@@ -183,8 +183,26 @@ log:
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state is one cursor into it, a commit id: what
   lies after the cursor is unread. The page walks the unread changes oldest
-  first, showing each as its diff; 已阅 moves the cursor past the change shown,
-  and 全部已阅 moves it to the head. This replaces the 478 per-item read
+  first, selecting one document at a time with `n` or its 新 chip; `r` moves
+  the cursor through the selected stop's step, and 全部已阅 moves it to the
+  head after confirmation. Expanded items and cards mark changes in their own
+  content, comparing the document before its first unread step with its current
+  state. Blocks are separated by blank lines, except inside fenced code;
+  contiguous lists and tables remain whole blocks so rich rendering stays
+  intact. Added or changed blocks are green; removed blocks stay in place,
+  struck through in red. A changed title shows its former title immediately
+  after it in small struck text. Changed status, priority and request rows
+  are green, as are added or changed dependency and link rows; removed
+  dependencies and links remain struck. New items and cards carry the blue
+  left bar on their whole box and mark their title green, without per-block
+  marks. New log entries, new notes and replies, and added dependency and link
+  rows use the same blue bar; a new reply also marks the reply itself. Note
+  changes appear only in the comment-list row, never as bookkeeping-field
+  diffs. Navigation opens the target and its comment list when needed, waits
+  for mark baselines and their rendering, then scrolls to the target so
+  loading marks cannot shift it afterward. Deleted documents have no body
+  to render but remain countable stops that `n` can visit and `r` can read.
+  This replaces the 478 per-item read
   records and their snapshots. A step groups consecutive commits by the same
   author on the same item, so five quick log appends read as one change, and
   the owner's own actions (notes, archiving) never count as unread. Scrubbing
