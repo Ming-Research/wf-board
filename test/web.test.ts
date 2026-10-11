@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
-import type { Snapshot } from "../src/model.ts";
+import type { Snapshot, Decision, Note } from "../src/model.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM. No browser or listener
 // is needed: these regressions concern event handlers and text, not layout.
@@ -11,6 +11,7 @@ class Element {
   tagName: string;
   id = ""; className = ""; textContent = ""; private html = ""; hidden = false;
   disabled = false; type = ""; title = ""; tabIndex = 0;
+  attributes: Record<string,string> = {};
   style: Record<string, string> = {}; dataset: Record<string, string> = {};
   children: Element[] = []; parentElement: Element | null = null;
   handlers = new Map<string, Array<(event: unknown) => unknown>>();
@@ -22,7 +23,7 @@ class Element {
   };
   appendChild(e: Element) { this.children.push(e); e.parentElement = this; return e; }
   insertBefore(e: Element) { this.children.unshift(e); e.parentElement = this; }
-  setAttribute() {}
+  setAttribute(name: string, value: string) { this.attributes[name] = value; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   async click() { for (const fn of this.handlers.get("click") ?? []) await fn({ stopPropagation() {}, preventDefault() {} }); }
   focus() {} blur() {} scrollIntoView() {}
@@ -33,9 +34,12 @@ class Element {
   get innerHTML() { return this.html; }
   set innerHTML(value: string) { this.html = value; this.children = []; }
   get firstChild(): Element | null { return this.children[0] ?? null; }
+  get firstElementChild(): Element | null { return this.firstChild; }
 }
-async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null) {
-  const code = (await build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", write: false, target: "es2022" })).outputFiles[0]!.text;
+type LineGroup = { kind: "same" | "added" | "removed"; lines: string[] };
+let bundle: Promise<string> | undefined;
+async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown) {
+  const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
   for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const body = new Element("body"), wrap = new Element("div"), header = new Element("header");
@@ -52,6 +56,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   };
   class EventSource { addEventListener() {} close() {} }
   const context = {
+    BoardPage: undefined as unknown as { lineDiff: (a: string, b: string) => LineGroup[] },
     document, HTMLElement: Element, EventSource, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, scrollY: 0, localStorage: { getItem: () => null, setItem() {} },
     matchMedia: () => ({ matches: true }), getComputedStyle: () => ({ scrollMarginTop: "0" }),
@@ -62,7 +67,11 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
       let value: unknown;
       if (path === "/api/snapshot") value = snapshot;
       else if (path === "/api/unread") value = { steps: unread };
-      else if (path.startsWith("/api/step?")) value = { before, after: {}, diff: "+ synthetic changed text" };
+      else if (path.startsWith("/api/step?")) {
+        const params = new URLSearchParams(path.split("?")[1]), id = params.get("doc")!;
+        const collection = params.get("kind") === "item" ? snapshot.items : params.get("kind") === "decision" ? snapshot.decisions : snapshot.notes;
+        value = { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
+      }
       else if (path === "/api/send") value = { sent: [{agent: "Session A"}, {agent: "Session A"}, {agent: "Session B"}] };
       else if (path === "/api/read") { unread = []; value = { ok: true }; }
       else throw new Error("Unexpected page request " + path);
@@ -71,7 +80,9 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   };
   runInNewContext(code, context);
   await setImmediate(); await setImmediate();
-  return { roots, all, calls, key: (key: string) => listeners.get("keydown")!({key,target:new Element("div"),preventDefault(){}}) };
+  return { roots, all, calls,
+    lineDiff: (a: string, b: string): LineGroup[] => JSON.parse(JSON.stringify(context.BoardPage.lineDiff(a,b))),
+    key: (key: string) => listeners.get("keydown")!({key,target:new Element("div"),preventDefault(){}}) };
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
@@ -97,7 +108,10 @@ test("filtered parent navigation opens its body, shows the step diff and reads o
   assert.ok(filter); await filter.click();
   p.key("n"); await setImmediate();
   const step = p.all().find(e => e.id === "step:" + id); assert.ok(step, "selected parent's body must contain its step");
-  assert.ok(step.children.some(e => e.tagName === "PRE" && e.innerHTML.includes("synthetic changed text")));
+  const raw = descendants(step).find(e => e.className === "raw-diff"); assert.ok(raw);
+  assert.equal(raw.tagName,"DETAILS"); assert.ok(!("open" in raw.attributes));
+  assert.equal(raw.children[0]!.innerHTML,"原始 diff");
+  assert.ok(raw.children.some(e => e.tagName === "PRE" && e.innerHTML.includes("synthetic changed text")));
   const read = step.children.find(e => e.tagName === "BUTTON"); assert.ok(read); await read.click();
   await setImmediate();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body), [{through:id}]);
@@ -115,4 +129,159 @@ test("unread logs expand with two preceding entries, highlight duplicate appends
   const step = p.all().find(e => e.id === "step:" + id)!;
   await step.children.find(e => e.tagName === "BUTTON")!.click(); await setImmediate();
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,0);
+});
+
+function descendants(root: Element): Element[] { return [root,...root.children.flatMap(descendants)]; }
+function markup(root: Element): string { return descendants(root).map(e => e.innerHTML + e.textContent).join("\n"); }
+async function changeView(s: Snapshot, kind: "item" | "decision" | "note", doc: string, before: unknown, after?: unknown) {
+  const id = "d".repeat(40);
+  const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind,id:doc,summary:"synthetic change"}]}],before,after);
+  p.key("n"); await setImmediate(); await setImmediate();
+  const step = p.all().find(e => e.id === "step:" + id); assert.ok(step,"the selected unread step must render");
+  const view = step.children.find(e => e.className === "document-change"); assert.ok(view,"the step must render a document change view");
+  assert.equal(step.children.filter(e => e.tagName === "PRE").length,0,"raw YAML must not be the default view");
+  return {p,step,view};
+}
+
+test("LCS line diff separates insertions, deletions and replacements and preserves matched lines", async t => {
+  const p = await page(snapshot(),[]);
+  await t.test("insertion", () => assert.deepEqual(p.lineDiff("首行\n末行","首行\n新增\n末行"),[
+    {kind:"same",lines:["首行"]},{kind:"added",lines:["新增"]},{kind:"same",lines:["末行"]},
+  ]));
+  await t.test("deletion", () => assert.deepEqual(p.lineDiff("首行\n移除\n末行","首行\n末行"),[
+    {kind:"same",lines:["首行"]},{kind:"removed",lines:["移除"]},{kind:"same",lines:["末行"]},
+  ]));
+  await t.test("replacement", () => assert.deepEqual(p.lineDiff("首行\n旧一\n旧二\n末行","首行\n新一\n新二\n末行"),[
+    {kind:"same",lines:["首行"]},{kind:"removed",lines:["旧一","旧二"]},{kind:"added",lines:["新一","新二"]},{kind:"same",lines:["末行"]},
+  ]));
+  // A positional comparison would mark the repeated lines as changes; LCS retains both.
+  await t.test("repeated lines", () => assert.deepEqual(p.lineDiff("重复\n删除\n重复","重复\n重复\n插入"),[
+    {kind:"same",lines:["重复"]},{kind:"removed",lines:["删除"]},{kind:"same",lines:["重复"]},{kind:"added",lines:["插入"]},
+  ]));
+  await t.test("empty endpoints", () => {
+    assert.deepEqual(p.lineDiff("","甲\n乙"),[{kind:"added",lines:["甲","乙"]}]);
+    assert.deepEqual(p.lineDiff("甲\n乙",""),[{kind:"removed",lines:["甲","乙"]}]);
+    assert.deepEqual(p.lineDiff("",""),[]);
+  });
+});
+
+test("head diff collapses unchanged runs longer than three lines without dropping their content", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"甲\n乙\n丙\n丁\n旧\n一\n二\n三\n终旧"};
+  s.items.child!.head = "甲\n乙\n丙\n丁\n新\n一\n二\n三\n终新";
+  const {view} = await changeView(s,"item","child",before);
+  const folds = descendants(view).filter(e => e.className === "change-context");
+  assert.equal(folds.length,1); assert.equal(folds[0]!.tagName,"DETAILS");
+  assert.ok(!("open" in folds[0]!.attributes));
+  assert.equal(folds[0]!.children[0]!.innerHTML,"… 省略 4 行");
+  assert.equal(folds[0]!.children[1]!.innerHTML,"<p>甲<br>乙<br>丙<br>丁</p>");
+  const visibleContext = descendants(view).find(e => e.className === "rich change-same" && e.innerHTML === "<p>一<br>二<br>三</p>");
+  assert.ok(visibleContext); assert.equal(visibleContext.parentElement!.className,"head-changes");
+});
+
+test("new item renders its head and every log with the existing rich block markup", async () => {
+  const s = snapshot();
+  s.items.child!.head = "**目标**：读中文\n\n- **保留**列表\n\n```\n<unsafe>\n```";
+  s.items.child!.log = [{at,by:"中文会话",text:"**完成**：正文\n\n1. 验证"},{at,text:"第二条"}];
+  const {view} = await changeView(s,"item","child",null);
+  assert.equal(view.children[0]!.innerHTML,"新条目");
+  const body = view.children[1]!; assert.equal(body.className,"change-added");
+  const head = body.children[0]!;
+  assert.equal(head.className,"rich");
+  assert.equal(head.innerHTML,'<div class="sub">目标</div><p>读中文</p><ul><li><strong>保留</strong>列表</li></ul><pre class="code"><code>&lt;unsafe&gt;</code></pre>');
+  const logs = descendants(body).filter(e => e.className === "log-entry fresh");
+  assert.equal(logs.length,2);
+  assert.equal(logs[0]!.children[0]!.innerHTML,"2026-10-11 01:02 · 中文会话");
+  assert.equal(logs[0]!.children[1]!.innerHTML,'<div class="sub">完成</div><p>正文</p><ol><li>验证</li></ol>');
+  assert.equal(logs[1]!.children[0]!.innerHTML,"2026-10-11 01:02");
+  assert.ok(!markup(body).includes("child"),"the body must not repeat the document id");
+});
+
+test("status change renders page labels and log additions match duplicate occurrences", async () => {
+  const s = snapshot(), old = {at,by:"Session A",text:"重复进展"};
+  const before = {...s.items.child!,status:"todo",log:[old,{at,text:"被移除"},{at,text:"保留进展"}]};
+  s.items.child!.log = [old,{at,text:"保留进展"},{...old},{at,by:"Session B",text:"**新进展**"}];
+  const {view} = await changeView(s,"item","child",before);
+  assert.ok(view.children.some(e => e.innerHTML === "状态：TODO → WIP"));
+  const logs = descendants(view).filter(e => e.className.split(" ").includes("log-entry"));
+  const added = logs.filter(e => e.className.includes("change-added")), removed = logs.filter(e => e.className.includes("change-removed"));
+  assert.equal(added.length,2); assert.equal(removed.length,1);
+  assert.ok(added.every(e => e.className.includes("fresh")));
+  assert.equal(added[0]!.children[1]!.innerHTML,"<p>重复进展</p>");
+  assert.equal(added[1]!.children[0]!.innerHTML,"2026-10-11 01:02 · Session B");
+  assert.equal(added[1]!.children[1]!.innerHTML,"<p><strong>新进展</strong></p>");
+  assert.equal(removed[0]!.children[1]!.innerHTML,"<p>被移除</p>");
+  assert.ok(!markup(view).includes("保留进展"),"unchanged logs must not clutter the change view");
+});
+
+test("head changes use rich line groups for removal, addition and dimmed context", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"共同开头\n\n- **旧条款**\n\n共同结尾"};
+  s.items.child!.head = "共同开头\n\n- **新条款**\n\n共同结尾";
+  const {view} = await changeView(s,"item","child",before);
+  const head = view.children.find(e => e.className === "head-changes"); assert.ok(head);
+  assert.deepEqual(head.children.map(e => [e.className,e.innerHTML]),[
+    ["rich change-same","<p>共同开头</p>"],
+    ["rich change-removed","<ul><li><strong>旧条款</strong></li></ul>"],
+    ["rich change-added","<ul><li><strong>新条款</strong></li></ul>"],
+    ["rich change-same","<p>共同结尾</p>"],
+  ]);
+});
+
+function card(): Decision {
+  return {item:"child",question:"如何显示？",background:"**背景**：中文正文",options:[{key:"A",text:"保留 YAML"},{key:"B",text:"渲染正文",recommended:true}],status:"open",updated:at,rev:1};
+}
+test("card ruling includes the ruling and chosen option from the step, not the latest snapshot", async () => {
+  const s = snapshot(), before = card();
+  const after: Decision = {...before,status:"ruled",choice:"B",ruling:"同意渲染正文",ruledAt:at};
+  s.decisions.q = {...after,choice:"A",ruling:"后续裁决"};
+  const {view} = await changeView(s,"decision","q",before,after);
+  assert.ok(view.children.some(e => e.innerHTML === "裁决：同意渲染正文"));
+  assert.ok(view.children.some(e => e.innerHTML === "选择：B · 渲染正文"));
+  assert.ok(view.children.some(e => e.innerHTML === "状态：待决定 → 已裁定"));
+  assert.ok(!markup(view).includes("后续裁决"));
+});
+
+test("new card reuses the card renderer without active choices, duplicate ids or recursive steps", async () => {
+  const s = snapshot(); s.decisions.q = card();
+  const {step,view} = await changeView(s,"decision","q",null);
+  assert.equal(view.children[0]!.innerHTML,"新决策卡");
+  const rendered = view.children.find(e => e.tagName === "ARTICLE"); assert.ok(rendered); assert.equal(rendered.id,"");
+  assert.ok(markup(rendered).includes('<div class="sub">背景</div><div class="sub">背景</div><p>中文正文</p>'));
+  const opts = descendants(rendered).filter(e => e.className.startsWith("optbtn"));
+  assert.equal(opts.length,2); assert.ok(opts.every(e => e.disabled));
+  assert.ok(opts[1]!.className.includes("rec"));
+  assert.equal(descendants(step).filter(e => e.className === "unread-step").length,1);
+});
+
+test("note reply renders the owner thread and reply with state changes", async () => {
+  const s = snapshot(), before: Note = {target:"it:child",kind:"comment",text:"**我的问题**",at,state:"sent",rev:1};
+  s.notes.n = {...before,state:"done",reply:"**回答**：已完成",repliedAt:at,repliedBy:"Session A"};
+  const {view} = await changeView(s,"note","n",before);
+  const thread = view.children.find(e => e.className.startsWith("note ")); assert.ok(thread);
+  assert.ok(thread.className.includes("newbar"));
+  assert.equal(thread.children.find(e => e.className === "txt")!.innerHTML,"<p><strong>我的问题</strong></p>");
+  assert.equal(thread.children.find(e => e.className === "reply rich")!.innerHTML,'<div class="sub">Claude</div><div class="sub">回答</div><p>已完成</p>');
+  assert.ok(view.children.some(e => e.innerHTML === "状态：已发送，等处理 → 已处理"));
+});
+
+test("dependencies and links show added and removed targets and explanations", async () => {
+  const s = snapshot(); s.decisions.q = card();
+  const before = {...s.items.child!,deps:[{id:"area",why:"旧原因"}],links:[{label:"旧链接",url:"https://example.com/old"}]};
+  s.items.child!.deps = [{card:"q",why:"选择渲染方式"}];
+  s.items.child!.links = [{label:"新链接",url:"https://example.com/new"}];
+  const {view} = await changeView(s,"item","child",before);
+  const removed = view.children.filter(e => e.className === "change-removed"), added = view.children.filter(e => e.className === "change-added");
+  assert.ok(removed.some(e => e.innerHTML === '依赖移除：Parent<span class="why"> · 旧原因</span>'));
+  assert.ok(added.some(e => e.innerHTML === '依赖新增：如何显示？<span class="why"> · 选择渲染方式</span>'));
+  assert.ok(removed.some(e => markup(e).includes("旧链接") && markup(e).includes("https://example.com/old")));
+  assert.ok(added.some(e => markup(e).includes("新链接") && markup(e).includes("https://example.com/new")));
+});
+
+test("deleted items preserve their head and logs, and absent endpoints remain readable", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"已删除正文",log:[{at,text:"已删除进展"}]}; delete s.items.child;
+  const {view} = await changeView(s,"item","child",before,null);
+  assert.equal(view.children[0]!.innerHTML,"已删除条目");
+  assert.equal(view.children[1]!.className,"change-removed");
+  assert.ok(markup(view.children[1]!).includes("已删除正文")); assert.ok(markup(view.children[1]!).includes("已删除进展"));
+  const absent = await changeView(s,"item","child",null,null);
+  assert.equal(absent.view.innerHTML,"本步前后均无此文档");
 });
