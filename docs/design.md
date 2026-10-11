@@ -299,9 +299,12 @@ cite them.
    - set `updated` to the newest log time on the 5 items where it is missing
      or older; take a ruled card's `ruledAt` from the owner's choice note;
      parse `confidence` into score and reason;
-   - qualify bare `#NNN` references in the 41 items whose project has one
-     repository; the other 192 items keep their text, and `prs` reports
-     their references as repository unknown;
+   - leave bare `#NNN` references as written: a project's items also cite
+     other repositories' pull requests (Snowghost items cite `Whitefoot #348`),
+     so the item's project does not name the repository; `prs` reads both
+     `Repo#N` and `Repo #N` and reports the rest as repository unknown;
+   - give the one item without a title a placeholder title, to be named
+     after the migration;
    - move the 50 notes and 49 reads whose target was deleted to
      `import/orphans.json` instead of dropping them.
 
