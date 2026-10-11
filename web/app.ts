@@ -6,30 +6,7 @@ type ViewItem = Item & { id: string };
 type ViewDecision = Decision & { id: string };
 type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
-interface FreshStop { key: string; step: string; doc: Step["docs"][number]; last: boolean; kinds: string[]; sel: string; item: string | null; container: string; card?: string; notes?: string }
-
-interface LineGroup { kind: "same" | "added" | "removed"; lines: string[] }
-/** Longest common subsequence of physical lines; replacements remove before adding. */
-export function lineDiff(before: string, after: string): LineGroup[] {
-  const lines = (s: string) => s ? s.replace(/\r/g, "").split("\n") : [];
-  const a = lines(before), b = lines(after);
-  const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
-  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
-    lcs[i]![j] = a[i] === b[j] ? 1 + lcs[i + 1]![j + 1]! : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
-  }
-  const groups: LineGroup[] = [];
-  const push = (kind: LineGroup["kind"], line: string) => {
-    if (groups.at(-1)?.kind !== kind) groups.push({ kind, lines: [] });
-    groups.at(-1)!.lines.push(line);
-  };
-  let i = 0, j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) { push("same", a[i++]!); j++; }
-    else if (i < a.length && (j === b.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) push("removed", a[i++]!);
-    else push("added", b[j++]!);
-  }
-  return groups;
-}
+interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string }
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
@@ -37,7 +14,9 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let shownStop: string | null = null;
-  const pendingDiffs = new Set<string>();
+  const pendingDiffs = new Map<string, Promise<void>>();
+  const failedDiffs = new Set<string>();
+  let freshNavigation = 0;
   const diffs = new Map<string, { before: unknown; after: unknown; diff: string }>();
   let sendMessage = "";
   let connected = false;
@@ -70,19 +49,17 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   }
   function blocks(src: unknown) {
     const lines = textLines(src);
-    const fresh = (_line: string) => false;
-    const cls = (changed: boolean) => changed ? ' class="chg"' : "";
     const out: string[] = [];
-    let para: string[] = [], list: {tag:string;items:Array<{text:string;raw:string}>} | null = null, code: string[] | null = null;
+    let para: string[] = [], list: {tag:string;items:Array<{text:string}>} | null = null, code: string[] | null = null;
     const flushPara = () => {
       if (!para.length) return;
       const m = para[0]!.match(/^\*\*([^*]+)\*\*\s*[：:]\s*(.*)$/);
       let lead = para.slice();
-      if (m) { out.push('<div class="sub' + (fresh(para[0]!) ? " chg" : "") + '">' + inline(m[1]) + "</div>"); lead[0] = m[2]!; lead = lead.filter((l, i) => i > 0 || l); }
-      if (lead.length) out.push("<p" + cls(para.some(fresh)) + ">" + lead.map(inline).join("<br>") + "</p>");
+      if (m) { out.push('<div class="sub">' + inline(m[1]) + "</div>"); lead[0] = m[2]!; lead = lead.filter((l, i) => i > 0 || l); }
+      if (lead.length) out.push("<p>" + lead.map(inline).join("<br>") + "</p>");
       para = [];
     };
-    const flushList = () => { if (list) { out.push("<" + list.tag + ">" + list.items.map(t => "<li" + cls(fresh(t.raw)) + ">" + inline(t.text) + "</li>").join("") + "</" + list.tag + ">"); list = null; } };
+    const flushList = () => { if (list) { out.push("<" + list.tag + ">" + list.items.map(t => "<li>" + inline(t.text) + "</li>").join("") + "</" + list.tag + ">"); list = null; } };
     // Markdown tables: consecutive lines starting with "|"; a second row of dashes makes the first a header and sets alignment.
     let table: string[] | null = null;
     const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
@@ -96,28 +73,28 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       const body = head ? rows.slice(2) : rows;
       const td = (tag: string, c: string, i: number) => "<" + tag + (align[i] && align[i] !== "left" ? ' style="text-align:' + align[i] + '"' : "") + ">" + inline(c) + "</" + tag + ">";
       let h = '<div class="tablewrap"><table>';
-      if (head) h += "<thead><tr" + cls(fresh(head)) + ">" + cells(head).map((c, i) => td("th", c, i)).join("") + "</tr></thead>";
-      h += "<tbody>" + body.map(r => "<tr" + cls(fresh(r)) + ">" + cells(r).map((c, i) => td("td", c, i)).join("") + "</tr>").join("") + "</tbody></table></div>";
+      if (head) h += "<thead><tr>" + cells(head).map((c, i) => td("th", c, i)).join("") + "</tr></thead>";
+      h += "<tbody>" + body.map(r => "<tr>" + cells(r).map((c, i) => td("td", c, i)).join("") + "</tr>").join("") + "</tbody></table></div>";
       out.push(h);
     };
     for (const line of lines) {
       if (!code && /^\s*\|/.test(line)) { flushPara(); flushList(); (table = table || []).push(line); continue; }
       flushTable();
-      if (code) { if (/^\s*```/.test(line)) { out.push("<pre" + (code.some(fresh) ? ' class="code chg"' : ' class="code"') + "><code>" + esc(code.join("\n")) + "</code></pre>"); code = null; } else code.push(line); continue; }
+      if (code) { if (/^\s*```/.test(line)) { out.push('<pre class="code"><code>' + esc(code.join("\n")) + "</code></pre>"); code = null; } else code.push(line); continue; }
       if (/^\s*```/.test(line)) { flushPara(); flushList(); code = []; continue; }
       const ul = line.match(/^\s*[-*]\s+(.*)$/), ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
       if (ul || ol) {
         flushPara();
         const tag = ul ? "ul" : "ol";
         if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
-        list.items.push({ text: (ul || ol)![1]!, raw: line });
+        list.items.push({ text: (ul || ol)![1]! });
         continue;
       }
       if (!line.trim()) { flushPara(); flushList(); continue; }
       flushList();
       para.push(line);
     }
-    if (code) out.push("<pre" + (code.some(fresh) ? ' class="code chg"' : ' class="code"') + "><code>" + esc(code.join("\n")) + "</code></pre>");
+    if (code) out.push('<pre class="code"><code>' + esc(code.join("\n")) + "</code></pre>");
     flushTable(); flushPara(); flushList();
     return out.join("");
   }
@@ -177,7 +154,12 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function touched(kind: string,id: string) { return steps.some(s => s.docs.some(d => d.kind === kind && d.id === id)); }
   function cardNew(d: ViewDecision) { return touched("decision",d.id); }
   function cardFresh(d: ViewDecision) { return cardNew(d) || notesOf("q:" + d.id).some(n => touched("note",n.id)); }
-  function newReplies(key: string) { return notesOf(key).filter(n => n.reply && touched("note",n.id)); }
+  function noteFresh(n: ViewNote) {
+    const before = unreadBefore<Note>("note",n.id);
+    return { created: before === null, reply: before !== undefined && !!n.reply && before?.reply !== n.reply };
+  }
+  function newReplies(key: string) { return notesOf(key).filter(n => noteFresh(n).reply); }
+  function newNotes(key: string) { return notesOf(key).filter(n => noteFresh(n).created); }
   // How many new things a document holds (server-counted; derived from the summary for a step without counts).
   function piecesOf(doc: Step["docs"][number]): {log:number;reply:number;other:number} {
     if (doc.pieces) return doc.pieces;
@@ -324,27 +306,36 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       if (d.kind === "decision") { card = d.id; item = snapshot.decisions[d.id]?.item || null; }
       if (d.kind === "note") { const n = snapshot.notes[d.id]; notes = n?.target; if (notes?.startsWith("q:")) { card = notes.slice(2); item = snapshot.decisions[card]?.item || null; } else item = notes?.slice(3) || null; }
       const key = step.id + "|" + d.kind + "|" + d.id;
-      return { key, step: step.id, doc: d, last: false, kinds: docKinds(d), sel: "step:" + key, item, card, notes, container: card ? "q:" + card : item ? "it:" + item : "history" };
+      return { key, step: step.id, doc: d, kinds: docKinds(d), sel: d.kind === "item" ? "it:" + d.id : d.kind === "decision" ? "q:" + d.id : "note:" + d.id, item, card, notes };
     })).filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item)));
-    // The cursor moves by whole commits, so only a step's last shown stop offers 已阅.
-    out.forEach((st, k) => { st.last = out[k + 1]?.step !== st.step; });
     return out;
   }
 
   function noteId(n: ViewNote) { return "note-" + String(n.id).replace(/[^A-Za-z0-9_-]/g, "_"); }
   // The element a stop selects, once its item, card and comment list are open.
   function stopEl(st: FreshStop) { return selEl(st.sel); }
-  function goFresh(k: number) {
+  async function goFresh(k: number) {
     const all = freshStops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
+    const navigation = ++freshNavigation;
+    failedDiffs.clear();
     shownStop = st.key;
-    void loadDiff(steps.find(s => s.id === st.step)!, st.doc);
+    clearCurrent();
     if (st.item && snapshot.items[st.item] && derived.inArchive(st.item)) { const g = derived.groupOf(st.item), f = groupFilter(g); filters[g] = { ...f, status: ["archived"] }; }
     if (st.card) { const d = index().decById.get(st.card); if (d && d.status !== "open" && !ruledOpen[d.id]) { ruledOpen[d.id] = true; saveRuled(); } }
     if (st.notes && !notesOpen[st.notes]) { notesOpen[st.notes] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {} }
     if (st.item) { const item = snapshot.items[st.item]; if (item && !passes({...item,id:st.item})) clearFilters(derived.groupOf(st.item)); openPath(st.item); renderCards(); } else { renderAreas(); renderCards(); }
-    const e = stopEl(st) || (st.item ? get("it-" + st.item) : null);
+    // Baseline responses can insert removed prose above this target. Drain requests started by rendering,
+    // including already pending ones and further requests their completed renders start, before measuring.
+    while (pendingDiffs.size) {
+      await Promise.all([...pendingDiffs.values()]);
+      if (navigation !== freshNavigation || shownStop !== st.key) return;
+    }
+    if (navigation !== freshNavigation || shownStop !== st.key || !allFreshStops().some(s => s.key === st.key)) return;
+    if (failedDiffs.size) return;
+    const e = stopEl(st);
+    if (!e) clearCurrent();
     if (e) { jump(e); setCurrent(e); }
   }
   // A chip counts the unread stops touching this item or card; a click opens the oldest.
@@ -368,6 +359,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   }
   async function readThrough(step: string) {
     if (!steps.some(s => s.id === step)) return false;
+    freshNavigation++;
     try { for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; await refreshOwner(); return true; } catch (e) { showError(e); return false; }
   }
   function goNextFresh() {
@@ -380,7 +372,12 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const at = all.findIndex(s => s.key === shownStop);
     goFresh(at < 0 ? all.length - 1 : at - 1);
   }
-  function selectedFresh() { return shownFresh() && onScreen(selEl("step:" + shownStop)) ? { key: "step:" + shownStop } : null; }
+  function selectedFresh() {
+    const st = shownFresh();
+    // A deleted document has no selectable body, but its logical stop still advances the read cursor.
+    const missing = st && (st.doc.kind === "item" ? !snapshot.items[st.doc.id] : st.doc.kind === "decision" ? !snapshot.decisions[st.doc.id] : !snapshot.notes[st.doc.id]);
+    return st && (missing ? current === null : current === st.sel && onScreen(stopEl(st))) ? { key: "step:" + st.key } : null;
+  }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
   // r, c, e and a act on it, or on the item or card that holds it.
@@ -388,7 +385,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
   function selEl(key: string | null) {
     if (!key) return null;
-    if (key.startsWith("step:")) return get(key);
     if (key.startsWith("it:")) return get("it-" + key.slice(3));
     if (key.startsWith("q:")) return get("q-" + key.slice(2));
     return document.querySelector<HTMLElement>('[data-sel="' + CSS.escape(key) + '"]');
@@ -397,7 +393,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   // The item or card a selection belongs to.
   function containerOf(key: string | null) {
     if (!key) return null;
-    if (key.startsWith("step:")) return allFreshStops().find(st => st.key === key.slice(5))?.container || null;
     if (key.startsWith("it:") || key.startsWith("q:")) return key;
     if (key.startsWith("log:")) return "it:" + key.slice(4, key.indexOf("@"));
     if (key.startsWith("dep:")) return "it:" + key.slice(4, key.indexOf("@"));
@@ -769,32 +764,33 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     return n ? "回复（" + day(n.repliedAt || n.at) + "）" : "一条回复";
   }
   const NOTE_STATE: Record<Note["state"], string> = { draft: "未发送", sent: "已发送，等处理", done: "已处理" };
-  function noteThread(n: Note, fresh = false) {
+  function noteThread(n: Note, fresh = false, replyFresh = false) {
     const box = el("div", "note" + (n.state === "draft" ? " draft" : "") + (fresh ? " newbar" : ""));
     box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
     if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
     box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : blocks(n.text)));
-    if (n.reply) box.appendChild(el("div", "reply rich", '<div class="sub">Claude</div>' + blocks(n.reply)));
+    if (n.reply) box.appendChild(el("div", "reply rich" + (replyFresh ? " newbar" : ""), '<div class="sub">Claude</div>' + blocks(n.reply)));
     return box;
   }
   function noteBlock(key: string, title: string) {
     const mine = notesOf(key).filter(listed).sort((x, y) => String(x.at).localeCompare(String(y.at)));
     if (!mine.length && editing !== key) return null;
     const wrap = el("div", "notes");
-    // New replies open the list until the owner folds or opens it by hand.
-    const shown = Object.prototype.hasOwnProperty.call(notesOpen, key) ? !!notesOpen[key] : newReplies(key).length > 0;
+    // New comments and reply content open the list until the owner folds or opens it by hand.
+    const freshReplies = newReplies(key), freshNotes = newNotes(key);
+    const shown = Object.prototype.hasOwnProperty.call(notesOpen, key) ? !!notesOpen[key] : freshReplies.length + freshNotes.length > 0;
     if (mine.length) {
       const replied = mine.filter(n => n.reply).length;
       const pend = mine.filter(n => n.state === "draft").length;
-      const t = el("button", "notes-toggle" + (!shown && fon("reply") && newReplies(key).length ? " newbar" : ""), (shown ? "▾ " : "▸ ") + "评论 " + mine.length + " 条" + (replied ? "，" + replied + " 条有回复" : "") + (pend ? '<span class="pend">' + pend + " 条未发送</span>" : ""));
+      const t = el("button", "notes-toggle" + (!shown && (fon("reply") && freshReplies.length || fon("other") && freshNotes.length) ? " newbar" : ""), (shown ? "▾ " : "▸ ") + "评论 " + mine.length + " 条" + (replied ? "，" + replied + " 条有回复" : "") + (pend ? '<span class="pend">' + pend + " 条未发送</span>" : ""));
       t.type = "button";
       t.setAttribute("aria-expanded", String(shown));
       t.addEventListener("click", () => { notesOpen[key] = !shown; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {} renderAreas(); renderCards(); });
       wrap.appendChild(t);
     }
-    const fresh = fon("reply") ? newReplies(key) : [];
     (shown ? mine : []).forEach(n => {
-      const box = noteThread(n, fresh.includes(n));
+      const replyFresh = fon("reply") && freshReplies.includes(n);
+      const box = noteThread(n, replyFresh || fon("other") && freshNotes.includes(n), replyFresh);
       box.id = noteId(n);
       box.dataset.sel = "note:" + n.id;
       if (current === "note:" + n.id) box.classList.add("cur");
@@ -975,28 +971,30 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     // A filter opens the path to its matches, their sub-item lists only; an item's body opens only when the owner opens it.
     const open = isOpen(it), bodyOpen = !!manual[it.id];
     if (!bodyOpen) { delete logShown[it.id]; delete logHold[it.id]; }
+    const baseline = unreadBefore<Item>("item",it.id);
+    const before = bodyOpen ? baseline : undefined;
     const st = statusOf(it);
-    const box = el("div", "item " + st + (up(it) ? "" : " line") + (freshShown(it) ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
+    const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
     box.id = "it-" + it.id;
     if (current === "it:" + it.id) box.classList.add("cur");
     box.dataset.title = plain(it.title);
     // Archived sub-items stay where they are: hidden, unless the 已归档 filter shows them.
     const sub = kids(it.id, inArchive || showsArchived(groupOf(it))).filter(k => inArchive || passes(k));
     const ck = checksOf(it), raised = raisedBy(it);
-    const hasBody = !!(headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
+    const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
     const head = el("button", "item-head");
     head.type = "button";
     head.setAttribute("aria-expanded", String(open));
     head.appendChild(el("span", "caret", hasBody ? (open ? "▾" : "▸") : ""));
 
-    head.appendChild(el("span", "st " + st, esc(STATUS[st] || st)));
+    head.appendChild(el("span", "st " + st + (before && it.status !== undefined && before.status !== it.status ? " chg-add" : ""), esc(STATUS[st] || st)));
     // The badge shows the effective priority; a raised one also shows the written one, struck through.
     const pr = effPriorityOf(it), wrote = priorityOf(it);
-    const pb = el("span", "prio " + (pr ? pr.toLowerCase() : "none"), pr || "P?");
+    const pb = el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?");
     if (raised) pb.title = "写的是 " + (wrote || "未设") + "；因为「" + plain(raised.title) + "」(" + effPriorityOf(raised) + ") 在等它";
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
-    head.appendChild(el("span", "item-title", inline(it.title)));
+    appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
     if (freshShown(it)) head.appendChild(freshChip("it:" + it.id));
@@ -1034,30 +1032,29 @@ export function lineDiff(before: string, after: string): LineGroup[] {
         ws.forEach(w => wl.appendChild(whyRow(w, it, whyOf(w, it.id))));
         body.appendChild(wl);
       }
-      if (headOf(it)) body.appendChild(el("div", "rich", blocks(headOf(it))));
+      if (headOf(it) || before?.head) body.appendChild(el("div", "rich", markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it))));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
-      const des = depEntries(it);
+      const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark}));
       if (des.length) {
         const dl = el("div", "deplists after");
         dl.appendChild(el("div", "k", "依赖"));
-        const fd = new Set<string>();
         des.forEach(e => {
           const d = e.kind === "item" ? index().byId.get(e.id) : undefined;
           const r = d ? whyRow(d, it, e.why) : el("button", "deprow", inline(e.kind === "card" ? snapshot.decisions[e.id]?.question || e.id : e.id) + '<span class="why">' + inline(e.why) + '</span>');
           if (!d && e.kind === "card") r.addEventListener("click", () => followCard(e.id));
           r.dataset.sel = "dep:" + it.id + "@" + e.id;
-          if (fd.has(e.id)) r.classList.add("fresh");
+          if (e.mark) r.classList.add(e.mark);
+          if (e.mark === "chg-add" || before === null) r.classList.add("fresh");
           if (current === r.dataset.sel) r.classList.add("cur");
           dl.appendChild(r);
         });
         body.appendChild(dl);
       }
-      appendStep(body, "it:" + it.id);
       const lg = logSection(it);
       if (lg) body.appendChild(lg);
       // The owner's request and the decision cards come after the log, whose last entry usually leads to them.
       if (askPending(it)) {
-        const a = el("div", "ask");
+        const a = el("div", "ask" + (before && !sameValue(before.ask,it.ask) ? " chg-add" : ""));
         a.id = "ask-" + it.id;
         a.style.scrollMarginTop = "24px";
         a.appendChild(el("span", null, '<span class="asktag">等你处理</span> ' + inline(it.ask?.text)));
@@ -1067,6 +1064,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
         a.appendChild(nextButton("ask-" + it.id));
         body.appendChild(a);
       }
+      if (before?.ask && !it.ask) body.appendChild(el("div", "ask chg-del",inline(before.ask.text)));
       cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
       ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
       if (ck.length || raised) {
@@ -1096,7 +1094,12 @@ export function lineDiff(before: string, after: string): LineGroup[] {
           refs.appendChild(b);
         });
       }
-      (it.links || []).forEach(l => { if (/^https:\/\//.test(l.url || "")) { has = true; const a = el("a", null, esc(l.label)); a.href = l.url; a.target = "_blank"; a.rel = "noopener"; refs.appendChild(a); } });
+      orderedChanges(before?.links || it.links,it.links).forEach(({value:l,mark}) => {
+        has = true;
+        const a = el("a", mark + (mark === "chg-add" || before === null ? " fresh" : ""), esc(l.label));
+        if (/^https:\/\//.test(l.url || "")) { a.href = l.url; a.target = "_blank"; a.rel = "noopener"; }
+        refs.appendChild(a);
+      });
       if (has) body.appendChild(refs);
       box.appendChild(body);
     }
@@ -1126,7 +1129,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     countBelow();
     // Top-level items render under their project group; under a dependency filter only those holding a match show.
     const groups = projectGroups();
-    if (!groups.length) { root.appendChild(el("p", "empty", "看板还没有内容。")); appendStep(root, "history"); return; }
+    if (!groups.length) { root.appendChild(el("p", "empty", "看板还没有内容。")); return; }
     const wrap = el("div"); wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "34px";
     groups.forEach((g, gi) => {
       const box = el("section", "group");
@@ -1151,43 +1154,45 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       wrap.appendChild(box);
     });
     root.appendChild(wrap);
-    appendStep(root, "history");
   }
 
   function choiceOf(d: ViewDecision) { return notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done")); }
-  function decisionCard(d: ViewDecision, historical = false) {
-    const c = el("article", "card" + (!historical && current === "q:" + d.id ? " cur" : "") + (!historical && fon("other") && cardNew(d) ? " fresh" : ""));
-    if (!historical) c.id = "q-" + d.id;
+  function decisionCard(d: ViewDecision) {
+    const before = unreadBefore<Decision>("decision",d.id);
+    const c = el("article", "card" + (current === "q:" + d.id ? " cur" : "") + (before === null ? " fresh" : ""));
+    c.id = "q-" + d.id;
     const top = el("div", "card-top");
     const h = el("h3");
     const closed = d.status !== "open";
-    if (!historical && waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
-    if (closed) h.appendChild(el("span", "closedtag", d.ruling ? "已裁定" : "已结束"));
-    h.appendChild(el("span", null, inline(d.question || "")));
-    if (!historical && cardFresh(d)) h.appendChild(freshChip("q:" + d.id));
-    const pc = historical ? null : pendingChip("q:" + d.id);
+    if (waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
+    if (closed) h.appendChild(el("span", "closedtag" + (before && before.status !== d.status ? " chg-add" : ""), d.ruling ? "已裁定" : "已结束"));
+    appendTitle(h,d.question || "",before === null ? null : before?.question);
+    if (cardFresh(d)) h.appendChild(freshChip("q:" + d.id));
+    const pc = pendingChip("q:" + d.id);
     if (pc) h.appendChild(pc);
     top.appendChild(h);
-    if (closed && !historical) {
+    if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
       x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); renderAreas(); renderCards(); });
       top.appendChild(x);
     }
     c.appendChild(top);
-    if (closed && d.ruling) c.appendChild(el("p", null, '<span class="lbl">裁定：</span>' + inline(d.ruling) + (d.ruledAt ? ' · ' + esc(day(d.ruledAt)) : '')));
-    if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + blocks(d.background)));
-    const chosen = historical ? undefined : choiceOf(d);
-    if (Array.isArray(d.options) && d.options.length) {
+    if (closed && (d.ruling || before?.ruling)) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || "") + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
+    if (d.background || before?.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + markedBlocks(before?.background,d.background || "")));
+    const chosen = choiceOf(d);
+    if (d.options.length || before?.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));
       const ol = el("ul", "opts");
-      d.options.forEach(o => {
+      const oldOptions = new Map(before?.options.map(o => [o.key,o]));
+      const opts = orderedChanges(before?.options || d.options,d.options,(a,b) => a.key === b.key);
+      opts.forEach(({value:o,mark}) => {
         const li = el("li");
         const sel = (chosen?.choice || d.choice) === o.key;
         const rec = !!o.recommended || /[（(]推荐[)）]/.test(o.text || "");
-        const btn = el("button", "optbtn" + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + inline(o.text));
+        const btn = el("button", "optbtn" + (mark === "chg-del" ? " chg-del" : "") + (before && mark !== "chg-del" && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + markedBlocks(mark === "chg-del" || !before ? undefined : oldOptions.get(o.key)?.text || "",o.text) + '</div>');
         btn.type = "button";
         btn.setAttribute("aria-pressed", String(sel));
-        btn.disabled = historical || !connected || closed || !!(chosen && chosen.state !== "draft");
+        btn.disabled = mark === "chg-del" || !connected || closed || !!(chosen && chosen.state !== "draft");
         btn.addEventListener("click", async () => {
           btn.disabled = true;
           try {
@@ -1201,10 +1206,9 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       c.appendChild(ol);
     }
     if (d.confidence) c.appendChild(el("p", null, '<span class="lbl">信心：</span>' + inline((d.confidence.score === undefined ? "" : d.confidence.score + "/5：") + d.confidence.reason)));
-    if (!historical) appendStep(c, "q:" + d.id);
-    const nb = historical ? null : noteBlock("q:" + d.id, d.question || "决策");
+    const nb = noteBlock("q:" + d.id, d.question || "决策");
     if (nb) c.appendChild(nb);
-    if (!historical && waitsQ(d)) {
+    if (waitsQ(d)) {
       const foot = el("div", "card-foot");
       foot.appendChild(nextButton("q-" + d.id));
       c.appendChild(foot);
@@ -1352,27 +1356,33 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const result = await api<{cursor?: string; steps: Step[]}>("/api/unread");
     if (generation !== unreadGeneration) return;
     steps = result.steps; snapshot.owner.cursor = result.cursor;
+    failedDiffs.clear();
     if (shownStop && !steps.some(s => shownStop!.startsWith(s.id + "|"))) shownStop = null;
     renderAll();
   }
   async function refreshOwner() { await loadSnapshot(); await refreshUnread(); }
-  async function loadDiff(step: Step, doc: Step["docs"][number]) {
+  function loadDiff(step: Step, doc: Step["docs"][number]): Promise<void> {
     const key = step.id + ":" + doc.kind + ":" + doc.id;
-    if (diffs.has(key) || pendingDiffs.has(key)) return;
-    pendingDiffs.add(key);
-    try {
-      const diff = await api<{before: unknown; after: unknown; diff: string}>("/api/step?id=" + step.id + "&kind=" + doc.kind + "&doc=" + encodeURIComponent(doc.id));
-      diffs.set(key,diff); renderAll();
-    } catch(e) { if (steps.some(s => s.id === step.id)) showError(e); }
-    finally { pendingDiffs.delete(key); }
+    if (diffs.has(key) || failedDiffs.has(key)) return Promise.resolve();
+    const pending = pendingDiffs.get(key);
+    if (pending) return pending;
+    const request = (async () => {
+      try {
+        const diff = await api<{before: unknown; after: unknown; diff: string}>("/api/step?id=" + step.id + "&kind=" + doc.kind + "&doc=" + encodeURIComponent(doc.id));
+        diffs.set(key,diff); renderAll();
+      } catch(e) {
+        // A failed baseline cannot keep a render/navigation drain retrying forever. The next unread refresh or unread walk retries it.
+        failedDiffs.add(key);
+        if (steps.some(s => s.id === step.id)) showError(e);
+      } finally { pendingDiffs.delete(key); }
+    })();
+    pendingDiffs.set(key,request);
+    return request;
   }
   function unreadLogs(it: ViewItem) {
-    const first = steps.find(s => s.docs.some(d => d.kind === "item" && d.id === it.id));
-    if (!first) return [];
-    const doc = first.docs.find(d => d.kind === "item" && d.id === it.id)!;
-    const diff = diffs.get(first.id + ":item:" + it.id);
-    if (!diff) { void loadDiff(first,doc); return []; }
-    const previous = ((diff.before as Item | null)?.log || []).slice();
+    const before = unreadBefore<Item>("item",it.id);
+    if (before === undefined) return [];
+    const previous = (before?.log || []).slice();
     return it.log.filter(e => {
       const old = previous.findIndex(entry => entry.at === e.at && entry.by === e.by && entry.text === e.text);
       if (old < 0) return true;
@@ -1386,160 +1396,48 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const left = a as Record<string,unknown>, right = b as Record<string,unknown>;
     return Object.keys(left).length === Object.keys(right).length && Object.keys(left).every(k => Object.hasOwn(right,k) && sameValue(left[k],right[k]));
   }
-  // Match occurrences, not just membership: appending an identical log entry is still an addition.
-  function entryChanges<T>(before: T[], after: T[]) {
-    const removed = before.slice(), added: T[] = [];
-    for (const entry of after) {
-      const i = removed.findIndex(old => sameValue(old,entry));
-      if (i < 0) added.push(entry); else removed.splice(i,1);
-    }
-    return { removed, added };
+  // undefined means no unread baseline (or still loading); null means the document is new.
+  function unreadBefore<T>(kind: Step["docs"][number]["kind"], id: string): T | null | undefined {
+    const first = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
+    if (!first) return undefined;
+    const doc = first.docs.find(d => d.kind === kind && d.id === id)!;
+    const diff = diffs.get(first.id + ":" + kind + ":" + id);
+    if (!diff) { void loadDiff(first,doc); return undefined; }
+    return diff.before as T | null;
   }
-  function valueText(value: unknown): string {
-    if (value == null) return "未设";
-    if (typeof value !== "object") return String(value);
-    if (Array.isArray(value)) return value.map(valueText).join("；");
-    return Object.values(value).map(valueText).join(" · ");
+  // Blank lines delimit blocks, except inside a fenced code block. A contiguous list or table is one block.
+  function proseBlocks(text: string): string[] {
+    const out: string[] = [], block: string[] = [];
+    let fenced = false;
+    const flush = () => { if (block.length) out.push(block.join("\n")); block.length = 0; };
+    for (const line of text.replace(/\r/g, "").split("\n")) {
+      if (/^\s*```/.test(line)) fenced = !fenced;
+      if (!line.trim() && !fenced) flush(); else block.push(line);
+    }
+    flush(); return out;
   }
-  function changedFields<T extends object>(box: HTMLElement, before: T | null, after: T | null, fields: Array<[keyof T, string, ((value: unknown) => string)?]>) {
-    for (const [key,label,format = valueText] of fields) {
-      const a = before?.[key], b = after?.[key];
-      if (!sameValue(a,b)) box.appendChild(el("div", "change-field", esc(label) + "：" + inline(format(a)) + " → " + inline(format(b))));
+  // An ordered LCS leaves deletions at their original place; replacements remove before adding.
+  function orderedChanges<T>(before: T[], after: T[], equal: (a:T,b:T) => boolean = sameValue): Array<{value:T; mark:"" | "chg-add" | "chg-del"}> {
+    const lcs = Array.from({length:before.length + 1}, () => new Uint32Array(after.length + 1));
+    for (let i = before.length - 1; i >= 0; i--) for (let j = after.length - 1; j >= 0; j--) {
+      lcs[i]![j] = equal(before[i]!,after[j]!) ? 1 + lcs[i + 1]![j + 1]! : Math.max(lcs[i + 1]![j]!,lcs[i]![j + 1]!);
     }
+    const out: Array<{value:T; mark:"" | "chg-add" | "chg-del"}> = [];
+    let i = 0, j = 0;
+    while (i < before.length || j < after.length) {
+      if (i < before.length && j < after.length && equal(before[i]!,after[j]!)) { out.push({value:after[j++]!,mark:""}); i++; }
+      else if (i < before.length && (j === after.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) out.push({value:before[i++]!,mark:"chg-del"});
+      else out.push({value:after[j++]!,mark:"chg-add"});
+    }
+    return out;
   }
-  function headChanges(before: string, after: string) {
-    const box = el("div", "head-changes");
-    for (const group of lineDiff(before,after)) {
-      const content = el("div", "rich change-" + group.kind, blocks(group.lines.join("\n")));
-      if (group.kind === "same" && group.lines.length > 3) {
-        const fold = el("details", "change-context");
-        fold.appendChild(el("summary", null, "… 省略 " + group.lines.length + " 行"));
-        fold.appendChild(content); box.appendChild(fold);
-      } else box.appendChild(content);
-    }
-    return box;
+  function markedBlocks(before: string | undefined, after: string) {
+    if (before === undefined || before === after) return blocks(after);
+    return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value) + '</div>' : blocks(value)).join("");
   }
-  function itemName(value: unknown) { return value == null ? "未设" : snapshot.items[String(value)]?.title || String(value); }
-  function askText(value: unknown) {
-    const ask = value as Item["ask"];
-    return ask ? ask.text + (ask.url ? " · " + ask.url : "") + (ask.chat ? " · 请在对话窗口里确认" : "") : "未设";
-  }
-  function itemChanges(before: Item | null, after: Item | null) {
-    const box = el("div", "document-change"), item = after || before!;
-    if (!before || !after) {
-      box.appendChild(el("div", "change-label", after ? "新条目" : "已删除条目"));
-      const body = el("div", after ? "change-added" : "change-removed");
-      if (item.head) body.appendChild(el("div", "rich", blocks(item.head)));
-      if (item.log.length) {
-        const log = el("div", "log"); log.appendChild(el("div", "log-head", "进展"));
-        item.log.slice().sort((a,b) => a.at.localeCompare(b.at)).forEach(e => log.appendChild(logEntry(e,!!after)));
-        body.appendChild(log);
-      }
-      box.appendChild(body);
-    } else {
-      changedFields(box,before,after,[["title","标题"]]);
-    }
-    // An item that gained sub-items loses its own status and priority, which are now derived: not a change to show.
-    const shown = before && after ? { ...before, ...(after.status === undefined ? { status: undefined } : {}), ...(after.priority === undefined ? { priority: undefined } : {}) } : before;
-    changedFields(box,shown,after,[
-      ["status","状态", v => v == null ? "未设" : STATUS[String(v)] || String(v)],
-      ["priority","优先级"], ["data","数字"], ["ask","请求",askText],
-      ["parent","上级",itemName],
-      ["group","项目"], ["order","排序"],
-    ]);
-    if (before && after) {
-      if (before.head !== after.head) box.appendChild(headChanges(before.head || "",after.head || ""));
-      const log = entryChanges(before.log,after.log);
-      for (const kind of ["removed","added"] as const) for (const e of log[kind]) {
-        const row = logEntry(e,kind === "added"); row.classList.add("change-" + kind);
-        box.appendChild(row);
-      }
-    }
-    const deps = entryChanges(before?.deps || [],after?.deps || []);
-    for (const kind of ["removed","added"] as const) for (const dep of deps[kind]) {
-      const title = "id" in dep ? itemName(dep.id) : snapshot.decisions[dep.card]?.question || dep.card;
-      box.appendChild(el("div", "change-" + kind, "依赖" + (kind === "added" ? "新增" : "移除") + "：" + inline(title) + '<span class="why"> · ' + inline(dep.why) + '</span>'));
-    }
-    const links = entryChanges(before?.links || [],after?.links || []);
-    for (const kind of ["removed","added"] as const) for (const link of links[kind]) {
-      const row = el("div", "change-" + kind, "链接" + (kind === "added" ? "新增" : "移除") + "：");
-      const a = el("a", null, esc(link.label));
-      if (/^https:\/\//.test(link.url)) { a.href = link.url; a.target = "_blank"; a.rel = "noopener"; }
-      row.appendChild(a); row.appendChild(el("span", null, " · " + esc(link.url))); box.appendChild(row);
-    }
-    return box;
-  }
-  const CARD_STATUS: Record<Decision["status"],string> = { open: "待决定", ruled: "已裁定", withtree: "随设计树处理", elsewhere: "在别处处理" };
-  function decisionChanges(before: Decision | null, after: Decision | null, id: string) {
-    const box = el("div", "document-change");
-    if (!before || !after) {
-      box.appendChild(el("div", "change-label", after ? "新决策卡" : "已删除决策卡"));
-      const card = decisionCard({...(after || before!),id},true);
-      card.classList.add(after ? "change-added" : "change-removed"); box.appendChild(card);
-      return box;
-    }
-    if (after.ruling && (before.ruling !== after.ruling || before.choice !== after.choice)) {
-      box.appendChild(el("div", "change-added", "裁决：" + inline(after.ruling)));
-      const option = after.options.find(o => o.key === after.choice);
-      if (after.choice) box.appendChild(el("div", "change-added", "选择：" + inline(after.choice) + (option ? " · " + inline(option.text) : "")));
-    } else {
-      changedFields(box,before,after,[["ruling","裁决"],["choice","选择"]]);
-    }
-    changedFields(box,before,after,[
-      ["question","问题"], ["background","背景"],
-      ["options","选项", v => (v as Decision["options"]).map(o => o.key + "：" + o.text + (o.recommended ? "（推荐）" : "")).join("；")],
-      ["confidence","信心", v => { const c = v as Decision["confidence"]; return c ? (c.score === undefined ? "" : c.score + "/5：") + c.reason : "未设"; }],
-      ["status","状态",v => CARD_STATUS[v as Decision["status"]]], ["item","所属条目",itemName],
-      ["ruledAt","裁决时间",v => day(v as string | undefined) || "未设"], ["order","排序"], ["at","创建时间",v => day(v as string | undefined) || "未设"],
-    ]);
-    return box;
-  }
-  function noteChanges(before: Note | null, after: Note | null) {
-    const box = el("div", "document-change");
-    if (!before || !after || before.reply !== after.reply || before.text !== after.text) {
-      if (!after) box.appendChild(el("div", "change-label", "已删除评论"));
-      if (before && after && (before.text !== after.text || before.reply && before.reply !== after.reply)) {
-        const old = noteThread(before); old.classList.add("change-removed"); box.appendChild(old);
-      }
-      const thread = noteThread(after || before!,!!after);
-      thread.classList.add(after ? "change-added" : "change-removed"); box.appendChild(thread);
-    }
-    const noteKind = (v: unknown) => ({ comment: "评论", explain: "详细解释", approve: "同意", choice: "选择", done: "完成" })[v as Note["kind"]] || "未设";
-    changedFields(box,before,after,[
-      ["state","状态",v => NOTE_STATE[v as Note["state"]] || "未设"], ["kind","类型",noteKind],
-      ["target","所属条目",v => v == null ? "未设" : titleOf(String(v))], ["choice","选择"],
-      ["repliedBy","回复项目"], ["repliedAt","回复时间",v => day(v as string | undefined) || "未设"],
-    ]);
-    return box;
-  }
-  function documentChange(doc: Step["docs"][number], diff: {before: unknown; after: unknown; diff: string}) {
-    const box = diff.before === null && diff.after === null ? el("div", "document-change", "本步前后均无此文档") :
-      doc.kind === "item" ? itemChanges(diff.before as Item | null,diff.after as Item | null) :
-      doc.kind === "decision" ? decisionChanges(diff.before as Decision | null,diff.after as Decision | null,doc.id) :
-      noteChanges(diff.before as Note | null,diff.after as Note | null);
-    if (!box.children.length && !box.innerHTML) box.appendChild(el("div", "change-same", "其他字段变化"));
-    return box;
-  }
-  function appendStep(parent: HTMLElement, key: string) {
-    const st = shownFresh(), step = st && steps.find(s => s.id === st.step);
-    if (!st || !step) return;
-    const missing = st.item && !snapshot.items[st.item] || st.card && !snapshot.decisions[st.card];
-    if ((missing ? "history" : st.container) !== key) return;
-    const box = el("section", "unread-step"); box.id = "step:" + st.key; box.dataset.sel = box.id;
-    const others = allFreshStops().filter(s => s.step === st.step).length - 1;
-    box.appendChild(el("div", "log-meta", esc(day(step.at)) + " · " + esc(step.author) + " · " + step.commits.length + " 次提交" + (others ? " · 同一步还改了 " + others + " 处" : "")));
-    {
-      const doc = st.doc;
-      const diff = diffs.get(step.id + ":" + doc.kind + ":" + doc.id);
-      const historical = (diff?.after || diff?.before) as Item | Decision | Note | undefined;
-      const title = doc.kind === "item" ? (historical as Item | undefined)?.title || snapshot.items[doc.id]?.title :
-        doc.kind === "decision" ? (historical as Decision | undefined)?.question || snapshot.decisions[doc.id]?.question :
-        historical ? titleOf((historical as Note).target) : snapshot.notes[doc.id] ? titleOf(snapshot.notes[doc.id]!.target) : undefined;
-      box.appendChild(el("div", "sub", esc(title || doc.id) + " · " + esc(doc.summary)));
-      box.appendChild(diff ? documentChange(doc,diff) : el("div", "change-same", "正在读取变化…"));
-    }
-    const read = el("button", "freshbtn", st.last ? "已阅（包括此前所有变化）" : "下一处（这一步看完再标已阅）"); read.type = "button";
-    read.addEventListener("click", ev => { ev.stopPropagation(); if (st.last) void markRead("step:" + st.key); else goNextFresh(); }); box.appendChild(read); parent.appendChild(box);
+  function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "") {
+    parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),inline(title)));
+    if (before != null && before !== title) parent.appendChild(el("small", "title-was chg-del",inline(before)));
   }
   let retry: ReturnType<typeof setTimeout> | undefined;
   let source: EventSource | undefined;
