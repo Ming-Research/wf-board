@@ -95,6 +95,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
     if (method === "POST") {
       if (path === "/api/notes") { const result = await ownerOps.createNote(args(await body(req))); json(res, 200, { id: result.id }); return; }
+      if (path === "/api/draft") { json(res, 200, await ownerOps.setDraft(args(await body(req)))); return; }
       if (path === "/api/send") {
         const result = await ownerOps.send();
         json(res, 200, result); return;
