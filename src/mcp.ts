@@ -29,6 +29,7 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
   if (!("ancestors" in result)) throw new Error("Invalid item context");
   const it = result.item as Snapshot["items"][string];
   const lines = [formatRow(result as q.Row), `rev ${it.rev} · updated ${it.updated}${it.created ? ` · created ${it.created}` : ""}`];
+  if (result.children.length) lines.push(`status and priority derived from ${result.children.length} sub-item${result.children.length > 1 ? "s" : ""}: ${result.children.map(c => `${c.id} ${label(c.status)}`).join(", ")}`);
   if (result.agent) lines.push(`agent: ${result.agent}${it.agent ? "" : " (inherited from an ancestor)"}`);
   if (it.short) lines.push(`short: ${it.short}`);
   if (it.order !== undefined) lines.push(`order: ${it.order}`);
@@ -50,7 +51,12 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
   return lines.join("\n");
 }
 export function formatSearch(hits: q.Hit[]): string {
-  return hits.length ? hits.map(h => `${formatRow(h)} · ${h.kind}.${h.field}${h.time ? ` ${h.time}` : ""}${h.more ? ` (+${h.more} more here)` : ""}\n  ${h.snippet}`).join("\n") : "No matches.";
+  if (!hits.length) return "No matches.";
+  // Bare #N references whose repository is unknown collapse into one line: they may be another repository's PR.
+  const bare = hits.filter(h => h.field === "pr" && h.snippet.includes("未写仓库")), rest = hits.filter(h => !bare.includes(h));
+  const lines = rest.map(h => `${formatRow(h)} · ${h.kind}.${h.field}${h.time ? ` ${h.time}` : ""}${h.more ? ` (+${h.more} more here)` : ""}\n  ${h.snippet}`);
+  if (bare.length) lines.push(`also a bare ${bare[0]!.snippet.replace(/[«»]/g, "").split("（")[0]} without repository (may be another repository's PR) in: ${bare.map(h => `${h.kind}:${h.id}`).join(", ")}`);
+  return lines.join("\n");
 }
 /** At most `limit` documents, then how many were left out, so one large commit (a migration) cannot flood the reader's context. */
 export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>, limit = 40): string {
@@ -138,7 +144,21 @@ export function createMcpServer({ store, ops, now: _now }: { store: Store; ops: 
   register("diff", "What exactly changed in one document? Returns its YAML diff between commits or ISO times; use after history or changes.", {
     kind, id: text("Exact document id; notes use their original note id."), from: text("Starting git commit/ref or ISO time."), to: text("Ending git commit/ref or ISO time; omitted means current HEAD.").optional(),
   }, async a => await q.diff(store, a.kind === "card" ? "decision" : a.kind, a.id, a.from, a.to) || "No differences.");
-  const result = async (operation: Promise<import("./ops.ts").Result>) => { const r = await operation; return `${r.summary} · rev ${r.rev} · commit ${r.commit}`; };
+  // A write answers with the state it produced: the target's row and every ancestor whose
+  // derived status or priority it changed, so the writer need not read context again.
+  const result = async (operation: Promise<import("./ops.ts").Result>) => {
+    const before = read();
+    const res = await operation;
+    const after = read(), lines = [`${res.summary} · rev ${res.rev} · commit ${res.commit}`];
+    const kind = Object.hasOwn(after.snapshot.items, res.id) ? "item" : Object.hasOwn(after.snapshot.decisions, res.id) ? "card" : "note";
+    if (kind !== "note") lines.push(formatRow(q.row(after.snapshot, after.rules, kind, res.id)));
+    if (kind === "item") for (const a of after.rules.ancestors(res.id)) {
+      const was = Object.hasOwn(before.snapshot.items, a) ? `${label(before.rules.statusOf(a))} ${before.rules.effectivePriorityOf(a)}` : "";
+      const now = `${label(after.rules.statusOf(a))} ${after.rules.effectivePriorityOf(a)}`;
+      if (was !== now) lines.push(`ancestor ${a} now ${now}${was ? ` (was ${was})` : ""}`);
+    }
+    return lines.join("\n");
+  };
   register("create_item", "Add a leaf and list it in the parent's dependencies in one commit. Omit parent only for a new area, which requires agent and group.", {
     author, key: Key.describe("New key unused by any item or decision."), parent: Key.describe("Existing parent item; omit to create an area.").optional(), title: text("Plain title naming what this delivers."), head: text("Stable task context and completion criteria.").optional(), priority: Priority.describe("Required leaf priority: P0 urgent, P1 soon, P2 can wait."), status: Status.describe("Initial leaf status; default todo.").optional(), deps: depsSchema.optional(), parent_why: text("Required with parent: explain what the parent needs this child for.").optional(), parent_own_work: z.object({ key: Key.describe("New key for the sub-item that takes over the parent's own work."), title: text("Title of that own-work sub-item.") }).strict().describe("Required when the parent is still a leaf: its status and priority move to this new sub-item in the same commit, since a parent's status is derived.").optional(), links: links.optional(), data: text("One line of key numbers.").optional(), agent: text("Responsible session; required for an area, optional handover on a child.").optional(), group: text("Project group heading; required for an area.").optional(), short: text("Optional short display title.").optional(), order: z.number().describe("Optional sibling ordering number.").optional(),
   }, a => { const { parent_why, parent_own_work, ...fields } = a; return result(ops.createItem({ ...fields, parentWhy: parent_why, parentOwnWork: parent_own_work })); }, true);

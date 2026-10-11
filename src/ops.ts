@@ -147,7 +147,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }, true),
     setStatus: a => edit(a, `set_status`, (it, s, at) => {
       const r = rules(s);
-      if (!r.isLeaf(a.id)) throw new OpError("status: a parent's status is derived; put its own work in a sub-item and set that leaf's status");
+      if (!r.isLeaf(a.id)) throw new OpError(`status: ${a.id}'s status is derived from its sub-items (${r.children(a.id).sort(r.compareSiblings).map(c => `${c} ${r.statusOf(c)}`).join(", ")}); put its own work in a sub-item and set that leaf's status`);
       if (a.status === "blocked" && !r.depsOf(a.id).some(d => d.open) && !it.ask) throw new OpError("status blocked: add at least one open dependency or an ask");
       return { ...it, updated: at, status: a.status, log: [...it.log, entry(a.author, at, a.log)] };
     }, false, ` ${a.status}`),
