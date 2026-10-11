@@ -83,10 +83,11 @@ function oldBoard(): LegacyState {
 // Intentionally no card deps: those did not exist on the page and have unit
 // coverage in rules.test.ts. Freshness/read snapshots are outside this module.
 // This mapping is written here, independently of the CLI's export mapper.
-function mapBoard(old: LegacyState): Pick<Snapshot, "items" | "decisions" | "notes" | "owner"> {
+function mapBoard(old: LegacyState): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
   return {
+    board: { title: "Legacy comparison", projects: [] },
     items: Object.fromEntries(old.items.map(it => [it.id, Item.parse({
-      title: it.title, parent: it.parent || it.area || undefined, agent: it.agent,
+      title: it.title, parent: it.parent || it.area || undefined,
       group: it.group, order: it.order, status: it.status, priority: it.priority,
       head: it.head || it.text, ask: it.ask ? { text: it.ask, url: it.askUrl, chat: it.askChat } : undefined,
       log: it.log || [], deps: (it.deps || []).map(e => typeof e === "string" ? { id: e, why: "" } : { id: e.id, why: e.why || "" }),

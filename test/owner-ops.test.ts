@@ -20,13 +20,37 @@ test("draft notes validate targets and choices, delete only drafts, send atomica
   const c = await own.createNote({ target: "it:other", kind: "explain", text: "explain" });
   const before = (await store.log()).length;
   const sent = await own.send();
-  assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "approve", agent: author }, { id: b.id, target: "q:choice", kind: "choice", agent: author }, { id: c.id, target: "it:other", kind: "explain", agent: "Other session" }]);
+  assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "approve", agents: [author] }, { id: b.id, target: "q:choice", kind: "choice", agents: [author] }, { id: c.id, target: "it:other", kind: "explain", agents: ["Other session"] }]);
   assert.equal((await store.log()).length, before + 1);
   for (const { id } of sent.sent) { assert.equal(store.snapshot().notes[id]!.state, "sent"); assert.equal(store.snapshot().notes[id]!.sentAt, later); }
   await assert.rejects(own.deleteNote({ id: a.id }), /Only draft/);
   await op.replyNote({ author, id: a.id, reply: "recorded" });
   await assert.rejects(own.deleteNote({ id: a.id }), /Only draft/);
   const head = store.snapshot().head; assert.deepEqual(await own.send(), { sent: [] }); assert.equal(store.snapshot().head, head);
+});
+
+test("send reports the agents responsible when a concurrent replacement claim commits first", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  const note = await own.createNote({ target: "it:a", kind: "comment", text: "Deliver after handover" });
+  let signalReached!: () => void, release!: () => void;
+  const reached = new Promise<void>(resolve => { signalReached = resolve; });
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  const commit = store.commit.bind(store);
+  t.mock.method(store, "commit", async (txn: Parameters<typeof store.commit>[0]) => {
+    if (txn.message.startsWith("send ")) { signalReached(); await resume; }
+    return commit(txn);
+  });
+  let deliveredTo: string[] | undefined;
+  t.after(store.onChange(change => {
+    if (change.message.startsWith("send ")) deliveredTo = rules(store.snapshot()).agentsFor("a");
+  }));
+  const sending = own.send();
+  await reached;
+  try { await op.claimProject({ author: "Replacement", project: "Whitefoot", replace: [author], reason: "Session departed" }); }
+  finally { release(); }
+  const result = await sending;
+  assert.deepEqual(deliveredTo, ["Replacement"]);
+  assert.deepEqual(result.sent, [{ id: note.id, target: "it:a", kind: "comment", agents: deliveredTo }]);
 });
 
 test("read advances monotonically; unknown, off-history and merged sibling commits are refused", async t => {

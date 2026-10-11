@@ -5,14 +5,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { board, author } from "./helpers.ts";
 
-test("SDK client discovers exactly twenty described tools, reads/writes fresh state and receives tool errors", async t => {
+test("SDK client discovers exactly twenty-eight described tools, reads/writes fresh state and receives tool errors", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Test agent", version: "1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
-  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "update_item", "set_status", "move_item", "set_ask", "clear_ask", "write_card", "rule_card", "reply_note"].sort());
+  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "update_item", "set_status", "move_item", "set_ask", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "claim_project", "create_request", "triage_request", "projects", "brief", "followups"].sort());
   for (const tool of tools) {
     assert.ok(tool.description && tool.description.length > 30);
     for (const [key, value] of Object.entries(tool.inputSchema.properties ?? {})) assert.ok((value as { description?: string }).description, `${tool.name}.${key} describes its parameter`);
@@ -90,7 +90,7 @@ test("writes answer with the state they produced; refusals and context name the 
 
 
 test("R2 R4 R5 MCP exposes transition and replacement fields and unscored confidence", async t => {
-  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const { store, op } = await board(t, {sharedProjects:true}), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Review regression", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
@@ -108,4 +108,28 @@ test("R2 R4 R5 MCP exposes transition and replacement fields and unscored confid
   assert.equal(card.isError, undefined, text(card));
   const context = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
   assert.match(context, /confidence Unscored grounds/); assert.doesNotMatch(context, /undefined\/5/);
+});
+
+test("project MCP onboarding, requests, triage, close and coordinator reads use the configured contracts", async t => {
+  const {store,op}=await board(t), server=createMcpServer({store,ops:op,now:()=>"2026-10-12T00:00:00Z"});
+  const client=new Client({name:"Project test",version:"1"}), [st,ct]=InMemoryTransport.createLinkedPair();
+  await server.connect(st);await client.connect(ct); t.after(async()=>{await client.close();await server.close();});
+  const text=(r:Awaited<ReturnType<typeof client.callTool>>)=>(r.content as Array<{text:string}>).map(c=>c.text).join("\n");
+  async function call(name:string,args:Record<string,unknown>={}) {const r=await client.callTool({name,arguments:args});assert.ok(!r.isError,text(r));return text(r);}
+  const instructions=client.getInstructions()!;
+  for (const term of ["projects","claim_project","brief","create_request","close_note","coordinator","need not listen"]) assert.ok(instructions.includes(term),term);
+  const configured=JSON.parse(await call("projects"));assert.deepEqual(configured[0].agents,[author]);assert.equal(configured[0].repo,"Ming-Research/Whitefoot");
+  await call("claim_project",{author:"New agent",project:"Whitefoot",reason:"Resuming"});
+  assert.ok(store.snapshot().board.projects[0]!.agents.includes("New agent"));
+  await call("create_project",{author:"Third agent",name:"Third",repo:"Org/Third"});
+  await call("create_request",{author:"New agent",project:"Third",key:"request",title:"Need feature",head:"Witness",priority:"P1",why:"Blocks",from:"a"});
+  const brief=JSON.parse(await call("brief",{project:"Third"})); assert.deepEqual(brief.inbox.map((r:{id:string})=>r.id),["request"]);
+  const pending=JSON.parse(await call("followups",{minutes:1}));assert.ok(pending.requests.some((r:{id:string})=>r.id==="request"));assert.ok(pending.notes.some((r:{id:string})=>r.id==="note-1"));
+  await call("triage_request",{author:"Third agent",id:"request",priority:"P0",log:"Own area"});assert.equal(store.snapshot().items.request!.request,undefined);
+  await call("close_note",{author:"New agent",id:"note-1",log:"Handled"});assert.equal(store.snapshot().notes["note-1"]!.state,"done");
+  const summary=await call("overview",{group:"Whitefoot"});assert.equal(summary.split("agents:").length-1,1);assert.match(summary,/inbox 0/);
+  for (const name of ["create_item","update_item"]) {
+    const schema=(await client.listTools()).tools.find(t=>t.name===name)!.inputSchema;
+    assert.ok(!Object.hasOwn(schema.properties!,"agent"));
+  }
 });

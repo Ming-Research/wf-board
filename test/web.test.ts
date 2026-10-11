@@ -11,6 +11,7 @@ import type { Snapshot, Decision, Note } from "../src/model.ts";
 class Element {
   tagName: string;
   id = ""; className = ""; textContent = ""; private html = ""; hidden = false;
+  value = "";
   disabled = false; type = ""; title = ""; tabIndex = 0;
   attributes: Record<string,string> = {};
   style: Record<string, string> = {}; dataset: Record<string, string> = {};
@@ -74,7 +75,8 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         const collection = params.get("kind") === "item" ? snapshot.items : params.get("kind") === "decision" ? snapshot.decisions : snapshot.notes;
         value = { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
       }
-      else if (path === "/api/send") value = { sent: [{agent: "Session A"}, {agent: "Session A"}, {agent: "Session B"}] };
+      else if (path === "/api/send") value = { sent: [{agents: ["Session A","Session B"]}, {agents: ["Session A"]}, {agents: []}] };
+      else if (path === "/api/requests") value = {id:"req-new"};
       else if (path === "/api/read") { unread = []; value = { ok: true }; }
       else throw new Error("Unexpected page request " + path);
       return { ok: true, status: 200, json: async () => structuredClone(value) };
@@ -88,8 +90,8 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
-  return { board: { title: "Synthetic title", eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
-    area: { title: "Parent", group: "Project", agent: "Session A", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
+  return { board: { title: "Synthetic title", projects: [{name:"Project",agents:["Session A","Session B"]}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
+    area: { title: "Parent", group: "Project", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
 }
@@ -99,7 +101,7 @@ test("bundled page renders board metadata and the recorded-send count by session
   assert.equal(p.roots.get("goal-title")!.textContent, "Synthetic title");
   assert.equal(p.roots.get("eyebrow")!.textContent, "Synthetic eyebrow");
   await p.roots.get("send-all")!.click();
-  assert.equal(p.roots.get("send-note")!.textContent, "已发出 3 条：Session A×2 … Session B×1");
+  assert.equal(p.roots.get("send-note")!.textContent, "已发出 3 条：Session A×2 · Session B×1 · 未指定负责会话×1");
 });
 test("filtered parent navigation opens its body, shows the step diff and reads only through a shown commit", async () => {
   const id = "b".repeat(40);
@@ -337,7 +339,7 @@ test("a dependency row names its project only when the project differs from the 
   const s = snapshot();
   s.items.sib = { title: "Sibling", parent: "area", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.area!.deps.push({ id: "sib", why: "needs sibling" });
-  s.items.far = { title: "Far area", group: "Other project", agent: "Session B", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.items.far = { title: "Far area", group: "Other project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.child!.deps = [{ id: "sib", why: "same area" }, { id: "far", why: "other area" }];
   const p = await page(s, []);
   await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
@@ -347,4 +349,31 @@ test("a dependency row names its project only when the project differs from the 
   assert.ok(same && far);
   assert.ok(!same.innerHTML.includes('class="where"'), "a same-project dependency carries no label");
   assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
+});
+
+test("project page shows agents, inbox requests and an inline request form including empty projects", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Empty",agents:[]});
+  s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
+  const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
+  assert.equal(headings.length,2); assert.match(markup(headings[0]!),/负责：Session A、Session B/); assert.match(markup(headings[1]!),/负责：未指定/);
+  assert.ok(p.all().some(e=>e.innerHTML==="等你处理 1 ›"));
+  const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
+  assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/); assert.match(markup(inbox),/Visitor/); assert.match(markup(inbox),/Need feature/);
+  const item=p.all().find(e=>e.id==="it-incoming"); assert.ok(item); assert.ok(descendants(inbox).includes(item));
+  await descendants(item).find(e=>e.className==="item-head")!.click();
+  assert.match(markup(p.all().find(e=>e.id==="it-incoming")!),/Request body/);
+  assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
+  await p.all().filter(e=>e.tagName==="BUTTON" && e.innerHTML==="提需求")[1]!.click();
+  let form=p.all().find(e=>e.className==="request-form"); assert.ok(form);
+  const inputs=descendants(form);
+  inputs.find(e=>e.tagName==="INPUT")!.value="New title";
+  inputs.find(e=>e.tagName==="TEXTAREA")!.value="New text";
+  inputs.find(e=>e.tagName==="SELECT")!.value="P0";
+  for (const input of inputs.filter(e=>["INPUT","TEXTAREA","SELECT"].includes(e.tagName))) for (const fn of input.handlers.get("input") ?? []) fn({});
+  await inputs.find(e=>e.tagName==="BUTTON" && e.innerHTML==="提交")!.click();
+  assert.deepEqual(p.calls.find(c=>c.path==="/api/requests")!.body,{project:"Empty",title:"New title",text:"New text",priority:"P0"});
+  await p.all().filter(e=>e.tagName==="BUTTON" && e.innerHTML==="提需求")[0]!.click();
+  form=p.all().find(e=>e.className==="request-form")!;
+  await descendants(form).find(e=>e.tagName==="BUTTON" && e.innerHTML==="取消")!.click();
+  assert.ok(!p.all().some(e=>e.className==="request-form"));
 });

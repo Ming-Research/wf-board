@@ -17,7 +17,10 @@ export interface Rules {
   ancestors(id: string): string[];
   lineOf(id: string): string;
   groupOf(id: string): string;
-  agentFor(id: string): string;
+  agentsFor(id: string): string[];
+  projectOf(id: string): string;
+  isRequest(id: string): boolean;
+  inbox(project: string): string[];
   isLeaf(id: string): boolean;
   statusOf(id: string): Status;
   priorityOf(id: string): Priority | "";
@@ -48,7 +51,7 @@ const rankOfPriority = (p: Priority | "" | undefined): number => p ? RANK[p] : 3
  * Array/object results are defensive copies; item() returns the snapshot's item.
  * Missing items have no metadata; tree queries still include dangling children.
  */
-export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner">): Rules {
+export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner">): Rules {
   const memo = new Map<string, Map<string, unknown>>();
   function cached<T>(name: string, key: string, make: () => T): T {
     let values = memo.get(name);
@@ -98,9 +101,11 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
     });
   }
   function lineOf(id: string): string { return ancestors(id).at(-1) || id; }
+  function groupOf(id: string): string { return item(lineOf(id))?.group || ""; }
+  function isRequest(id: string): boolean { return !!item(id)?.request && !ended(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
-      const list = kids("").filter(id => !include || include(id)), groups = new Map<string, number>();
+      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map<string, number>();
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
       return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
     }
@@ -252,7 +257,11 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
         else if (!e.why.trim() && !ended(id)) out.push({ text: "依赖没写为什么：", target });
       }
       if (cycles().has(id)) out.push({ text: "依赖成环" });
-      if (!it.parent && !it.agent) out.push({ text: "顶层条目没有负责会话（agent）" });
+      if (!it.parent) {
+        const project = s.board.projects.find(p => p.name === it.group);
+        if (!project) out.push({ text: "项目没有配置：" + (it.group || "") });
+        else if (!project.agents.length) out.push({ text: "项目没有负责的会话：" + it.group });
+      }
       if (it.parent && !parent) out.push({ text: "上级条目不存在：" + it.parent });
       if (parent && !ended(id) && !depsOf(parent).some(e => e.kind === "item" && e.id === id)) out.push({ text: "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", target: { kind: "item", id: parent } });
       const open = deps.filter(e => e.open);
@@ -264,8 +273,9 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
   }
   return {
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
-    ancestors: id => ancestors(id).slice(), lineOf, groupOf: id => item(lineOf(id))?.group || "",
-    agentFor: id => item(id)?.agent || item(ancestors(id).find(a => item(a)?.agent) || "")?.agent || "",
+    ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
+    agentsFor: id => s.board.projects.find(p => p.name === groupOf(id))?.agents.slice() || [],
+    isRequest, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
     isLeaf, statusOf, priorityOf, effectivePriorityOf, raisedBy,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),

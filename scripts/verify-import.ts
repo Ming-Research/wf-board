@@ -45,7 +45,15 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
   const parent = (raw: Raw) => optional(raw.parent) ?? optional(raw.area);
   const parents = new Set(items.map(r => parent(r.data)).filter(Boolean));
   const archived = Object.fromEntries(archives.map(r => [r.id, date(r.data.at)]));
-  equal("board metadata", converted.board, fields(meta, ["title", "eyebrow", "goal"]));
+  const projects: Array<{name:string;agents:string[]}> = [];
+  for (const area of items.filter(r => !parent(r.data)).sort((a,b) => Number(a.data.order ?? 0) - Number(b.data.order ?? 0))) {
+    if (!area.data.group) continue;
+    const name = String(area.data.group);
+    if (!projects.some(p => p.name === name)) projects.push({name,agents:[]});
+    const agents = projects.find(p => p.name === name)!.agents;
+    if (area.data.agent && !agents.includes(String(area.data.agent))) agents.push(String(area.data.agent));
+  }
+  equal("board metadata", converted.board, {...fields(meta, ["title", "eyebrow", "goal"]),projects});
   equal("owner archive state", converted.owner, { archived });
   // Build expected documents directly from the source contract, independently
   // of the converter and of the output being checked. Whole-document equality
@@ -53,7 +61,7 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
   const expected: { items: Record<string, Raw>; decisions: Record<string, Raw>; notes: Record<string, Raw> } = { items: {}, decisions: {}, notes: {} };
   const dependency = (target: string, why: unknown) => !itemMap.has(target) && decisionIds.has(target) ? { card: target, why } : { id: target, why };
   for (const { id, data: raw } of items) {
-    const doc = fields(raw, ["title", "agent", "group", "order", "status", "priority", "data", "links"]);
+    const doc = fields(raw, ["title", "group", "order", "status", "priority", "data", "links"]);
     doc.title ??= `（缺标题）${id}`;
     if (parent(raw)) doc.parent = parent(raw);
     const head = optional(raw.head ?? raw.text);

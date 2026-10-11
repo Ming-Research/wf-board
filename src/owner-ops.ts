@@ -11,7 +11,7 @@ export class NotFoundError extends Error {}
 export interface OwnerOps {
   createNote(a: { target: string; kind: Note["kind"]; text: string; choice?: string; anchor?: Note["anchor"] }): Promise<{ id: string; commit: string }>;
   deleteNote(a: { id: string }): Promise<void>;
-  send(): Promise<{ sent: Array<{ id: string; target: string; kind: string; agent: string }> }>;
+  send(): Promise<{ sent: Array<{ id: string; target: string; kind: string; agents: string[] }> }>;
   archive(a: { id: string; on: boolean }): void;
   read(a: { through: string }): Promise<void>;
 }
@@ -48,9 +48,11 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
     }),
     send: () => run(async s => {
       const drafts = Object.entries(s.notes).filter(([, n]) => n.state === "draft");
-      const r = rules(s), sentAt = now();
-      const sent = drafts.map(([id, n]) => ({ id, target: n.target, kind: n.kind, agent: r.agentFor(n.target.startsWith("it:") ? n.target.slice(3) : s.decisions[n.target.slice(2)]?.item ?? "") }));
+      const sentAt = now();
       if (drafts.length) await store.commit({ author: "owner", message: `send ${drafts.length} notes`, puts: drafts.map(([id, n]) => ({ kind: "note", id, expectRev: n.rev, doc: { ...n, state: "sent", sentAt } })) });
+      // Claims use the agent queue and can commit while this send waits for the store.
+      const committed = store.snapshot(), r = rules(committed);
+      const sent = drafts.map(([id, n]) => ({ id, target: n.target, kind: n.kind, agents: r.agentsFor(n.target.startsWith("it:") ? n.target.slice(3) : committed.decisions[n.target.slice(2)]?.item ?? "") }));
       return { sent };
     }),
     archive: a => {

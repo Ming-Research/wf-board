@@ -1,9 +1,7 @@
-# wf-board design (proposal)
+# wf-board design
 
-Status: proposal for the owner's review, 2026-10-11. Nothing here is
-implemented yet. After the owner rules, the decisions move into a design tree
-(`design/`, checked by the Design-skill submodule) and this document is
-deleted.
+The local server implements this model. Project responsibility in sections 8–9
+records the owner’s settled decisions and supersedes per-item `agent` ownership.
 
 ## 1. Problem
 
@@ -109,7 +107,7 @@ agent reading with Grep or Read when the server is down.
 
 ```
 wf-board-data/
-  board.yaml              title, eyebrow, goal, group order
+  board.yaml              title, eyebrow, goal, projects
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
@@ -212,8 +210,11 @@ the server cannot tell sessions apart (several share one repository).
 | `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows for items matching status, priority, area subtree, open ask, flags, updated-since |
-| `overview(group?)` | The board at a glance | Per area: counts by status, owner actions waiting, blocked items, flags |
+| `overview(group?)` | The board at a glance | Project agents and inbox count once per heading; per area: counts by status, owner actions waiting, blocked items, flags |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
+| `projects()` | Which project matches this repository? | Project configuration, areas, open leaves and inbox counts |
+| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs and outgoing work |
+| `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project and agents |
 
 ### Changing things
 
@@ -228,6 +229,11 @@ the server cannot tell sessions apart (several share one repository).
 | `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
+| `create_project(name, repo?)` | Configures a project with the author as its first agent | Unique project name |
+| `claim_project(project, replace?, reason?)` | Adds the author and optionally removes departed agents | Author not already listed; replacements listed; replacement reason required |
+| `create_request(project, key, title, head, priority, why, from?)` | Files into any project's inbox; optionally links the filing item | Project exists; author owns `from`; atomic dependency |
+| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Project member; same-project parent; preserves leaf parent work |
+| `close_note(id, log)` | Closes a note and records handling in its item's log | Project member; not draft |
 
 ## 7. The page
 
@@ -239,18 +245,24 @@ moves out of the page into `src/rules.ts` and is loaded by both.
 
 ## 8. Waking sessions
 
-"发给 Claude" posts to `/api/send`. The server marks the drafts sent and sends
-one line per note on `/wake`: the note id, its target, kind and the
-responsible session.
+"发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
+sent note produces one wake event:
+`{event:"note", note, target, kind, title, project, agents}`. Sending does not
+mark a note handled. It stays `sent` until a project agent replies with
+`reply_note` or closes it with `close_note`. Closing stamps the handler and
+time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
+reply text and refuses draft notes; an existing reply is preserved.
 
-A session listens with Claude Code's Monitor tool (`ws` source on
-`ws://127.0.0.1:7417/wake?session=<name>`); each frame wakes it. A monitor
-expires after at most 30 minutes, so a listening session is woken at expiry to
-re-arm it, which costs a small turn every 30 minutes per listening session.
-
-Initially only the coordinator listens and forwards, as today. Later, each
-session can listen for its own notes and the relay step disappears; that
-depends on section 9.
+A newly created request also produces one event:
+`{event:"request", item, title, project, agents, by}`. The store's committed
+change is the event source, so updates and retries do not announce a request
+again. A socket at `/wake?session=*` receives everything; a named socket
+receives events whose `agents` include that session. The coordinator listens
+to the wildcard stream, forwards to the responsible project agents, and uses
+`followups(minutes)` for notes and inbox requests older than that age. Agents
+need not listen. With no live responsible session, the coordinator asks the
+owner to restart one. The server does not detect session liveness or retry
+messages itself.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
 Code does not start a turn in an idle session for them. Claude Code's
@@ -263,17 +275,64 @@ sessions cannot pass. The wake events are therefore defined independently of
 transport, so a thin stdio channel that relays `/wake` can replace the
 Monitor once channels allow it, without changing the server.
 
-## 9. Open question: responsibility
+## 9. Project responsibility
 
-The owner's observation (2026-10-11): sessions' assignments change often, so
-an `agent` field written on items helps little today; yet responsibility
-decides who changes what, so it matters. The data agrees: only the 23 areas
-name a session, and handovers happen in log prose. This proposal keeps the
-current fields unchanged and defers a design, to be brought as a decision card
-with options after the server runs. Questions it must answer: what a session
-is responsible for (areas, items, repositories), how a handover is recorded
-and seen, how a note reaches the right session, and how a session finds its
-work after a restart or an account switch.
+Responsibility belongs to the project, the existing `group` page heading;
+there is no extra item layer. `board.projects` contains unique project names,
+a unique list of agent session names per project, and an optional repository
+identifier such as `Ming-Research/Halo-wf`. Several listed agents share the
+work among themselves. An item's agents are those of its top-level area's
+project. The item `agent` field is removed, including child handovers.
+An area with an absent or unconfigured group, or an empty project agents
+list, gets a shared rules check; older boards without `projects` load with
+an empty list.
+
+At a repository root, a session calls `projects`, matches the repository,
+claims the project with `claim_project` unless already listed, then reads
+`brief(project)`. A claim adds its author and may remove named departed
+agents, each of which must already be listed. Replacements require a reason.
+The commit records the claim, with the reason in its body; no board log or
+`.mcp.json` change is needed. `create_project` configures a new project with
+its author as its first agent. Both run in the same operations queue as item
+writes, including prospective board checks; concurrent claims cannot lose
+one another.
+
+The server checks membership before agent mutations to items, their cards
+and owner-note replies or closures. Moving work requires membership in both
+source and destination projects, and revising a card's owning item checks
+both owners. A refusal names the project and agents and directs the caller
+to `create_request`. Cross-project dependency targets remain allowed on an
+agent's own items. The page's owner-note, send, archive and read operations
+are separate from agent operations and remain unrestricted. Session names
+are supplied by trusted local callers; membership is workflow enforcement,
+not authentication against a caller impersonating another session.
+
+Anyone can call `create_request(project, key, title, head, priority, why,
+from?)`. It creates a top-level TODO item in that project with
+`request: {by, at}` and a first log recording the author and reason. With
+`from`, the author must own the filing item; adding its dependency on the
+new request happens in the same commit. Requests stay in a separate inbox,
+oldest first, until a project agent triages them. `triage_request` removes
+the marker, sets an optional priority, logs the disposition, and either
+places the request under a parent in its project or retains it as an area.
+Placement also appends `分拣：放到 <parent>：<why>` before the supplied log.
+A leaf parent requires `parent_own_work`, preserving its own work as in
+`create_item`. Moving a request under a parent in its project also triages
+it and logs the placement. Declining with `set_status cancelled` clears the
+marker and records the reason. An open inbox request is not an area in
+listings; completed or cancelled items are not open requests.
+
+`projects` reports configuration, area counts, open leaf status counts
+(excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
+sent item/card owner notes, checks including cleared blockers, open cards
+still awaiting the owner, WIP leaves, the next ten TODO leaves by effective
+priority, and outstanding work requested from other projects. That outgoing
+list includes open requests by the project's agents and open items targeted
+by its items' cross-project dependencies, so triage does not hide linked work.
+Work queues omit archived items. The page shows agents once on each project
+heading, an inbox above its areas, and a small inline owner request form.
+The form posts to `/api/requests`; the server creates an owner-authored request
+with a random `req-` key, using the submitted text as both head and reason.
 
 Keys bear on it. The rule that every key starts with its session's prefix
 exists so that sessions writing one database never collide. The server now
@@ -289,6 +348,9 @@ cite them.
 1. Convert the export into the file format, keeping every id, in one commit.
    The survey of the export found no broken dependency, cycle, bad timestamp
    or invalid status; the conversion applies these mechanical cleanups:
+   - derive projects from top-level areas in their displayed order, collecting
+     distinct area agents per group in that order; drop every item's `agent`,
+     with separate area and child counts in the conversion report;
    - fold `area` into `parent` and `text` into `head`; drop empty strings and
      the ignored status and priority on 17 and 6 parents;
    - turn the 18 bare-string deps (all on done queue items) into entries
@@ -329,7 +391,7 @@ cite them.
    otherwise its earliest update/note time, or export time, supplies the available
    dating evidence. This cannot recover an undated card's actual
    creation time. Card contents and rulings were not snapshotted and stay
-   current for cards that remain. Item parent, agent, group, order,
+   current for cards that remain. Item parent, group, order,
    links, ask and created also stay current; older snapshots leave any missing
    fields current. Note contents stay current except unread replies are hidden using
    target/all read times (the legacy item freshness floor does not read replies).

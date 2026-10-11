@@ -14,7 +14,7 @@ import type { Snapshot } from "./model.ts";
 export type DocKind = "item" | "decision" | "note";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
-export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: Board }
+export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board> }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
 export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
@@ -188,7 +188,7 @@ export class Store {
     return result.stdout;
   }
 
-  static async open(dir: string, opts: { init?: boolean; board?: Board } = {}): Promise<Store> {
+  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board> } = {}): Promise<Store> {
     dir = resolve(dir);
     let entries: string[];
     try { entries = await readdir(dir); }

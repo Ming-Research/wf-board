@@ -12,6 +12,7 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
   const own = ownerOps(store);
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
   const d = await op.appendLog({ author, id: "b", text: "after owner" });
+  await op.claimProject({author:"other",project:"Whitefoot",reason:"Second writer"});
   const e = await op.appendLog({ author: "other", id: "b", text: "other author" });
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit, b.commit], [c.commit], [d.commit], [e.commit]]);
@@ -42,7 +43,7 @@ test("multi-document writes are separate steps and deletion keeps its before doc
 test("commits that change no item, card or note are not steps", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   const a = await op.appendLog({ author, id: "a", text: "before settings" });
-  await store.commit({ author, message: "retitle board", board: { title: "Renamed board" } });
+  await store.commit({ author, message: "retitle board", board: { ...store.snapshot().board, title: "Renamed board" } });
   store.setOwner({ archived: { other: later } });
   await store.flushOwner(author);
   const b = await op.appendLog({ author, id: "a", text: "after settings" });

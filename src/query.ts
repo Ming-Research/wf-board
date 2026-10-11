@@ -6,7 +6,7 @@ import { rules as makeRules } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string; agent: string }
+export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string; agents: string[] }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -26,7 +26,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   return { kind, id, title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
     ...(kind === "item" ? { priority: r.effectivePriorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
-    group: r.groupOf(owner), agent: r.agentFor(owner) };
+    group: r.groupOf(owner), agents: r.agentsFor(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
   if (scope.under !== undefined && !Object.hasOwn(s.items, scope.under)) throw new Error(`under ${scope.under}: choose an existing item subtree`);
@@ -102,7 +102,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
     if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.effectivePriorityOf(id))) &&
-      (f.agent === undefined || r.agentFor(id) === f.agent) && (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
+      (f.agent === undefined || r.agentsFor(id).includes(f.agent)) && (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
   }
@@ -160,11 +160,53 @@ export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "
   return { id, ...(options.direction !== "down" ? { up: walk(rootKind, id, "up", depth, new Set()) } : {}), ...(options.direction !== "up" ? { down: walk(rootKind, id, "down", depth, new Set()) } : {}) };
 }
 export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
-  return r.areas().filter(id => f.group === undefined || r.groupOf(id) === f.group).map(id => {
+  const areas = r.areas().filter(id => f.group === undefined || r.groupOf(id) === f.group).map(id => {
     const rows = list(s, r, { under: id, limit: Object.keys(s.items).length }), leaves = rows.filter(it => r.isLeaf(it.id));
     const counts = Object.fromEntries(STATUSES.map(st => [st, leaves.filter(it => it.status === st).length])) as Record<Status, number>;
-    return { ...row(s, r, "item", id), counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
+    const { agents: _agents, ...area } = row(s, r, "item", id);
+    return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
   });
+  const names = [...new Set([...s.board.projects.map(p => p.name), ...areas.map(a => a.group)])];
+  return names.filter(name => f.group === undefined || name === f.group).map(name => ({ project: name, agents: s.board.projects.find(p => p.name === name)?.agents ?? [], inbox: r.inbox(name).length, areas: areas.filter(a => a.group === name) }));
+}
+
+export function projects(s: Snapshot, r: Rules = makeRules(s)) {
+  return s.board.projects.map(project => {
+    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && r.isLeaf(id) && !r.isRequest(id));
+    return { ...project, agents: project.agents.slice(), areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
+      openLeaves: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
+  });
+}
+function requestRow(s: Snapshot, r: Rules, id: string) {
+  const it = s.items[id]!, request = it.request!;
+  const prefix = `${request.by} 提出：`;
+  const first = it.log[0]?.text ?? "";
+  return { id, title: it.title, project: r.projectOf(id), agents: r.agentsFor(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
+}
+function sentNotes(s: Snapshot, r: Rules) {
+  return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, sentAt: n.sentAt ?? n.at,
+    project: r.projectOf(noteItem(s,n)), agents: r.agentsFor(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
+}
+export function brief(s: Snapshot, r: Rules, project: string) {
+  const config = s.board.projects.find(p => p.name === project);
+  if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
+  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
+  const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && config.agents.includes(s.items[id]!.request!.by)));
+  for (const id of ids) for (const dep of r.depsOf(id)) if (dep.kind === "item" && dep.open && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
+  return { project, agents: config.agents.slice(), inbox: r.inbox(project).map(id => requestRow(s,r,id)),
+    notes: sentNotes(s,r).filter(n => n.project === project),
+    checks: ids.map(id => ({ id, title: s.items[id]!.title, checks: r.checks(id) })).filter(it => it.checks.length),
+    cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question})),
+    wip: leaves.filter(id => r.statusOf(id) === "wip").sort(r.compareSiblings).map(id => row(s,r,"item",id)),
+    todo: leaves.filter(id => r.statusOf(id) === "todo").sort(r.compareSiblings).slice(0,10).map(id => row(s,r,"item",id)),
+    outgoing: [...outgoing].map(id => ({...row(s,r,"item",id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
+  };
+}
+export function followups(s: Snapshot, r: Rules, { minutes }: { minutes: number }, now = new Date().toISOString()) {
+  if (!Number.isFinite(minutes) || minutes < 0) throw new Error("minutes: provide a nonnegative age");
+  const cutoff = Date.parse(now) - minutes * 60000;
+  return { notes: sentNotes(s,r).filter(n => Date.parse(n.sentAt) < cutoff),
+    requests: s.board.projects.flatMap(p => r.inbox(p.name).map(id => requestRow(s,r,id))).filter(it => Date.parse(it.at) < cutoff).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at) || a.id.localeCompare(b.id)) };
 }
 
 function documentText(s: Snapshot, kind: Kind, id: string): string {
