@@ -190,13 +190,21 @@ log:
   change to the same document is new again without reviving its read changes.
   Moving the cursor removes marks it passes; reading every document in a
   prefix advances the cursor over that prefix and removes its marks.
-  `n` walks the documents with unread changes in page order, top to bottom:
-  an item, its comments, then each of its cards and that card's comments,
-  with documents the page does not place last, oldest first. Each document is
-  one stop holding all its unread changes; after `r` reads a stop, `n` goes on
-  to the next stop below it. A 新 chip jumps to its document's stop.
-  `r` reads all unread changes of the selected document, however selected,
-  leaving other documents' read state unchanged; 全部已阅 moves the cursor to the
+  新 counts items: an item with any unread change in itself, its cards or the
+  comments on either counts once, however many changes it holds, and a change
+  no item holds (a card without an item, a deleted document) counts once on
+  its own. An item's head shows one 新 chip counting the items with something
+  new in its subtree, itself included; a card shows no chip of its own unless
+  no item holds it. The header total and the kind buttons count the same way.
+  `n` walks page order, top to bottom: an item, its comments, then each of its
+  cards and that card's comments, with documents the page does not place last,
+  oldest first. Inside a changed item it visits each new place in turn (a
+  changed status, title or body block, a new log entry, an added dependency or
+  link); a new item is one stop at its start. After `r`, `n` goes on below
+  where it was. A 新 chip jumps to the first new place in its subtree.
+  `r` reads the whole item holding the selection, however selected: its own
+  changes, its cards and the comments on both, but not its sub-items; a card
+  no item holds is read with its comments. 全部已阅 moves the cursor to the
   head after confirmation. Expanded items and cards mark changes in their own
   content, comparing the document before its first unread step with its current
   state. Blocks are separated by blank lines, except inside fenced code;
@@ -286,14 +294,14 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-`r` acts on the current selection: an item for `it:`, a decision card for
-`q:`, the note for `note:`, and the enclosing item for `log:<item>@<time>`.
+`r` acts on the item holding the current selection: the item for `it:` and
+`log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
 The same selection works after the 等你处理 下一条 walk, a click, `n`, a 新
-chip or following a dependency. It reads all of that document's displayed
+chip or following a dependency. It reads each of that item's documents' displayed
 unread changes, including those hidden by freshness filters, through its
 latest unread step, without reading another document or a change arriving
 after the action. A selection with nothing unread shows “这里没有新内容”.
-The selected document's blue bars, chips and counts clear immediately while
+The selected item's blue bars, chips and counts clear immediately while
 the write is pending and return with a visible error if it fails, using the
 same eight-second deadline and no automatic retry as other owner controls.
 If a later change joins a pending read's step, that combined step waits for

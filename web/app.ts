@@ -30,6 +30,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let shownStop: string | null = null;
   // Where the last stop n showed sits on the page, so the walk continues after it once r has read it.
   let shownAt: number[] | null = null;
+  // Which new place inside the shown item n reached last.
+  let shownMark = 0;
   const pendingDiffs = new Map<string, Promise<void>>();
   const failedDiffs = new Set<string>();
   let freshNavigation = 0;
@@ -190,8 +192,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function docKinds(doc: Step["docs"][number]): string[] { const p = piecesOf(doc); return (["log","reply","other"] as const).filter(k => p[k] > 0); }
   // The pieces of a stop the kind filter keeps: what the 新 counts add up.
-  function stopCount(st: FreshStop) { const p = piecesOf(st.doc); return (["log","reply","other"] as const).reduce((n, k) => n + (fon(k) ? p[k] : 0), 0); }
-  function countOf(list: FreshStop[]) { return list.reduce((n, st) => n + stopCount(st), 0); }
+  // 新 counts items: an item with any unread change in itself, its cards or their comments is one, however many changes
+  // it holds. A change no item holds (a card without an item, a deleted document) is one on its own.
+  function unitOf(st: FreshStop) { return st.item && snapshot.items[st.item] ? "it:" + st.item : st.card && snapshot.decisions[st.card] ? "q:" + st.card : st.doc.kind + ":" + st.doc.id; }
+  function countOf(list: FreshStop[]) { return new Set(list.map(unitOf)).size; }
   function legacyKinds(doc: Step["docs"][number]): string[] {
     const kinds = new Set<string>();
     const changes = doc.summary.split(", ");
@@ -280,7 +284,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const tally = <T extends {item: string | null}>(list: T[], into: Record<string,number>, weight: (x: T) => number) => list.forEach(x => { const it = x.item && byId.get(x.item); if (it) ancestors(it).forEach(a => { into[a.id] = (into[a.id] || 0) + weight(x); }); });
     below = { wait: {}, fresh: {} };
     tally(stops(), below.wait, () => 1);
-    tally(freshStops(), below.fresh, stopCount);
+    const freshItems = [...new Set(freshStops().map(st => st.item && snapshot.items[st.item] ? st.item : null).filter((id): id is string => !!id))];
+    tally(freshItems.map(item => ({item})), below.fresh, () => 1);
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
   function tops() { return derived.areas(id => !derived.isArchived(id) || showsArchived(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
@@ -356,10 +361,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const all = freshStops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
-    shownStop = st.key; shownAt = st.at;
-    await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
+    shownStop = st.key; shownAt = st.at; shownMark = 0;
+    await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
   }
-  interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string }
+  interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
+  // The new places inside a changed item, top to bottom: a changed status, title or body block, a new log entry, an added
+  // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
+  function freshMarks(box: HTMLElement, id: string) {
+    if (unreadBefore<Item>("item", id) === null) return [];
+    return [...box.querySelectorAll<HTMLElement>(".chg-add, .chg-del, .log-entry.fresh, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
+  }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
     const active=() => navigation === freshNavigation && valid();
@@ -391,7 +402,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     const e=get(target.id);
     if (!e) return;
-    glideToTarget(e);
+    glideToTarget(target.marks && freshMarks(e, target.marks)[0] || e);
     setCurrent(target.note || target.selection ? e : e.closest<HTMLElement>(".card, .item"));
   }
   function navigationBaselines(st: NavigationTarget) {
@@ -419,12 +430,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (st.note && snapshot.notes[st.note]) add("note",st.note);
     return required;
   }
-  // A chip counts the unread stops touching this item or card; a click opens the oldest.
-  function freshChip(key: string) {
+  // An item's one chip counts the items with something new in its subtree, itself included; a card no item holds has a
+  // chip of its own. A click opens the first new place there, in page order.
+  function freshChip(key: string, n: number, own: boolean) {
     const all = freshStops();
-    const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => stopTouches(st, key));
-    const c = el("span", "newtag freshchip", "新 " + Math.max(1, countOf(mine.map(([st]) => st))));
-    c.title = "点一下到这里的第一条新内容；n 走到下一条，r 标为已阅";
+    const id = key.startsWith("it:") ? key.slice(3) : null;
+    const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => id ? !!st.item && (st.item === id || derived.ancestors(st.item).includes(id)) : stopTouches(st, key));
+    const c = el("span", "newtag freshchip", "新 " + Math.max(1, n));
+    c.title = (own ? "这一条有新内容" + (n > 1 ? "，下面还有 " + (n - 1) + " 条" : "") : "下面有 " + n + " 条有新内容") + "；点一下到第一处，n 走到下一处，r 把整条标为已阅";
     if (mine.length) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
       const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(mine[0]![1]); };
@@ -444,11 +457,29 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!current && st && !(st.doc.kind === "item" ? snapshot.items[st.doc.id] : st.doc.kind === "decision" ? snapshot.decisions[st.doc.id] : snapshot.notes[st.doc.id])) return st.doc.kind + ":" + st.doc.id;
     return null;
   }
+  // What r reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
+  // the comments on both) but not its sub-items; a card no item holds; or the deleted document n is showing.
+  function selectedUnit() {
+    const doc = selectedDocument(); if (!doc) return null;
+    const kind = doc.slice(0, doc.indexOf(":")), id = doc.slice(doc.indexOf(":") + 1);
+    const ofCard = (card: string) => { const it = snapshot.decisions[card]?.item; return it && snapshot.items[it] ? "it:" + it : "q:" + card; };
+    if (kind === "item") return snapshot.items[id] ? "it:" + id : doc;
+    if (kind === "decision") return snapshot.decisions[id] ? ofCard(id) : doc;
+    const target = snapshot.notes[id]?.target;
+    if (target?.startsWith("it:") && snapshot.items[target.slice(3)]) return target;
+    if (target?.startsWith("q:")) return ofCard(target.slice(2));
+    return doc;
+  }
   async function markRead() {
-    const doc = selectedDocument();
-    if (doc && pendingReads.get(doc)?.saving) return false;
-    const latest = doc && steps.findLast(step => step.docs.some(d => d.kind + ":" + d.id === doc));
-    if (!doc || !latest) { showHint("这里没有新内容"); return false; }
+    const unit = selectedUnit();
+    const docs = unit ? [...new Set(allFreshStops().filter(st => unitOf(st) === unit).map(st => st.doc.kind + ":" + st.doc.id))] : [];
+    if (!docs.length) { showHint("这里没有新内容"); return false; }
+    return (await Promise.all(docs.map(markDocRead))).every(Boolean);
+  }
+  async function markDocRead(doc: string) {
+    if (pendingReads.get(doc)?.saving) return false;
+    const latest = steps.findLast(step => step.docs.some(d => d.kind + ":" + d.id === doc));
+    if (!latest) return false;
     const selected = latest.docs.find(d => d.kind + ":" + d.id === doc)!;
     const scope = scopeForDoc(selected.kind, selected.id, snapshot.notes[selected.id]?.target);
     if (!scope.length) scope.push("header");
@@ -483,7 +514,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
     const at = all.findIndex(s => s.key === shownStop);
-    if (at >= 0) { goFresh(at + 1); return; }
+    if (at >= 0) {
+      // Inside a changed item, n first visits its remaining new places.
+      const st = all[at]!, box = st.doc.kind === "item" ? get("it-" + st.doc.id) : null;
+      const marks = box ? freshMarks(box, st.doc.id) : [];
+      if (shownMark + 1 < marks.length) { shownMark++; glideToTarget(marks[shownMark]!); return; }
+      goFresh(at + 1); return;
+    }
     const after = shownAt ? all.findIndex(s => compareAt(s.at, shownAt!) > 0) : 0;
     goFresh(after < 0 ? 0 : after);
   }
@@ -1080,14 +1117,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const sbtn = (cls: string, text: string, title: string, onClick: () => void) => { const b = el("button", "sbtn " + cls, text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", onClick); return b; };
     const waiting = stops().length;
     if (waiting) acts.appendChild(sbtn("s-wait", "等你处理 " + waiting + " ›", "从第一条开始", () => goStop(0)));
-    // Counts are pieces, as the page always counted (each new log entry, each new reply, each other change); n walks
-    // one document at a time and shows all of its pieces.
+    // Counts are items, as the chips count them; n visits each new place inside them.
     const fresh = countOf(freshStops());
     if (fresh) acts.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
-    // Which kinds of new things count, picked like the project filters; each shows how many new pieces it has.
+    // Which kinds of new things count, picked like the project filters; each shows how many items have that kind.
     const everyFresh = allFreshStops();
     FRESH_KINDS.forEach(([kind, label, title]) => {
-      const n = everyFresh.reduce((sum, st) => sum + piecesOf(st.doc)[kind as "log" | "reply" | "other"], 0), on = freshSel.includes(kind);
+      const n = countOf(everyFresh.filter(st => st.kinds.includes(kind))), on = freshSel.includes(kind);
       if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); acts.appendChild(b); }
     });
     if (freshSel.length) acts.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
@@ -1252,18 +1288,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
-    if (freshShown(it)) head.appendChild(freshChip("it:" + it.id));
+    const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
+    if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
     if (pc) head.appendChild(pc);
     // A parent also counts what waits or is new below it, so a folded section shows where to look.
     if (sub.length) {
       const waitingBelow = below.wait[it.id] || 0;
-      const freshBelow = below.fresh[it.id] || 0;
       if (waitingBelow) head.appendChild(el("span", "asktag", "等 " + waitingBelow)).title = "下面有 " + waitingBelow + " 处等你处理";
-      if (freshBelow) head.appendChild(el("span", "newtag", "新 " + freshBelow)).title = "下面有 " + freshBelow + " 条新内容";
     }
     // The blue bar follows the 新 chip: a box whose head counts something new carries it, so a folded box shows it too.
-    if (freshShown(it) || sub.length && below.fresh[it.id]) box.classList.add("fresh");
+    if (freshCount) box.classList.add("fresh");
     // Opening or closing changes only this item's own subtree, so only that subtree is rebuilt.
     head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true}); });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
@@ -1410,7 +1445,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (proseBlocks(d.question).length > 1 || before && proseBlocks(before.question).length > 1) {
       h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),markedBlocks(before?.question,d.question)));
     } else appendTitle(h,d.question || "",before === null ? null : before?.question);
-    if (cardFresh(d)) { h.appendChild(freshChip("q:" + d.id)); c.classList.add("fresh"); }
+    // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
+    if (cardFresh(d)) { if (!homeOf(d)) h.appendChild(freshChip("q:" + d.id, 1, true)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
     if (pc) h.appendChild(pc);
     top.appendChild(h);

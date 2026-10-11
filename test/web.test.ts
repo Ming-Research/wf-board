@@ -49,6 +49,7 @@ class Element {
   }); }
   closest(selector: string): Element | null { return this.matches(selector.replace("#areas ", "")) ? this : this.parentElement?.closest(selector) ?? null; }
   querySelector(selector: string):Element|null { const children=selector.startsWith(":scope > ") ? this.children : this.children.flatMap(descendants); const match=children.find(e=>e.matches(selector.replace(":scope > ",""))); if(match) return match; if (selector === ".t") { const e = new Element("span"); e.className = "t"; return this.appendChild(e); } return null; }
+  querySelectorAll(selector:string):Element[] { return this.children.flatMap(descendants).filter(e=>e.matches(selector)); }
   contains(e:Element):boolean { return e === this || this.children.some(c=>c.contains(e)); }
   get innerHTML() { return this.html; }
   set innerHTML(value: string) { this.html = value; this.children = []; }
@@ -390,7 +391,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n selects one existing document at a time skips archived documents and r reads only its document", async () => {
+test("n reaches items in page order, skips archived ones, and r reads the selected item but not its sub-items", async () => {
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
@@ -401,23 +402,49 @@ test("n selects one existing document at a time skips archived documents and r r
   assert.ok(!item(p).className.includes("cur"));
   assert.ok(!p.calls.some(c => c.path === "/api/read"));
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
-  assert.ok(item(p).className.includes("fresh"),"same-step sibling stays unread");
-  const areaHead=item(p,"area").children[0]!.children[0]!;
-  assert.ok(!areaHead.children.some(e=>e.className === "newtag freshchip"),"the read item's own 新 chip is gone");
+  assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
+  const areaChip=descendants(item(p,"area").children[0]!.children[0]!).filter(e=>e.className === "newtag freshchip");
+  assert.deepEqual(areaChip.map(e=>e.innerHTML),["新 1"],"the parent's one chip now counts only the sub-item");
+  assert.match(areaChip[0]!.title,/下面有 1 条/);
   assert.ok(item(p,"area").className.includes("fresh"),"its bar stays while 新 still counts the unread sub-item");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
 });
 
-test("n walks the page from top to bottom, one stop per document, and goes on from a read stop", async () => {
+test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
+  // Elements sit at fixed page positions, one row apart in document order; the viewport moves over them.
+  const layout = () => { let view: {scrollY:number} | undefined; return { bind:(p:{scrollY:number}) => { view = p; }, geometry:(e:Element, all:() => Element[]) => {
+    const y = e.className.split(" ").includes("item") ? 600 : 600 + all().indexOf(e) * 40;
+    return {top:y - (view?.scrollY ?? 0), height:e.className.split(" ").includes("item") ? 6000 : 20};
+  } }; };
+  const s = snapshot();
+  s.items.child!.log = [{at, by:"Session A", text:"First new entry"}, {at:"2026-10-11T02:00:00Z", by:"Session A", text:"Second new entry"}];
+  const changedLayout = layout();
+  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", log:[]}, undefined, {geometry:changedLayout.geometry}); changedLayout.bind(p);
+  const before = p.scrolls.length;
+  p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush();
+  const visits = p.scrolls.slice(before);
+  assert.ok(item(p).className.includes("cur"), "n stays inside the changed item");
+  assert.equal(visits.length, 4);
+  assert.ok(visits[0]! < visits[1]! && visits[1]! < visits[2]!, "a changed status and two new log entries, down the page: " + visits.join(", "));
+  assert.equal(visits[3], visits[0], "after its last place, n goes on to the next stop, here the same item again");
+  const createdLayout = layout();
+  const created = await page(snapshot(), unread("item","child"), null, undefined, {geometry:createdLayout.geometry}); createdLayout.bind(created);
+  const start = created.scrolls.length;
+  created.key("n"); await created.flush(); created.key("n"); await created.flush();
+  assert.equal(new Set(created.scrolls.slice(start)).size, 1, "a new item is one stop, at its start: " + created.scrolls.slice(start).join(", "));
+});
+
+
+test("n walks the page from top to bottom, one stop per changed document, and goes on from a read item", async () => {
   const s = snapshot(), [a,b,c] = ["a","b","c"].map(x => x.repeat(40)) as [string,string,string];
   s.items.plain = {title:"Plain",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   const doc = (id:string) => ({kind:"item" as const,id,summary:"+1 log",pieces:{log:1,reply:0,other:0}});
   // Commit order is plain, child, area, area again; the page order is area, its child, then plain.
   const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]},{id:c,commits:[c],author:"Session A",at,docs:[doc("area")]}]);
   const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
-  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 4 ›"),"counts still add every piece");
+  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 3 ›"),"three items have something new");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
-  assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "新 2"),"both changes to area make one stop");
+  assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "新 2"),"area counts itself and its child once each");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"area's second change is not a second stop");
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after r, n continues below the read stop instead of starting over");
@@ -453,27 +480,26 @@ test("project page omits session assignments and shows inbox requests, including
   assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
 });
 
-test("the 新 counts add up pieces while n walks one document at a time", async () => {
+test("新 counts items: one per item however many changes, a parent adding the items below it, in one chip", async () => {
   const s = snapshot(), id = "f".repeat(40);
   const p = await page(s, [{ id, commits: [id], author: "Session A", at, docs: [
     { kind: "item", id: "child", summary: "head changed, +3 log", pieces: { log: 3, reply: 0, other: 1 } },
     { kind: "item", id: "area", summary: "+2 log", pieces: { log: 2, reply: 0, other: 0 } },
   ] }]);
   const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
-  assert.ok(buttons.includes("新 6 ›"), buttons.join(" | "));
-  assert.ok(buttons.includes("进展 5") && buttons.includes("其他 1"));
+  assert.ok(buttons.includes("新 2 ›"), "two items have something new: " + buttons.join(" | "));
+  assert.ok(buttons.includes("进展 2") && buttons.includes("其他 1"), "kind counts are items too");
   await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
   const chip = (itemId: string) => descendants(p.all().find(e => e.id === "it-" + itemId)!.children[0]!).filter(e => e.className.includes("newtag")).map(e => e.innerHTML);
-  assert.ok(chip("child").includes("新 4"), "the item's chip adds its pieces: " + chip("child"));
-  assert.ok(chip("area").includes("新 4") && chip("area").includes("新 2"), "the parent shows its own 2 and the 4 below it: " + chip("area"));
-  // Keeping only progress: 3 + 2 pieces.
-  await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "进展 5")!.click();
-  const after = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
-  assert.ok(after.includes("新 5 ›"), after.join(" | "));
-  assert.ok(chip("child").includes("新 3") && chip("area").includes("新 3"));
+  assert.deepEqual(chip("child"), ["新 1"], "four changes in one item count once");
+  assert.deepEqual(chip("area"), ["新 2"], "the parent shows one chip: itself and the item below it");
+  await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "其他 1")!.click();
+  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 1 ›"));
+  assert.deepEqual(chip("area"), ["新 1"], "with only other changes kept, the parent counts its child alone");
   p.key("n"); await p.flush();
-  assert.ok(item(p,"area").className.includes("cur"),"the parent sits above its child on the page");
+  assert.ok(item(p).className.includes("cur"));
 });
+
 
 test("a note being typed keeps its focus, text and caret across a live re-render", async () => {
   const id = "f".repeat(40);
@@ -1194,7 +1220,8 @@ test("scoped unread card membership inserts replies and removes read ended cards
 });
 
 test("all card jump entry points await baselines before selecting and scrolling", async t => {
-  for(const path of ["waiting key","previous key","reference","dependency","next button","fresh chip"]) await t.test(path,async()=> {
+  // A card its item holds has no 新 chip of its own (it counts toward the item's), so the chip is no entry point here.
+  for(const path of ["waiting key","previous key","reference","dependency","next button"]) await t.test(path,async()=> {
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), ancestor=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
     if(path === "dependency") s.items.area!.deps.push({card:"q",why:"Needs decision"});
     if(path === "next button") s.items.area!.ask={text:"Parent approval"};
@@ -1203,8 +1230,7 @@ test("all card jump entry points await baselines before selecting and scrolling"
     else if(path === "previous key") p.key("ArrowLeft");
     else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
     else if(path === "dependency") await p.all().find(e=>e.className === "deprow" && e.innerHTML.includes("如何显示"))!.click();
-    else if(path === "next button") await button(p,"下一条（2/2）").click();
-    else await descendants(p.all().find(e=>e.id === "q-q")!).find(e=>e.className.includes("freshchip"))!.click();
+    else await button(p,"下一条（2/2）").click();
     await p.flush(); assert.equal(p.scrolls.length,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
     hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.equal(p.scrolls.length,0,"ancestor baseline also affects target height");
@@ -1373,25 +1399,25 @@ test("r reads all selected document steps from item card note and log clicks", a
   });
 });
 
-test("selected document read clears immediately and restores on error or eight-second deadline without retry", async t => {
+test("r on a card reads its whole item at once and restores both on error or eight-second deadline without retry", async t => {
   for(const failure of ["refused","deadline"] as const) await t.test(failure,async()=> {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card(); let signal:AbortSignal|undefined;
-    const p=await page(s,[...unread("item","area"),...unread("decision","q","e".repeat(40))],null,undefined,{clock,response:(path,_body,init)=> { if(path === "/api/read") { signal=init.signal; return hold.promise; } }}); await expand(p);
+    const p=await page(s,[...unread("item","child"),...unread("decision","q","e".repeat(40))],null,undefined,{clock,response:(path,_body,init)=> { if(path === "/api/read") { signal=init.signal; return hold.promise; } }}); await expand(p);
     await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>(c.body as {doc:string}).doc).sort(),["decision:q","item:child"],"r on the card reads the item holding it with the card");
     assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"read is painted before fetch settles");
-    assert.ok(!descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
-    assert.ok(item(p,"area").className.includes("fresh"));
-    assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
-    p.key("r"); assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1,"pending read is not repeated");
+    assert.ok(!item(p).className.includes("fresh"));
+    assert.ok(!p.all().some(e=>e.innerHTML.startsWith("新 ")));
+    p.key("r"); assert.equal(p.calls.filter(c=>c.path === "/api/read").length,2,"pending reads are not repeated");
     if(failure === "refused") hold.resolve({ok:false,status:400,json:async()=>({error:"Read refused"})});
     else { clock.advance(7999); await settle(); assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh")); clock.advance(1); }
     await settle(); await p.flush();
     assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
-    assert.ok(descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
-    assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
+    assert.ok(item(p).className.includes("fresh"));
+    assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"),"one item holds both changes");
     assert.match(p.roots.get("server-banner")!.textContent,failure === "refused" ? /Read refused/ : /没有响应.*刷新/);
     if(failure === "deadline") { assert.equal(signal?.aborted,true); hold.resolve(reply({ok:true})); await settle(); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"late acknowledgement cannot reapply timed-out read"); }
-    assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1);
+    assert.equal(p.calls.filter(c=>c.path === "/api/read").length,2);
   });
 });
 
