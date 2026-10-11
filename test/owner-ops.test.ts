@@ -6,6 +6,133 @@ import { board, later, author } from "./helpers.ts";
 import { rules } from "../src/rules.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
+test("setDraft replaces and clears duplicate choices in one commit with authoritative results", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const first = await own.createNote({ target: "q:choice", kind: "choice", text: "选 A", choice: "A" });
+  const extra = await own.createNote({ target: "q:choice", kind: "choice", text: "duplicate A", choice: "A" });
+  const unrelated = await own.createNote({ target: "it:other", kind: "approve", text: "Other draft" });
+  const preserved = store.snapshot().notes;
+  const changes: Array<Parameters<Parameters<typeof store.onChange>[0]>[0]> = [];
+  t.after(store.onChange(change => changes.push(change)));
+  const commit = t.mock.method(store, "commit", store.commit.bind(store));
+  const result = await own.setDraft({ target: "q:choice", kind: "choice", on: true, text: "选 B", choice: "B" });
+  assert.equal(commit.mock.callCount(), 1);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0]!.changed.map(n => [n.id, n.after === null]), [[first.id, false], [extra.id, true]]);
+  assert.deepEqual(result, { note: { id: first.id, doc: store.snapshot().notes[first.id] }, deleted: [extra.id], commit: store.snapshot().head });
+  assert.equal(result.note!.doc.choice, "B");
+  assert.equal(result.note!.doc.rev, preserved[first.id]!.rev + 1);
+  for (const id of [unrelated.id, "note-1", "note-2"]) assert.deepEqual(store.snapshot().notes[id], preserved[id]);
+  const head = store.snapshot().head;
+  assert.deepEqual(await own.setDraft({ target: "q:choice", kind: "choice", on: true, text: "选 B", choice: "B" }), { ...result, deleted: [] });
+  assert.equal(store.snapshot().head, head);
+  const duplicate = await own.createNote({ target: "q:choice", kind: "choice", text: "duplicate B", choice: "B" });
+  const beforeClear = commit.mock.callCount(), beforeEvents = changes.length;
+  const cleared = await own.setDraft({ target: "q:choice", kind: "choice", on: false, text: "" });
+  assert.equal(commit.mock.callCount(), beforeClear + 1);
+  assert.equal(changes.length, beforeEvents + 1);
+  assert.deepEqual(cleared, { note: null, deleted: [first.id, duplicate.id], commit: store.snapshot().head });
+  assert.equal(store.snapshot().notes[first.id], undefined);
+  assert.equal(store.snapshot().notes[duplicate.id], undefined);
+  const afterClear = commit.mock.callCount();
+  assert.deepEqual(await own.setDraft({ target: "q:choice", kind: "choice", on: false, text: "" }), { note: null, deleted: [], commit: cleared.commit });
+  assert.equal(commit.mock.callCount(), afterClear);
+});
+
+test("setDraft validates runtime inputs and choices before mutating any draft", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const first = await own.createNote({ target: "q:choice", kind: "choice", text: "选 A", choice: "A" });
+  const before = store.snapshot();
+  const invalid = [
+    { target: "q:choice", kind: "choice", on: true, text: "选 C", choice: "C" },
+    { target: "q:ruled", kind: "choice", on: true, text: "选 A", choice: "A" },
+    { target: "it:a", kind: "choice", on: true, text: "选 A", choice: "A" },
+    { target: "it:missing", kind: "approve", on: true, text: "yes" },
+    { target: "q:choice", kind: "choice", on: "true", text: "选 B", choice: "B" },
+    { target: "q:choice", kind: "choice", on: false, text: 0 },
+    { target: "it:a", kind: "comment", on: true, text: "hello" },
+    { target: "it:a", kind: "approve", on: true, text: "yes", unexpected: true },
+  ];
+  for (const input of invalid) {
+    await assert.rejects(own.setDraft(input as Parameters<typeof own.setDraft>[0]));
+    assert.deepEqual(store.snapshot(), before);
+  }
+  const card = before.decisions.choice!;
+  await store.commit({ author, message: "Rule card while draft remains", puts: [{ kind: "decision", id: "choice", expectRev: card.rev, doc: { ...card, status: "ruled", ruling: "A", ruledAt: later } }] });
+  assert.deepEqual((await own.setDraft({ target: "q:choice", kind: "choice", on: false, text: "" })).deleted, [first.id]);
+});
+
+test("setDraft preserves sent and done answers and follows each control's availability", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  for (const kind of ["approve", "done", "choice"] as const) {
+    const target = kind === "choice" ? "q:choice" : "it:a";
+    const draft = await own.createNote({ target, kind, text: "answer", ...(kind === "choice" ? { choice: "A" } : {}) });
+    await own.send();
+    const snapshot = store.snapshot();
+    await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", ...(kind === "choice" ? { choice: "B" } : {}) }), /already sent/);
+    assert.deepEqual(store.snapshot(), snapshot);
+    await op.replyNote({ author, id: draft.id, reply: "handled" });
+    if (kind === "choice") {
+      const handled = store.snapshot();
+      await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", choice: "B" }), /already sent/);
+      assert.deepEqual(store.snapshot(), handled);
+    } else {
+      const replacement = await own.setDraft({ target, kind, on: true, text: "new request answer" });
+      assert.equal(replacement.note!.doc.state, "draft");
+      assert.equal(store.snapshot().notes[draft.id]!.state, "done");
+      await own.setDraft({ target, kind, on: false, text: "" });
+    }
+  }
+  const explain = await own.setDraft({ target: "q:choice", kind: "explain", on: true, text: "Explain again" });
+  assert.equal(explain.note!.doc.state, "draft");
+  assert.equal(store.snapshot().notes["note-2"]!.state, "done");
+});
+
+test("setDraft conflict retries revalidate before atomically replacing and deleting", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const first = await own.createNote({ target: "q:choice", kind: "choice", text: "选 A", choice: "A" });
+  const duplicate = await own.createNote({ target: "q:choice", kind: "choice", text: "another A", choice: "A" });
+  const survivor = store.snapshot().notes[first.id]!;
+  const commit = store.commit.bind(store);
+  let interrupted = false;
+  t.mock.method(store, "commit", async (txn: Parameters<typeof store.commit>[0]) => {
+    if (!interrupted) {
+      interrupted = true;
+      const note = store.snapshot().notes[duplicate.id]!;
+      await commit({ author: "owner", message: "Concurrent send", puts: [{ kind: "note", id: duplicate.id, expectRev: note.rev, doc: { ...note, state: "sent", sentAt: later } }] });
+    }
+    return commit(txn);
+  });
+  const changes: string[] = [];
+  t.after(store.onChange(change => changes.push(change.message)));
+  await assert.rejects(own.setDraft({ target: "q:choice", kind: "choice", on: true, text: "选 B", choice: "B" }), /already sent/);
+  assert.deepEqual(changes, ["Concurrent send"]);
+  assert.deepEqual(store.snapshot().notes[first.id], survivor);
+  assert.equal(store.snapshot().notes[duplicate.id]!.state, "sent");
+  await assert.rejects(own.setDraft({ target: "q:choice", kind: "choice", on: false, text: "" }), /already sent/);
+  assert.deepEqual(store.snapshot().notes[first.id], survivor);
+});
+
+test("setDraft duplicate cleanup guards an unchanged retained draft against concurrent sending", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const first = await own.createNote({ target: "q:choice", kind: "choice", text: "选 A", choice: "A" });
+  const duplicate = await own.createNote({ target: "q:choice", kind: "choice", text: "another A", choice: "A" });
+  const untouched = store.snapshot().notes[duplicate.id];
+  const commit = store.commit.bind(store);
+  let interrupted = false;
+  t.mock.method(store, "commit", async (txn: Parameters<typeof store.commit>[0]) => {
+    if (!interrupted) {
+      interrupted = true;
+      const note = store.snapshot().notes[first.id]!;
+      await commit({ author: "owner", message: "Concurrent retained send", puts: [{ kind: "note", id: first.id, expectRev: note.rev, doc: { ...note, state: "sent", sentAt: later } }] });
+    }
+    return commit(txn);
+  });
+  await assert.rejects(own.setDraft({ target: "q:choice", kind: "choice", on: true, text: "选 A", choice: "A" }), /already sent/);
+  assert.equal(store.snapshot().notes[first.id]!.state, "sent");
+  assert.deepEqual(store.snapshot().notes[duplicate.id], untouched);
+});
+
 test("draft notes validate targets and choices, delete only drafts, send atomically with target projects", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later);
   const one = await own.createNote({ target: "it:a", kind: "comment", text: "hello", anchor: { kind: "note", id: "note-1" } });

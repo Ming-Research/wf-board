@@ -192,17 +192,21 @@ log:
   contiguous lists and tables remain whole blocks so rich rendering stays
   intact. Added or changed blocks are green; removed blocks stay in place,
   struck through in red. A changed title shows its former title immediately
-  after it in small struck text. Changed status, priority and request rows
-  are green, as are added or changed dependency and link rows; removed
+  after it in small struck text. Multi-paragraph card questions use the same
+  block comparison as heads, keeping unchanged paragraphs once. Changed
+  status, priority and request rows are green, as are added or changed
+  dependency and link rows; removed
   dependencies and links remain struck. New items and cards carry the blue
   left bar on their whole box and mark their title green, without per-block
   marks. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar; a new reply also marks the reply itself. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Navigation opens the target and its comment list when needed, waits
-  for mark baselines and their rendering, then scrolls to the target so
-  loading marks cannot shift it afterward. Deleted documents have no body
-  to render but remain countable stops that `n` can visit and `r` can read.
+  for the baselines affecting that target and its expanded containers, then
+  scrolls after rendering. Baselines for unrelated collapsed items or
+  explicitly collapsed comment lists neither delay nor cancel the jump.
+  Deleted documents have no body to render but remain countable stops that
+  `n` can visit and `r` can read.
   This replaces the 478 per-item read
   records and their snapshots. A step groups consecutive commits by the same
   author on the same item, so five quick log appends read as one change, and
@@ -264,6 +268,40 @@ The current template is kept. Its data layer, `window.claude.use("db")` and
 snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
+
+Choice, approve/done and explain controls show their pending state immediately,
+before sending the write, and restore the authoritative state with a visible
+error if it fails. `POST /api/draft` sets or clears a target's draft of that
+kind in one owner operation: replacing a choice makes one commit, preserving
+sent and completed notes. Its response carries the affected draft and deleted
+ids so the page can settle its pending state without waiting for live updates.
+The affected control stays busy until that write settles. Sending waits for
+pending draft writes and stops if one fails, so an immediately displayed choice
+cannot be omitted from the send by a slower draft request.
+
+Live changes, unread results and loaded baselines schedule a shared render on
+the next animation frame (a zero-delay timer when animation frames are
+unavailable). Changes arriving before that frame share one render. Note
+changes update their item or card, and an item or card change updates its
+affected subtree and summaries; unrelated cards keep their DOM elements.
+The header counts and send box update with the affected content. Unread
+refreshes are debounced across each burst, and superseded results cannot
+replace newer state. Rendering preserves the editor's focus and caret and
+the reading position.
+
+After a jump, the page holds the target at its landing position through
+subsequent renders, including baseline loads and unrelated live changes.
+The owner's scrolling, key press or click ends that pin; a new jump establishes
+its own target. Programmatic scroll corrections do not end it.
+
+Every page write has an eight-second deadline, including reading the response.
+On timeout the page restores the control and shows a banner saying that the
+board server did not answer and to refresh. It never automatically retries a
+write, because the server may already have applied it. A dropped live-update
+connection immediately shows “已和看板服务器断开，正在重连…” and refuses
+writes with that message. Reconnection retries every five seconds; writes
+resume and the banner clears only after a live connection and a successful
+snapshot reload restore the page's current state.
 
 ## 8. Waking sessions
 

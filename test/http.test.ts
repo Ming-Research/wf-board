@@ -137,6 +137,42 @@ test("JSON body decoding preserves Chinese codepoints split across request chunk
   assert.equal(store.snapshot().notes[created.data.id]!.text,"中文意见");
 });
 
+test("atomic draft HTTP route returns committed notes and deletions without a listener", async t => {
+  const { store, op } = await board(t), owner = ownerOps(store);
+  const http = createHttpServer({ store, ops: op, ownerOps: owner, webDir: "web", createMcp: () => createMcpServer({ store, ops: op }) });
+  t.after(() => { http.close(); });
+  async function api(data: unknown) {
+    const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", { value: 7417 });
+    const req = new IncomingMessage(socket); req.method = "POST"; req.url = "/api/draft"; req.headers = { host: "127.0.0.1:7417" };
+    const res = new ServerResponse(req);
+    const response = new Promise<{ status: number; data: Record<string, unknown> }>(resolve => {
+      res.writeHead = status => { res.statusCode = status; return res; };
+      res.end = ((body: string) => { resolve({ status: res.statusCode, data: JSON.parse(body) }); return res; }) as typeof res.end;
+    });
+    http.emit("request", req, res); req.push(Buffer.from(JSON.stringify(data))); req.push(null);
+    return response;
+  }
+  const made = await api({ target: "q:choice", kind: "choice", on: true, text: "选 A", choice: "A" });
+  assert.equal(made.status, 200);
+  const note = made.data.note as { id: string; doc: unknown };
+  assert.deepEqual(note.doc, store.snapshot().notes[note.id]);
+  assert.equal(made.data.commit, store.snapshot().head);
+  assert.deepEqual(made.data.deleted, []);
+  const extra = await owner.createNote({ target: "q:choice", kind: "choice", text: "duplicate A", choice: "A" });
+  const replacement = await api({ target: "q:choice", kind: "choice", on: true, text: "选 B", choice: "B" });
+  assert.equal(replacement.status, 200);
+  assert.deepEqual(replacement.data.note, { id: note.id, doc: store.snapshot().notes[note.id] });
+  assert.deepEqual(replacement.data.deleted, [extra.id]);
+  const before = store.snapshot();
+  assert.equal((await api({ target: "q:choice", kind: "choice", on: "false", text: "" })).status, 400);
+  assert.deepEqual(store.snapshot(), before);
+  assert.equal((await api({ target: "it:missing", kind: "approve", on: true, text: "yes" })).status, 404);
+  assert.deepEqual(store.snapshot(), before);
+  const cleared = await api({ target: "q:choice", kind: "choice", on: false, text: "" });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(cleared.data, { note: null, deleted: [note.id], commit: store.snapshot().head });
+});
+
 test("project wake routing reaches matching project sockets and the coordinator exactly once", async t => {
   const {url,api,store,op} = await server(t);
   const sockets=["Whitefoot","Whitefoot","Firn","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
