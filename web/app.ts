@@ -1,5 +1,5 @@
 import { rules } from "../src/rules.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -8,6 +8,28 @@ type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
 interface FreshStop { step: string; kinds: string[]; sel: string; item: string | null; container: string; card?: string; notes?: string }
 
+interface LineGroup { kind: "same" | "added" | "removed"; lines: string[] }
+/** Longest common subsequence of physical lines; replacements remove before adding. */
+export function lineDiff(before: string, after: string): LineGroup[] {
+  const lines = (s: string) => s ? s.replace(/\r/g, "").split("\n") : [];
+  const a = lines(before), b = lines(after);
+  const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+    lcs[i]![j] = a[i] === b[j] ? 1 + lcs[i + 1]![j + 1]! : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+  }
+  const groups: LineGroup[] = [];
+  const push = (kind: LineGroup["kind"], line: string) => {
+    if (groups.at(-1)?.kind !== kind) groups.push({ kind, lines: [] });
+    groups.at(-1)!.lines.push(line);
+  };
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { push("same", a[i++]!); j++; }
+    else if (i < a.length && (j === b.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) push("removed", a[i++]!);
+    else push("added", b[j++]!);
+  }
+  return groups;
+}
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
@@ -733,6 +755,15 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
     const n = state.notes.find(x => x.id === a.id);
     return n ? "回复（" + day(n.repliedAt || n.at) + "）" : "一条回复";
   }
+  const NOTE_STATE: Record<Note["state"], string> = { draft: "未发送", sent: "已发送，等处理", done: "已处理" };
+  function noteThread(n: Note, fresh = false) {
+    const box = el("div", "note" + (n.state === "draft" ? " draft" : "") + (fresh ? " newbar" : ""));
+    box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
+    if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
+    box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : blocks(n.text)));
+    if (n.reply) box.appendChild(el("div", "reply rich", '<div class="sub">Claude</div>' + blocks(n.reply)));
+    return box;
+  }
   function noteBlock(key: string, title: string) {
     const mine = notesOf(key).filter(listed).sort((x, y) => String(x.at).localeCompare(String(y.at)));
     if (!mine.length && editing !== key) return null;
@@ -750,21 +781,16 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
     }
     const fresh = fon("reply") ? newReplies(key) : [];
     (shown ? mine : []).forEach(n => {
-      const box = el("div", "note" + (n.state === "draft" ? " draft" : "") + (fresh.includes(n) ? " newbar" : ""));
+      const box = noteThread(n, fresh.includes(n));
       box.id = noteId(n);
       box.dataset.sel = "note:" + n.id;
       if (current === "note:" + n.id) box.classList.add("cur");
-      const who = el("div", "who");
-      who.appendChild(el("span", null, esc(day(n.at)) + " · " + (n.state === "draft" ? "未发送" : n.state === "sent" ? "已发送，等处理" : "已处理")));
+      const who = box.firstElementChild!;
       if (n.state === "draft") {
         const del = el("button", "linkbtn", "删除"); del.type = "button";
         del.addEventListener("click", () => { deleteNote(n.id).catch(showError); });
         who.appendChild(del);
       }
-      box.appendChild(who);
-      if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
-      box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : blocks(n.text)));
-      if (n.reply) box.appendChild(el("div", "reply rich", '<div class="sub">Claude</div>' + blocks(n.reply)));
       wrap.appendChild(box);
     });
     if (editing === key) {
@@ -894,6 +920,12 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
   let logOpen: Record<string, boolean> = {};
   // Per open item, the first log entry shown, and whether a read the owner just made holds it there; both clear when the item folds.
   const logShown: Record<string, number> = {}, logHold: Record<string,boolean> = {};
+  function logEntry(e: LogEntry, fresh = false) {
+    const row = el("div", "log-entry" + (fresh ? " fresh" : ""));
+    row.appendChild(el("div", "log-meta", esc(day(e.at)) + (e.by ? " · " + esc(e.by) : "")));
+    row.appendChild(el("div", "rich", blocks(e.text)));
+    return row;
+  }
   function logSection(it: ViewItem) {
     const all = logOf(it);
     if (!all.length) return null;
@@ -914,14 +946,10 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
     all.slice(start).forEach((e, j) => {
       const i = start + j;
       const isNew = fon("log") && unread.includes(e);
-      const row = el("div", "log-entry" + (isNew ? " fresh" : ""));
+      const row = logEntry(e, isNew);
       row.id = "log-" + it.id + "-" + i;
       row.dataset.sel = "log:" + it.id + "@" + e.at;
       if (current === row.dataset.sel) row.classList.add("cur");
-      const meta = el("div", "log-meta", esc(day(e.at)));
-
-      row.appendChild(meta);
-      row.appendChild(el("div", "rich", blocks(e.text)));
       box.appendChild(row);
     });
     return box;
@@ -1099,19 +1127,20 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
   }
 
   function choiceOf(d: ViewDecision) { return notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done")); }
-  function decisionCard(d: ViewDecision) {
-    const c = el("article", "card" + (current === "q:" + d.id ? " cur" : "") + (fon("other") && cardNew(d) ? " fresh" : "")); c.id = "q-" + d.id;
+  function decisionCard(d: ViewDecision, historical = false) {
+    const c = el("article", "card" + (!historical && current === "q:" + d.id ? " cur" : "") + (!historical && fon("other") && cardNew(d) ? " fresh" : ""));
+    if (!historical) c.id = "q-" + d.id;
     const top = el("div", "card-top");
     const h = el("h3");
     const closed = d.status !== "open";
-    if (waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
+    if (!historical && waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
     if (closed) h.appendChild(el("span", "closedtag", d.ruling ? "已裁定" : "已结束"));
     h.appendChild(el("span", null, inline(d.question || "")));
-    if (cardFresh(d)) h.appendChild(freshChip("q:" + d.id));
-    const pc = pendingChip("q:" + d.id);
+    if (!historical && cardFresh(d)) h.appendChild(freshChip("q:" + d.id));
+    const pc = historical ? null : pendingChip("q:" + d.id);
     if (pc) h.appendChild(pc);
     top.appendChild(h);
-    if (closed) {
+    if (closed && !historical) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
       x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); renderAreas(); renderCards(); });
       top.appendChild(x);
@@ -1119,7 +1148,7 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
     c.appendChild(top);
     if (closed && d.ruling) c.appendChild(el("p", null, '<span class="lbl">裁定：</span>' + inline(d.ruling) + (d.ruledAt ? ' · ' + esc(day(d.ruledAt)) : '')));
     if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + blocks(d.background)));
-    const chosen = choiceOf(d);
+    const chosen = historical ? undefined : choiceOf(d);
     if (Array.isArray(d.options) && d.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));
       const ol = el("ul", "opts");
@@ -1130,7 +1159,7 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
         const btn = el("button", "optbtn" + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + inline(o.text));
         btn.type = "button";
         btn.setAttribute("aria-pressed", String(sel));
-        btn.disabled = !connected || closed || !!(chosen && chosen.state !== "draft");
+        btn.disabled = historical || !connected || closed || !!(chosen && chosen.state !== "draft");
         btn.addEventListener("click", async () => {
           btn.disabled = true;
           try {
@@ -1144,10 +1173,10 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
       c.appendChild(ol);
     }
     if (d.confidence) c.appendChild(el("p", null, '<span class="lbl">信心：</span>' + inline(d.confidence.score + "/5：" + d.confidence.reason)));
-    appendStep(c, "q:" + d.id);
-    const nb = noteBlock("q:" + d.id, d.question || "决策");
+    if (!historical) appendStep(c, "q:" + d.id);
+    const nb = historical ? null : noteBlock("q:" + d.id, d.question || "决策");
     if (nb) c.appendChild(nb);
-    if (waitsQ(d)) {
+    if (!historical && waitsQ(d)) {
       const foot = el("div", "card-foot");
       foot.appendChild(nextButton("q-" + d.id));
       c.appendChild(foot);
@@ -1321,6 +1350,149 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
       previous.splice(old,1); return false;
     });
   }
+  function sameValue(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v,i) => sameValue(v,b[i]));
+    const left = a as Record<string,unknown>, right = b as Record<string,unknown>;
+    return Object.keys(left).length === Object.keys(right).length && Object.keys(left).every(k => Object.hasOwn(right,k) && sameValue(left[k],right[k]));
+  }
+  // Match occurrences, not just membership: appending an identical log entry is still an addition.
+  function entryChanges<T>(before: T[], after: T[]) {
+    const removed = before.slice(), added: T[] = [];
+    for (const entry of after) {
+      const i = removed.findIndex(old => sameValue(old,entry));
+      if (i < 0) added.push(entry); else removed.splice(i,1);
+    }
+    return { removed, added };
+  }
+  function valueText(value: unknown): string {
+    if (value == null) return "未设";
+    if (typeof value !== "object") return String(value);
+    if (Array.isArray(value)) return value.map(valueText).join("；");
+    return Object.values(value).map(valueText).join(" · ");
+  }
+  function changedFields<T extends object>(box: HTMLElement, before: T | null, after: T | null, fields: Array<[keyof T, string, ((value: unknown) => string)?]>) {
+    for (const [key,label,format = valueText] of fields) {
+      const a = before?.[key], b = after?.[key];
+      if (!sameValue(a,b)) box.appendChild(el("div", "change-field", esc(label) + "：" + inline(format(a)) + " → " + inline(format(b))));
+    }
+  }
+  function headChanges(before: string, after: string) {
+    const box = el("div", "head-changes");
+    for (const group of lineDiff(before,after)) {
+      const content = el("div", "rich change-" + group.kind, blocks(group.lines.join("\n")));
+      if (group.kind === "same" && group.lines.length > 3) {
+        const fold = el("details", "change-context");
+        fold.appendChild(el("summary", null, "… 省略 " + group.lines.length + " 行"));
+        fold.appendChild(content); box.appendChild(fold);
+      } else box.appendChild(content);
+    }
+    return box;
+  }
+  function itemName(value: unknown) { return value == null ? "未设" : snapshot.items[String(value)]?.title || String(value); }
+  function askText(value: unknown) {
+    const ask = value as Item["ask"];
+    return ask ? ask.text + (ask.url ? " · " + ask.url : "") + (ask.chat ? " · 请在对话窗口里确认" : "") : "未设";
+  }
+  function itemChanges(before: Item | null, after: Item | null) {
+    const box = el("div", "document-change"), item = after || before!;
+    if (!before || !after) {
+      box.appendChild(el("div", "change-label", after ? "新条目" : "已删除条目"));
+      const body = el("div", after ? "change-added" : "change-removed");
+      if (item.head) body.appendChild(el("div", "rich", blocks(item.head)));
+      if (item.log.length) {
+        const log = el("div", "log"); log.appendChild(el("div", "log-head", "进展"));
+        item.log.slice().sort((a,b) => a.at.localeCompare(b.at)).forEach(e => log.appendChild(logEntry(e,!!after)));
+        body.appendChild(log);
+      }
+      box.appendChild(body);
+    } else {
+      changedFields(box,before,after,[["title","标题"]]);
+    }
+    changedFields(box,before,after,[
+      ["status","状态", v => v == null ? "未设" : STATUS[String(v)] || String(v)],
+      ["priority","优先级"], ["data","数字"], ["ask","请求",askText],
+      ["agent","负责会话"], ["parent","上级",itemName],
+      ["group","项目"], ["short","简称"], ["order","排序"],
+    ]);
+    if (before && after) {
+      if (before.head !== after.head) box.appendChild(headChanges(before.head || "",after.head || ""));
+      const log = entryChanges(before.log,after.log);
+      for (const kind of ["removed","added"] as const) for (const e of log[kind]) {
+        const row = logEntry(e,kind === "added"); row.classList.add("change-" + kind);
+        box.appendChild(row);
+      }
+    }
+    const deps = entryChanges(before?.deps || [],after?.deps || []);
+    for (const kind of ["removed","added"] as const) for (const dep of deps[kind]) {
+      const title = "id" in dep ? itemName(dep.id) : snapshot.decisions[dep.card]?.question || dep.card;
+      box.appendChild(el("div", "change-" + kind, "依赖" + (kind === "added" ? "新增" : "移除") + "：" + inline(title) + '<span class="why"> · ' + inline(dep.why) + '</span>'));
+    }
+    const links = entryChanges(before?.links || [],after?.links || []);
+    for (const kind of ["removed","added"] as const) for (const link of links[kind]) {
+      const row = el("div", "change-" + kind, "链接" + (kind === "added" ? "新增" : "移除") + "：");
+      const a = el("a", null, esc(link.label));
+      if (/^https:\/\//.test(link.url)) { a.href = link.url; a.target = "_blank"; a.rel = "noopener"; }
+      row.appendChild(a); row.appendChild(el("span", null, " · " + esc(link.url))); box.appendChild(row);
+    }
+    return box;
+  }
+  const CARD_STATUS: Record<Decision["status"],string> = { open: "待决定", ruled: "已裁定", withtree: "随设计树处理", elsewhere: "在别处处理" };
+  function decisionChanges(before: Decision | null, after: Decision | null, id: string) {
+    const box = el("div", "document-change");
+    if (!before || !after) {
+      box.appendChild(el("div", "change-label", after ? "新决策卡" : "已删除决策卡"));
+      const card = decisionCard({...(after || before!),id},true);
+      card.classList.add(after ? "change-added" : "change-removed"); box.appendChild(card);
+      return box;
+    }
+    if (after.ruling && (before.ruling !== after.ruling || before.choice !== after.choice)) {
+      box.appendChild(el("div", "change-added", "裁决：" + inline(after.ruling)));
+      const option = after.options.find(o => o.key === after.choice);
+      if (after.choice) box.appendChild(el("div", "change-added", "选择：" + inline(after.choice) + (option ? " · " + inline(option.text) : "")));
+    } else {
+      changedFields(box,before,after,[["ruling","裁决"],["choice","选择"]]);
+    }
+    changedFields(box,before,after,[
+      ["question","问题"], ["background","背景"],
+      ["options","选项", v => (v as Decision["options"]).map(o => o.key + "：" + o.text + (o.recommended ? "（推荐）" : "")).join("；")],
+      ["confidence","信心", v => { const c = v as Decision["confidence"]; return c ? c.score + "/5：" + c.reason : "未设"; }],
+      ["status","状态",v => CARD_STATUS[v as Decision["status"]]], ["item","所属条目",itemName],
+      ["ruledAt","裁决时间",v => day(v as string | undefined) || "未设"], ["order","排序"], ["at","创建时间",v => day(v as string | undefined) || "未设"],
+    ]);
+    return box;
+  }
+  function noteChanges(before: Note | null, after: Note | null) {
+    const box = el("div", "document-change");
+    if (!before || !after || before.reply !== after.reply || before.text !== after.text) {
+      if (!after) box.appendChild(el("div", "change-label", "已删除评论"));
+      if (before && after && (before.text !== after.text || before.reply && before.reply !== after.reply)) {
+        const old = noteThread(before); old.classList.add("change-removed"); box.appendChild(old);
+      }
+      const thread = noteThread(after || before!,!!after);
+      thread.classList.add(after ? "change-added" : "change-removed"); box.appendChild(thread);
+    }
+    const noteKind = (v: unknown) => ({ comment: "评论", explain: "详细解释", approve: "同意", choice: "选择", done: "完成" })[v as Note["kind"]] || "未设";
+    changedFields(box,before,after,[
+      ["state","状态",v => NOTE_STATE[v as Note["state"]] || "未设"], ["kind","类型",noteKind],
+      ["target","所属条目",v => v == null ? "未设" : titleOf(String(v))], ["choice","选择"],
+      ["repliedBy","回复会话"], ["repliedAt","回复时间",v => day(v as string | undefined) || "未设"],
+    ]);
+    return box;
+  }
+  function documentChange(doc: Step["docs"][number], diff: {before: unknown; after: unknown; diff: string}) {
+    const box = diff.before === null && diff.after === null ? el("div", "document-change", "本步前后均无此文档") :
+      doc.kind === "item" ? itemChanges(diff.before as Item | null,diff.after as Item | null) :
+      doc.kind === "decision" ? decisionChanges(diff.before as Decision | null,diff.after as Decision | null,doc.id) :
+      noteChanges(diff.before as Note | null,diff.after as Note | null);
+    if (!box.children.length && !box.innerHTML) box.appendChild(el("div", "change-same", "其他字段变化（详见原始 diff）"));
+    const raw = el("details", "raw-diff");
+    raw.appendChild(el("summary", null, "原始 diff"));
+    raw.appendChild(el("pre", "step-diff", esc(diff.diff)));
+    box.appendChild(raw);
+    return box;
+  }
   function appendStep(parent: HTMLElement, key: string) {
     if (!shownStep) return;
     const st = allFreshStops().find(s => s.step === shownStep), step = steps.find(s => s.id === shownStep);
@@ -1330,10 +1502,13 @@ interface FreshStop { step: string; kinds: string[]; sel: string; item: string |
     const box = el("section", "unread-step"); box.id = "step:" + step.id; box.dataset.sel = box.id;
     box.appendChild(el("div", "log-meta", esc(day(step.at)) + " · " + esc(step.author) + " · " + step.commits.length + " 次提交"));
     for (const doc of step.docs) {
-      const title = doc.kind === "item" ? snapshot.items[doc.id]?.title : doc.kind === "decision" ? snapshot.decisions[doc.id]?.question : snapshot.notes[doc.id] ? titleOf(snapshot.notes[doc.id]!.target) : doc.id;
-      box.appendChild(el("div", "sub", esc(title || doc.id) + " · " + esc(doc.summary)));
       const diff = diffs.get(step.id + ":" + doc.kind + ":" + doc.id);
-      box.appendChild(el("pre", "step-diff", esc(diff?.diff || "正在读取变化…")));
+      const historical = (diff?.after || diff?.before) as Item | Decision | Note | undefined;
+      const title = doc.kind === "item" ? (historical as Item | undefined)?.title || snapshot.items[doc.id]?.title :
+        doc.kind === "decision" ? (historical as Decision | undefined)?.question || snapshot.decisions[doc.id]?.question :
+        historical ? titleOf((historical as Note).target) : snapshot.notes[doc.id] ? titleOf(snapshot.notes[doc.id]!.target) : undefined;
+      box.appendChild(el("div", "sub", esc(title || doc.id) + " · " + esc(doc.summary)));
+      box.appendChild(diff ? documentChange(doc,diff) : el("div", "change-same", "正在读取变化…"));
     }
     if (!step.docs.length) box.appendChild(el("p", null, "看板元数据更新"));
     const read = el("button", "freshbtn", "已阅（包括此前所有变化）"); read.type = "button";
