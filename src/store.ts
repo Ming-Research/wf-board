@@ -482,8 +482,8 @@ export class Store {
   async show(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
     const path = docPath(kind, id);
     const hash = await this.resolveCommit(commit);
-    const doc = await this.readAt(path, hash);
-    return doc === null ? null : validated(schemas[kind], doc, `${hash}:${path}`);
+    // A past version is returned as written: it may hold fields a later schema dropped, which history must still show.
+    return this.readAt(path, hash);
   }
 
   /** The full commit id of `ref` when it is HEAD or an ancestor of HEAD; null when unknown or off the history. */

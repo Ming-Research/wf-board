@@ -307,6 +307,20 @@ test("log/diff/show reproduce commits, author, multiline messages, paths and del
   assert.equal(await store.push(), false);
 });
 
+test("show returns a past document as written, including a field the current schema dropped", async t => {
+  const { dir, store } = await setup(t);
+  const first = await store.commit({ author: "History Session", message: "Create", puts: [put("a", item())] });
+  // An older schema's field, written outside the store as a past schema's writer would have.
+  const path = join(dir, "items/a.yaml");
+  await writeFile(path, (await readFile(path, "utf8")) + "short: Old label\n");
+  await git(dir, "commit", "-qam", "Old schema field", "--author", "Old <old@wf-board.invalid>");
+  const old = await git(dir, "rev-parse", "HEAD");
+  await git(dir, "revert", "--no-edit", "HEAD");
+  const reopened = await Store.open(dir);
+  assert.deepEqual(await reopened.show("item", "a", old), { ...Item.parse({ ...item(), rev: 1 }), short: "Old label" });
+  assert.deepEqual(await reopened.show("item", "a", first.commit), Item.parse({ ...item(), rev: 1 }));
+});
+
 test("push sends an ahead branch to origin and skips an up-to-date branch", async t => {
   const { dir, store } = await setup(t);
   const remote = join(dir, "remote.git");
