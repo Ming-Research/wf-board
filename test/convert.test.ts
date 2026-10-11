@@ -27,7 +27,7 @@ function fixture() {
         log: [{ at: "2026-10-11T01:00:00+00:00", by: "Old writer", text: "Old #11" }, { at: "2026-10-11T03:00:00.123+00:00", text: "New #12" }],
         ask: "Merge #13", askUrl: "https://example.com/pr/13", askChat: true, links: [{ label: "PR", url: "https://example.com/pr/3" }], order: 3, agent: "Handover" }),
       row("fold", { title: "Area child", area: "snow", head: "Head wins #14", text: "Ignored body", data: "", ask: "", askUrl: "", status: "todo", priority: "P2", updated: t1 }),
-      row("empty", { title: "Explicit top level", parent: "", area: "snow", group: "Multi", short: "E", status: "todo", priority: "P2", updated: t1, head: "#15" }),
+      row("empty", { title: "Empty parent falls back to area", parent: "", area: "snow", status: "todo", priority: "P2", updated: t1, head: "#15" }),
       row("done", { title: "Done child", parent: "snow", status: "done", priority: "P2", updated: t1, deps: ["card", "shared", { id: "old", why: "Need history" }] }),
       row("shared", { title: "Cancelled child", parent: "snow", status: "cancelled", priority: "P2", updated: t1 }),
       row("halo", { title: "Halo", group: "Halo-wf", updated: t1, head: "#16" }),
@@ -69,7 +69,8 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   assert.deepEqual(out.board, { title: "Synthetic board", eyebrow: "实验", goal: "Preserve every field" });
   assert.equal(out.current.items.old!.parent, "snow");
   assert.equal(out.current.items.fold!.parent, "snow");
-  assert.equal(out.current.items.empty!.parent, undefined);
+  // The old page read up(it) = it.parent || it.area: an empty parent falls back to area.
+  assert.equal(out.current.items.empty!.parent, "snow");
   assert.equal(out.current.items.snow!.status, undefined);
   assert.equal(out.current.items.snow!.priority, undefined);
   assert.equal(out.current.items.snow!.agent, "Store");
@@ -82,7 +83,7 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   assert.equal(out.current.items.old!.data, "data #10");
   assert.deepEqual(out.current.items.old!.ask, { text: "Merge #13", url: "https://example.com/pr/13", chat: true });
   assert.deepEqual(out.current.items.done!.deps, [{ card: "card", why: "（迁移时补：原依赖没有记录理由）" }, { id: "shared", why: "（迁移时补：原依赖没有记录理由）" }, { id: "old", why: "Need history" }]);
-  assert.deepEqual(out.current.items.snow!.deps, [{ id: "old", why: "子条目：Changed #3" }, { id: "fold", why: "子条目：Area child" }]);
+  assert.deepEqual(out.current.items.snow!.deps, [{ id: "old", why: "子条目：Changed #3" }, { id: "fold", why: "子条目：Area child" }, { id: "empty", why: "子条目：Empty parent falls back to area" }]);
   assert.equal(out.current.items.old!.updated, "2026-10-11T03:00:00.123Z");
   assert.equal(out.current.items.old!.created, t1);
   assert.equal(out.current.items.old!.log[0]!.by, undefined);

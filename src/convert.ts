@@ -69,8 +69,9 @@ export function convertExport(exportJson: unknown): Converted {
   const owner: Converted["owner"] = { archived: {} };
   const parents: Record<string, string | undefined> = {};
   for (const [id, raw] of Object.entries(items)) {
-    parents[id] = raw.parent === "" ? undefined : string(raw.parent) ?? string(raw.area);
-    if (raw.area !== undefined) report("Fold area into parent (nonempty parent wins; explicit empty parent has none)", id);
+    // As the old page read it: up(it) = it.parent || it.area, so an empty parent falls back to area.
+    parents[id] = string(raw.parent) ?? string(raw.area);
+    if (raw.area !== undefined) report("Fold area into parent (a nonempty parent wins, else area)", id);
   }
   const hasChildren = new Set(Object.values(parents).filter((p): p is string => p !== undefined));
   function exists(target: unknown): boolean {

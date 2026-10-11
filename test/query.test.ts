@@ -7,7 +7,9 @@ import { board, at, later, author } from "./helpers.ts";
 test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks snippets and filters", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
   const hits = q.search(s, r, "中文", { limit: 100 });
-  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:background", "card:choice:option.A", "card:ruled:ruling", "item:a:log[6]", "item:a:log[0]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
+  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:background", "card:choice:option.A", "card:ruled:ruling", "item:a:log[6]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
+  // One hit per field: log[0] matches twice and reports the second as `more`.
+  assert.equal(hits.find(h => h.field === "log[0]")!.more, 1);
   for (const hit of hits) { assert.ok(hit.snippet.includes("«中文»")); assert.equal(hit.area, "解释器工作"); }
   assert.equal(hits[8]!.time, "2026-10-11T01:02:06Z");
   assert.equal(q.search(s, r, "WHITEFOOT", { kind: ["item"] })[0]!.id, "a");

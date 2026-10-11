@@ -25,7 +25,8 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
     if (!isDeepStrictEqual(actual, expected)) issues.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   }
   function optional(value: unknown): unknown { return value === "" ? undefined : value; }
-  function parent(raw: Raw): unknown { return raw.parent === "" ? undefined : optional(raw.parent) ?? optional(raw.area); }
+  // The old page placed an item under it.parent || it.area.
+  function parent(raw: Raw): unknown { return optional(raw.parent) ?? optional(raw.area); }
   const parentIds = new Set(items.map(row => parent(row.data)).filter(p => p !== undefined));
   // Prose, PR references included, must survive exactly as written.
   function prose(value: unknown, _id: string): unknown { return value; }

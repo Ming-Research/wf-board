@@ -50,10 +50,21 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
   return lines.join("\n");
 }
 export function formatSearch(hits: q.Hit[]): string {
-  return hits.length ? hits.map(h => `${formatRow(h)} · ${h.kind}.${h.field}${h.time ? ` ${h.time}` : ""}\n  ${h.snippet}`).join("\n") : "No matches.";
+  return hits.length ? hits.map(h => `${formatRow(h)} · ${h.kind}.${h.field}${h.time ? ` ${h.time}` : ""}${h.more ? ` (+${h.more} more here)` : ""}\n  ${h.snippet}`).join("\n") : "No matches.";
 }
-export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>): string {
-  return groups.length ? groups.map(g => `${g.areaId} · ${g.area}\n${g.documents.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.author}: ${oneLine(c.message)}`).join("\n")}`).join("\n")}`).join("\n") : "No changes.";
+/** At most `limit` documents, then how many were left out, so one large commit (a migration) cannot flood the reader's context. */
+export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>, limit = 40): string {
+  if (!groups.length) return "No changes.";
+  const total = groups.reduce((n, g) => n + g.documents.length, 0), out: string[] = [];
+  let shown = 0;
+  for (const g of groups) {
+    if (shown >= limit) break;
+    const docs = g.documents.slice(0, limit - shown);
+    shown += docs.length;
+    out.push(`${g.areaId} · ${g.area}`, ...docs.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.author}: ${oneLine(c.message)}`).join("\n")}`));
+  }
+  if (total > shown) out.push(`… ${total - shown} more changed documents; narrow with since, filters.group or filters.under, or raise limit.`);
+  return out.join("\n");
 }
 function formatGraph(graph: ReturnType<typeof q.graph>): string {
   const lines: string[] = [];
@@ -118,9 +129,9 @@ export function createMcpServer({ store, ops, now: _now }: { store: Store; ops: 
     repo: text("Repository name under Ming-Research, such as Whitefoot."), number: z.number().int().positive().describe("Pull request number in that repository."),
   }, a => { const x = read(), refs = q.prs(x.snapshot, x.rules, a.repo, a.number); return [`${a.repo}#${a.number}:`, ...refs.qualified.map(it => `  ${it.kind}: ${formatRow(it)}`), "repository unknown:", ...refs.unknown.map(it => `  ${it.kind}: ${formatRow(it)}`)].join("\n"); });
   register("changes", "What changed while I was away? Summarizes changed documents by area with net field differences and their commits, since an ISO time or commit.", {
-    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(),
-  }, async a => formatChanges(await q.changes(store, read().snapshot, a.since, a.filters)));
-  const kind = z.enum(["item", "card", "note"]).describe("Document kind; card means a decision card.");
+    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(), limit: limit(40),
+  }, async a => formatChanges(await q.changes(store, read().snapshot, a.since, a.filters), a.limit));
+  const kind = z.enum(["item", "card", "note"]).default("item").describe("Document kind; card means a decision card; default item.");
   register("history", "How did this document change? Lists its commits newest first; use a commit in diff to inspect the exact text change.", {
     kind, id: text("Exact document id; notes use their original note id."), limit: limit(20),
   }, async a => (await q.history(store, a.kind === "card" ? "decision" : a.kind, a.id, a.limit)).map(c => `${c.commit} ${c.at} ${c.author}: ${oneLine(c.message)}`).join("\n") || "No history.");
