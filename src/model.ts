@@ -20,7 +20,7 @@ export type Priority = z.infer<typeof Priority>;
 
 export const LogEntry = z.object({
   at: Time,
-  /** The writing session; absent on entries migrated from the artifact, which recorded no author. */
+  /** The writing session; absent when the source recorded no author. */
   by: z.string().min(1).optional(),
   text: z.string().min(1),
 });
@@ -87,7 +87,7 @@ export const Decision = z.object({
   question: z.string().min(1),
   background: z.string().min(1),
   options: z.array(Option).min(1),
-  confidence: z.object({ score: z.number().int().min(1).max(5), reason: z.string() }).strict().optional(),
+  confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
   status: z.enum(DECISION_STATUSES),
   /** The chosen option's key, when the ruling picked one. */
   choice: z.string().min(1).optional(),

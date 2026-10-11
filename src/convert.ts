@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Board, Decision, Item, Key, Note, OwnerState } from "./model.ts";
+import { Board, Decision, Dep, Item, Key, Note, OwnerState } from "./model.ts";
 import { Store } from "./store.ts";
 import type { DocKind, Put, Del } from "./store.ts";
 
@@ -14,17 +14,17 @@ export interface Converted {
 
 type Raw = Record<string, unknown>;
 const ObjectData = z.record(z.string(), z.unknown());
-const Row = z.object({ id: z.string(), data: ObjectData });
+const Row = z.object({ id: z.string(), data: ObjectData }).strict();
 const Export = z.object({
   exportedAt: z.string(), meta: z.union([ObjectData, z.array(Row)]),
   items: z.array(Row), decisions: z.array(Row), notes: z.array(Row), reads: z.array(Row), archived: z.array(Row),
-});
+}).strict();
 
 function object(value: unknown): Raw { return ObjectData.parse(value); }
 function string(value: unknown): string | undefined { return typeof value === "string" && value !== "" ? value : undefined; }
 function time(value: unknown): string | undefined {
-  const text = string(value);
-  if (text === undefined) return undefined;
+  if (value === undefined || value === "") return undefined;
+  const text = z.string().parse(value);
   if (!/^\d{4}-\d{2}-\d{2}T/.test(text) || !Number.isFinite(Date.parse(text))) throw new Error(`Invalid migration time: ${text}`);
   const iso = new Date(text).toISOString();
   return /\.\d+/.test(text) ? iso : iso.replace(".000Z", "Z");
@@ -37,10 +37,20 @@ function optionalFields(raw: Raw, fields: string[]): Raw {
   return Object.fromEntries(fields.filter(k => raw[k] !== undefined && raw[k] !== "").map(k => [k, raw[k]]));
 }
 
+// An unfamiliar nonempty source field needs an explicit mapping, never silent
+// schema stripping. The original export remains provenance for cleanups.
+function known(raw: Raw, fields: string[], path: string): void {
+  for (const [field, value] of Object.entries(raw)) {
+    if (!fields.includes(field) && value !== undefined && value !== "" && value !== null && !(Array.isArray(value) && !value.length)) throw new Error(`${path}.${field}: unsupported nonempty migration content`);
+  }
+}
+
 export function convertExport(exportJson: unknown): Converted {
   const input = Export.parse(exportJson);
   const exportedAt = time(input.exportedAt)!;
   const meta = Array.isArray(input.meta) ? input.meta.find(r => r.id === "meta")?.data ?? input.meta[0]?.data ?? {} : input.meta;
+  known(meta, ["title", "eyebrow", "goal", "updated", "revision", "freshSince"], "meta");
+  if (Array.isArray(input.meta) && input.meta.length > 1) throw new Error("meta: unsupported additional metadata rows");
   const board = Board.parse(optionalFields(meta, ["title", "eyebrow", "goal"]));
   const counts = new Map<string, { count: number; examples: Set<string> }>();
   function report(action: string, id: string, count = 1): void {
@@ -64,11 +74,19 @@ export function convertExport(exportJson: unknown): Converted {
   const notes = records(input.notes, false);
   const reads = records(input.reads, false);
   const archives = records(input.archived);
+  for (const [id, raw] of Object.entries(archives)) known(raw, ["at"], `archived.${id}`);
+  for (const [id, raw] of Object.entries(reads)) {
+    if (id !== "all" && !exists(id)) continue;
+    known(raw, ["at", "snap"], `reads.${id}`);
+    if (raw.snap !== undefined) known(object(raw.snap), ["title", "text", "head", "data", "status", "priority", "deps", "qs"], `reads.${id}.snap`);
+  }
   const current: Converted["current"] = { items: {}, decisions: {}, notes: {} };
   const orphans: Converted["orphans"] = { notes: [], reads: [] };
   const owner: Converted["owner"] = { archived: {} };
   const parents: Record<string, string | undefined> = {};
   for (const [id, raw] of Object.entries(items)) {
+    known(raw, ["title", "parent", "area", "agent", "group", "short", "order", "status", "priority", "data", "links", "head", "text", "qs", "deps", "log", "updated", "created", "ask", "askUrl", "askChat"], `items.${id}`);
+    for (const field of ["parent", "area", "askUrl"]) if (raw[field] !== undefined) z.string().parse(raw[field]);
     // As the old page read it: up(it) = it.parent || it.area, so an empty parent falls back to area.
     parents[id] = string(raw.parent) ?? string(raw.area);
     if (raw.area !== undefined) report("Fold area into parent (a nonempty parent wins, else area)", id);
@@ -114,6 +132,8 @@ export function convertExport(exportJson: unknown): Converted {
     if (raw.qs !== undefined) report("Drop item qs (card item owns its location)", id);
     doc.deps = (raw.deps === undefined ? [] : z.array(z.unknown()).parse(raw.deps)).map(dep => {
       const entry = typeof dep === "string" ? { id: dep, why: "（迁移时补：原依赖没有记录理由）" } : object(dep);
+      known(entry, ["id", "card", "why"], `items.${id}.deps`);
+      Dep.parse(entry); // validate the union before translating id to card
       if (typeof dep === "string") report("Give bare dependency a migration reason", id);
       if (typeof entry.id === "string" && !Object.hasOwn(items, entry.id) && Object.hasOwn(decisions, entry.id)) {
         report("Convert decision dependency id to card", id);
@@ -122,10 +142,10 @@ export function convertExport(exportJson: unknown): Converted {
       return entry;
     });
     const log = (raw.log === undefined ? [] : z.array(ObjectData).parse(raw.log)).map(entry => {
-      if (entry.by !== undefined) report("Remove migrated log author", id);
+      known(entry, ["at", "by", "text"], `items.${id}.log`);
       const at = time(entry.at);
       if (at !== entry.at) report("Normalize log time", id);
-      return { at, text: z.string().parse(entry.text) };
+      return { at, ...optionalFields(entry, ["by"]), text: z.string().parse(entry.text) };
     });
     doc.log = log;
     const newest = latest(...log.map(entry => entry.at));
@@ -137,11 +157,14 @@ export function convertExport(exportJson: unknown): Converted {
     }
     if (!updated) { updated = exportedAt; report("Set missing updated from exportedAt", id); }
     doc.updated = updated;
-    if (log.length) {
+    if (raw.created !== undefined && raw.created !== "") doc.created = time(raw.created);
+    else if (log.length) {
       doc.created = log.map(entry => entry.at!).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
       report("Set created from oldest log time", id);
     }
+    if (raw.ask !== undefined && typeof raw.ask !== "string") throw new Error(`items.${id}.ask: expected legacy request text`);
     const ask = string(raw.ask);
+    if (!ask && (string(raw.askUrl) || (raw.askChat !== undefined && raw.askChat !== ""))) throw new Error(`items.${id}.ask: cannot preserve askUrl/askChat without request text`);
     if (ask) {
       doc.ask = { text: ask, ...optionalFields({ url: raw.askUrl, chat: raw.askChat }, ["url", "chat"]) };
       report("Convert ask to structured request", id);
@@ -159,7 +182,10 @@ export function convertExport(exportJson: unknown): Converted {
     }
   }
   for (const [id, raw] of Object.entries(decisions)) {
-    const doc = optionalFields(raw, ["item", "question", "background", "options", "status", "ruling", "order"]);
+    known(raw, ["item", "question", "background", "options", "status", "ruling", "order", "confidence", "at", "updated", "choice", "ruledAt"], `decisions.${id}`);
+    const doc = optionalFields(raw, ["item", "question", "background", "options", "status", "ruling", "order", "choice"]);
+    if (raw.ruledAt !== undefined && raw.ruledAt !== "") doc.ruledAt = time(raw.ruledAt);
+    if (raw.item !== undefined && raw.item !== "") Key.parse(raw.item);
     if (!doc.item) {
       doc.item = Object.entries(items).find(([, item]) => Array.isArray(item.qs) && item.qs.includes(id))?.[0];
       report("Resolve missing card item from legacy qs", id);
@@ -167,24 +193,25 @@ export function convertExport(exportJson: unknown): Converted {
     if (typeof raw.confidence === "string") {
       const match = raw.confidence.match(/^\s*([1-5])\s*\/\s*5\s*[。:：]?\s*([\s\S]*)$/);
       if (match) { doc.confidence = { score: Number(match[1]), reason: match[2] }; report("Parse confidence score and reason", id); }
-      else report("Drop confidence without a parsable score", id);
+      else if (raw.confidence) { doc.confidence = { reason: raw.confidence }; report("Keep confidence text without score", id); }
     } else if (raw.confidence !== undefined) doc.confidence = raw.confidence;
-    if (raw.at) doc.at = time(raw.at);
+    if (raw.at !== undefined && raw.at !== "") doc.at = time(raw.at);
     const rulingNote = Object.values(notes).filter(note => note.target === `q:${id}` && (note.kind === "choice" || note.kind === "approve"))
       .sort((a, b) => Date.parse(z.string().parse(b.at)) - Date.parse(z.string().parse(a.at)))[0];
     if (raw.status !== "open" && rulingNote) {
-      doc.ruledAt = time(rulingNote.at);
+      doc.ruledAt ??= time(rulingNote.at);
       const options = z.array(ObjectData).parse(raw.options);
-      if (typeof rulingNote.choice === "string" && options.some(option => option.key === rulingNote.choice)) doc.choice = rulingNote.choice;
+      if (doc.choice === undefined && typeof rulingNote.choice === "string" && options.some(option => option.key === rulingNote.choice)) doc.choice = rulingNote.choice;
       report("Derive ruledAt and choice from latest ruling note", id);
     }
-    doc.updated = doc.ruledAt ?? doc.at ?? exportedAt;
+    doc.updated = time(raw.updated) ?? doc.ruledAt ?? doc.at ?? exportedAt;
     doc.rev = 1;
     current.decisions[id] = Decision.parse(doc);
   }
   for (const [id, raw] of Object.entries(notes)) {
     if (!exists(raw.target)) continue;
     Key.parse(id);
+    known(raw, ["target", "title", "kind", "choice", "text", "at", "state", "sentAt", "reply", "repliedAt", "repliedBy", "anchor"], `notes.${id}`);
     const doc = optionalFields(raw, ["target", "kind", "choice", "state", "reply", "repliedBy", "anchor"]);
     doc.text = raw.text;
     doc.at = time(raw.at);
@@ -192,45 +219,64 @@ export function convertExport(exportJson: unknown): Converted {
     if (raw.title !== undefined) report("Drop note title (derived from target)", id);
     if (raw.anchor === null) { delete doc.anchor; report("Drop null note anchor", id); }
     else if (doc.anchor && object(doc.anchor).kind === "log") doc.anchor = { ...object(doc.anchor), at: time(object(doc.anchor).at) };
-    if (raw.sentAt) doc.sentAt = time(raw.sentAt);
+    if (raw.sentAt !== undefined && raw.sentAt !== "") doc.sentAt = time(raw.sentAt);
     if (doc.reply) {
       doc.repliedAt = time(raw.repliedAt) ?? doc.at;
       if (!raw.repliedAt) report("Set reply time from note time", id);
-    } else {
-      if (raw.repliedAt) report("Drop repliedAt without reply", id);
-      delete doc.repliedBy;
-    }
+    } else if (raw.repliedAt !== undefined && raw.repliedAt !== "") doc.repliedAt = time(raw.repliedAt);
     doc.rev = 1;
     current.notes[id] = Note.parse(doc);
   }
   const asRead = structuredClone(current);
   for (const [id, item] of Object.entries(current.items)) {
     const readAt = itemRead(id);
-    if (!later(item.updated, readAt)) continue;
     const read = reads[`it:${id}`];
+    const snapshotApplies = read?.snap !== undefined && readAt !== undefined && !later(readAt, time(read.at));
+    const changed = later(item.updated, readAt);
+    if (!changed && !snapshotApplies) continue;
     if (!read) { delete asRead.items[id]; report("Exclude new item from as-read state", id); continue; }
     if (!readAt) throw new Error(`Read ${id} lacks an at time`);
     const old: Raw = structuredClone(item);
-    if (read.snap !== undefined) {
+    if (snapshotApplies) {
       const snap = object(read.snap);
-      for (const field of ["title", "data", "status"]) if (Object.hasOwn(snap, field)) {
+      for (const field of ["title", "data", "status", "priority"]) if (Object.hasOwn(snap, field)) {
         if (snap[field] === "" || snap[field] === undefined) delete old[field];
         else old[field] = snap[field];
       }
       if (snap.head !== undefined || snap.text !== undefined) old.head = z.string().parse(snap.head ?? snap.text);
+      if (snap.deps !== undefined) old.deps = z.array(z.string()).parse(snap.deps).map(signature => {
+        const split = signature.indexOf("\u0001");
+        if (split < 1) throw new Error(`Read ${id} has invalid dependency signature`);
+        const target = signature.slice(0, split), why = signature.slice(split + 1);
+        return !Object.hasOwn(items, target) && Object.hasOwn(decisions, target) ? { card: target, why } : { id: target, why };
+      });
     }
-    if (hasChildren.has(id)) delete old.status;
+    // A snapshot's stored status/priority are retained even for a current
+    // parent: they are historical evidence, not its current derived values.
     old.log = item.log.filter(entry => !later(entry.at, readAt));
-    const oldLog = old.log as Item["log"];
-    if (oldLog.length) old.created = oldLog.map(entry => entry.at).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
-    else delete old.created;
-    old.updated = readAt;
+    old.title ??= `（缺标题）${id}`;
+    if (changed) old.updated = readAt;
     asRead.items[id] = Item.parse(old);
     report("Reconstruct changed item as read", id);
   }
+  for (const [id, card] of Object.entries(current.decisions)) {
+    const readAt = itemRead(card.item);
+    const snap = reads[`it:${card.item}`]?.snap === undefined ? undefined : object(reads[`it:${card.item}`]!.snap);
+    const seen = Array.isArray(snap?.qs) ? z.array(z.string()).parse(snap.qs) : undefined;
+    const currentQs = items[card.item]?.qs;
+    const addedSinceSnapshot = seen !== undefined && !seen.includes(id) && Array.isArray(currentQs) && currentQs.includes(id);
+    // qs proves an undated card already existed at that read. Otherwise date
+    // it from the earliest update/note evidence, or the export checkpoint.
+    const noteTimes = Object.values(notes).filter(n => n.target === `q:${id}`).map(n => time(n.at)!).sort((a, b) => Date.parse(a) - Date.parse(b));
+    const evidence = [time(decisions[id]!.updated), ...noteTimes].filter((t): t is string => t !== undefined).sort((a,b) => Date.parse(a) - Date.parse(b))[0];
+    const dated = card.at ?? (seen?.includes(id) ? undefined : evidence ?? exportedAt);
+    if ((dated && later(dated, readAt)) || (addedSinceSnapshot && (!readAt || !later(readAt, time(reads[`it:${card.item}`]?.at))))) {
+      delete asRead.decisions[id]; report("Exclude new card from as-read state", id);
+    }
+  }
   for (const [id, note] of Object.entries(asRead.notes)) {
     const readAt = latest(time(reads[note.target]?.at), allRead);
-    if (note.repliedAt && later(note.repliedAt, readAt)) {
+    if (note.reply && note.repliedAt && later(note.repliedAt, readAt)) {
       delete note.reply; delete note.repliedAt; delete note.repliedBy;
       note.state = "sent";
       report("Hide unread reply in as-read state", id);

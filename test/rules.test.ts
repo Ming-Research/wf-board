@@ -32,7 +32,7 @@ test("tree lookup, unsorted children, grouped areas, inheritance and missing ids
   assert.equal(r.parentOf("leaf"), "c1");
   assert.deepEqual(r.children("a"), ["c2", "c1"]);
   assert.deepEqual(r.children("absent"), ["orphan"]);
-  assert.deepEqual(r.areas(), ["a2", "a", "z"]);
+  assert.deepEqual(r.areas(), ["z", "a2", "a"]);
   assert.deepEqual(r.ancestors("leaf"), ["c1", "a"]);
   assert.deepEqual(r.ancestors("orphan"), []);
   assert.equal(r.lineOf("leaf"), "a");

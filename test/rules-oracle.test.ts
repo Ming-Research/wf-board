@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
+import { tmpdir } from "node:os";
 import { Item, Decision, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { rules } from "../src/rules.ts";
@@ -104,7 +105,7 @@ function exportBoard(old: LegacyState): LegacyExport {
   return { exportedAt: T1, meta: {}, items: rows(old.items), decisions: rows(old.decisions), notes: rows(old.notes), reads: [], archived: Object.entries(old.archived).map(([id, data]) => ({ id, data })) };
 }
 
-test("synthetic legacy oracle agrees on eight rules for every item (four levels, all statuses/priorities)", () => {
+test("synthetic legacy oracle agrees on eight item rules and area ordering (four levels, all statuses/priorities)", () => {
   const old = oldBoard(), mapped = mapBoard(old);
   assert.ok(old.items.length >= 40);
   assert.deepEqual(compare(old, mapped), []);
@@ -124,21 +125,21 @@ test("export comparison is independent of the oracle test mapper and reports cha
   const data = exportBoard(oldBoard());
   const equal = compareExport(data);
   assert.deepEqual(equal.disagreements, []);
-  assert.equal(equal.comparisons, data.items.length * 8);
+  assert.equal(equal.comparisons, data.items.length * 8 + 1);
   const old = oldBoard(), mapped = mapBoard(old);
   const wrong = { ...mapped, items: { ...mapped.items, leaf: { ...mapped.items.leaf!, priority: "P0" as const } } };
   assert.ok(compare(old, wrong).some(d => d.id === "leaf" && d.rule === "priorityOf" && d.old === "P2" && d.new === "P0"));
 });
 
 test("comparison CLI prints all disagreements and exits nonzero, using synthetic exports only", async () => {
-  // Keep all scratch writes in this worktree, as requested.
-  const dir = await mkdtemp(resolve("test/.oracle-"));
+  // The CLI fixture is temporary and never writes into the checkout.
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-oracle-"));
   try {
     const filename = join(dir, "export.json"), old = oldBoard();
     await writeFile(filename, JSON.stringify(exportBoard(old)));
     const ok = spawnSync(process.execPath, ["scripts/compare-legacy.ts", filename], { encoding: "utf8" });
     assert.equal(ok.status, 0, ok.stderr);
-    assert.match(ok.stdout, /51 items, 408 comparisons, 0 disagreements/);
+    assert.match(ok.stdout, /51 items, 409 comparisons, 0 disagreements/);
     // This intentionally inconsistent qs is a real difference between models:
     // new needsOwner uses decision.item, while the page used each item's qs.
     old.items.find(it => it.id === "card-open")!.qs = [];
@@ -153,4 +154,41 @@ test("comparison CLI prints all disagreements and exits nonzero, using synthetic
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /Usage:/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test("R8 areas follow the first area in order, independently of insertion order", () => {
+  const old: LegacyState = { items: [
+    { id: "a", title: "A", agent: "session", group: "A", order: 9, updated: T0 },
+    { id: "z", title: "Z", agent: "session", group: "Z", order: -4, updated: T0 },
+    { id: "a2", title: "A2", agent: "session", group: "A", order: 1, updated: T0 },
+  ], decisions: [], notes: [], archived: {} };
+  assert.deepEqual(legacyRules(old).tops().map(i => i.id), ["z", "a2", "a"]);
+  assert.deepEqual(compare(old, mapBoard(old)), []);
+  assert.deepEqual(rules(mapBoard(old)).areas(), ["z", "a2", "a"]);
+});
+
+test("R9 shared owner-action predicates distinguish asks from cards and draft from sent answers", () => {
+  const s = mapBoard(oldBoard()), r = rules(s);
+  assert.equal(r.askPending("ask"), true);
+  assert.equal(r.askPending("ask-approved"), false);
+  assert.equal(r.askPending("ask-done"), false);
+  assert.equal(r.askPending("ask-draft"), true);
+  assert.equal(r.askPending("card-open"), false);
+  assert.equal(r.cardWaiting("open"), true);
+  assert.equal(r.cardWaiting("choice"), false);
+  assert.equal(r.cardWaiting("draft"), true);
+  assert.equal(r.cardWaiting("ruled"), false);
+  assert.equal(r.cardWaiting("absent"), false);
+  for (const id of Object.keys(s.items)) assert.equal(r.needsOwner(id), r.askPending(id) || r.cardsOf(id).some(r.cardWaiting));
+});
+
+
+test("R8 hidden archived areas do not determine visible project group order", () => {
+  const old: LegacyState = { items: [
+    { id: "archived", title: "Archived A", agent: "session", group: "A", order: -9, updated: T0 },
+    { id: "z", title: "Z", agent: "session", group: "Z", order: -4, updated: T0 },
+    { id: "a", title: "A", agent: "session", group: "A", order: 1, updated: T0 },
+  ], decisions: [], notes: [], archived: { archived: { at: T1 } } };
+  assert.deepEqual(compare(old, mapBoard(old)), []);
 });

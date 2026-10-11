@@ -87,3 +87,25 @@ test("writes answer with the state they produced; refusals and context name the 
   assert.equal(prs.split("\n").filter(l => l.includes("without repository")).length, 1);
   assert.match(prs, /also a bare #341 without repository \(may be another repository's PR\) in: .*item:b/);
 });
+
+
+test("R2 R4 R5 MCP exposes transition and replacement fields and unscored confidence", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Review regression", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tools = (await client.listTools()).tools;
+  for (const name of ["parent_own_work", "source_status", "source_priority"]) assert.ok(tools.find(t => t.name === "move_item")!.inputSchema.properties?.[name]);
+  assert.ok(tools.find(t => t.name === "reply_note")!.inputSchema.properties?.replace);
+  const text = (r: Awaited<ReturnType<typeof client.callTool>>) => JSON.stringify(r.content);
+  const move = await client.callTool({ name: "move_item", arguments: { author, id: "a", new_parent: "other", parent_why: "Transfer", parent_own_work: { key: "other-own", title: "Own" } } });
+  assert.equal(move.isError, undefined, text(move));
+  const last = await client.callTool({ name: "move_item", arguments: { author, id: "b", new_parent: "other", parent_why: "Transfer", source_status: "done", source_priority: "P2" } });
+  assert.equal(last.isError, undefined, text(last));
+  const reply = await client.callTool({ name: "reply_note", arguments: { author, id: "note-2", reply: "Deliberate correction", replace: true } });
+  assert.equal(reply.isError, undefined, text(reply));
+  const card = await client.callTool({ name: "write_card", arguments: { author, key: "unscored", item: "a", question: "Q", background: "B", options: [{ key: "A", text: "A" }], confidence: { reason: "Unscored grounds" } } });
+  assert.equal(card.isError, undefined, text(card));
+  const context = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  assert.match(context, /confidence Unscored grounds/); assert.doesNotMatch(context, /undefined\/5/);
+});
