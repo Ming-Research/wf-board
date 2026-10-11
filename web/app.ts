@@ -1042,7 +1042,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     (shown ? mine : []).forEach(n => {
       const replyFresh = fon("reply") && freshReplies.includes(n);
-      const box = noteThread(n, replyFresh || fon("other") && freshNotes.includes(n), replyFresh);
+      // The owner wrote the comment, so only what a session added carries the line: a new reply marks the reply alone.
+      const box = noteThread(n, !replyFresh && fon("other") && freshNotes.includes(n), replyFresh);
       box.id = noteId(n);
       box.dataset.sel = "note:" + n.id;
       if (current === "note:" + n.id) box.classList.add("cur");

@@ -222,7 +222,8 @@ log:
   and carries no line, since `r` leaves sub-items alone. A folded item shows its head row
   alone: its body, cards and comment list fold together, and its 新 chip
   still counts what is new inside. New log entries, new notes and replies, and added dependency and link
-  rows use the same blue bar; a new reply also marks the reply itself. Note
+  rows use the same blue bar. A new reply marks the reply alone, never the
+  owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,
   unread chips and item breadcrumbs, opens the target and its comment list,
