@@ -196,12 +196,15 @@ export class Store {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !opts.init) throw error;
       entries = [];
     }
-    if (opts.init && entries.length === 0) {
+    // init starts a board in an empty directory, or in an existing git repository that has
+    // no board yet (the data repository may already hold the import's provenance files).
+    if (opts.init && !entries.includes("board.yaml")) {
+      if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
       const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
       const store = new Store(dir, initial);
-      await store.git(["init", "-b", "main"]);
+      if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
       for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
       atomicWrite(join(dir, "board.yaml"), board);
       await store.git(["add", "--", "board.yaml"]);

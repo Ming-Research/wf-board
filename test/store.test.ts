@@ -352,3 +352,21 @@ test("inHistory accepts HEAD and its ancestors only; unpushed counts commits ori
   await store.commit({ author: "a", message: "Third", puts: [put("b", item())] });
   assert.equal(await store.unpushed(), 1);
 });
+
+test("init starts a board in an existing git repository without one, and refuses a non-empty plain directory", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-existing-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await git(dir, "init", "-q", "-b", "main");
+  await mkdir(join(dir, "import"));
+  await writeFile(join(dir, "import/export.json"), "{}\n");
+  await git(dir, "add", "import");
+  await git(dir, "-c", "user.name=O", "-c", "user.email=o@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "Provenance");
+  const store = await Store.open(dir, { init: true, board: { title: "Board" } });
+  assert.equal(store.snapshot().board.title, "Board");
+  assert.equal(await git(dir, "rev-list", "--count", "HEAD"), "2");
+  assert.equal(await readFile(join(dir, "import/export.json"), "utf8"), "{}\n");
+  const plain = await mkdtemp(join(tmpdir(), "wf-board-plain-"));
+  t.after(() => rm(plain, { recursive: true, force: true }));
+  await writeFile(join(plain, "stray.txt"), "x");
+  await assert.rejects(Store.open(plain, { init: true, board: { title: "Board" } }), /neither empty nor a git repository/);
+});
