@@ -107,3 +107,44 @@ test("pieces count each new log entry, each new reply and one other change, as t
   assert.deepEqual(piecesOf({}, {}, "note", "text changed"), { log: 0, reply: 0, other: 1 }, "an edited note is a change");
   assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), { log: 0, reply: 0, other: 1 }, "a cleared reply is a change");
 });
+
+
+test("document read marks exclude only marked documents and disappear from stop counts", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  const first = await op.appendLog({ author, id: "a", text: "earlier unread item" });
+  const second = await op.appendLog({ author, id: "b", text: "selected later item" });
+  const unmarked = await unreadSteps(store, cursor);
+  const marked = await unreadSteps(store, cursor, { "item:b": second.commit });
+  assert.deepEqual(marked.map(s => s.id), [first.commit], "the later document is read without reading the earlier item");
+  assert.equal(unmarked.length, 2, "read marks do not mutate the cached unmarked steps");
+  const multi = await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", priority: "P1", parentOwnWork: { key: "a-own", title: "a own" } });
+  const partial = await unreadSteps(store, cursor, { "item:a": multi.commit });
+  assert.deepEqual(partial.find(s => s.id === multi.commit)!.docs.map(d => d.id).sort(), ["a-own", "kid"], "other documents in a shared commit remain unread");
+});
+
+test("a marked document's later same-author change starts a fresh baseline", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  const first = await op.appendLog({ author, id: "a", text: "already read" });
+  const second = await op.appendLog({ author, id: "a", text: "new after the mark" });
+  const steps = await unreadSteps(store, cursor, { "item:a": first.commit });
+  assert.deepEqual(steps[0]!.commits, [second.commit], "a mark splits consecutive changes at the read boundary");
+  assert.equal(steps[0]!.parent, first.commit);
+  assert.equal(steps[0]!.docs[0]!.pieces.log, 1, "the read log entry does not return in the count");
+  assert.equal(steps[0]!.docs[0]!.summary, "+1 log");
+});
+
+test("unread history scans stay constant as valid document marks accumulate", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  const marks: Record<string, string> = {};
+  for (const id of ["a", "b", "area"]) marks[`item:${id}`] = (await op.appendLog({ author, id, text: `read ${id}` })).commit;
+  const latest = await op.appendLog({ author, id: "a", text: "unread after marks" });
+  const log = store.log.bind(store);
+  let scans = 0;
+  t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0]) => { scans++; return log(options); });
+  await unreadSteps(store, cursor, { "item:a": marks["item:a"]! });
+  const oneMarkScans = scans; scans = 0;
+  const steps = await unreadSteps(store, cursor, marks);
+  assert.deepEqual(steps.map(step => step.id), [latest.commit]);
+  assert.equal(scans, oneMarkScans, "adding valid marks must not add history scans");
+  assert.equal(scans, 1, "one bounded commit range supplies every mark comparison");
+});

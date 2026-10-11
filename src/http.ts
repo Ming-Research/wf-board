@@ -85,9 +85,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         res.write(": connected\n\n"); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
       }
-      if (path === "/api/unread") { const cursor = store.snapshot().owner.cursor; json(res, 200, { cursor, steps: await unreadSteps(store, cursor) }); return; }
+      if (path === "/api/unread") { const { head, owner: { cursor, readMarks } } = store.snapshot(); json(res, 200, { cursor, steps: await unreadSteps(store, cursor, readMarks, head) }); return; }
       if (path === "/api/step") {
-        const step = (await unreadSteps(store, store.snapshot().owner.cursor)).find(s => s.id === url.searchParams.get("id"));
+        const { head, owner: { cursor, readMarks } } = store.snapshot();
+        const step = (await unreadSteps(store, cursor, readMarks, head)).find(s => s.id === url.searchParams.get("id"));
         const kind = url.searchParams.get("kind") ?? "", id = url.searchParams.get("doc") ?? "";
         if (!step || !step.docs.some(d => d.kind === kind && d.id === id)) throw new NotFoundError("Unknown step or document");
         json(res, 200, await stepDiff(store, step, kind, id)); return;

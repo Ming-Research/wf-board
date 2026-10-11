@@ -4,7 +4,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { board, later, author } from "./helpers.ts";
 import { rules } from "../src/rules.ts";
+import { unreadSteps } from "../src/history.ts";
+import { OwnerState } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
+import { Store } from "../src/store.ts";
 
 test("setDraft replaces and clears duplicate choices in one commit with authoritative results", async t => {
   const { store } = await board(t), own = ownerOps(store, () => later);
@@ -195,8 +198,10 @@ test("read advances monotonically; unknown, off-history and merged sibling commi
   const headTree = (await git("git", ["rev-parse", `${b.commit}^{tree}`], { cwd: dir })).stdout.trim();
   const merged = (await git("git", ["commit-tree", headTree, "-p", b.commit, "-p", sibling, "-m", "merge witness"], { cwd: dir, env })).stdout.trim();
   await git("git", ["update-ref", "HEAD", merged], { cwd: dir });
-  await assert.rejects(own.read({ through: sibling }), /advance/);
-  await own.read({ through: merged }); assert.equal(store.snapshot().owner.cursor, merged);
+  // Publish the externally constructed fixture history before reading it.
+  const reopened = await Store.open(dir), mergedOwner = ownerOps(reopened);
+  await assert.rejects(mergedOwner.read({ through: sibling }), /advance/);
+  await mergedOwner.read({ through: merged }); assert.equal(reopened.snapshot().owner.cursor, merged);
 });
 
 test("archive and cursor create no commits and ride with the next data write", async t => {
@@ -221,4 +226,133 @@ test("archive includes future item, log and reply timestamps", async t => {
   own.archive({id:"a",on:true});
   assert.equal(store.snapshot().owner.archived.a,"2030-03-01T00:00:00Z");
   assert.equal(rules(store.snapshot()).isArchived("a"),true);
+});
+
+
+test("document reads persist with the next data write and compact the completed prefix", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const a = await op.appendLog({ author, id: "a", text: "first unread" });
+  const b = await op.appendLog({ author, id: "b", text: "later selected" });
+  await own.read({ doc: "item:b" });
+  assert.equal(store.snapshot().owner.readMarks?.["item:b"], b.commit);
+  assert.equal(store.snapshot().owner.cursor, cursor, "the earlier unread item blocks compaction");
+  assert.equal(store.snapshot().head, b.commit, "a read creates no data commit");
+  let saved: unknown;
+  t.after(store.onChange(change => { saved = change.changed.find(d => d.kind === "owner")?.after; }));
+  const next = await op.appendLog({ author, id: "a", text: "next write saves the marks" });
+  assert.deepEqual((saved as {readMarks?: unknown})?.readMarks, { "item:b": b.commit });
+  await own.read({ doc: "item:a", through: a.commit });
+  assert.equal(store.snapshot().owner.cursor, b.commit, "reading the prefix advances across the later marked item");
+  assert.equal(store.snapshot().owner.readMarks, undefined, "marks covered by the cursor are removed");
+  assert.deepEqual((await unreadSteps(store, store.snapshot().owner.cursor, store.snapshot().owner.readMarks)).map(s => s.id), [next.commit], "the later unseen update remains unread");
+});
+
+test("cursor reads prune marks while invalid and backward document marks are refused", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const a = await op.appendLog({ author, id: "a", text: "earlier" });
+  const b = await op.appendLog({ author, id: "b", text: "later" });
+  await own.read({ doc: "item:b", through: b.commit });
+  const state = store.snapshot().owner;
+  assert.equal(state.readMarks?.["item:b"], b.commit, "the document mark is recorded independently of the cursor");
+  for (const input of [{}, {doc: 5}, {doc: "item:b", through: 9}, {doc: "it:b"}, {doc: "item:../b"}, {doc: "item:missing"}, {doc: "item:b", through: "f".repeat(40)}, {doc: "item:b", through: b.commit.slice(0, 8)}, {doc: "item:b", extra: true}, {doc: "item:b", through: a.commit}]) {
+    await assert.rejects(own.read(input as Parameters<typeof own.read>[0]), /document|history|commit|advance|Unrecognized/i);
+    assert.deepEqual(store.snapshot().owner, state, "rejected input leaves read state intact");
+  }
+  assert.equal(OwnerState.safeParse({archived: {}, readMarks: {"it:b": b.commit}}).success, false);
+  assert.equal(OwnerState.safeParse({archived: {}, readMarks: {"item:b": "short"}}).success, false);
+  await own.read({ through: b.commit });
+  assert.equal(store.snapshot().owner.readMarks, undefined);
+});
+
+test("document reads can name a deleted historical document", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  await op.appendLog({ author, id: "a", text: "earlier stays unread" });
+  const note = store.snapshot().notes["note-1"]!;
+  const deleted = await store.commit({ author, message: "delete historic note", deletes: [{kind: "note", id: "note-1", expectRev: note.rev}] });
+  await own.read({ doc: "note:note-1" });
+  assert.equal(store.snapshot().owner.readMarks?.["note:note-1"], deleted.commit);
+});
+
+
+test("read compaction never advances over a data change committed during its history reads", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const shown = await op.appendLog({ author, id: "b", text: "displayed document" });
+  const log = store.log.bind(store);
+  let cursorReads = 0, unseen: string | undefined;
+  t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => {
+    if (options.since === cursor && ++cursorReads === 3) {
+      unseen = (await op.appendLog({ author, id: "a", text: "arrived during compaction" })).commit;
+    }
+    return log(options);
+  });
+  await own.read({ doc: "item:b", through: shown.commit });
+  assert.ok(unseen, "the data write interleaves after unread computation and before compaction history");
+  assert.equal(store.snapshot().owner.cursor, shown.commit, "compaction stops before the unseen data write");
+  const steps = await unreadSteps(store, store.snapshot().owner.cursor, store.snapshot().owner.readMarks);
+  assert.deepEqual(steps.map(step => step.id), [unseen]);
+  assert.equal(steps[0]!.docs[0]!.id, "a");
+});
+
+test("read compaction excludes a git commit whose snapshot is not published yet", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const shown = await op.appendLog({ author, id: "b", text: "displayed document" });
+  const internals = store as unknown as { git(args: string[], author?: string): Promise<string> };
+  const git = internals.git.bind(store), log = store.log.bind(store);
+  let release!: () => void, paused!: () => void;
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  const committed = new Promise<void>(resolve => { paused = resolve; });
+  t.mock.method(internals, "git", async (args: string[], author?: string) => {
+    if (args.includes("--format=%H%x00%aI")) { paused(); await resume; }
+    return git(args, author);
+  });
+  let cursorRanges = 0, pending: ReturnType<typeof op.appendLog> | undefined, gitHead: string | undefined;
+  t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => {
+    const result = await log(options);
+    // The remaining-unread range has been read; pause a real data transaction
+    // after git commits, before Store.apply publishes its snapshot.
+    if (options.since === cursor && ++cursorRanges === 2) {
+      pending = op.appendLog({ author, id: "a", text: "committed but unpublished" });
+      await committed;
+      gitHead = (await git(["rev-parse", "HEAD"])).trim();
+      assert.notEqual(gitHead, shown.commit);
+      assert.equal(store.snapshot().head, shown.commit, "git HEAD advances before snapshot publication");
+    }
+    return result;
+  });
+  try {
+    await own.read({ doc: "item:b", through: shown.commit });
+    assert.ok(pending, "the real data transaction reached its unpublished interval");
+    assert.equal(store.snapshot().owner.cursor, shown.commit, "compaction cannot cross the captured snapshot head");
+  } finally { release(); await pending; }
+  const s = store.snapshot();
+  assert.deepEqual((await unreadSteps(store, s.owner.cursor, s.owner.readMarks)).map(step => step.id), [gitHead]);
+});
+
+test("read stops after three changing snapshots without changing owner state or blocking its queue", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const shown = await op.appendLog({ author, id: "b", text: "displayed document" });
+  const owner = store.snapshot().owner, inHistory = store.inHistory.bind(store);
+  let changes = 0;
+  const mocked = t.mock.method(store, "inHistory", async (...args: Parameters<typeof store.inHistory>) => {
+    const result = await inHistory(...args);
+    // This is the through-commit validation at the start of every attempt.
+    // Stop injecting after four so the old unbounded loop fails rather than hangs.
+    if (args[0] === shown.commit && changes < 4) {
+      changes++;
+      await op.appendLog({ author, id: "a", text: `concurrent change ${changes}` });
+    }
+    return result;
+  });
+  await assert.rejects(own.read({ doc: "item:b", through: shown.commit }), /changed.*3|3.*changed/i);
+  assert.equal(changes, 3, "the read has a fixed retry budget");
+  assert.deepEqual(store.snapshot().owner, owner, "exhausted attempts publish no read state");
+  mocked.mock.restore();
+  await own.read({ doc: "item:b", through: shown.commit });
+  assert.equal(store.snapshot().owner.cursor, shown.commit, "the next queued action can finish");
 });
