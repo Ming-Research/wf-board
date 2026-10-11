@@ -75,7 +75,7 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   assert.equal(out.current.items.snow!.priority, undefined);
   assert.equal(out.current.items.snow!.agent, "Store");
   assert.equal(out.current.items.snow!.group, "Snowghost-wf");
-  assert.equal(out.current.items.snow!.short, "Snow");
+  assert.equal("short" in out.current.items.snow!, false, "area short names are dropped");
   assert.equal(out.current.items.fold!.head, "Head wins #14");
   assert.equal(out.current.items.fold!.data, undefined);
   assert.equal(out.current.items.fold!.ask, undefined);

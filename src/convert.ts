@@ -118,7 +118,9 @@ export function convertExport(exportJson: unknown): Converted {
 
   for (const id of Object.keys(items)) rootGroup(id);
   for (const [id, raw] of Object.entries(items)) {
-    const doc: Raw = optionalFields(raw, ["title", "agent", "group", "short", "order", "status", "priority", "data", "links"]);
+    const doc: Raw = optionalFields(raw, ["title", "agent", "group", "order", "status", "priority", "data", "links"]);
+    // Area short names labelled dependency rows; the owner reads projects, not areas, so they are dropped.
+    if (raw.short !== undefined && raw.short !== "") report("Drop area short name", id);
     if (parents[id]) doc.parent = parents[id];
     if (doc.title === undefined) { doc.title = `（缺标题）${id}`; report("Fill a missing item title with a placeholder", id); }
     for (const [field, value] of Object.entries(raw)) if (value === "") report(`Drop empty item ${field}`, id);

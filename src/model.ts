@@ -55,7 +55,6 @@ export const Item = z.object({
   parent: Key.optional(),
   agent: z.string().min(1).optional(),
   group: z.string().min(1).optional(),
-  short: z.string().min(1).optional(),
   order: z.number().optional(),
   status: Status.optional(),
   priority: Priority.optional(),
