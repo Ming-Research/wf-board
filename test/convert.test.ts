@@ -86,7 +86,7 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   assert.deepEqual(out.current.items.snow!.deps, [{ id: "old", why: "子条目：Changed #3" }, { id: "fold", why: "子条目：Area child" }, { id: "empty", why: "子条目：Empty parent falls back to area" }]);
   assert.equal(out.current.items.old!.updated, "2026-10-11T03:00:00.123Z");
   assert.equal(out.current.items.old!.created, t1);
-  assert.equal(out.current.items.old!.log[0]!.by, undefined);
+  assert.equal(out.current.items.old!.log[0]!.by, "Old writer");
   assert.equal(out.current.items.archive!.updated, t3);
   assert.equal(out.current.items.readFallback!.updated, t2);
   assert.equal(out.current.items.logFallback!.updated, t2);
@@ -102,13 +102,13 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   assert.deepEqual(out.current.decisions.colon!.confidence, { score: 4, reason: "中文理由" });
   assert.equal(out.current.decisions.colon!.ruledAt, undefined);
   assert.equal(out.current.decisions.colon!.updated, t2);
-  assert.equal(out.current.decisions.shared!.confidence, undefined);
+  assert.deepEqual(out.current.decisions.shared!.confidence, { reason: "unknown" });
   assert.equal(out.current.decisions.shared!.updated, t5);
   assert.equal(out.current.decisions.legacyPlace!.item, "snow");
   assert.equal(out.current.notes.missing!.kind, "comment");
   assert.equal(out.current.notes.missing!.repliedAt, t1);
   assert.equal(out.current.notes.missing!.anchor, undefined);
-  assert.equal(out.current.notes.stale!.repliedAt, undefined);
+  assert.equal(out.current.notes.stale!.repliedAt, t4);
   assert.equal(out.current.notes.reply!.sentAt, t1);
   assert.deepEqual(out.orphans.notes, [input.notes.at(-1)]);
   assert.deepEqual(out.orphans.reads, [input.reads.at(-1)]);
@@ -119,7 +119,7 @@ test("conversion applies every cleanup, preserves prose and validates every resu
     for (const card of Object.values(state.decisions)) { Decision.parse(card); assert.equal(card.rev, 1); }
     for (const note of Object.values(state.notes)) { Note.parse(note); assert.equal(note.rev, 1); }
   }
-  for (const action of ["Fold area", "Rename text", "both head and text", "Drop empty", "Remove parent status", "Remove parent priority", "bare dependency", "decision dependency", "unfinished child", "newest log", "archive/read", "oldest log", "Normalize log", "confidence", "qs", "ruledAt", "note kind", "note title", "null note anchor", "reply time", "repliedAt without reply", "orphan notes", "orphan reads", "rev to 1"]) assert.ok(out.report.some(line => line.includes(action)), action);
+  for (const action of ["Fold area", "Rename text", "both head and text", "Drop empty", "Remove parent status", "Remove parent priority", "bare dependency", "decision dependency", "unfinished child", "newest log", "archive/read", "oldest log", "Normalize log", "confidence", "qs", "ruledAt", "note kind", "note title", "null note anchor", "reply time", "orphan notes", "orphan reads", "rev to 1"]) assert.ok(out.report.some(line => line.includes(action)), action);
   assert.ok(out.report.every(line => /: \d+ \(examples: .+\)$/.test(line)));
 });
 
@@ -130,10 +130,10 @@ test("asRead reconstructs snapshots and logs, excludes new items and removes unr
   assert.equal(out.asRead.items.old!.data, undefined);
   assert.equal(out.asRead.items.old!.status, "todo");
   assert.equal(out.asRead.items.old!.updated, t2);
-  assert.deepEqual(out.asRead.items.old!.log, [{ at: t1, text: "Old #11" }]);
+  assert.deepEqual(out.asRead.items.old!.log, [{ at: t1, by: "Old writer", text: "Old #11" }]);
   assert.equal(out.asRead.items.new, undefined);
   assert.deepEqual(out.asRead.items.fold, out.current.items.fold);
-  assert.deepEqual(out.asRead.decisions, out.current.decisions);
+  assert.deepEqual(Object.keys(out.asRead.decisions), ["card", "legacyPlace"]);
   assert.equal(out.asRead.notes.reply!.reply, undefined);
   assert.equal(out.asRead.notes.reply!.repliedAt, undefined);
   assert.equal(out.asRead.notes.reply!.repliedBy, undefined);
@@ -266,4 +266,109 @@ test("verify-import CLI accepts only synthetic input here and reports invalid in
   assert.match(result.stdout, /All preservation checks passed/);
   await writeFile(path, "{}");
   await assert.rejects(exec(process.execPath, ["scripts/verify-import.ts", path]));
+});
+
+
+test("R3 restores every snapshot field and excludes unread cards even on unchanged items", () => {
+  const input = fullFixture();
+  input.reads.find(r => r.id === "it:old")!.data.snap = { title: "Read title", head: "Read head", data: "Read data", status: "todo", priority: "P2", deps: ["shared\u0001old why\u0001suffix", "card\u0001needs ruling"], qs: [] };
+  input.items.find(r => r.id === "old")!.data.qs = ["new-card", "undated"];
+  input.decisions.push(row("new-card", { ...input.decisions[0]!.data, item: "old", status: "open", at: t3 }));
+  input.decisions.push(row("undated", { ...input.decisions[1]!.data, item: "old" }));
+  const out = convertExport(input), old = out.asRead.items.old!;
+  assert.equal(old.priority, "P2");
+  assert.deepEqual(old.deps, [{ id: "shared", why: "old why\u0001suffix" }, { card: "card", why: "needs ruling" }]);
+  assert.equal(out.asRead.decisions["new-card"], undefined);
+  assert.equal(out.asRead.decisions.undated, undefined);
+  assert.equal(out.asRead.decisions.colon, undefined, "card is later than the read even though its item is unchanged");
+  assert.equal(old.ask?.text, out.current.items.old!.ask?.text, "ask was never snapshotted");
+  assert.deepEqual(verifyConverted(input, out), []);
+});
+
+test("R5 retains authors and unscored confidence and rejects unsupported nonempty content", () => {
+  const input = fullFixture(), out = convertExport(input);
+  assert.equal(out.current.items.old!.log[0]!.by, "Old writer");
+  assert.deepEqual(out.current.decisions.shared!.confidence, { reason: "unknown" });
+  const changed = fullFixture(); changed.items[0]!.data.unsupported = "must not disappear";
+  assert.throws(() => convertExport(changed), /unsupported/);
+});
+
+test("R6 independent oracle detects corruption of every preserved output field", () => {
+  const input = fullFixture();
+  input.decisions[0]!.data.order = 7;
+  input.reads.find(r => r.id === "it:old")!.data.snap = { title: "Read", head: "Read body", data: "Read data", status: "todo", priority: "P2", deps: ["shared\u0001Read why"], qs: [] };
+  const converted = convertExport(input);
+  assert.deepEqual(verifyConverted(input, converted), []);
+  const missed: string[] = [];
+  function visit(value: unknown, path: string[]) {
+    if (value && typeof value === "object" && Object.keys(value).length) {
+      for (const [key, child] of Object.entries(value)) visit(child, [...path, key]);
+    } else {
+      const broken = structuredClone(converted);
+      let target = broken as unknown as Record<string, unknown>;
+      for (const key of path.slice(0, -1)) target = target[key] as Record<string, unknown>;
+      target[path.at(-1)!] = typeof value === "number" ? value + 1 : typeof value === "boolean" ? !value : Array.isArray(value) ? ["corruption"] : "corruption";
+      if (!verifyConverted(input, broken).length) missed.push(path.join("."));
+    }
+  }
+  for (const field of ["board", "owner", "current", "asRead"] as const) visit(converted[field], [field]);
+  assert.deepEqual(missed, []);
+});
+
+
+test("R5 unsupported nested dependency content and metadata rows cannot disappear", () => {
+  const dep = fullFixture(); dep.items[0]!.data.deps = [{ id: "card", why: "Ruling", extra: "Evidence" }];
+  assert.throws(() => convertExport(dep), /deps.extra.*unsupported/);
+  dep.items[0]!.data.deps = [{ id: "card", card: "shared", why: "Both cannot survive" }];
+  assert.throws(() => convertExport(dep), /Invalid input/);
+  const meta = fullFixture(); meta.meta.push({ id: "extra", data: { title: "Must survive" } } as typeof meta.meta[number]);
+  assert.throws(() => convertExport(meta), /additional metadata/);
+});
+
+
+test("R3 keeps unsnapshotted creation times and dates undated cards from earliest evidence", () => {
+  const input = fullFixture();
+  input.items.find(r => r.id === "old")!.data.created = t0;
+  input.reads.find(r => r.id === "it:old")!.data.snap = { title: "", text: "Old" };
+  const card = input.decisions.find(r => r.id === "shared")!.data;
+  card.item = "old"; card.updated = t4;
+  input.notes.push(row("prior-card", { target: "q:shared", kind: "comment", text: "Already existed", at: t1, state: "done" }));
+  const out = convertExport(input);
+  assert.equal(out.asRead.items.old!.created, t0);
+  assert.equal(out.asRead.items.old!.title, "（缺标题）old");
+  assert.ok(out.asRead.decisions.shared);
+  assert.deepEqual(verifyConverted(input, out), []);
+});
+
+
+test("R5 malformed nonempty transformed fields are refused instead of silently omitted", () => {
+  const cases: Array<["items" | "decisions" | "notes", string, unknown]> = [
+    ["items", "parent", 4], ["items", "area", false], ["items", "created", false], ["items", "askUrl", 42],
+    ["decisions", "item", false], ["decisions", "at", 0], ["decisions", "ruledAt", false],
+    ["notes", "sentAt", false], ["notes", "repliedAt", 0],
+  ];
+  const accepted: string[] = [];
+  for (const [collection, field, value] of cases) {
+    const input = fullFixture(); input[collection][0]!.data[field] = value;
+    try { convertExport(input); accepted.push(`${collection}.${field}`); } catch { /* refused */ }
+  }
+  assert.deepEqual(accepted, []);
+});
+
+test("R3 latest snapshots remain authoritative when an unchanged leaf acquired a new child", () => {
+  const input = fullFixture();
+  input.reads.push(row("it:halo", { at: t1, snap: { title: "Halo", head: "#16", data: "", status: "wip", priority: "P1", deps: [], qs: [] } }));
+  const out = convertExport(input);
+  assert.equal(out.current.items.halo!.status, undefined);
+  assert.equal(out.asRead.items.new, undefined);
+  assert.equal(out.asRead.items.halo!.status, "wip");
+  assert.equal(out.asRead.items.halo!.priority, "P1");
+  assert.deepEqual(out.asRead.items.halo!.deps, []);
+  assert.deepEqual(verifyConverted(input, out), []);
+  // A newer all-read has no field snapshot; it supersedes the old item snapshot.
+  input.reads.find(r => r.id === "all")!.data.at = t3;
+  const newer = convertExport(input);
+  assert.equal(newer.asRead.items.old!.title, newer.current.items.old!.title);
+  assert.equal(newer.asRead.items.old!.head, newer.current.items.old!.head);
+  assert.deepEqual(verifyConverted(input, newer), []);
 });

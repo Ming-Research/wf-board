@@ -12,7 +12,8 @@ export interface Rules {
   item(id: string): Item | undefined;
   parentOf(id: string): string | undefined;
   children(id: string): string[];
-  areas(): string[];
+  /** Filter before ranking groups, as the legacy archive controls do. */
+  areas(include?: (id: string) => boolean): string[];
   ancestors(id: string): string[];
   lineOf(id: string): string;
   groupOf(id: string): string;
@@ -26,6 +27,8 @@ export interface Rules {
   dependents(id: string): Array<{ id: string; why: string }>;
   cardDependents(key: string): Array<{ id: string; why: string }>;
   cardsOf(id: string): string[];
+  askPending(id: string): boolean;
+  cardWaiting(key: string): boolean;
   needsOwner(id: string): boolean;
   isArchived(id: string): boolean;
   inArchive(id: string): boolean;
@@ -95,12 +98,13 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
     });
   }
   function lineOf(id: string): string { return ancestors(id).at(-1) || id; }
-  function areas(): string[] {
-    return cached("areas", "", () => {
-      const list = index().children.get("") || [], groups = new Map<string, number>();
+  function areas(include?: (id: string) => boolean): string[] {
+    function ordered(): string[] {
+      const list = kids("").filter(id => !include || include(id)), groups = new Map<string, number>();
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
-      return list.slice().sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
-    });
+      return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
+    }
+    return include ? ordered() : cached("areas", "", ordered);
   }
   function statusWalk(id: string, seen: Set<string>): Status {
     const it = item(id);
@@ -157,12 +161,15 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
     });
   }
   function cardsOf(id: string): string[] { return index().cards.get(id) || []; }
+  function askPending(id: string): boolean {
+    const ask = item(id)?.ask;
+    return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && n.text === ANSWER[n.kind] + ask.text);
+  }
+  function cardWaiting(key: string): boolean {
+    return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
+  }
   function needsOwner(id: string): boolean {
-    return cached("needsOwner", id, () => {
-      const ask = item(id)?.ask;
-      if (ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && n.text === ANSWER[n.kind] + ask.text)) return true;
-      return cardsOf(id).some(key => index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft"));
-    });
+    return cached("needsOwner", id, () => askPending(id) || cardsOf(id).some(cardWaiting));
   }
   function isArchived(id: string): boolean {
     return cached("archived", id, () => {
@@ -242,7 +249,7 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
         const target = { kind: e.kind, id: e.id };
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
         else if (e.kind === "item" && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
-        else if (!e.why && !ended(id)) out.push({ text: "依赖没写为什么：", target });
+        else if (!e.why.trim() && !ended(id)) out.push({ text: "依赖没写为什么：", target });
       }
       if (cycles().has(id)) out.push({ text: "依赖成环" });
       if (!it.parent && !it.agent) out.push({ text: "顶层条目没有负责会话（agent）" });
@@ -256,14 +263,14 @@ export function rules(s: Pick<Snapshot, "items" | "decisions" | "notes" | "owner
     });
   }
   return {
-    item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: () => areas().slice(),
+    item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf: id => item(lineOf(id))?.group || "",
     agentFor: id => item(id)?.agent || item(ancestors(id).find(a => item(a)?.agent) || "")?.agent || "",
     isLeaf, statusOf, priorityOf, effectivePriorityOf, raisedBy,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), needsOwner, isArchived, inArchive, onCycle: id => cycles().has(id),
+    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, needsOwner, isArchived, inArchive, onCycle: id => cycles().has(id),
     checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
     compareSiblings: (a, b) => rankOfPriority(effectivePriorityOf(a)) - rankOfPriority(effectivePriorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };

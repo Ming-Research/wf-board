@@ -13,18 +13,19 @@ export interface Ops {
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number; agent?: string | null; short?: string | null }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
-  moveItem(a: { author: string; id: string; parent: string; parentWhy: string }): Promise<Result>;
+  moveItem(a: { author: string; id: string; parent: string; parentWhy: string; parentOwnWork?: { key: string; title: string }; sourceStatus?: Status; sourcePriority?: Priority }): Promise<Result>;
   setAsk(a: { author: string; id: string; text: string; url?: string; chat?: boolean }): Promise<Result>;
   clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
-  writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score: number; reason: string } }): Promise<Result>;
+  writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string } }): Promise<Result>;
   ruleCard(a: { author: string; key: string; choice?: string; ruling: string }): Promise<Result>;
-  replyNote(a: { author: string; id: string; reply: string }): Promise<Result>;
+  replyNote(a: { author: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
 }
 
 // Shared across Ops instances: validation and multi-document writes are one
 // operation. Store.commit still checks revisions against other store callers.
 const queues = new WeakMap<Store, Promise<unknown>>();
 function nonempty(value: unknown, path = "input"): void {
+  if (/\.deps\.\d+\.why$/.test(path)) return; // dependency reasons are checked by the shared board rules
   if (typeof value === "string" && !value.trim()) throw new OpError(`${path}: provide nonempty text after trimming`);
   if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) nonempty(child, `${path}.${key}`);
 }
@@ -46,13 +47,6 @@ function requireCard(s: Snapshot, key: string): Decision {
 function newKey(s: Snapshot, key: string): void {
   if (!Key.safeParse(key).success) throw new OpError("key: use 1–200 letters, digits, dots, underscores or hyphens, starting with a letter or digit");
   if (Object.hasOwn(s.items, key) || Object.hasOwn(s.decisions, key)) throw new OpError(`key ${key}: already used; choose a new item or decision key`);
-}
-function depsExist(s: Snapshot, deps: Dep[]): void {
-  for (const [i, dep] of deps.entries()) {
-    const exists = "id" in dep ? Object.hasOwn(s.items, dep.id) : Object.hasOwn(s.decisions, dep.card);
-    if (!exists) throw new OpError(`deps.${i}: choose an existing item (id) or decision (card)`);
-    if (!dep.why.trim()) throw new OpError(`deps.${i}.why: explain what this dependency is needed for`);
-  }
 }
 
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z")): Ops {
@@ -76,6 +70,22 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (;;) {
         const s = store.snapshot();
         const work = await make(s, now());
+        // Validate the prospective board, including indirect effects on children,
+        // dependents and items whose owner actions a card/note write changes.
+        const next = structuredClone(s);
+        for (const put of work.puts) {
+          if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
+          else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
+          else next.notes[put.id] = parse(Note, put.doc);
+        }
+        const beforeRules = rules(s), afterRules = rules(next);
+        const required = /^(卡住了，但没写在等什么|上级没有把它列在依赖里|依赖的条目不存在|依赖的决策卡不存在|依赖没写为什么)/;
+        for (const id of Object.keys(next.items)) {
+          const oldChecks = new Set(beforeRules.checks(id).map(c => JSON.stringify(c)));
+          for (const check of afterRules.checks(id)) {
+            if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}`);
+          }
+        }
         try {
           const result = await store.commit({ author: a.author, message: work.message, puts: work.puts });
           return { commit: result.commit, id: work.id, rev: result.revs[`${work.kind}:${work.id}`]!, summary: work.message };
@@ -98,6 +108,23 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   function edit(a: { author: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = ""): Promise<Result> {
     return run(a, async (s, at) => ({ id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(requireItem(s, a.id), s, at))] }), overwrite);
   }
+  function addChild(s: Snapshot, at: string, author: string, parentId: string, childId: string, why: string, ownWork: { key: string; title: string } | undefined, priority: Priority | undefined, puts: Put[]): void {
+    const parent = requireItem(s, parentId, "parent");
+    let deps = [...parent.deps.filter(d => !("id" in d && d.id === childId)), { id: childId, why }];
+    const next: Item = { ...parent, updated: at };
+    if (rules(s).isLeaf(parentId)) {
+      if (!ownWork) throw new OpError(`parentOwnWork: ${parentId} is a leaf (${parent.status ?? "todo"} ${parent.priority ?? ""}); with a first sub-item its status becomes derived. Give parentOwnWork {key, title} for a sub-item that takes over its own work, status and priority, in the same commit`);
+      newKey(s, ownWork.key);
+      if (ownWork.key === childId) throw new OpError("parentOwnWork.key: choose a key other than the new item's");
+      const own = parse(Item, { title: ownWork.title, parent: parentId, status: parent.status ?? "todo", priority: parent.priority ?? priority, created: at, updated: at, rev: 1,
+        log: [entry(author, at, `接过 ${parentId} 自己的工作（原状态 ${parent.status ?? "todo"}，优先级 ${parent.priority ?? "未设"}）。`)] });
+      puts.push({ kind: "item", id: ownWork.key, doc: own, expectRev: null });
+      deps = [...deps, { id: ownWork.key, why: "它自己的工作" }];
+      delete next.status; delete next.priority;
+      next.log = [...parent.log, entry(author, at, `加了子条目 ${childId}；自己的工作移到 ${ownWork.key}。`)];
+    } else if (ownWork) throw new OpError(`parentOwnWork: ${parentId} already has sub-items; omit parentOwnWork`);
+    puts.push(itemPut(parentId, { ...next, deps }));
+  }
   return {
     createItem: a => run(a, (s, at) => {
       newKey(s, a.key);
@@ -105,27 +132,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!a.parent && (!a.agent || !a.group)) throw new OpError("agent and group: a new area requires its responsible session and project group");
       const { author: _author, key: _key, parentWhy: _why, parentOwnWork: _own, ...fields } = a;
       const doc = parse(Item, { ...fields, status: a.status ?? "todo", created: at, updated: at, rev: 1 });
-      depsExist(s, doc.deps);
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       if (a.parent) {
-        const parent = requireItem(s, a.parent, "parent");
+        requireItem(s, a.parent, "parent");
         if (!a.parentWhy?.trim()) throw new OpError("parentWhy: explain what the parent needs this child for");
-        let deps = [...parent.deps.filter(d => !("id" in d && d.id === a.key)), { id: a.key, why: a.parentWhy }];
-        const next: Item = { ...parent, updated: at };
-        // A leaf that gets its first sub-item becomes a parent, whose status and priority
-        // are derived; its own work moves into a sub-item so nothing it said is lost.
-        if (rules(s).isLeaf(a.parent)) {
-          if (!a.parentOwnWork) throw new OpError(`parentOwnWork: ${a.parent} is a leaf (${parent.status ?? "todo"} ${parent.priority ?? ""}); with a first sub-item its status becomes derived. Give parentOwnWork {key, title} for a sub-item that takes over its own work, status and priority, in the same commit`);
-          newKey(s, a.parentOwnWork.key);
-          if (a.parentOwnWork.key === a.key) throw new OpError("parentOwnWork.key: choose a key other than the new item's");
-          const own = parse(Item, { title: a.parentOwnWork.title, parent: a.parent, status: parent.status ?? "todo", priority: parent.priority ?? a.priority, created: at, updated: at, rev: 1,
-            log: [entry(a.author, at, `接过 ${a.parent} 自己的工作（原状态 ${parent.status ?? "todo"}，优先级 ${parent.priority ?? "未设"}）。`)] });
-          puts.push({ kind: "item", id: a.parentOwnWork.key, doc: own, expectRev: null });
-          deps = [...deps, { id: a.parentOwnWork.key, why: "它自己的工作" }];
-          delete next.status; delete next.priority;
-          next.log = [...parent.log, entry(a.author, at, `加了子条目 ${a.key}；自己的工作移到 ${a.parentOwnWork.key}。`)];
-        } else if (a.parentOwnWork) throw new OpError(`parentOwnWork: ${a.parent} already has sub-items; omit parentOwnWork`);
-        puts.push(itemPut(a.parent, { ...next, deps }));
+        addChild(s, at, a.author, a.parent, a.key, a.parentWhy, a.parentOwnWork, a.priority, puts);
       }
       return { id: a.key, kind: "item", message: `create_item ${a.key}`, puts };
     }),
@@ -141,27 +152,33 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         else if (value !== undefined) Object.assign(doc, { [key]: value });
       }
       const validated = parse(Item, doc);
-      depsExist(s, validated.deps);
       if (changedHead) validated.log.push(entry(a.author, at, `改了 head：${a.reason}`));
       return validated;
     }, true),
     setStatus: a => edit(a, `set_status`, (it, s, at) => {
       const r = rules(s);
       if (!r.isLeaf(a.id)) throw new OpError(`status: ${a.id}'s status is derived from its sub-items (${r.children(a.id).sort(r.compareSiblings).map(c => `${c} ${r.statusOf(c)}`).join(", ")}); put its own work in a sub-item and set that leaf's status`);
-      if (a.status === "blocked" && !r.depsOf(a.id).some(d => d.open) && !it.ask) throw new OpError("status blocked: add at least one open dependency or an ask");
+      if (a.status === "blocked" && !r.depsOf(a.id).some(d => d.open) && !r.needsOwner(a.id)) throw new OpError(`item ${a.id}: "${r.depsOf(a.id).length ? "可解除阻塞：等的都已完成" : "卡住了，但没写在等什么"}"; status blocked: add at least one open dependency or an ask`);
       return { ...it, updated: at, status: a.status, log: [...it.log, entry(a.author, at, a.log)] };
     }, false, ` ${a.status}`),
     moveItem: a => run(a, (s, at) => {
-      const it = requireItem(s, a.id), parent = requireItem(s, a.parent, "parent");
+      const it = requireItem(s, a.id);
+      requireItem(s, a.parent, "parent");
       if (!a.parentWhy?.trim()) throw new OpError("parentWhy: explain what the new parent needs this child for");
       if (a.id === a.parent || rules(s).ancestors(a.parent).includes(a.id)) throw new OpError("parent: choose a parent other than this item or its descendants (no cycle)");
       const old = it.parent;
       const puts = [itemPut(a.id, { ...it, parent: a.parent, updated: at, log: [...it.log, entry(a.author, at, `从 ${old ?? "（顶层）"} 移到 ${a.parent}：${a.parentWhy}`)] })];
       if (old && old !== a.parent) {
         const previous = requireItem(s, old, "parent");
-        puts.push(itemPut(old, { ...previous, updated: at, deps: previous.deps.filter(d => !("id" in d && d.id === a.id)) }));
+        const next = { ...previous, updated: at, deps: previous.deps.filter(d => !("id" in d && d.id === a.id)) };
+        if (rules(s).children(old).length === 1) {
+          if (!a.sourceStatus || !a.sourcePriority) throw new OpError(`sourceStatus and sourcePriority: ${old} loses its last sub-item; specify its leaf status and priority`);
+          next.status = a.sourceStatus; next.priority = a.sourcePriority;
+          next.log = [...previous.log, entry(a.author, at, `最后一个子条目 ${a.id} 移走；恢复为叶条目，状态 ${a.sourceStatus}，优先级 ${a.sourcePriority}。`)];
+        }
+        puts.push(itemPut(old, next));
       }
-      puts.push(itemPut(a.parent, { ...parent, updated: at, deps: [...parent.deps.filter(d => !("id" in d && d.id === a.id)), { id: a.id, why: a.parentWhy }] }));
+      addChild(s, at, a.author, a.parent, a.id, a.parentWhy, a.parentOwnWork, it.priority, puts);
       return { id: a.id, kind: "item", message: `move_item ${a.id}`, puts };
     }),
     setAsk: a => edit(a, "set_ask", (it, _s, at) => ({ ...it, updated: at, ask: { text: a.text, ...(a.url !== undefined ? { url: a.url } : {}), ...(a.chat !== undefined ? { chat: a.chat } : {}) } })),
@@ -194,6 +211,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     replyNote: a => run(a, (s, at) => {
       const note = Object.hasOwn(s.notes, a.id) ? s.notes[a.id] : undefined;
       if (!note) throw new OpError(`id ${a.id}: choose an existing note`);
+      if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
     }),

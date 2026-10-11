@@ -298,6 +298,10 @@ export class Store {
       const path = docPath(put.kind, put.id);
       const records = next[collections[put.kind]] as Record<string, Doc>;
       const before = Object.hasOwn(records, put.id) ? records[put.id]! : null;
+      // Check before any filesystem mutation, including earlier puts in this
+      // transaction: these names alias on the owner's case-insensitive volume.
+      const alias = Object.keys(records).find(id => id !== put.id && id.toLowerCase() === put.id.toLowerCase());
+      if (alias) throw new ValidationError([{ path, issues: `ID ${put.id} conflicts with ${alias} (letter case only)` }]);
       try {
         const input = typeof put.doc === "object" && put.doc !== null && !Array.isArray(put.doc) ? put.doc : {};
         const after = validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path);
