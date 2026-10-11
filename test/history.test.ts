@@ -65,6 +65,21 @@ test("unread steps are reused until HEAD or the cursor moves", async t => {
   assert.equal(moved[0]!.parent, cursor, "a step's before state is the commit preceding it");
 });
 
+test("a new commit reads only the documents of the step it creates or extends", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  await op.appendLog({ author, id: "a", text: "one" });
+  await op.appendLog({ author, id: "b", text: "two" });
+  await unreadSteps(store, cursor);
+  const shown: string[] = [];
+  const show = store.show.bind(store);
+  t.mock.method(store, "show", (kind: Parameters<typeof store.show>[0], id: string, at: string) => { shown.push(kind + ":" + id); return show(kind, id, at); });
+  await op.appendLog({ author, id: "a", text: "three" });
+  const steps = await unreadSteps(store, cursor);
+  assert.equal(steps.length, 3);
+  assert.deepEqual([...new Set(shown)], ["item:a"], "earlier steps come from the cache: " + shown.join(" "));
+  assert.equal(steps[0]!.docs[0]!.pieces.log, 1, "cached steps keep their counts");
+});
+
 test("a status that became derived and changes the owner cannot see are not unread", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", priority: "P1", parentOwnWork: { key: "a-own", title: "a own" } });
