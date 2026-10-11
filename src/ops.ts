@@ -19,7 +19,6 @@ export interface Ops {
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; parent: string; parentWhy: string; parentOwnWork?: { key: string; title: string }; sourceStatus?: Status; sourcePriority?: Priority }): Promise<Result>;
-  setAsk(a: { author: string; id: string; text: string; url?: string; chat?: boolean }): Promise<Result>;
   clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string } }): Promise<Result>;
   ruleCard(a: { author: string; key: string; choice?: string; ruling: string }): Promise<Result>;
@@ -277,7 +276,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       addChild(s, at, a.author, a.parent, a.id, a.parentWhy, a.parentOwnWork, it.priority, puts);
       return { id: a.id, kind: "item", message: `move_item ${a.id}`, puts };
     }),
-    setAsk: a => edit(a, "set_ask", (it, _s, at) => ({ ...it, updated: at, ask: { text: a.text, ...(a.url !== undefined ? { url: a.url } : {}), ...(a.chat !== undefined ? { chat: a.chat } : {}) } })),
     clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       delete doc.ask;
