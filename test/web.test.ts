@@ -43,7 +43,7 @@ class Element {
   getBoundingClientRect() { return this.geometry?.() ?? { left: 0, width: 900, height: 100, top: 50, bottom: 150 }; }
   matches(selector: string):boolean { return selector.split(/,\s*/).some(s=> {
     const parts=s.trim().split(/\s+/), last=parts.pop()!;
-    const own=last.startsWith(".") ? last.slice(1).split(".").every(c=>this.className.split(" ").includes(c)) : last.startsWith("#") ? this.id === last.slice(1) : /^[\w-]+(?:\.[\w-]+)*$/.test(last) && this.tagName === last.split(".")[0]!.toUpperCase() && last.split(".").slice(1).every(c=>this.className.split(" ").includes(c));
+    const own=last === "[data-sel]" ? this.dataset.sel !== undefined : last.startsWith(".") ? last.slice(1).split(".").every(c=>this.className.split(" ").includes(c)) : last.startsWith("#") ? this.id === last.slice(1) : /^[\w-]+(?:\.[\w-]+)*$/.test(last) && this.tagName === last.split(".")[0]!.toUpperCase() && last.split(".").slice(1).every(c=>this.className.split(" ").includes(c));
     return own && (!parts.length || !!this.parentElement?.closest(parts.join(" ")));
   }); }
   closest(selector: string): Element | null { return this.matches(selector.replace("#areas ", "")) ? this : this.parentElement?.closest(selector) ?? null; }
@@ -90,7 +90,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     },
     querySelector: (selector: string) => selector === ".wrap" ? wrap : selector === "header.top" ? header : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
     querySelectorAll: (selector:string) => all().filter(e=>e.matches(selector)), elementFromPoint: () => options.pointId ? all().find(e=>e.id === options.pointId) ?? null : null,
-    addEventListener: (kind: string, fn: (event: unknown) => unknown,opts?:{capture?:boolean}) => listeners.set(kind,[...listeners.get(kind) ?? [],{fn,capture:!!opts?.capture}]),
+    addEventListener: (kind: string, fn: (event: unknown) => unknown,opts?:boolean | {capture?:boolean}) => listeners.set(kind,[...listeners.get(kind) ?? [],{fn,capture:typeof opts === "boolean" ? opts : !!opts?.capture}]),
   };
   const sources: EventSource[] = [];
   class EventSource {
@@ -1210,4 +1210,50 @@ test("scoped card order updates reorder its region and preserve other card eleme
   const p=await page(s,[],null,undefined,{frames}); await expand(p); const peer=p.all().find(e=>e.id === "q-other")!, third=p.all().find(e=>e.id === "q-third")!;
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,order:4,rev:2}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>["q-q","q-other","q-third"].includes(e.id)).map(e=>e.id),["q-other","q-third","q-q"]); assert.ok(p.all().find(e=>e.id === "q-other") === peer); assert.ok(p.all().find(e=>e.id === "q-third") === third);
+});
+
+test("held unread and loose addition coalesce without suppressing hosted card membership", async t => {
+  for (const kind of ["note","decision"]) await t.test(kind,async()=> {
+    const s=snapshot(), frames=new Frames(), held=deferred<FakeResponse>(), baseline=deferred<unknown>();
+    s.decisions.q={...card(),status:"ruled",ruling:"A"}; s.decisions.peer=card();
+    s.notes.n={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2};
+    let hold=false;
+    const p=await page(s,[],()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" && hold ? held.promise : undefined}); await expand(p); await p.flush();
+    const peer=p.all().find(e=>e.id === "q-peer")!; assert.ok(peer); assert.ok(!p.all().some(e=>e.id === "q-q"));
+    hold=true; p.emit("b".repeat(40)); frames.flush(); await settle();
+    held.resolve(reply({steps:unread(kind,kind === "note" ? "n" : "q")})); await settle();
+    p.emit("c".repeat(40),[{kind:"decision",id:"loose",after:{...card(),item:"absent"}}]);
+    const count=p.renders.length; frames.flush(); await settle();
+    assert.equal(p.renders.length-count,1);
+    assert.deepEqual([...p.renders.at(-1) as Set<string>].sort(),["cards","card:loose",kind === "note" ? "notes:q:q" : "card:q"].sort(),"the held unread result and loose addition share precisely the affected scopes");
+    assert.ok(p.all().some(e=>e.id === "q-loose"));
+    assert.ok(p.all().some(e=>e.id === "q-q"),"loose-card rendering must not suppress hosted membership reconciliation");
+    assert.ok(p.all().find(e=>e.id === "q-peer") === peer,"the hosted peer is untouched");
+  });
+});
+
+test("dependency Back reacquires selects and scrolls its row after an owner rerender", async () => {
+  const s=snapshot(), frames=new Frames(), baseline=deferred<unknown>(); let fresh:unknown[]=[]; let p!:Awaited<ReturnType<typeof page>>;
+  p=await page(s,fresh,()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,geometry:e=>({top:(e.dataset.sel === "dep:area@child" ? 600 : e.id === "it-child" ? 1800 : 0)-(p?.scrollY ?? 0),height:e.dataset.sel === "dep:area@child" ? 80 : e.id === "it-child" ? 400 : 2400})});
+  await expand(p,"area"); await p.flush();
+  const from=p.all().find(e=>e.dataset.sel === "dep:area@child")!; assert.ok(from.matches("[data-sel]"),"capture click selects the actual dependency row");
+  await from.click(); await p.flush(); assert.ok(item(p).className.includes("cur"));
+  fresh=unread("item","area"); p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"New parent prose",rev:2}}]); await p.flush();
+  const replacement=p.all().find(e=>e.dataset.sel === "dep:area@child")!; assert.ok(replacement !== from);
+  const scrolls=p.scrolls.length; await button(p,"← 返回").click(); await p.flush(); assert.equal(p.scrolls.length,scrolls,"return waits for the enclosing item baseline");
+  baseline.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush();
+  const returned=p.all().find(e=>e.dataset.sel === "dep:area@child")!;
+  assert.ok(returned.className.includes("cur"),"Back selects the dependency row rather than its enclosing item");
+  assert.ok(!item(p,"area").className.includes("cur")); assert.ok(p.scrolls.length>scrolls);
+  assert.ok(returned.getBoundingClientRect().top >= 54 && returned.getBoundingClientRect().bottom <= 992,"the row lands in the viewport");
+  assert.ok(p.measurements.some(m=>m.id === returned.id && m.height === 80),"scroll geometry comes from the dependency row");
+});
+
+test("loose-card scope does not suppress a coalesced item-note update", async () => {
+  const s=snapshot(), frames=new Frames(); s.notes.n={target:"it:child",kind:"comment",text:"Original comment",at,state:"sent",rev:1};
+  const p=await page(s,[],null,undefined,{frames,notesOpen:{"it:child":true}}); await expand(p); await p.flush();
+  p.emit("b".repeat(40),[{kind:"note",id:"n",after:{...s.notes.n!,text:"Updated comment",rev:2}},{kind:"decision",id:"loose",after:{...card(),item:"absent"}}]);
+  frames.flush(); await settle();
+  assert.deepEqual([...p.renders.at(-1) as Set<string>].sort(),["cards","card:loose","notes:it:child"].sort());
+  assert.match(markup(item(p)),/Updated comment/); assert.ok(p.all().some(e=>e.id === "q-loose"));
 });
