@@ -330,9 +330,8 @@ priority, and outstanding work requested from other projects. That outgoing
 list includes open requests by the project's agents and open items targeted
 by its items' cross-project dependencies, so triage does not hide linked work.
 Work queues omit archived items. The page shows agents once on each project
-heading, an inbox above its areas, and a small inline owner request form.
-The form posts to `/api/requests`; the server creates an owner-authored request
-with a random `req-` key, using the submitted text as both head and reason.
+heading and an inbox above its areas. Requests come from sessions; the owner
+asks for work through notes and the coordinator, so the page files none.
 
 Keys bear on it. The rule that every key starts with its session's prefix
 exists so that sessions writing one database never collide. The server now

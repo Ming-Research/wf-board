@@ -2,11 +2,9 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { z } from "zod";
-import { Priority } from "./model.ts";
 import type { Item, Note } from "./model.ts";
 import { rules } from "./rules.ts";
-import { randomInt, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -96,15 +94,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       }
     }
     if (method === "POST") {
-      if (path === "/api/requests") {
-        const parsed = z.object({project:z.string().min(1),title:z.string().min(1),text:z.string().min(1),priority:Priority}).strict().safeParse(await body(req));
-        if (!parsed.success) throw new OpError(parsed.error.message);
-        const a = parsed.data;
-        let key: string;
-        do { key = "req-" + Array.from({length:10}, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(store.snapshot().items,key) || Object.hasOwn(store.snapshot().decisions,key));
-        const result = await deps.ops.createRequest({author:"owner",project:a.project,key,title:a.title,head:a.text,priority:a.priority,why:a.text});
-        json(res,200,{id:result.id}); return;
-      }
       if (path === "/api/notes") { const result = await ownerOps.createNote(args(await body(req))); json(res, 200, { id: result.id }); return; }
       if (path === "/api/send") {
         const result = await ownerOps.send();

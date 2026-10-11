@@ -1120,34 +1120,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     tops().forEach(t => { const name = t.group || ""; let group = groups.find(g => g.name === name); if (!group) { group = {name,items:[]}; groups.push(group); } group.items.push(t); });
     return groups;
   }
-  const requestDrafts = new Map<string, {title:string;text:string;priority:string;sending:boolean}>();
-  function requestForm(project: string) {
-    const draft = requestDrafts.get(project)!;
-    const form = el("div", "request-form");
-    const title = el("input"); title.id = "request-title-" + project; title.value = draft.title; title.placeholder = "标题"; title.setAttribute("aria-label", "需求标题");
-    const text = el("textarea"); text.value = draft.text; text.placeholder = "需求内容"; text.setAttribute("aria-label", "需求内容"); text.id = "request-text-" + project;
-    const priority = el("select"); priority.setAttribute("aria-label", "优先级");
-    for (const p of ["P0","P1","P2"]) { const option = el("option", null, p); option.value = p; priority.appendChild(option); }
-    priority.value = draft.priority;
-    title.addEventListener("input", () => { draft.title = title.value; });
-    text.addEventListener("input", () => { draft.text = text.value; });
-    priority.addEventListener("input", () => { draft.priority = priority.value; });
-    const submit = el("button", "sendbtn", draft.sending ? "提交中…" : "提交"); submit.type = "button"; submit.disabled = draft.sending;
-    submit.addEventListener("click", async () => {
-      if (draft.sending) return;
-      if (!draft.title.trim() || !draft.text.trim()) { showError(new Error("请填写标题和需求内容。")); return; }
-      draft.sending = true; submit.disabled = true;
-      try {
-        await api("/api/requests", {project,title:draft.title,text:draft.text,priority:draft.priority});
-        requestDrafts.delete(project); renderAreas();
-      } catch (e) { showError(e); }
-      finally { draft.sending = false; renderAreas(); }
-    });
-    const cancel = el("button", "topbtn", "取消"); cancel.type = "button"; cancel.disabled = draft.sending;
-    cancel.addEventListener("click", () => { if (!draft.sending) { requestDrafts.delete(project); renderAreas(); } });
-    form.appendChild(title); form.appendChild(text); form.appendChild(priority); form.appendChild(submit); form.appendChild(cancel);
-    return form;
-  }
   function renderAreas() {
     const root = get("areas");
     const nav = get("nav");
@@ -1164,16 +1136,10 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       const gh = el("h2", "group-head", inline(g.name || "其他"));
       const project = snapshot.board.projects.find(p => p.name === g.name);
       gh.appendChild(el("span", "project-agents", "负责：" + esc(project?.agents.join("、") || "未指定")));
-      if (project) {
-        const request = el("button", "topbtn", "提需求"); request.type = "button";
-        request.addEventListener("click", () => { if (!requestDrafts.has(g.name)) requestDrafts.set(g.name,{title:"",text:"",priority:"P1",sending:false}); renderAreas(); });
-        gh.appendChild(request);
-      }
       const xs = crossSummary(g.name);
       if (xs) { const x = el("button", "xdeps", esc(xs)); x.type = "button"; x.title = "只看跨项目依赖"; x.addEventListener("click", () => setDepFilter(g.name, "cross")); gh.appendChild(x); }
       box.appendChild(gh);
       const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl);
-      if (requestDrafts.has(g.name)) box.appendChild(requestForm(g.name));
       const requests = derived.inbox(g.name);
       if (requests.length) {
         const inbox = el("section", "inbox"); inbox.appendChild(el("h3", null, "收件箱 " + requests.length));
