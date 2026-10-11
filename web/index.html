@@ -144,6 +144,9 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .item.todo { --bar: var(--bar-todo); }
 .item.cancelled { --bar: var(--bar-cancel); }
 .item.blocked { --bar: var(--bar-block); }
+/* An item already has a status bar on its left edge; a gap keeps the blue bar from merging into it. */
+.item.fresh { box-shadow: inset 3px 0 0 var(--surface), inset 6px 0 0 var(--fresh); }
+.item.fresh.cur { box-shadow: inset 3px 0 0 var(--cur), inset 6px 0 0 var(--fresh); }
 .item.cancelled .item-title { color: var(--muted); text-decoration: line-through; font-weight: 500; }
 .item.done .item-title { color: var(--muted); }
 .archive { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; border-top: 1px dashed var(--rule); }
