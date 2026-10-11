@@ -219,14 +219,18 @@ log:
   green, without per-block marks. An item or card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. A folded item shows its head row
-  alone: its body, cards and comment list fold together, and its 新 chip
-  still counts what is new inside. New log entries, new notes and replies, and added dependency and link
+  and carries no line, since `r` leaves sub-items alone. On narrow windows a
+  folded item shows its head row alone: its body, cards and comment list fold
+  together. On wide windows the tree always shows only head rows, with a short
+  blue line for an item's own unread content; the selected item's body and
+  comments appear in the detail column, with the full body line. In both
+  layouts the 新 chip still counts what is new inside. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar. A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,
-  unread chips and item breadcrumbs, opens the target and its comment list,
+  unread chips and item breadcrumbs, reveals the target and its comment list
+  (in the selected item's detail column on wide windows),
   waits for the baselines affecting that target and its expanded containers,
   then scrolls after rendering. Baselines for unrelated collapsed items or
   explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
@@ -298,6 +302,39 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
+At viewport widths of at least 1000 CSS pixels, selected through `matchMedia`,
+the page has two columns. The left column contains the header, summary and
+navigation, crumbs, project groups and filters, and the nested item tree.
+Each item shows only its head row: fold toggle, status, priority, title, tags,
+新 chip, 等 count and leaf counts. Clicking the row selects the item and
+highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
+sub-items. The separate decisions section and send box remain available.
+
+The right column is sticky, fills the viewport height and scrolls independently.
+It shows the selected item's head row with the same marks and chip, followed
+by 被依赖, head text, data, 依赖, log, ask, open cards, shown ruled cards,
+checks and refs, then the item's comment list. The same detail builder renders
+this content inline on narrow windows. With no selection the column says
+“点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
+replies retain their meanings. Selection inside the detail column retains
+the existing item, log, dependency, card and note selection keys and actions.
+The selected item is saved per viewer in browser localStorage and restored
+when it still exists; unavailable storage does not prevent using the page.
+
+Below 1000 CSS pixels the page keeps inline bodies: a head click opens or
+folds both its body and sub-items. Width changes switch layouts immediately.
+No keyboard bindings change: Enter on a focused head selects its item in the
+wide layout, and opens or folds it in the narrow layout; j/k move focus as
+before. Actions use the current selection on wide windows, falling
+back to the selected item or the top visible tree row.
+
+On wide windows, `n`, `N` and 新 chips select the stop's item, unfold its
+ancestors and bring its tree row into view, then scroll the right column to
+the exact fresh mark, card or note. A card held by no item keeps its existing
+navigation behavior in the separate decisions section. Dependency links,
+Backspace/`[` and the 等你处理 下一条 walk also select their target item and
+show its detail. Tree folding and detail selection are independent.
+
 `r` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
 The same selection works after the 等你处理 下一条 walk, a click, `n`, a 新
@@ -331,6 +368,9 @@ stream cannot leave navigation waiting indefinitely. Changes arriving before
 that callback share one render. Note
 changes update their item or card, and an item or card change updates its
 affected subtree and summaries; unrelated cards keep their DOM elements.
+On wide windows these same scoped render paths update the selected item's
+detail in place and preserve its scroll position. Unrelated changes do not
+rebuild the detail column.
 Scoped card updates also reconcile membership and order: an unread reply can
 reveal a ruled card, and clearing unread state hides a card that was open only
 by that default. Explicit owner choices to open or fold it remain in effect.

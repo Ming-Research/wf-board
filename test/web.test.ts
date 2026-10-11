@@ -36,7 +36,11 @@ class Element {
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   captureClick?:(at:{clientX:number;clientY:number})=>boolean;
   // A click at a point; a document capture listener that stops propagation keeps it from the element, as in a browser.
-  async click(at={clientX:0,clientY:0}) { if (this.captureClick?.(at) === false) return; for (const fn of this.handlers.get("click") ?? []) await fn({ ...at, stopPropagation() {}, preventDefault() {} }); }
+  async click(at={clientX:0,clientY:0}) { if (this.captureClick?.(at) === false) return; let stopped=false; const event={ ...at, target:this, stopPropagation() { stopped=true; }, preventDefault() {} }; for (let e:Element|null=this;e;e=this.bubbleClick && !stopped ? e.parentElement : null) for (const fn of e.handlers.get("click") ?? []) await fn(event); }
+  scrollTop = 0; clientHeight = 1000; scrollHeight = 10000;
+  scrollTo(_x: number | {top?:number}, y?: number) { this.scrollTop = Math.max(0, Math.min(this.scrollHeight-this.clientHeight, typeof _x === "object" ? _x.top ?? 0 : y ?? 0)); }
+  scrollBy(_x: number, y: number) { this.scrollTo(0,this.scrollTop+y); }
+  bubbleClick = false;
   selectionStart = 0; selectionEnd = 0;
   focus() { focused.current = this; } blur() { if (focused.current === this) focused.current = null; } scrollIntoView() {}
   setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
@@ -48,7 +52,16 @@ class Element {
     return own && (!parts.length || !!this.parentElement?.closest(parts.join(" ")));
   }); }
   closest(selector: string): Element | null { return this.matches(selector.replace("#areas ", "")) ? this : this.parentElement?.closest(selector) ?? null; }
-  querySelector(selector: string):Element|null { const children=selector.startsWith(":scope > ") ? this.children : this.children.flatMap(descendants); const match=children.find(e=>e.matches(selector.replace(":scope > ",""))); if(match) return match; if (selector === ".t") { const e = new Element("span"); e.className = "t"; return this.appendChild(e); } return null; }
+  querySelector(selector: string):Element|null {
+    // Follow each direct-child step, as focused-head lookup uses a two-step scoped selector.
+    let candidates:Element[];
+    if (selector.startsWith(":scope > ")) {
+      candidates=[this];
+      for (const part of selector.slice(9).split(/\s*>\s*/)) candidates=candidates.flatMap(e=>e.children).filter(e=>e.matches(part));
+    } else candidates=this.children.flatMap(descendants).filter(e=>e.matches(selector));
+    const match=candidates[0]; if(match) return match;
+    if (selector === ".t") { const e = new Element("span"); e.className = "t"; return this.appendChild(e); } return null;
+  }
   querySelectorAll(selector:string):Element[] { return this.children.flatMap(descendants).filter(e=>e.matches(selector)); }
   contains(e:Element):boolean { return e === this || this.children.some(c=>c.contains(e)); }
   get innerHTML() { return this.html; }
@@ -59,6 +72,7 @@ class Element {
 let bundle: Promise<string> | undefined;
 interface FakeResponse { ok:boolean; status:number; json: () => Promise<unknown> }
 interface PageOptions {
+  wide?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   notesOpen?: Record<string,boolean>; geometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   transform?: (code:string) => string;
   frames?: Frames;
@@ -68,7 +82,11 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
+  detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
+  let wide=options.wide ?? false;
+  const widthListeners: Array<(event:{matches:boolean})=>unknown> = [];
   const body = new Element("body"), wrap = new Element("div"), header = new Element("header");
   if (options.pointId) header.geometry=()=>({top:-200,bottom:-100,height:100,left:0,width:900});
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
@@ -86,8 +104,9 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     createTextNode: (text:string) => { const e=new Element("#text"); e.textContent=text; return e; },
     createElement: (tag: string) => {
       const e = new Element(tag);
+      e.bubbleClick=!!options.wide;
       e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,stopPropagation() { go=false; },preventDefault() {}},true); return go; };
-      if (options.geometry) e.geometry = () => { const r = options.geometry!(e,all); measurements.push({id:e.id,...r}); return {...r,bottom:r.top+r.height,left:0,width:900}; };
+      if (options.geometry || options.detailGeometry || options.wide) e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
       return e;
     },
     querySelector: (selector: string) => selector === ".wrap" ? wrap : selector === "header.top" ? header : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
@@ -106,8 +125,8 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
-    innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null, setItem() {} },
-    matchMedia: () => ({ matches: options.reducedMotion !== false }), getComputedStyle: () => ({ scrollMarginTop: "0" }),
+    innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null), setItem(key:string,value:string) { storage.set(key,value); } },
+    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 1000px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }}, getComputedStyle: () => ({ scrollMarginTop: "0" }),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
@@ -157,9 +176,11 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   // A live update from the server, as the page's event stream delivers it.
   const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
-  return { roots, all, calls, document, change, emit, measurements, scrolls, sources, renders,flush, get scrollY() { return scrollPosition; },
+  return { roots, all, calls, document, change, emit, measurements, scrolls, sources, renders,flush, storage,
+    setWide:async(value:boolean)=> { wide=value; widthListeners.forEach(fn=>fn({matches:wide})); await flush(); },
+    get scrollY() { return scrollPosition; },
     user:(kind:string)=> { if (kind === "scroll") scrollPosition+=100; dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
-    key: (key: string) => dispatch("keydown",{key,isTrusted:true,target:new Element("div"),preventDefault(){}}),
+    key: (key: string,target:Element=new Element("div")) => { let prevented=false; dispatch("keydown",{key,isTrusted:true,target,preventDefault(){prevented=true;}}); return prevented; },
     // The reader presses the mouse at a point, leaving text selected or not when the button is released.
     press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
 }
@@ -1495,4 +1516,220 @@ test("r follows a dependency-selected card instead of the document previously sh
     return failure.code === "ERR_ASSERTION" && failure.actual?.length === 0 && failure.expected?.length === 1;
   });
   assert.ok(mutated,"restoring the old shownFresh selection restriction must make the document read disappear");
+});
+
+function wideHead(p: Awaited<ReturnType<typeof page>>, id="area") { return item(p,id).querySelector(".item-head")!; }
+function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return item(p,id).querySelector(".caret")!; }
+function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
+async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
+
+test("wide head click selects detail without changing the sub-item fold", async () => {
+  const s=snapshot(); s.items.area!.head="Parent detail";
+  const p=await page(s,[],null,undefined,{wide:true});
+  assert.ok(!item(p,"child"),"the parent initially folds its sub-items");
+  await selectWide(p);
+  assert.ok(!item(p,"child"),"selecting a head leaves sub-items folded");
+  assert.ok(item(p,"area").className.includes("cur"),"the selected tree row is highlighted");
+  assert.match(markup(detailItem(p)!),/Parent detail/);
+  await selectWide(p);
+  assert.ok(detailItem(p),"clicking the selected head keeps its detail visible");
+});
+
+test("wide caret folds sub-items only and preserves the selected detail", async () => {
+  const s=snapshot(); s.items.area!.head="Parent detail";
+  const p=await page(s,[],null,undefined,{wide:true});
+  await wideCaret(p).click(); await p.flush();
+  assert.ok(item(p,"child"),"the caret unfolds sub-items");
+  assert.ok(!item(p,"area").querySelector(".body"),"unfolding never puts a body in the tree");
+  assert.ok(!detailItem(p),"a caret does not select an item");
+  await selectWide(p,"child"); const selected=detailItem(p,"child");
+  await wideCaret(p).click(); await p.flush();
+  assert.ok(!item(p,"child"),"the caret folds sub-items");
+  assert.equal(detailItem(p,"child"),selected,"folding an ancestor leaves its selected child's detail alone");
+});
+
+test("wide detail owns the selected body cards comments and unique DOM ids", async () => {
+  const s=snapshot(); s.items.child!.head="Selected body"; s.decisions.q=card();
+  s.notes.n={target:"it:child",kind:"comment",text:"Selected comment",at,state:"sent",rev:1};
+  const p=await page(s,[],null,undefined,{wide:true,notesOpen:{"it:child":true}});
+  await wideCaret(p).click(); await p.flush(); await selectWide(p,"child");
+  const d=detailItem(p,"child"); assert.ok(d,"selected item has a detail wrapper");
+  assert.match(markup(d),/Selected body/); assert.match(markup(d),/如何显示/); assert.match(markup(d),/Selected comment/);
+  const tree=p.roots.get("areas")!;
+  assert.equal(tree.querySelectorAll(".body, .card, .notes").length,0,"the tree contains head rows only");
+  assert.equal(p.all().filter(e=>e.id === "q-q").length,1); assert.equal(p.all().filter(e=>e.id === "note-n").length,1);
+  const ids=p.all().map(e=>e.id).filter(Boolean); assert.equal(new Set(ids).size,ids.length,"tree and detail use unique ids");
+});
+
+test("wide n selects the stop's item and scrolls the right pane to its first fresh mark", async () => {
+  const s=snapshot(), before={...s.items.child!,log:[]}; s.items.child!.log=[{at,text:"Fresh entry"}];
+  const p=await page(s,unread(),before,undefined,{wide:true,detailGeometry:e=>({top:e.className.includes("log-entry") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+  p.key("n"); await p.flush();
+  assert.ok(detailItem(p,"child"),"n selects the item in the detail pane");
+  assert.ok(item(p,"child").className.includes("cur"),"n unfolds ancestors and highlights the target tree row");
+  assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"fresh mark navigation uses the independently scrolled pane");
+  assert.ok(p.measurements.some(m=>m.id === "log-child-0" && m.top>1000),"the fresh log entry supplies the landing geometry");
+  const landed=p.document.getElementById("log-child-0")!.getBoundingClientRect();
+  assert.ok(landed.top>=0 && landed.bottom<=p.roots.get("item-detail")!.clientHeight,"the first fresh mark lands inside the right pane viewport");
+  assert.ok(p.scrollY<1000,"the detail's distant mark does not scroll the tree to that offset");
+});
+
+test("wide r on a selected detail log entry reads its item and leaves sub-items unread", async () => {
+  const s=snapshot(); s.items.area!.log=[{at,text:"Parent fresh log"}];
+  const p=await page(s,[...unread("item","area"),...unread()],null,undefined,{wide:true});
+  await selectWide(p);
+  const log=detailItem(p)?.querySelector(".log-entry"); assert.ok(log,"the log entry is in the selected detail");
+  await log.click(); p.key("r"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}]);
+  await wideCaret(p).click(); await p.flush();
+  assert.ok(item(p,"child").className.includes("fresh"),"r leaves the child's own new content unread");
+});
+
+test("wide selected-item live update rerenders its detail and keeps the independent scroll", async () => {
+  const s=snapshot(), frames=new Frames(); s.items.area!.head="Old detail";
+  const p=await page(s,[],null,undefined,{wide:true,frames}); await selectWide(p);
+  const old=detailItem(p); assert.ok(old,"selected detail is rendered before the update");
+  const pane=p.roots.get("item-detail")!; pane.scrollTop=425;
+  p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Updated detail"}}]); await p.flush();
+  assert.notEqual(detailItem(p),old,"selected prose update replaces the detail body");
+  assert.match(markup(detailItem(p)!),/Updated detail/); assert.equal(pane.scrollTop,425);
+  assert.equal(item(p,"area").querySelectorAll(".body").length,0);
+});
+
+test("wide unrelated-item live update preserves the selected detail DOM identity", async () => {
+  const s=snapshot(), frames=new Frames(); s.items.area!.head="Selected detail";
+  const p=await page(s,[],null,undefined,{wide:true,frames}); await selectWide(p);
+  const old=detailItem(p); assert.ok(old,"selected detail is rendered before an unrelated update");
+  p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Other detail"}}]); await p.flush();
+  assert.equal(detailItem(p),old,"an unrelated update never rebuilds the selected detail");
+});
+
+test("wide-to-narrow width change restores inline bodies and narrow head toggling", async () => {
+  const s=snapshot(); s.items.area!.head="Parent detail";
+  const p=await page(s,[],null,undefined,{wide:true});
+  await wideCaret(p).click(); await p.flush(); await selectWide(p);
+  assert.ok(detailItem(p),"wide selection renders a detail");
+  await p.setWide(false);
+  assert.match(markup(item(p,"area")),/Parent detail/); assert.ok(item(p,"area").querySelector(".body"));
+  assert.ok(!detailItem(p),"narrow mode removes the separate detail item");
+  await wideHead(p).click(); await p.flush();
+  assert.equal(item(p,"area").querySelector(".body"),null,"a narrow head closes its inline body");
+  assert.ok(!item(p,"child"),"the narrow head closes sub-items with the body");
+});
+
+test("wide selected item survives reload through per-viewer localStorage", async () => {
+  const storage=new Map<string,string>(), s=snapshot(); s.items.child!.head="Restored detail";
+  const first=await page(s,[],null,undefined,{wide:true,storage});
+  await wideCaret(first).click(); await first.flush(); await selectWide(first,"child");
+  const reloaded=await page(s,[],null,undefined,{wide:true,storage});
+  const d=detailItem(reloaded,"child"); assert.ok(d,"a fresh page restores the last selected item");
+  assert.match(markup(d),/Restored detail/); assert.ok(item(reloaded,"child").className.includes("cur"));
+  const missing=snapshot(); delete missing.items.child;
+  const removed=await page(missing,[],null,undefined,{wide:true,storage});
+  assert.ok(!detailItem(removed,"child"),"a removed item cannot be restored");
+  assert.match(markup(removed.roots.get("item-detail")!),/点左边/);
+});
+
+test("wide dependency follow and Backspace restore the prior dependency selection", async () => {
+  const p=await page(snapshot(),[],null,undefined,{wide:true}); await selectWide(p);
+  const from=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
+  assert.ok(from,"the source dependency is rendered in the detail pane");
+  await from.click(); await p.flush(); assert.ok(detailItem(p,"child"),"following a dependency selects its target");
+  p.key("Backspace"); await p.flush();
+  const returned=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
+  assert.ok(returned && returned !== from,"Back reacquires the dependency from the restored detail");
+  assert.ok(returned.className.includes("cur"),"Back restores the exact dependency selection");
+  assert.ok(item(p,"area").className.includes("selected"),"the restored detail item remains highlighted in the tree");
+});
+
+test("wide scoped note and card updates preserve detail identity and independent scroll", async () => {
+  const s=snapshot(); s.decisions.q={...card(),item:"area"}; s.items.area!.ask={text:"Approve parent"};
+  let held: ReturnType<typeof deferred<FakeResponse>> | undefined;
+  s.notes.n={target:"it:area",kind:"comment",text:"Old note",at,state:"sent",rev:1};
+  const p=await page(s,[],null,undefined,{wide:true,notesOpen:{"it:area":true},response:path=>path === "/api/draft" && held ? held.promise : undefined}); await selectWide(p);
+  const d=detailItem(p), q=p.document.getElementById("q-q"); assert.ok(d,"the item detail exists before scoped updates"); assert.ok(q);
+  const pane=p.roots.get("item-detail")!; pane.scrollTop=425;
+  p.emit("b".repeat(40),[{kind:"note",id:"n",after:{...s.notes.n!,text:"Updated note",rev:2}}]); await p.flush();
+  assert.equal(detailItem(p),d,"notes: updates replace only the comment list");
+  assert.equal(p.document.getElementById("q-q"),q,"item comments do not rebuild its cards");
+  assert.match(markup(d),/Updated note/); assert.equal(pane.scrollTop,425);
+  p.emit("c".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,question:"Updated card",rev:2}}]); await p.flush();
+  assert.equal(detailItem(p),d,"card: updates replace only the affected card");
+  assert.notEqual(p.document.getElementById("q-q"),q); assert.match(markup(d),/Updated card/); assert.equal(pane.scrollTop,425);
+  await wideCaret(p).click(); await p.flush();
+  pane.scrollTop=0; const currentCard=p.document.getElementById("q-q")!;
+  await currentCard.click(); assert.ok(currentCard.className.includes("cur"),"clicking a right-pane card selects the card itself");
+  p.key("j",currentCard); await p.flush();
+  assert.ok(item(p,"child").className.includes("cur"),"j from a detail card moves from its item's tree row");
+  assert.equal(detailItem(p),d,"moving focus from a card leaves the shown detail intact");
+  await currentCard.click();
+  p.key("c"); await p.flush();
+  assert.ok(p.document.getElementById("q-q")!.querySelector("textarea"),"c opens the clicked card's own editor");
+  assert.ok(p.document.getElementById("ed-q_q"),"the editor retains the card selection key");
+  assert.equal(p.document.getElementById("ed-it_area"),null,"the clicked card does not open its item's editor");
+  await selectWide(p); pane.scrollTop=425;
+  held=deferred<FakeResponse>();
+  const approve=descendants(d).find(e=>e.dataset.answer === "approve")!;
+  const approving=approve.click(); await settle();
+  assert.equal(approve.disabled,true,"approval shows its busy state in the detail before acknowledgement");
+  assert.ok(approve.className.includes("on")); assert.match(approve.textContent,/待发/);
+  held.resolve(reply({note:{id:"approve-draft",doc:{target:"it:area",kind:"approve",text:"同意",at,state:"draft",rev:1}},deleted:[],commit:"d".repeat(40)}));
+  await approving; await p.flush();
+  held=deferred<FakeResponse>(); p.key("e"); await settle();
+  assert.ok(detailItem(p)!.querySelector(".item-head")!.querySelector(".pendtag"),"explain patches the detail head immediately");
+  assert.ok(wideHead(p).querySelector(".pendtag"),"explain also patches the tree head");
+  assert.equal(wideCaret(p).querySelector(".pendtag"),null,"the pending chip never lands inside the fold toggle");
+  held.resolve(reply({note:{id:"explain-draft",doc:{target:"it:area",kind:"explain",text:"请求：详细解释",at,state:"draft",rev:1}},deleted:[],commit:"e".repeat(40)}));
+  await p.flush(); assert.equal(pane.scrollTop,425);
+});
+
+test("wide j and k move tree focus while Enter selects the focused head", async () => {
+  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  p.key("j"); await p.flush();
+  assert.ok(item(p,"area").className.includes("cur")); assert.ok(!detailItem(p),"j only moves focus");
+  p.key("Enter"); await p.flush(); assert.ok(detailItem(p),"Enter selects the focused head's detail");
+  assert.ok(!item(p,"child"),"Enter does not change the sub-item fold");
+  await wideCaret(p).click(); await p.flush(); const d=detailItem(p);
+  p.key("j"); await p.flush(); assert.ok(item(p,"child").className.includes("cur")); assert.equal(detailItem(p),d,"j does not open the next detail");
+  p.key("k"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
+  p.key("j"); p.key("Enter"); await p.flush(); assert.ok(detailItem(p,"child"));
+  const nativeEnter=async(target:Element) => {
+    target.focus(); const prevented=p.key("Enter",target);
+    // Native button activation follows keydown only when the page leaves its default action intact.
+    if (!prevented) await target.click(); await p.flush(); return prevented;
+  };
+  const childDetail=detailItem(p,"child");
+  assert.equal(await nativeEnter(wideCaret(p)),false,"Enter on the fold button keeps native activation");
+  assert.ok(!item(p,"child"),"the focused caret folds sub-items");
+  assert.equal(detailItem(p,"child"),childDetail,"caret Enter preserves the selected detail");
+  await nativeEnter(wideCaret(p)); assert.ok(item(p,"child"));
+  await nativeEnter(wideHead(p)); assert.ok(detailItem(p),"Enter selects the actual focused head");
+  await nativeEnter(wideHead(p,"child")); assert.ok(detailItem(p,"child"),"tabbing to a different head changes the Enter target");
+  await selectWide(p); const stale=wideHead(p);
+  p.key("j",stale); await p.flush();
+  assert.equal(p.document.activeElement,wideHead(p,"child"),"j moves DOM focus away from the previously clicked head");
+  await nativeEnter(p.document.activeElement!); assert.ok(detailItem(p,"child"),"Enter follows j's moved focus");
+  p.key("k",p.document.activeElement!); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
+  assert.equal(p.document.activeElement,wideHead(p),"k moves DOM focus back to the previous head");
+  p.key("c",p.document.activeElement!); await p.flush();
+  assert.ok(detailItem(p),"commenting on a focused row selects its detail");
+  assert.ok(detailItem(p)!.querySelector("textarea"),"the focused item's comment editor opens in the right pane");
+  assert.equal(item(p,"area").querySelector("textarea"),null);
+});
+
+test("wide n lands on card and note stops in the detail pane and keeps loose-card navigation", async t => {
+  for (const kind of ["decision","note"] as const) await t.test(kind,async()=> {
+    const s=snapshot(); s.decisions.q=card(); s.decisions.loose={...card(),item:"missing",question:"Loose card"};
+    s.notes.n={target:"it:child",kind:"comment",text:"Fresh comment",at,state:"sent",rev:1};
+    const id=kind === "decision" ? "q" : "n", stop=kind === "decision" ? "q-q" : "note-n";
+    const p=await page(s,[...unread(kind,id),...unread("decision","loose","e".repeat(40))],null,undefined,{wide:true,notesOpen:{"it:child":false},geometry:e=>({top:e.id === "q-loose" ? 1800 : 50,height:100}),detailGeometry:e=>({top:e.id === stop ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+    p.key("n"); await p.flush(); assert.ok(detailItem(p,"child"),"the fresh stop opens its containing item's detail");
+    assert.ok(detailItem(p,"child")!.contains(p.document.getElementById(stop)!));
+    assert.ok(p.document.getElementById(stop)!.className.includes("cur"),"the exact card or note is selected");
+    assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"the card or note scrolls the independent pane");
+    p.key("n"); await p.flush();
+    const loose=p.document.getElementById("q-loose")!;
+    assert.ok(loose.className.includes("cur")); assert.ok(!p.roots.get("item-detail")!.contains(loose),"a loose card stays in the decisions section");
+    assert.ok(p.scrollY>1000,"a loose card retains window navigation");
+  });
 });

@@ -56,6 +56,27 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
   function saveManual() { try { localStorage.setItem("board-open", JSON.stringify(manual)); } catch (e) {} }
+  const wideQuery = matchMedia("(min-width: 1000px)");
+  let wide = wideQuery.matches;
+  let selectedItem: string | null = null;
+  try { selectedItem = localStorage.getItem("board-selected"); } catch {}
+  let selectionRestored = false, detailDirty = true;
+  function rememberSelected(id: string | null) {
+    selectedItem = id;
+    try { localStorage.setItem("board-selected", id || ""); } catch {}
+  }
+  function bodyShown(id: string) { return wide ? selectedItem === id : !!manual[id]; }
+  function itemBox(id: string) { return get((wide ? "detail-it-" : "it-") + id); }
+  function selectItem(id: string) {
+    if (!snapshot.items[id]) return;
+    if (selectedItem !== id) {
+      get("it-" + selectedItem)?.classList.remove("selected");
+      rememberSelected(id); detailDirty = true;
+      if (wide) get("item-detail").scrollTop = 0;
+    }
+    get("it-" + id)?.classList.add("selected");
+    if (wide && detailDirty) renderNow("detail");
+  }
 
   function esc(s: unknown) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)); }
   // Inline text: **bold**, `code`, [label](https://...). Escaped first, so stored text cannot inject markup.
@@ -256,7 +277,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && (key === "archived" ? isArchived(it) : !inArchive(it)) && f![3](it)).length; }
   function passes(it: ViewItem) { return !filtering(groupOf(it)) || filterMatches().keep.has(it.id); }
-  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas"); }
+  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : [])); }
   function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); }
@@ -273,7 +294,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const n = filterCount(DEP_FILTERS, key, g), on = f.dep === key;
       if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
     });
-    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas"); }));
+    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : [])); }));
     return row;
   }
   const byOrder = (a: {order?:number}, b: {order?:number}) => (a.order || 0) - (b.order || 0);
@@ -381,6 +402,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (inArchive(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["archived"]}; invalidate(); }
       else if (!passes(it)) clearFilters(groupOf(it));
       openPath(it.id);
+      selectItem(it.id);
     }
     if (target.card) { const d=index().decById.get(target.card); if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); } }
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
@@ -400,8 +422,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if ([...required.keys()].some(key => failedDiffs.has(key))) return;
       if ([...required.keys()].every(key => diffs.has(key))) break;
     }
-    const e=get(target.id);
+    const primary=wide && it && target.id === "it-"+it.id ? itemBox(it.id) : get(target.id);
+    const e=target.selection ? selEl(target.selection) || primary : primary;
     if (!e) return;
+    if (wide && it) {
+      const row=get("it-"+it.id), bar=get("crumbs"), edge=bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
+      if (row) {
+        const r=row.getBoundingClientRect();
+        if (r.top < edge + 4) scrollTo(scrollY+r.top-edge-8);
+        else if (r.bottom > innerHeight-4) scrollTo(scrollY+Math.min(r.top-edge-8,r.bottom-innerHeight+8));
+      }
+    }
     glideToTarget(target.marks && freshMarks(e, target.marks)[0] || e);
     setCurrent(target.note || target.selection ? e : e.closest<HTMLElement>(".card, .item"));
   }
@@ -418,10 +449,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       notesOf(key).filter(listed).forEach(n => add("note",n.id));
     };
     const card = (id:string) => { if (!get("q-" + id)) return; add("decision",id); notes("q:" + id); };
-    if (st.item) for (const id of [st.item,...derived.ancestors(st.item)]) {
+    if (st.item) for (const id of wide ? [st.item] : [st.item,...derived.ancestors(st.item)]) {
       if (!get("it-" + id)) continue;
-      // Comments render with the manually opened body; a folded item shows neither.
-      if (!manual[id]) continue;
+      // Only rendered bodies and their expanded comment lists need baselines.
+      if (!bodyShown(id)) continue;
       notes("it:" + id);
       add("item",id);
       derived.cardsOf(id).forEach(card);
@@ -493,7 +524,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const overlay = { covered: new Set(serverSteps.slice(0, serverSteps.findIndex(step => step.id === latest.id) + 1).map(step => step.id)), saving: true };
     pendingReads.set(doc, overlay);
     freshNavigation++;
-    for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true;
+    for (const id of Object.keys(logShown)) if (bodyShown(id)) logHold[id] = true;
     applyReadMarks(); renderNow(...scope);
     try {
       await api("/api/read", { doc, through: latest.id });
@@ -514,7 +545,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   async function readThrough(step: string) {
     if (!steps.some(s => s.id === step)) return false;
     freshNavigation++;
-    try { for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
+    try { for (const id of Object.keys(logShown)) if (bodyShown(id)) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
   // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
   function goNextFresh() {
@@ -522,7 +553,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const at = all.findIndex(s => s.key === shownStop);
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
-      const st = all[at]!, box = st.doc.kind === "item" ? get("it-" + st.doc.id) : null;
+      const st = all[at]!, box = st.doc.kind === "item" ? itemBox(st.doc.id) : null;
       const marks = box ? freshMarks(box, st.doc.id) : [];
       if (shownMark + 1 < marks.length) { shownMark++; glideToTarget(marks[shownMark]!); return; }
       goFresh(at + 1); return;
@@ -544,7 +575,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
   function selEl(key: string | null) {
     if (!key) return null;
-    if (key.startsWith("it:")) return get("it-" + key.slice(3));
+    if (key.startsWith("it:")) return itemBox(key.slice(3)) || get("it-"+key.slice(3));
     if (key.startsWith("q:")) return get("q-" + key.slice(2));
     return document.querySelector<HTMLElement>('[data-sel="' + CSS.escape(key) + '"]');
   }
@@ -567,19 +598,24 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function setCurrent(box: HTMLElement | null) {
     const key = keyOfBox(box);
     if (!key || !box) return;
-    const old = selEl(current);
-    if (old) old.classList.remove("cur");
+    clearSelectionClasses();
     current = key;
     box.classList.add("cur");
+    if (wide && key === "it:"+selectedItem) get("it-"+selectedItem)?.classList.add("cur");
   }
   function onScreen(e: HTMLElement | null) {
     if (!e) return false;
-    const bar = get("crumbs");
-    const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
+    const bar = get("crumbs"), pane=get("item-detail");
+    const inDetail=wide && pane.contains(e), view=inDetail ? pane.getBoundingClientRect() : null;
+    const topEdge=view ? view.top : bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
     const r = e.getBoundingClientRect();
-    return r.bottom > topEdge && r.top < innerHeight;
+    return r.bottom > topEdge && r.top < (view ? view.bottom : innerHeight);
   }
-  function clearCurrent() { const old = boxOfKey(current); if (old) old.classList.remove("cur"); current = null; }
+  function clearSelectionClasses() {
+    selEl(current)?.classList.remove("cur");
+    if (wide && current?.startsWith("it:")) get("it-"+current.slice(3))?.classList.remove("cur");
+  }
+  function clearCurrent() { clearSelectionClasses(); current = null; }
   // A drag that selects text ends in a click on the row where it started; that click must not toggle, follow or
   // re-render the row, or the selection is gone. Movement is required: a press on a button keeps a selection made
   // elsewhere, so a plain click with text still selected is a click.
@@ -593,16 +629,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // A click on an item or card selects it; a click on blank space (not on a control) clears the selection.
   document.addEventListener("click", ev => {
     const t = ev.target as HTMLElement & {type?: string};
-    const box = t.closest && t.closest<HTMLElement>("[data-sel], #areas .item, #areas .card, #cards .card");
+    if (wide && t.closest && t.closest<HTMLElement>("button.caret")) return;
+    const box = t.closest && t.closest<HTMLElement>("[data-sel], #areas .item, #areas .card, #cards .card, #item-detail .card");
     if (box) setCurrent(box);
     else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearCurrent();
   }, true);
   // Otherwise the item or card the reader is looking at: the one just below the location bar, or near the top of the screen.
   function targetOnScreen() {
     if (current && onScreen(boxOfKey(current))) return current;
+    if (wide && selectedItem && snapshot.items[selectedItem]) return "it:"+selectedItem;
     const bar = get("crumbs");
     const y = (bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0) + 16;
-    const wrap = document.querySelector<HTMLElement>(".wrap")!.getBoundingClientRect();
+    const wrap = (wide ? get("areas") : document.querySelector<HTMLElement>(".wrap")!).getBoundingClientRect();
     const hit = document.elementFromPoint(wrap.left + wrap.width / 2, y);
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
     if (box && box.id.startsWith("q-")) return "q:" + box.id.slice(2);
@@ -629,7 +667,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     lastG = 0;
     if (ev.key === "Backspace" || ev.key === "[") { if (backStack.length) { ev.preventDefault(); goBack(); } return; }
     if (ev.key === "j" || ev.key === "k") { ev.preventDefault(); moveFocus(ev.key === "j" ? 1 : -1); return; }
-    if (ev.key === "Enter") { if (toggleFocused()) ev.preventDefault(); return; }
+    if (ev.key === "Enter") {
+      if (wide && t?.closest<HTMLElement>("button.caret")) return;
+      if (toggleFocused(wide && t?.classList.contains("item-head") ? t : undefined)) ev.preventDefault();
+      return;
+    }
     if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") { ev.preventDefault(); stepStop(ev.key === "ArrowRight" ? 1 : -1); return; }
     const act = ACTIONS.find(a => a.key === ev.key && a.db);
     if (act && !connected) { showError(new Error(DISCONNECTED)); return; }
@@ -640,33 +682,40 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function itemOfSelection() {
     const box = current && boxOfKey(current);
     if (!box || !onScreen(box)) return null;
-    const itemBox = current?.startsWith("it:") ? box : box.closest<HTMLElement>("#areas .item");
-    return itemBox ? index().byId.get(itemBox.id.slice(3)) : null;
+    const key=containerOf(current);
+    const id=key?.startsWith("it:") ? key.slice(3) : key?.startsWith("q:") ? snapshot.decisions[key.slice(2)]?.item : null;
+    return id ? index().byId.get(id) : null;
   }
   // j and k move the selection to the next or previous item or card on the page, in screen order, without opening
-  // anything; the page scrolls only as far as keeps the new selection in view. Enter opens or folds the selected item.
+  // anything; the page scrolls only as far as keeps the new selection in view. Enter selects detail in wide windows,
+  // and opens or folds the selected item in narrow windows.
   function navBoxes() { return [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].filter(e => e.offsetParent !== null); }
   function moveFocus(dir: number) {
     const list = navBoxes();
     if (!list.length) return;
     const bar = get("crumbs");
     const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
-    const sel = selEl(current);
-    const box = sel && (sel.matches(".item, .card") ? sel : sel.closest<HTMLElement>(".card, .item"));
+    const sel = wide && current?.startsWith("it:") ? get("it-"+current.slice(3)) : selEl(current);
+    const selectedBox = sel && (sel.matches(".item, .card") ? sel : sel.closest<HTMLElement>(".card, .item"));
+    const box = wide && selectedBox && get("item-detail").contains(selectedBox) ? get("it-"+selectedItem) : selectedBox;
     let k = box ? list.indexOf(box) : -1;
     let next;
     if (k >= 0 && onScreen(box)) next = list[Math.min(list.length - 1, Math.max(0, k + dir))];
     else next = list.find(e => e.getBoundingClientRect().top >= topEdge) || list[0];
     if (!next) return;
     setCurrent(next);
+    if (wide) {
+      const head=next.classList.contains("item") ? next.querySelector<HTMLElement>(".item-head") : null;
+      if (head) head.focus({preventScroll:true}); else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }
     const r = next.getBoundingClientRect();
     if (r.top < topEdge + 4) glideTo(scrollY + r.top - topEdge - 8);
     else if (r.bottom > innerHeight - 4) glideTo(scrollY + Math.min(r.top - topEdge - 8, r.bottom - innerHeight + 8));
   }
-  function toggleFocused() {
+  function toggleFocused(focusedHead?:HTMLElement) {
     const sel = selEl(current);
     const box = sel && (sel.matches(".item") ? sel : sel.closest<HTMLElement>(".item"));
-    const head = box && box.querySelector<HTMLButtonElement>(":scope > .item-row > .item-head");
+    const head = focusedHead || box && box.querySelector<HTMLButtonElement>(":scope > .item-row > .item-head");
     if (!head) return false;
     head.click();
     // The head click focuses the head for keyboard users; from Enter that leaves a focus ring, so drop the focus.
@@ -688,7 +737,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
-    { key: "Enter", show: "Enter", label: "展开或收起选中的条目", run: () => toggleFocused() },
+    { key: "Enter", show: "Enter", label: "查看选中的条目（窄屏展开或收起）", run: () => toggleFocused() },
     { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你处理", run: () => { stepStop(1); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
@@ -737,35 +786,39 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return b;
   }
   // An item opens by default when it is in progress, waits for the owner, or holds something that does.
-  // Everything starts folded; an item opens when the owner opens it or a jump (下一条, 下一条新, a chip) leads into it.
+  // Sub-items start folded; owner toggles and navigation open their path. Narrow mode also uses manual for bodies.
   // Under a dependency filter, the items above a match open unless the owner folded them.
   function isOpen(it: ViewItem) { return filtering(groupOf(it)) && !(it.id in manual) ? filterMatches().anc.has(it.id) : !!manual[it.id]; }
 
   // Scrolling glides for at most about a third of a second however far it goes: a long trip jumps most of the way
   // and eases over the last screenful, so the motion still shows the direction without dragging.
   let glideRun = 0;
-  let landing:{id:string;top:number;gliding?:number} | null = null;
+  let landing:{id:string;top:number;gliding?:number;pane?:boolean} | null = null;
   let expectedScroll:number | null = null;
+  let expectedDetailScroll:number | null = null;
   function scrollTo(top:number) { expectedScroll=top; window.scrollTo(0,top); expectedScroll=window.scrollY; }
   function scrollBy(delta:number) { expectedScroll=window.scrollY+delta; window.scrollBy(0,delta); expectedScroll=window.scrollY; }
   function releaseLanding() { landing=null; glideRun++; freshNavigation++; }
-  function glideTo(top: number, pin?:{id:string;top:number}) {
-    const max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  function glideTo(top: number, pin?:{id:string;top:number}, pane?:HTMLElement) {
+    const height=pane ? pane.clientHeight : innerHeight;
+    const position=() => pane ? pane.scrollTop : window.scrollY;
+    const place=(y:number) => { if (pane) { pane.scrollTo(0,y); expectedDetailScroll=pane.scrollTop; } else scrollTo(y); };
+    const max = Math.max(0, (pane ? pane.scrollHeight : document.documentElement.scrollHeight) - height);
     top = Math.min(max, Math.max(0, Math.round(top)));
     const run = ++glideRun;
     const target=pin && get(pin.id);
-    landing=pin && target ? {id:pin.id,top:window.scrollY+target.getBoundingClientRect().top-top,gliding:run} : null;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { scrollTo(top); if (landing) delete landing.gliding; return; }
-    const reach = innerHeight;
-    let from = scrollY;
-    if (Math.abs(top - from) > reach) { from = top - Math.sign(top - from) * reach; scrollTo(from); }
+    landing=pin && target ? {id:pin.id,top:position()+target.getBoundingClientRect().top-top,gliding:run,pane:!!pane} : null;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { place(top); if (landing) delete landing.gliding; return; }
+    const reach = height;
+    let from = position();
+    if (Math.abs(top - from) > reach) { from = top - Math.sign(top - from) * reach; place(from); }
     const dist = top - from, ms = 160 + Math.abs(dist) / reach * 160, t0 = performance.now();
     const step = (now: number) => {
       if (run !== glideRun) return;
       const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
       const target=landing && get(landing.id);
-      const destination=target && landing ? window.scrollY+target.getBoundingClientRect().top-landing.top : top;
-      scrollTo(from + (destination-from) * e);
+      const destination=target && landing ? position()+target.getBoundingClientRect().top-landing.top : top;
+      place(from + (destination-from) * e);
       if (k < 1) frame(step); else if (landing) delete landing.gliding;
     };
     frame(step);
@@ -783,9 +836,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // and centres what it shows: the whole card when it fits under the location bar, else the target, moved off
   // centre only as far as keeps the card filling three quarters of the view.
   function glideToTarget(t: HTMLElement) {
-    const bar = get("crumbs");
-    const top = (bar && !bar.hidden && bar.offsetHeight ? bar.offsetHeight : 46) + 8, bottom = innerHeight - 8, room = bottom - top;
-    const doc = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { top: r.top + scrollY, bottom: r.bottom + scrollY }; };
+    const bar = get("crumbs"), detail=get("item-detail");
+    const pane=wide && detail.contains(t) ? detail : undefined;
+    const origin=pane ? pane.getBoundingClientRect().top : 0, height=pane ? pane.clientHeight : innerHeight;
+    const offset=pane ? pane.scrollTop : scrollY;
+    const top = pane ? 8 : (bar && !bar.hidden && bar.offsetHeight ? bar.offsetHeight : 46) + 8, bottom = height - 8, room = bottom - top;
+    const doc = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { top: r.top-origin+offset, bottom: r.bottom-origin+offset }; };
     const T = doc(t);
     const box = (t.parentElement && t.parentElement.closest<HTMLElement>(".card, .item")) && !t.matches(".card, .item") ? t.parentElement.closest<HTMLElement>(".card, .item") : t;
     const C = doc(box || t);
@@ -796,13 +852,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       view = T.bottom - T.top <= room ? Math.min(Math.max(view, T.bottom - room), T.top) : T.top;
     }
     const destination=view-top;
-    glideTo(destination,t.id ? {id:t.id,top:T.top-destination} : undefined);
+    glideTo(destination,t.id ? {id:t.id,top:T.top-destination} : undefined,pane);
   }
   function jump(id: string | HTMLElement) {
     const name=typeof id === "string" ? id : id.id, e=typeof id === "string" ? get(id) : id;
     const box=e?.closest<HTMLElement>(".card, .item");
     const card=name.startsWith("q-") ? name.slice(2) : box?.id.startsWith("q-") ? box.id.slice(2) : undefined;
-    const item=name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("it-") ? box.id.slice(3) : null;
+    const item=name.startsWith("detail-it-") ? name.slice(10) : name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("detail-it-") ? box.id.slice(10) : box?.id.startsWith("it-") ? box.id.slice(3) : null;
     const note=e?.dataset.sel?.startsWith("note:") ? e.dataset.sel.slice(5) : undefined;
     if (item || card || note) { void navigate({id:name,item,card,note,selection:e?.dataset.sel,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
     if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
@@ -810,7 +866,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openPath(id: string) {
     let it = index().byId.get(id);
     let outer:string | undefined;
-    if (it && !manual[it.id]) { manual[it.id] = true; outer=it.id; }
+    if (it && !wide && !manual[it.id]) { manual[it.id] = true; outer=it.id; }
     if (it) ancestors(it).forEach(p => { if (!isOpen(p)) { manual[p.id] = true; outer=p.id; } });
     saveManual();
     if (outer) renderNow(get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer));
@@ -830,6 +886,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     renderBack();
     if (!b) return;
     const box = b.key && boxOfKey(b.key);
+    if (wide && b.key) {
+      const container=containerOf(b.key), card=container?.startsWith("q:") ? container.slice(2) : undefined;
+      const item=container?.startsWith("it:") ? container.slice(3) : card ? snapshot.decisions[card]?.item || null : null;
+      const note=b.key.startsWith("note:") ? b.key.slice(5) : undefined;
+      if (item || card || note) {
+        const id=note ? noteElementId(note) : card ? "q-"+card : "it-"+item;
+        void navigate({id,item,card,note,selection:b.key,notes:note ? snapshot.notes[note]?.target : undefined}); return;
+      }
+    }
     if (box) jump(box); else glideTo(b.y);
   }
   function renderBack() {
@@ -918,7 +983,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // A comment on a log entry or a reply keeps its target, the item or card, and names the piece in anchor.
   let editingAnchor: Note["anchor"] | null = null;
   function openComment(key: string, anchor?: Note["anchor"] | null) {
-    if (key.startsWith("it:")) openPath(key.slice(3));
+    if (key.startsWith("it:")) { openPath(key.slice(3)); if (wide) selectItem(key.slice(3)); }
+    else if (wide && key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
     editing = key; editingAnchor = anchor || null;
     renderNow("notes:"+key);
     const ta = get<HTMLTextAreaElement>("ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_"));
@@ -928,7 +994,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function pendingChip(key: string) { return pendingExplain(key) ? el("span", "pendtag", "待发：详细解释") : null; }
   function elements(root:HTMLElement): HTMLElement[] { return [root,...[...root.children].flatMap(e => elements(e as HTMLElement))]; }
   function patchDraft(target:string,kind:DraftKind) {
-    const box = target.startsWith("q:") ? get("q-"+target.slice(2)) : get("it-"+target.slice(3));
+    const box = target.startsWith("q:") ? get("q-"+target.slice(2)) : itemBox(target.slice(3)) || get("it-"+target.slice(3));
     if (!box) return;
     const busy = optimistic.has(draftKey(target,kind));
     if (kind === "choice") {
@@ -941,9 +1007,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || e.dataset.removed === "true" || !!(chosen && chosen.state !== "draft");
       });
     } else if (kind === "explain") {
-      const head=box.children[0]?.children[0] as HTMLElement | undefined; if (!head) return;
-      const old=[...head.children].find(e => e.classList.contains("pendtag"));
-      if (pendingExplain(target)) { if (!old) head.appendChild(pendingChip(target)!); } else old?.remove();
+      const boxes=[box,...(wide && target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
+      for (const host of boxes) {
+        const head=target.startsWith("it:") ? host.querySelector<HTMLElement>(".item-head") : host.children[0]?.children[0] as HTMLElement | undefined;
+        if (!head) continue;
+        const old=[...head.children].find(e => e.classList.contains("pendtag"));
+        if (pendingExplain(target)) { if (!old) head.appendChild(pendingChip(target)!); } else old?.remove();
+      }
     } else {
       const pending=pendingDraft(target,kind), sent=notesOf(target).some(n => n.kind === kind && n.state === "sent");
       elements(box).filter(e => e.dataset.answer === kind).forEach(e => {
@@ -1159,14 +1229,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       state.notes.forEach(n => { if (n.target) notesOpen[n.target] = false; });
       try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
       ruledOpen = {}; state.decisions.forEach(d => { if (d.status !== "open") ruledOpen[d.id] = false; }); saveRuled();
-      renderNow("areas","cards");
+      renderNow("areas","cards","detail");
     });
     view.appendChild(fold);
     // Opens every top-level item so the items under it show, each one folded: the first level and nothing deeper.
     view.appendChild(sbtn("s-plain", "展开第一层", "展开每条工作线，只显示它下面第一层条目", () => {
       state.items.forEach(i => { delete manual[i.id]; });
       tops().forEach(t => { manual[t.id] = true; });
-      saveManual(); renderNow("areas");
+      saveManual(); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : []));
     }));
     acts.insertBefore(el("span", "sum-k", "待看"), acts.firstChild);
 
@@ -1204,7 +1274,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (start > 0) {
       const more = el("button", "notes-toggle", "▸ 更早的 " + start + " 条");
       more.type = "button";
-      more.addEventListener("click", () => { logOpen[it.id] = true; renderNow("areas"); });
+      more.addEventListener("click", () => { logOpen[it.id] = true; renderNow("item:"+it.id); });
       box.appendChild(more);
     }
     all.slice(start).forEach((e, j) => {
@@ -1262,18 +1332,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
     return null;
   }
-  function itemNode(it: ViewItem, inArchive = false, headerOnly = false, boxOnly = false) {
+  function itemNode(it: ViewItem, inArchive = false, headerOnly = false, boxOnly = false, detail = false) {
     const retained=groupReuse?.items.get(it.id);
-    if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly) return retained;
+    if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly && !detail) return retained;
     const li = el("li");
-    // A filter opens the path to its matches, their sub-item lists only; an item's body opens only when the owner opens it.
-    const open = isOpen(it), bodyOpen = !!manual[it.id];
-    if (!bodyOpen) { delete logShown[it.id]; delete logHold[it.id]; }
+    // Filters open sub-item paths; the shared body renders inline when opened, or as the selected wide detail.
+    const open = isOpen(it), bodyOpen = detail || !wide && !!manual[it.id];
+    if (!bodyOpen && !bodyShown(it.id)) { delete logShown[it.id]; delete logHold[it.id]; }
     const baseline = unreadBefore<Item>("item",it.id);
-    const before = bodyOpen ? baseline : undefined;
+    const before = bodyOpen || wide ? baseline : undefined;
     const st = statusOf(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
-    box.id = "it-" + it.id;
+    box.id = (detail ? "detail-it-" : "it-") + it.id;
+    if (detail) box.dataset.sel = "it:"+it.id;
+    if (wide && !detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");
     box.dataset.title = plain(it.title);
     // Archived sub-items stay where they are: hidden, unless the 已归档 filter shows them.
@@ -1282,8 +1354,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
     const head = el("button", "item-head");
     head.type = "button";
-    head.setAttribute("aria-expanded", String(open));
-    head.appendChild(el("span", "caret", hasBody ? (open ? "▾" : "▸") : ""));
+    if (!wide) head.setAttribute("aria-expanded", String(open));
+    if (!wide) head.appendChild(el("span", "caret", hasBody ? (open ? "▾" : "▸") : ""));
 
     head.appendChild(el("span", "st " + st + (before && it.status !== undefined && before.status !== it.status ? " chg-add" : ""), esc(STATUS[st] || st)));
     // The badge shows the effective priority; a raised one also shows the written one, struck through.
@@ -1307,10 +1379,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
     if (ownFresh) box.classList.add("fresh");
-    // Opening or closing changes only this item's own subtree, so only that subtree is rebuilt.
-    head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true}); });
+    // Narrow head clicks open the subtree; wide clicks select the displayed detail.
+    head.addEventListener("click", ev => {
+      if (wide) { ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id)); }
+      else { rememberSelected(it.id); manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); }
+      get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
+    });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
     const row = el("div", "item-row");
+    if (wide) {
+      const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
+      caret.type="button"; caret.disabled=!sub.length;
+      caret.setAttribute("aria-expanded",String(open)); caret.setAttribute("aria-label",open ? "收起子条目" : "展开子条目");
+      caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
+      row.appendChild(caret);
+      row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
+    }
     row.appendChild(head);
     // A parent counts its leaves by status at the right of its row; archived ones are left out.
     if ((index().children.get(it.id) || []).length) {
@@ -1366,17 +1450,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       const refs=refsRow(it,before); if (refs) body.appendChild(refs);
       box.appendChild(body);
-      // Comments belong to the body: a folded item hides them with everything else below its head.
+      // Comments follow the same body, inline or in the detail pane.
       const nb = noteBlock("it:" + it.id, it.title);
       if (nb) box.appendChild(nb);
     }
     li.appendChild(box);
-    if (open && sub.length && !boxOnly) {
+    if (open && sub.length && !boxOnly && !detail) {
       const ul = el("ul", "tree");
       sub.forEach(k => ul.appendChild(itemNode(k, inArchive)));
       li.appendChild(ul);
     }
-    if (derived.isRequest(it.id)) {
+    if (derived.isRequest(it.id) && (!wide || detail)) {
       const prefix = `${it.request!.by} 提出：`, first = it.log[0]?.text || "";
       li.appendChild(el("div", "request-meta", esc(it.request!.by) + " · " + esc(day(it.request!.at)) + " · " + inline(first.startsWith(prefix) ? first.slice(prefix.length) : first)));
     }
@@ -1516,7 +1600,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The sticky bar names where the reader is: project group, then each item down to the one under the bar.
   function crumbPath(y: number) {
     const wrap = document.querySelector<HTMLElement>(".wrap");
-    const r = wrap!.getBoundingClientRect();
+    const r = (wide ? get("areas") : wrap!).getBoundingClientRect();
     const x = r.left + r.width / 2;
     const hit = document.elementFromPoint(x, y);
     if (!hit || !hit.closest<HTMLElement>("#areas")) return hit && hit.closest<HTMLElement>("#decisions") ? [{ label: "其他待决事项", target: get("decisions") }] : [];
@@ -1538,6 +1622,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let crumbKey: string | null = null;
   function updateCrumbs() {
     const bar = get("crumbs");
+    if (wide) { const r=get("areas").getBoundingClientRect(); bar.style.left=r.left+"px"; bar.style.width=r.width+"px"; }
+    else { bar.style.left=""; bar.style.width=""; }
     const header = document.querySelector<HTMLElement>("header.top");
     const atTop = header!.getBoundingClientRect().bottom > 0;
     bar.hidden = atTop;
@@ -1584,7 +1670,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   let crumbQueued = false;
   window.addEventListener("scroll", () => {
-    if (landing && (expectedScroll === null || Math.abs(window.scrollY-expectedScroll)>1)) releaseLanding();
+    if (landing && !landing.pane && (expectedScroll === null || Math.abs(window.scrollY-expectedScroll)>1)) releaseLanding();
     if (crumbQueued) return; crumbQueued = true; frame(() => { crumbQueued = false; updateCrumbs(); });
   }, { passive: true });
   window.addEventListener("resize", () => updateCrumbs(), { passive: true });
@@ -1593,7 +1679,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The item or card the reader is looking at, and where it sits, so a data update does not move the page under them.
   function scrollAnchor() {
     const cur = boxOfKey(current);
-    if (cur && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top };
+    if (cur && !(wide && get("item-detail").contains(cur)) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top };
     const bar = get("crumbs");
     const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
     const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > topEdge);
@@ -1648,8 +1734,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (target.startsWith("q:")) {
       reconcileCard(target.slice(2)); return;
     }
-    const it=index().byId.get(target.slice(3)), box=get("it-"+target.slice(3)); if (!it || !box) return;
-    const old=[...box.children].find(e => e.classList.contains("notes")), next=manual[it.id] ? noteBlock(target,it.title) : null;
+    const it=index().byId.get(target.slice(3)), box=itemBox(target.slice(3)); if (!it || !box) return;
+    const old=[...box.children].find(e => e.classList.contains("notes")), next=bodyShown(it.id) ? noteBlock(target,it.title) : null;
     if (old && next) old.replaceWith(next); else if (old) old.remove(); else if (next) box.appendChild(next);
     const ask=get("ask-"+it.id), nextAsk=askRow(it,unreadBefore<Item>("item",it.id));
     const body=[...box.children].find(e => e.classList.contains("body"));
@@ -1657,8 +1743,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function reconcileCard(id:string) {
     const d=index().decById.get(id), old=get("q-"+id);
-    const home=d ? homeOf(d) : null, item=home ? get("it-"+home) : null;
-    const container=d && (home ? manual[home] && item?.querySelector<HTMLElement>(":scope > .body") : get("cards"));
+    const home=d ? homeOf(d) : null, item=home ? itemBox(home) : null;
+    const container=d && (home ? bodyShown(home) && item?.querySelector<HTMLElement>(":scope > .body") : get("cards"));
     if (!d || !container || d.status !== "open" && !ruledShown(d)) { old?.remove(); }
     else {
       const last=[...container.children].reverse().find(e => e.classList.contains("card"));
@@ -1672,10 +1758,27 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     get("decisions").hidden=!get("cards").children.length;
   }
   function patchRefs(id:string) {
-    const it=index().byId.get(id), box=get("it-"+id); if (!it || !box) return;
+    const it=index().byId.get(id), box=itemBox(id); if (!it || !box) return;
     const body=[...box.children].find(e => e.classList.contains("body")); if (!body) return;
     const old=[...body.children].find(e => e.classList.contains("refs")), next=refsRow(it,unreadBefore<Item>("item",id));
     if (old && next) old.replaceWith(next); else if (old) old.remove(); else if (next) body.appendChild(next);
+  }
+  function renderDetail(scope:Set<string>) {
+    const pane=get("item-detail");
+    const top=pane.scrollTop;
+    const retained=new Map(elements(pane).filter(e => e.classList.contains("card")).map(e => [e.id,e]));
+    pane.innerHTML="";
+    const it=selectedItem && index().byId.get(selectedItem);
+    if (wide && it) {
+      const next=itemNode(it,inArchive(it),false,true,true);
+      for (const card of elements(next).filter(e => e.classList.contains("card"))) {
+        const old=retained.get(card.id), id=card.id.slice(2);
+        if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
+      }
+      [...next.children].forEach(child => pane.appendChild(child));
+    } else if (wide) pane.appendChild(el("p","empty","点左边的条目标题，在这里看正文"));
+    pane.scrollTop=top;
+    pane.hidden=!wide; detailDirty=false;
   }
   function renderPage(scope:Set<string>) {
     presentationScopes(scope);
@@ -1683,14 +1786,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
     const keep = a && a.id && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") ? { id: a.id, start: a.selectionStart, end: a.selectionEnd } : null;
     const anchor = landing ? landing.gliding ? null : {...landing} : window.scrollY > 0 ? scrollAnchor() : null;
+    const paneTop=get("item-detail").scrollTop;
     countBelow();
+    const detailPainted=wide && (detailDirty || scope.has("all") || scope.has("detail") || !!selectedItem && scope.has("item:"+selectedItem));
+    if (detailPainted || !wide && (detailDirty || scope.has("all") || scope.has("detail"))) renderDetail(scope);
     if (scope.has("all") || scope.has("areas")) renderAreasDOM();
     else { const groups=new Set([...scope].filter(k => k.startsWith("group:")).map(k => k.slice(6))); if (groups.size) renderAreasDOM(groups,scope); }
     if (scope.has("all") || scope.has("cards")) renderCardsDOM();
     if (!scope.has("all")) {
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
-      const paintedHome=(home:string | null) => home ? scope.has("areas") || scope.has("group:"+derived.groupOf(home)) : scope.has("cards");
+      const paintedHome=(home:string | null) => home ? wide ? home === selectedItem && detailPainted : scope.has("areas") || scope.has("group:"+derived.groupOf(home)) : scope.has("cards");
       for (const key of scope) {
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
@@ -1706,7 +1812,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
             if (kind === "tree") old.parentElement!.replaceWith(next); else old.replaceWith(next.children[0]!);
             drawnItems.add(id);
           }
-          if (it) derived.ancestors(id).forEach(p => heads.add(p));
+          if (it) { if (wide && kind === "tree") heads.add(id); derived.ancestors(id).forEach(p => heads.add(p)); }
         } else if (kind === "card") {
           const d=index().decById.get(id); if (d && !paintedHome(homeOf(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
@@ -1722,9 +1828,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       refs.forEach(patchRefs);
       for (const id of heads) {
-        const it=index().byId.get(id), old=get("it-"+id); if (!it || !old || scope.has("areas")) continue;
-        const next=itemNode(it,inArchive(it),true).children[0] as HTMLElement;
-        old.children[0]!.replaceWith(next.children[0]!); old.className=next.className; old.dataset.title=next.dataset.title;
+        const it=index().byId.get(id), old=get("it-"+id); if (!it) continue;
+        if (old && !scope.has("areas") && !scope.has("group:"+groupOf(it))) {
+          const next=itemNode(it,inArchive(it),true).children[0] as HTMLElement;
+          old.children[0]!.replaceWith(next.children[0]!); old.className=next.className; old.dataset.title=next.dataset.title;
+        }
+        if (wide && id === selectedItem && !detailPainted) {
+          const detail=itemBox(id);
+          if (detail) {
+            const head=itemNode(it,inArchive(it),true,true,true).children[0] as HTMLElement;
+            detail.children[0]!.replaceWith(head.children[0]!); detail.className=head.className; detail.dataset.title=head.dataset.title;
+          }
+        }
       }
       // Keep the existing sibling subtrees while reflecting derived status/priority ordering.
       const parents=new Set<HTMLElement>();
@@ -1746,14 +1861,27 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const order=stops().map(s => s.id);
     if (!sameValue(order,waitingOrder)) {
       waitingOrder=order;
-      for (const root of [get("areas"),get("cards")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
+      for (const root of [get("areas"),get("cards"),...(wide ? [get("item-detail")] : [])]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
     renderHeader(); renderSend(); renderMenu();
-    if (anchor) { const e = get(anchor.id); if (e) { const d = e.getBoundingClientRect().top - anchor.top; if (d) scrollBy(d); if (landing) expectedScroll=window.scrollY; } }
+    if (wide) get("item-detail").scrollTop=paneTop;
+    if (anchor) { const e = get(anchor.id); if (e) {
+      const d=e.getBoundingClientRect().top-anchor.top;
+      if ("pane" in anchor && anchor.pane) { if (d) get("item-detail").scrollTop+=d; expectedDetailScroll=get("item-detail").scrollTop; }
+      else { if (d) scrollBy(d); if (landing) expectedScroll=window.scrollY; }
+    } }
     crumbKey = null; updateCrumbs();
     if (keep) { const t = get<HTMLTextAreaElement | HTMLInputElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
   }
-  renderAll();
+  function layoutChanged() {
+    if (wide) document.body.classList.add("wide"); else document.body.classList.remove("wide");
+    detailDirty=true; releaseLanding(); renderAll();
+  }
+  wideQuery.addEventListener("change", ev => { if (wide === ev.matches) return; wide=ev.matches; layoutChanged(); });
+  get("item-detail").addEventListener("scroll", () => {
+    if (landing?.pane && (expectedDetailScroll === null || Math.abs(get("item-detail").scrollTop-expectedDetailScroll)>1)) releaseLanding();
+  }, {passive:true});
+  layoutChanged();
 
   get("to-top").addEventListener("click", () => glideTo(0));
 
@@ -1805,6 +1933,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     state.decisions = Object.entries(s.decisions).map(([id,d]) => ({...d,id}));
     state.notes = Object.entries(s.notes).map(([id,n]) => ({...n,id}));
     invalidate();
+    if (selectedItem && !s.items[selectedItem]) { rememberSelected(null); detailDirty=true; current=null; }
+    if (!selectionRestored) {
+      selectionRestored=true;
+      if (selectedItem && s.items[selectedItem]) {
+        current="it:"+selectedItem;
+        if (wide) {
+          const it=index().byId.get(selectedItem)!;
+          if (inArchive(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["archived"]};
+          else if (!passes(it)) clearFilters(groupOf(it));
+          ancestors(it).forEach(p => { manual[p.id]=true; }); saveManual();
+        }
+      }
+    }
   }
   let unreadGeneration = 0;
   let unreadFlight:{signal?:AbortSignal;promise:Promise<boolean>} | undefined;
