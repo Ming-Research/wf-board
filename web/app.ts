@@ -317,37 +317,53 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return out;
   }
 
-  function noteId(n: ViewNote) { return "note-" + String(n.id).replace(/[^A-Za-z0-9_-]/g, "_"); }
+  function noteElementId(id:string) { return "note-"+id.replace(/[^A-Za-z0-9_-]/g,"_"); }
+  function noteId(n: ViewNote) { return noteElementId(n.id); }
   // The element a stop selects, once its item, card and comment list are open.
   function stopEl(st: FreshStop) { return selEl(st.sel); }
   async function goFresh(k: number) {
     const all = freshStops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
-    const navigation = ++freshNavigation;
     shownStop = st.key;
+    await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
+  }
+  interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string }
+  async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
+    const navigation=++freshNavigation;
+    const active=() => navigation === freshNavigation && valid();
+    const retry=new Set(failedDiffs);
     clearCurrent();
-    if (st.item && snapshot.items[st.item] && derived.inArchive(st.item)) { const g = derived.groupOf(st.item), f = groupFilter(g); filters[g] = { ...f, status: ["archived"] }; }
-    if (st.card) { const d = index().decById.get(st.card); if (d && d.status !== "open" && !ruledOpen[d.id]) { ruledOpen[d.id] = true; saveRuled(); } }
-    if (st.notes && !notesOpen[st.notes]) { notesOpen[st.notes] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {} }
-    if (st.item) { const item = snapshot.items[st.item]; if (item && !passes({...item,id:st.item})) clearFilters(derived.groupOf(st.item)); openPath(st.item); renderNow(...(st.card ? ["item:"+st.item] : []),...(st.notes ? ["notes:"+st.notes] : [])); } else { renderNow("areas","cards"); }
-    // Only marks in this target and its expanded containers can change the layout we are about to measure.
-    let required = navigationBaselines(st);
-    for (const key of required.keys()) failedDiffs.delete(key);
+    const it=target.item && index().byId.get(target.item);
+    if (it) {
+      if (inArchive(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["archived"]}; invalidate(); }
+      else if (!passes(it)) clearFilters(groupOf(it));
+      openPath(it.id);
+    }
+    if (target.card) { const d=index().decById.get(target.card); if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); } }
+    const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
+    if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
+    scheduleRender(...(target.card ? ["card:"+target.card] : []),...(comments ? ["notes:"+comments] : []));
+    if (it && !get("it-"+it.id)) scheduleRender("group:"+groupOf(it));
+    await rendered();
+    if (!active()) return;
+    let required=navigationBaselines(target);
+    for (const key of required.keys()) if (retry.has(key)) failedDiffs.delete(key);
     for (;;) {
       await Promise.all([...required.values()].map(({step,doc}) => loadDiff(step,doc)));
-      if (navigation !== freshNavigation || shownStop !== st.key || !allFreshStops().some(s => s.key === st.key)) return;
+      if (!active()) return;
       await rendered();
-      if (navigation !== freshNavigation || shownStop !== st.key) return;
-      required = navigationBaselines(st);
+      if (!active()) return;
+      required=navigationBaselines(target);
       if ([...required.keys()].some(key => failedDiffs.has(key))) return;
       if ([...required.keys()].every(key => diffs.has(key))) break;
     }
-    const e = stopEl(st);
-    if (!e) clearCurrent();
-    if (e) { jump(e); setCurrent(e); }
+    const e=get(target.id);
+    if (!e) return;
+    glideToTarget(e);
+    setCurrent(target.note ? e : e.closest<HTMLElement>(".card, .item"));
   }
-  function navigationBaselines(st: FreshStop) {
+  function navigationBaselines(st: NavigationTarget) {
     const required = new Map<string,{step:Step;doc:Step["docs"][number]}>();
     const add = (kind: Step["docs"][number]["kind"], id: string) => {
       const step = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
@@ -369,7 +385,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       derived.cardsOf(id).forEach(card);
     }
     if (st.card) card(st.card);
-    if (st.doc.kind === "note" && snapshot.notes[st.doc.id]) add("note",st.doc.id);
+    if (st.note && snapshot.notes[st.note]) add("note",st.note);
     return required;
   }
   // A chip counts the unread stops touching this item or card; a click opens the oldest.
@@ -588,7 +604,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const all = stops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
-    if (st.item) openPath(st.item);
     jump(st.id);
   }
   // The last waiting stop leads to the send box, so the owner sends the batch without scrolling back.
@@ -665,12 +680,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     glideTo(destination,t.id ? {id:t.id,top:T.top-destination} : undefined);
   }
   function jump(id: string | HTMLElement) {
-    let t = typeof id === "string" ? get(id) : id;
-    // A target the dependency filter hides clears the filter.
-    if (!t && anyFiltering() && typeof id === "string") { clearFilters(); renderNow("areas"); t = get(id); }
-    if (!t) return;
-    glideToTarget(t);
-    setCurrent(t.closest<HTMLElement>(".card, .item"));
+    const name=typeof id === "string" ? id : id.id, e=typeof id === "string" ? get(id) : id;
+    const box=e?.closest<HTMLElement>(".card, .item");
+    const card=name.startsWith("q-") ? name.slice(2) : box?.id.startsWith("q-") ? box.id.slice(2) : undefined;
+    const item=name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("it-") ? box.id.slice(3) : null;
+    const note=e?.dataset.sel?.startsWith("note:") ? e.dataset.sel.slice(5) : undefined;
+    if (item || card || note) { void navigate({id:name,item,card,note,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
+    if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
   }
   function openPath(id: string) {
     let it = index().byId.get(id);
@@ -678,17 +694,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (it && !manual[it.id]) { manual[it.id] = true; outer=it.id; }
     if (it) ancestors(it).forEach(p => { if (!isOpen(p)) { manual[p.id] = true; outer=p.id; } });
     saveManual();
-    if (outer) renderNow(get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer)); else flushRender();
+    if (outer) renderNow(get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer));
   }
-  function reveal(id: string) { openPath(id); jump("it-" + id); }
+  function reveal(id: string) { jump("it-" + id); }
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
   const backStack: Array<{key:string|null;y:number}> = [];
   function follow(id: string) {
     const from = targetOnScreen();
     backStack.push({ key: from, y: scrollY });
     if (backStack.length > 50) backStack.shift();
-    const target = index().byId.get(id);
-    if (target && !passes(target)) clearFilters(groupOf(target));
     reveal(id);
     renderBack();
   }
@@ -730,7 +744,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     b.querySelector(".t")!.appendChild(el("span", "why" + (why ? "" : " none"), why ? inline(why) : "（没写为什么）"));
     return b;
   }
-  function followCard(id: string) { const d = snapshot.decisions[id]; if (!d) return; if (d.status !== "open") { ruledOpen[id] = true; saveRuled(); } openPath(d.item); renderNow(snapshot.items[d.item] ? "item:"+d.item : "cards"); jump("q-" + id); }
+  function followCard(id: string) { if (snapshot.decisions[id]) jump("q-"+id); }
   function depLink(d: ViewItem | {kind: "item" | "card"; id: string}) {
     const card = "kind" in d && d.kind === "card";
     const title = card ? snapshot.decisions[d.id]?.question : snapshot.items[d.id]?.title;
@@ -1087,9 +1101,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           b.title = d ? (d.status === "open" ? "待你决定" : "点开查看这张已结束的决策卡和它的评论") : "";
           b.addEventListener("click", () => {
             if (!d) return;
-            const h = homeOf(d);
-            if (d.status !== "open") { const show = !ruledShown(d); ruledOpen[q] = show; saveRuled(); if (h) { openPath(h); renderNow("item:"+h); } else renderNow("cards"); if (show) jump("q-" + q); return; }
-            if (h) openPath(h); jump("q-" + q);
+            if (d.status !== "open") { const show = !ruledShown(d); ruledOpen[q] = show; saveRuled(); if (show) jump("q-"+q); else renderNow("card:"+q); return; }
+            jump("q-" + q);
           });
           refs.appendChild(b);
         });
@@ -1455,7 +1468,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const renderWaiters:Array<() => void>=[];
   let rulePresentationDirty=true;
   let presentations=new Map<string,{signature:string;archived:boolean;shown:boolean;request:boolean;group:string}>();
-  function frame(fn:FrameRequestCallback) { if (typeof requestAnimationFrame === "function") requestAnimationFrame(fn); else setTimeout(() => fn(performance.now()),0); }
+  function frame(fn:FrameRequestCallback) {
+    if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
+    let finished=false, raf:number | undefined;
+    const run=(now:number) => { if (finished) return; finished=true; clearTimeout(watchdog); if (raf !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf); fn(now); };
+    const watchdog=setTimeout(() => run(performance.now()),100);
+    raf=requestAnimationFrame(run);
+  }
   function scheduleRender(...scope:string[]) {
     invalidate(); scope.forEach(s => dirty.add(s));
     if (renderQueued) return;
@@ -1490,8 +1509,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function replaceNotes(target:string) {
     if (target.startsWith("q:")) {
-      const d=index().decById.get(target.slice(2)), old=get("q-"+target.slice(2));
-      if (d && old) old.replaceWith(decisionCard(d)); return;
+      reconcileCard(target.slice(2)); return;
     }
     const it=index().byId.get(target.slice(3)), box=get("it-"+target.slice(3)); if (!it || !box) return;
     const old=[...box.children].find(e => e.classList.contains("notes")), next=noteBlock(target,it.title);
@@ -1499,6 +1517,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const ask=get("ask-"+it.id), nextAsk=askRow(it,unreadBefore<Item>("item",it.id));
     const body=[...box.children].find(e => e.classList.contains("body"));
     if (ask && nextAsk) ask.replaceWith(nextAsk); else if (ask) ask.remove(); else if (body && nextAsk) body.insertBefore(nextAsk,[...body.children].find(e => e.classList.contains("card")) || null);
+  }
+  function reconcileCard(id:string) {
+    const d=index().decById.get(id), old=get("q-"+id);
+    const home=d ? homeOf(d) : null, item=home ? get("it-"+home) : null;
+    const container=d && (home ? manual[home] && item?.querySelector<HTMLElement>(":scope > .body") : get("cards"));
+    if (!d || !container || d.status !== "open" && !ruledShown(d)) { old?.remove(); }
+    else {
+      const last=[...container.children].reverse().find(e => e.classList.contains("card"));
+      const after=last ? [...container.children][[...container.children].indexOf(last)+1] || null : [...container.children].find(e => e.classList.contains("checks") || e.classList.contains("refs")) || null;
+      const next=decisionCard(d);
+      if (old && old.parentElement === container) old.replaceWith(next); else { old?.remove(); container.insertBefore(next,after); }
+      const ids=home ? [...cardsUnder(index().byId.get(home)!),...ruledUnder(index().byId.get(home)!).filter(ruledShown)].map(d => d.id) : state.decisions.filter(d => !homeOf(d) && (d.status === "open" || ruledShown(d))).sort(byOrder).map(d => d.id);
+      const cards=ids.map(id => get("q-"+id)).filter((e):e is HTMLElement => !!e && e.parentElement === container);
+      cards.forEach(card => container.insertBefore(card,after));
+    }
+    get("decisions").hidden=!get("cards").children.length;
   }
   function patchRefs(id:string) {
     const it=index().byId.get(id), box=get("it-"+id); if (!it || !box) return;
@@ -1535,7 +1569,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           if (it) derived.ancestors(id).forEach(p => heads.add(p));
         } else if (kind === "card") {
-          const d=index().decById.get(id), old=get("q-"+id); if (d && old && !scope.has("areas") && !scope.has("cards") && !drawnCards.has(id) && !scope.has("group:"+derived.groupOf(d.item))) { old.replaceWith(decisionCard(d)); drawnCards.add(id); }
+          const d=index().decById.get(id); if (d && !scope.has("areas") && !scope.has("cards") && !drawnCards.has(id) && !scope.has("group:"+derived.groupOf(d.item))) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
           if (d) refs.add(d.item);
         } else if (kind === "notes") {

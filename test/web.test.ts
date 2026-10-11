@@ -43,7 +43,7 @@ class Element {
   getBoundingClientRect() { return this.geometry?.() ?? { left: 0, width: 900, height: 100, top: 50, bottom: 150 }; }
   matches(selector: string):boolean { return selector.split(/,\s*/).some(s=> {
     const parts=s.trim().split(/\s+/), last=parts.pop()!;
-    const own=last.startsWith(".") ? last.slice(1).split(".").every(c=>this.className.split(" ").includes(c)) : last.startsWith("#") ? this.id === last.slice(1) : this.tagName === last.toUpperCase();
+    const own=last.startsWith(".") ? last.slice(1).split(".").every(c=>this.className.split(" ").includes(c)) : last.startsWith("#") ? this.id === last.slice(1) : /^[\w-]+(?:\.[\w-]+)*$/.test(last) && this.tagName === last.split(".")[0]!.toUpperCase() && last.split(".").slice(1).every(c=>this.className.split(" ").includes(c));
     return own && (!parts.length || !!this.parentElement?.closest(parts.join(" ")));
   }); }
   closest(selector: string): Element | null { return this.matches(selector.replace("#areas ", "")) ? this : this.parentElement?.closest(selector) ?? null; }
@@ -60,7 +60,7 @@ interface PageOptions {
   notesOpen?: Record<string,boolean>; geometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   transform?: (code:string) => string;
   frames?: Frames;
-  reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number;
+  reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
   clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
@@ -68,6 +68,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const roots = new Map<string, Element>();
   for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const body = new Element("body"), wrap = new Element("div"), header = new Element("header");
+  if (options.pointId) header.geometry=()=>({top:-200,bottom:-100,height:100,left:0,width:900});
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
   const calls: Array<{path: string; body?: unknown}> = [];
   const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [];
@@ -88,7 +89,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
       return e;
     },
     querySelector: (selector: string) => selector === ".wrap" ? wrap : selector === "header.top" ? header : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
-    querySelectorAll: (selector:string) => all().filter(e=>e.matches(selector)), elementFromPoint: () => null,
+    querySelectorAll: (selector:string) => all().filter(e=>e.matches(selector)), elementFromPoint: () => options.pointId ? all().find(e=>e.id === options.pointId) ?? null : null,
     addEventListener: (kind: string, fn: (event: unknown) => unknown,opts?:{capture?:boolean}) => listeners.set(kind,[...listeners.get(kind) ?? [],{fn,capture:!!opts?.capture}]),
   };
   const sources: EventSource[] = [];
@@ -105,7 +106,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null, setItem() {} },
     matchMedia: () => ({ matches: options.reducedMotion !== false }), getComputedStyle: () => ({ scrollMarginTop: "0" }),
     recordRender:(scope:unknown)=>renders.push(scope),
-    performance:{now:()=>options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame},
+    performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
     window: { get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
@@ -138,7 +139,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   runInNewContext(options.transform?.(recorded) ?? recorded, context);
   await setImmediate(); await setImmediate();
   if (options.autoOpen !== false) { await sources[0]?.onopen?.(); await setImmediate(); await setImmediate(); }
-  const flush=async()=> { for (let i=0;i<4;i++) { options.frames?.flush(); if (options.noFrames) options.clock?.advance(0); if (options.noFrames) await new Promise(resolve=>setTimeout(resolve,0)); await setImmediate(); } };
+  const flush=async()=> { for (let i=0;i<4;i++) { if (!options.stalledFrames) options.frames?.flush(); else options.clock!.advance(100); if (options.noFrames) options.clock?.advance(0); if (options.noFrames) await new Promise(resolve=>setTimeout(resolve,0)); await setImmediate(); } };
   await flush();
   // A live update from the server, as the page's event stream delivers it.
   const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
@@ -731,7 +732,7 @@ test("all mutating requests time out at eight seconds and recover their controls
       p.key("n"); await settle();
       if (action === "archive") { control=p.all().find(e=>e.className === "keymenu-row" && e.innerHTML.includes("归档或取消归档"))!; pending=control.click(); }
       else if (action === "notes") { p.key("c"); await settle(); const text=p.all().find(e=>e.id === "ed-it_area")!; text.value="New draft"; control=button(p,"保存"); pending=control.click(); }
-      else { const toggle=p.all().find(e=>e.className.startsWith("notes-toggle") && e.innerHTML.includes("评论 1 条"))!; await toggle.click(); control=button(p,"删除"); pending=control.click(); }
+      else { if (!button(p,"删除")) { const toggle=p.all().find(e=>e.className.startsWith("notes-toggle") && e.innerHTML.includes("评论 1 条"))!; await toggle.click(); } control=button(p,"删除"); pending=control.click(); }
     }
     await settle(); clock.advance(7999); await settle(); assert.ok(p.roots.get("server-banner")!.hidden || !p.roots.get("server-banner")!.textContent.includes("刷新"));
     clock.advance(1); await settle();
@@ -763,7 +764,7 @@ test("successful read releases confirmation even when snapshot or unread refresh
 
 test("disconnection immediately reports and refuses existing write controls without fetch", async () => {
   const s=snapshot(), clock=new FakeClock(); s.notes.d={target:"it:area",kind:"comment",text:"Draft",at,state:"draft",rev:1};
-  const p=await page(s,unread("item","area"),null,undefined,{clock}); p.key("n"); await settle(); p.key("c"); await settle();
+  const p=await page(s,unread("item","area"),null,undefined,{clock}); p.key("n"); await p.flush(); p.key("c"); await settle();
   const text=p.all().find(e=>e.id === "ed-it_area")!; text.value="Offline draft";
   p.sources[0]!.onerror!();
   assert.equal(p.roots.get("server-banner")!.textContent,"已和看板服务器断开，正在重连…");
@@ -884,12 +885,14 @@ test("send waits for optimistic draft acknowledgement and refuses to send a fail
   });
 });
 
-test("card jump stays pinned through baseline and unrelated SSE changes until owner scroll", async () => {
-  const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.decisions.q=card(); let above=0, p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,geometry:e=>({top: e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p); await p.flush();
-  p.key("ArrowRight"); await p.flush(); const landed=p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top;
-  above=400; hold.resolve({before:{...card(),background:"Removed\n\n"+card().background},after:card(),diff:""}); await p.flush();
-  assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,landed,"baseline cannot move landed target");
+test("card jump waits for target baseline then stays pinned through a later unrelated baseline and SSE until owner scroll", async () => {
+  const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), later=deferred<unknown>(); s.decisions.q=card(); s.items.far={...s.items.area!,title:"Far",deps:[]}; let above=0, p!:Awaited<ReturnType<typeof page>>, fresh=unread("decision","q");
+  p=await page(s,fresh,(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : later.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,geometry:e=>({top: e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p); await item(p,"far").children[0]!.children[0]!.click(); await p.flush();
+  p.key("ArrowRight"); await p.flush(); assert.equal(p.scrolls.length,0,"target baseline must complete before landing");
+  hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); const landed=p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top;
+  fresh=[...fresh,...unread("item","far","e".repeat(40))]; p.emit("a".repeat(40)); await p.flush();
+  above=400; later.resolve({before:{...s.items.far!,head:"Removed"},after:s.items.far,diff:""}); await p.flush();
+  assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,landed,"later unrelated baseline cannot move landed target");
   above=800; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted above"}}]); await p.flush();
   assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,landed,"SSE insertion cannot move landed target");
   p.user("wheel"); p.user("scroll"); const released=p.scrollY; above=1000; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"More above"}}]); await p.flush();
@@ -932,7 +935,7 @@ test("scoped note changes refresh ask controls card reference counts and the nex
   assert.match(ref.innerHTML,/评论 1/); assert.ok(p.all().find(e=>e.id === "q-other") === other);
   const next=descendants(p.all().find(e=>e.id === "q-q")!).find(e=>e.className === "nextbtn")!;
   assert.equal(next.innerHTML,"下一条（2/3）");
-  assert.equal(descendants(other).find(e=>e.className === "nextbtn")!.innerHTML,"下一条（3/3）","untouched peer footer follows changed waiting order"); await next.click(); assert.ok(p.all().find(e=>e.id === "q-other")!.className.includes("cur"));
+  assert.equal(descendants(other).find(e=>e.className === "nextbtn")!.innerHTML,"下一条（3/3）","untouched peer footer follows changed waiting order"); await next.click(); await p.flush(); assert.ok(p.all().find(e=>e.id === "q-other")!.className.includes("cur"));
 });
 
 test("card closure and a filtered item update preserve unrelated card identities", async () => {
@@ -956,10 +959,11 @@ test("frame fallback works without requestAnimationFrame and smooth jump follows
   await t.test("smooth glide",async()=> {
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>, above=0;
     p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
-    p.key("ArrowRight"); frames.flush(50); await settle(); assert.ok(p.scrollY>0 && p.scrollY<1477,"glide is still moving");
-    above=500; hold.resolve({before:card(),after:card(),diff:""}); await p.flush();
+    p.key("ArrowRight"); frames.flush(50); await settle(); assert.equal(p.scrollY,0,"pending target baseline cannot start the glide");
+    hold.resolve({before:card(),after:card(),diff:""}); await settle(); frames.flush(0); await settle(); assert.ok(p.scrollY>0 && p.scrollY<1477,"glide is still moving");
+    above=500; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted during glide"}}]); await p.flush();
     assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,323,"glide retains its intended landing after insertion");
-    for (const input of ["click","keydown","scroll"]) { p.key("ArrowRight"); await p.flush(); p.user(input); const position=p.scrollY; above+=200; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Above "+above}}]); await p.flush(); assert.equal(p.scrollY,position,input+" releases pin"); }
+    for (const input of ["click","keydown","scroll"]) { p.key("ArrowRight"); await p.flush(); p.user(input); const position:number=p.scrollY; above+=200; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Above "+above}}]); await p.flush(); assert.equal(p.scrollY,position,input+" releases pin"); }
   });
 });
 
@@ -971,7 +975,7 @@ test("owner input cancels an unread jump still awaiting its baseline", async () 
 
 test("saving a comment preserves other card identity", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q=card(); s.decisions.other={...card(),question:"Other"};
-  const p=await page(s,[],null,undefined,{frames,response:path=>path === "/api/notes" ? reply({id:"saved-comment"}) : undefined}); await expand(p); p.key("ArrowRight"); p.key("c"); await p.flush();
+  const p=await page(s,[],null,undefined,{frames,response:path=>path === "/api/notes" ? reply({id:"saved-comment"}) : undefined}); await expand(p); p.key("ArrowRight"); await p.flush(); p.key("c"); await p.flush();
   const other=p.all().find(e=>e.id === "q-other")!, editor=p.all().find(e=>e.id === "ed-q_q")!;
   editor.value="Comment"; await button(p,"保存").click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-other") === other,"successful note-only save cannot rebuild another card");
@@ -1098,4 +1102,112 @@ test("finishing an inbox request moves it into the normal project tree", async (
   assert.deepEqual(p.all().filter(e=>e.id === "it-request" || e.id === "it-request2").map(e=>e.id),["it-request","it-request2"],"inbox remains ordered by request time");
   p.emit("b".repeat(40),[{kind:"item",id:"request",after:{...s.items.request!,status:"done"}}]); await p.flush();
   assert.ok(!item(p,"request").closest(".inbox"),"ended request leaves inbox without a request-object edit");
+});
+
+test("scoped unread card membership inserts replies and removes read ended cards without rebuilding peers", async t => {
+  for (const kind of ["note","decision"]) for (const hosted of [true,false]) for (const showing of [true,false]) await t.test(kind+" "+(hosted ? "hosted " : "loose ")+(showing ? "insert" : "remove"),async()=> {
+    const s=snapshot(), frames=new Frames(), note:Note={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2};
+    s.decisions.q={...card(),item:hosted ? "child" : "absent",status:"ruled",ruling:"A",order:2}; s.decisions.other={...card(),item:hosted ? "child" : "absent",order:1}; s.decisions.third={...card(),item:hosted ? "child" : "absent",order:3};
+    if (!showing && kind === "note") s.notes.n=note;
+    let fresh=showing ? [] : unread(kind,kind === "note" ? "n" : "q");
+    const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,params.get("kind") === "note" ? {...note,reply:undefined} : {...s.decisions.q!,background:"Old"}),undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : path === "/api/read" ? (fresh=[],reply({ok:true})) : undefined}); if(hosted) await expand(p); await p.flush();
+    const peer=p.all().find(e=>e.id === "q-other")!, third=p.all().find(e=>e.id === "q-third")!; assert.ok(peer && third);
+    if(showing) { assert.ok(!p.all().some(e=>e.id === "q-q")); fresh=unread(kind,kind === "note" ? "n" : "q"); p.emit("b".repeat(40),[{kind,id:kind === "note" ? "n" : "q",after:kind === "note" ? note : {...s.decisions.q!,background:"Updated",rev:2}}]); await p.flush(); }
+    else { fresh=[]; p.emit("b".repeat(40)); await p.flush(); }
+    assert.equal(p.all().some(e=>e.id === "q-q"),showing,"ended card membership follows unread state"); assert.ok(p.all().find(e=>e.id === "q-other") === peer); assert.ok(p.all().find(e=>e.id === "q-third") === third);
+    if(showing) { assert.deepEqual(p.all().filter(e=>e.id === "q-q" || e.id === "q-other" || e.id === "q-third").map(e=>e.id),hosted ? ["q-other","q-third","q-q"] : ["q-other","q-q","q-third"]); if(hosted) { const body=item(p).children.find(e=>e.className === "body")!; assert.ok(body.children.findIndex(e=>e.id === "q-q") < body.children.findIndex(e=>e.className === "refs"),"card region stays before reference rows"); } }
+  });
+});
+
+test("all card jump entry points await baselines before selecting and scrolling", async t => {
+  for(const path of ["waiting key","previous key","reference","dependency","next button","fresh chip"]) await t.test(path,async()=> {
+    const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), ancestor=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
+    if(path === "dependency") s.items.area!.deps.push({card:"q",why:"Needs decision"});
+    if(path === "next button") s.items.area!.ask={text:"Parent approval"};
+    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : ancestor.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p); await p.flush();
+    if(path === "waiting key") p.key("ArrowRight");
+    else if(path === "previous key") p.key("ArrowLeft");
+    else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
+    else if(path === "dependency") await p.all().find(e=>e.className === "deprow" && e.innerHTML.includes("如何显示"))!.click();
+    else if(path === "next button") await button(p,"下一条（2/2）").click();
+    else await descendants(p.all().find(e=>e.id === "q-q")!).find(e=>e.className.includes("freshchip"))!.click();
+    await p.flush(); assert.equal(p.scrolls.length,0,"no document jump may scroll with an unresolved target baseline");
+    assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
+    hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.equal(p.scrolls.length,0,"ancestor baseline also affects target height");
+    ancestor.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.ok(p.scrolls.length>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+  });
+});
+
+test("a stalled animation frame still renders and finishes a smooth document jump within one second", async () => {
+  const s=snapshot(), frames=new Frames(), clock=new FakeClock(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>;
+  p=await page(s,[],null,undefined,{frames,clock,stalledFrames:true,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})});
+  assert.ok(item(p,"area"),"watchdog must paint the initial snapshot while rAF is stalled");
+  await expand(p); await p.flush(); const start=clock.now; p.key("ArrowRight");
+  let landedAt:number | undefined;
+  for(let i=0;i<8;i++) { clock.advance(100); await settle(); if (landedAt === undefined && p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top === 323) landedAt=clock.now-start; }
+  assert.ok(landedAt !== undefined && landedAt <= 600,"render plus smooth glide finishes within its bounded timer schedule");
+  assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,323); assert.ok(clock.now-start<1000);
+  const count=p.renders.length, scrolls=p.scrolls.length; frames.flush(); await settle(); assert.equal(p.renders.length,count); assert.equal(p.scrolls.length,scrolls,"late rAF callbacks cannot run watchdog-completed work again");
+});
+
+test("draft fetch and response-body stalls roll back at eight seconds and ignore late success", async t => {
+  for(const phase of ["fetch","json"]) await t.test(phase,async()=> {
+    const s=snapshot(), clock=new FakeClock(), frames=new Frames(), hold=deferred<FakeResponse>(), body=deferred<unknown>(); s.decisions.q=card();
+    s.notes.old={target:"q:q",kind:"choice",choice:"B",text:"Old",at,state:"draft",rev:1};
+    const p=await page(s,[],null,undefined,{clock,frames,response:path=>path === "/api/draft" ? phase === "fetch" ? hold.promise : {ok:true,status:200,json:()=>body.promise} : undefined}); await expand(p); const click=option(p,"A").click();
+    assert.ok(option(p,"A").className.includes("sel")); assert.equal(option(p,"B").disabled,true); clock.advance(7999); await settle(); assert.equal(option(p,"B").disabled,true);
+    clock.advance(1); await settle(); await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(option(p,"A").disabled,false); assert.match(p.roots.get("server-banner")!.textContent,/没有响应.*刷新/); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
+    const result={note:{id:"old",doc:{...s.notes.old!,choice:"A",rev:2}},deleted:[],commit:"b".repeat(40)};
+    if(phase === "fetch") hold.resolve(reply(result)); else body.resolve(result); await click; await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
+  });
+});
+
+test("breadcrumb jump unfolds comments and waits for its unread item baseline", async () => {
+  const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.notes.n={target:"it:child",kind:"comment",text:"Comment",at,state:"sent",rev:1};
+  const p=await page(s,unread(),()=>hold.promise,undefined,{frames,pointId:"it-child",notesOpen:{"it:child":false}}); await expand(p); await p.flush();
+  const crumb=p.all().find(e=>e.className.startsWith("crumbrow") && descendants(e).some(c=>c.className === "t" && c.innerHTML === "Child"))!; assert.ok(crumb); await crumb.click(); await p.flush();
+  assert.equal(p.scrolls.length,0); assert.ok(p.all().some(e=>e.id === "note-n")); hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=child"),null)); await p.flush(); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrolls.length>0);
+});
+
+test("a fast baseline rejection is attempted once per jump and retries on the next jump", async () => {
+  const s=snapshot(), frames=new Frames(); let attempts=0;
+  const p=await page(s,unread(),(params:URLSearchParams)=> { attempts++; return attempts === 1 ? Promise.reject(new Error("Baseline refused")) : endpoints(s,params,null); },undefined,{frames});
+  p.key("n"); await settle(); await p.flush(); assert.equal(attempts,1); assert.equal(p.scrolls.length,0); p.key("n"); await p.flush(); assert.equal(attempts,2); assert.ok(p.scrolls.length>0);
+});
+
+test("document jump restores an already-open target hidden by filtering or archive", async t => {
+  for (const hiding of ["filter","archive"]) await t.test(hiding,async()=> {
+    const s=snapshot(), frames=new Frames(); s.items.child!.status="todo"; s.items.sibling={...s.items.child!,title:"Sibling",status:"wip",deps:[{id:"child",why:"Needs child"}]}; s.items.area!.deps.push({id:"sibling",why:"Sibling"});
+    const p=await page(s,[],null,undefined,{frames}); await expand(p); await item(p,"sibling").children[0]!.children[0]!.click();
+    if(hiding === "filter") await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
+    else { p.emit("b".repeat(40),[{kind:"owner",id:"owner",after:{archived:{child:"2026-10-12T00:00:00Z"}}}]); await p.flush(); }
+    assert.ok(!item(p)); const dep=descendants(item(p,"sibling")).find(e=>e.className === "deprow" && e.innerHTML.includes('class="t">Child<'))!; assert.ok(dep); await dep.click(); await p.flush();
+    assert.ok(item(p),"jump materializes the previously open target again"); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrolls.length>0);
+  });
+});
+
+test("scoped first-card insertion stays before checks and references", async () => {
+  const s=snapshot(), frames=new Frames(); s.decisions.q={...card(),status:"ruled",ruling:"A"}; s.items.child!.deps=[{id:"missing",why:"Needs missing item"}]; let fresh:unknown[]=[];
+  const p=await page(s,fresh,null,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p); await p.flush(); assert.ok(!p.all().some(e=>e.id === "q-q"));
+  fresh=unread("note","n"); p.emit("b".repeat(40),[{kind:"note",id:"n",after:{target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:1}}]); await p.flush();
+  const children=item(p).children.find(e=>e.className === "body")!.children, cardIndex=children.findIndex(e=>e.id === "q-q"); assert.ok(cardIndex>=0);
+  assert.ok(cardIndex < children.findIndex(e=>e.className === "checks")); assert.ok(cardIndex < children.findIndex(e=>e.className === "refs"));
+});
+
+test("scoped card membership retains explicit shown and hidden overrides", async t => {
+  for(const shown of [true,false]) await t.test(String(shown),async()=> {
+    const s=snapshot(), frames=new Frames(), note:Note={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2}; s.decisions.q={...card(),status:"ruled",ruling:"A"}; s.notes.n=note; let fresh=unread("note","n");
+    const p=await page(s,fresh,{...note,reply:undefined},undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p); await p.flush();
+    await p.all().find(e=>e.className.startsWith("ref q"))!.click(); await p.flush();
+    if(shown) { await p.all().find(e=>e.className.startsWith("ref q"))!.click(); await p.flush(); }
+    fresh=[]; p.emit("b".repeat(40)); await p.flush(); assert.equal(p.all().some(e=>e.id === "q-q"),shown,"reading preserves the explicit override");
+    fresh=unread("note","n","e".repeat(40)); p.emit("c".repeat(40),[{kind:"note",id:"n",after:{...note,reply:"Later reply",rev:3}}]); await p.flush(); assert.equal(p.all().some(e=>e.id === "q-q"),shown,"new freshness preserves the explicit override");
+  });
+});
+
+test("scoped card order updates reorder its region and preserve other card elements", async () => {
+  const s=snapshot(), frames=new Frames(); s.decisions.q={...card(),order:1}; s.decisions.other={...card(),order:2}; s.decisions.third={...card(),order:3};
+  const p=await page(s,[],null,undefined,{frames}); await expand(p); const peer=p.all().find(e=>e.id === "q-other")!, third=p.all().find(e=>e.id === "q-third")!;
+  p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,order:4,rev:2}}]); await p.flush();
+  assert.deepEqual(p.all().filter(e=>["q-q","q-other","q-third"].includes(e.id)).map(e=>e.id),["q-other","q-third","q-q"]); assert.ok(p.all().find(e=>e.id === "q-other") === peer); assert.ok(p.all().find(e=>e.id === "q-third") === third);
 });
