@@ -115,7 +115,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
    the bottom, away from the status bar; a folded item, which has no body, gets a short line beside its head. */
 .item.fresh > .body, .item.fresh > .body ~ .notes { position: relative; }
 .item.fresh > .body::before, .item.fresh > .body ~ .notes::before { content: ""; position: absolute; left: 6px; top: 2px; bottom: -4px; width: 3px; background: var(--fresh); }
-.item.fresh > .body ~ .notes::before { top: -4px; }
+.item.fresh > .body ~ .notes::before { top: -4px; bottom: 4px; }
 .item.fresh:not(:has(> .body))::before { left: 3px; top: 8px; bottom: 8px; }
 .item.fresh:has(> .body)::before { content: none; }
 .item.fresh, .card.fresh, .deprow.fresh, .refs .fresh, .note.newbar, .note .reply.newbar, .notes-toggle.newbar, .log-entry.fresh { position: relative; }
