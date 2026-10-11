@@ -201,10 +201,11 @@ log:
   marks. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar; a new reply also marks the reply itself. Note
   changes appear only in the comment-list row, never as bookkeeping-field
-  diffs. Navigation opens the target and its comment list when needed, waits
-  for the baselines affecting that target and its expanded containers, then
-  scrolls after rendering. Baselines for unrelated collapsed items or
-  explicitly collapsed comment lists neither delay nor cancel the jump.
+  diffs. Every document jump, including card references, waiting-stop arrows,
+  unread chips and item breadcrumbs, opens the target and its comment list,
+  waits for the baselines affecting that target and its expanded containers,
+  then scrolls after rendering. Baselines for unrelated collapsed items or
+  explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
   Deleted documents have no body to render but remain countable stops that
   `n` can visit and `r` can read.
   This replaces the 478 per-item read
@@ -280,10 +281,17 @@ pending draft writes and stops if one fails, so an immediately displayed choice
 cannot be omitted from the send by a slower draft request.
 
 Live changes, unread results and loaded baselines schedule a shared render on
-the next animation frame (a zero-delay timer when animation frames are
-unavailable). Changes arriving before that frame share one render. Note
+the next animation frame. A 100-millisecond timer runs the callback if the
+frame has not fired; whichever runs first cancels the other, and the callback
+runs once. When animation frames are unavailable, a zero-delay timer is used.
+The same scheduler drives jump animation, so a suspended animation-frame
+stream cannot leave navigation waiting indefinitely. Changes arriving before
+that callback share one render. Note
 changes update their item or card, and an item or card change updates its
 affected subtree and summaries; unrelated cards keep their DOM elements.
+Scoped card updates also reconcile membership and order: an unread reply can
+reveal a ruled card, and clearing unread state hides a card that was open only
+by that default. Explicit owner choices to open or fold it remain in effect.
 The header counts and send box update with the affected content. Unread
 refreshes are debounced across each burst, and superseded results cannot
 replace newer state. Rendering preserves the editor's focus and caret and
