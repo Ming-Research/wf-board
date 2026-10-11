@@ -744,6 +744,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     b.querySelector(".t")!.appendChild(el("span", "why" + (why ? "" : " none"), why ? inline(why) : "（没写为什么）"));
     return b;
   }
+  // A row for a dependency that is not a live item: a decision card shows its state where an item shows its status,
+  // its question as the title and, under it, why the depending item needs it, like an item row.
+  function depFallbackRow(kind: string, id: string, why: string) {
+    const d = kind === "card" ? snapshot.decisions[id] : undefined;
+    const tag = !d ? '<span class="st cancelled">已删除</span>'
+      : derived.cardWaiting(id) ? '<span class="asktag">等你决定</span>'
+      : d.status === "open" ? '<span class="st todo">未定</span>'
+      : '<span class="st done">' + (d.ruling ? "已裁定" : "已结束") + "</span>";
+    const b = el("button", "deprow", tag + '<span class="t">' + inline(d?.question || id)
+      + '<span class="why' + (why ? "" : " none") + '">' + (why ? inline(why) : "（没写为什么）") + "</span></span>");
+    b.type = "button";
+    if (d) b.addEventListener("click", ev => { ev.stopPropagation(); followCard(id); });
+    return b;
+  }
   function followCard(id: string) { if (snapshot.decisions[id]) jump("q-"+id); }
   function depLink(d: ViewItem | {kind: "item" | "card"; id: string}) {
     const card = "kind" in d && d.kind === "card";
@@ -1206,8 +1220,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         dl.appendChild(el("div", "k", "依赖"));
         des.forEach(e => {
           const d = e.kind === "item" ? index().byId.get(e.id) : undefined;
-          const r = d ? whyRow(d, it, e.why) : el("button", "deprow", inline(e.kind === "card" ? snapshot.decisions[e.id]?.question || e.id : e.id) + '<span class="why">' + inline(e.why) + '</span>');
-          if (!d && e.kind === "card") r.addEventListener("click", () => followCard(e.id));
+          const r = d ? whyRow(d, it, e.why) : depFallbackRow(e.kind, e.id, e.why);
           r.dataset.sel = "dep:" + it.id + "@" + e.id;
           r.id = "sel-" + encodeURIComponent(JSON.stringify([r.dataset.sel,e.mark === "chg-del"]));
           if (e.mark) r.classList.add(e.mark);
