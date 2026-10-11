@@ -1,6 +1,25 @@
 import { stringify } from "yaml";
 import type { Store, DocKind } from "./store.ts";
+import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
+
+/** How many new things a document's change holds, counted as the owner's page always counted them: each new log
+ * entry, each new reply, and one for any other visible change (a new item or card, a changed head, status, ...). */
+export interface Pieces { log: number; reply: number; other: number }
+export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary: string): Pieces {
+  const visible = summary !== "metadata changed";
+  // A note counts through its reply; a state change alone (sent, closed) is not news, a deleted note is.
+  if (kind === "note") return { log: 0, reply: /(new reply|reply changed)/.test(summary) ? 1 : 0, other: before === null || after === null ? 1 : 0 };
+  if (kind === "decision") return { log: 0, reply: 0, other: visible ? 1 : 0 };
+  const key = (e: { at: string; text: string }) => e.at + "\u0000" + e.text;
+  const old = new Map<string, number>();
+  for (const e of (before as Item | null)?.log ?? []) old.set(key(e), (old.get(key(e)) ?? 0) + 1);
+  let log = 0;
+  for (const e of (after as Item | null)?.log ?? []) { const n = old.get(key(e)) ?? 0; if (n) old.set(key(e), n - 1); else log++; }
+  // A new item counts through its log entries, as the old page did; one without entries counts once.
+  const otherChange = before === null ? log === 0 : summary.split(", ").some(part => visible && !/^(\+\d+ log|log changed)$/.test(part));
+  return { log, reply: 0, other: otherChange ? 1 : 0 };
+}
 
 export interface Step {
   id: string;
@@ -9,7 +28,7 @@ export interface Step {
   parent: string | null;
   author: string;
   at: string;
-  docs: Array<{ kind: DocKind; id: string; summary: string }>;
+  docs: Array<{ kind: DocKind; id: string; summary: string; pieces: Pieces }>;
 }
 
 // Steps depend only on HEAD and the cursor, and past commits never change, so one computation serves every
@@ -37,7 +56,7 @@ async function computeSteps(store: Store, cursor: string | undefined): Promise<S
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];
       const kind = ({ items: "item", decisions: "decision", notes: "note" } as const)[m[1] as "items" | "decisions" | "notes"];
-      return [{ kind, id: m[2]!, summary: "" }];
+      return [{ kind, id: m[2]!, summary: "", pieces: { log: 0, reply: 0, other: 0 } }];
     });
     // A commit that changes no item, card or note (board settings, owner state) has nothing to read.
     if (!docs.length) { previous = undefined; continue; }
@@ -53,9 +72,10 @@ async function computeSteps(store: Store, cursor: string | undefined): Promise<S
   for (const step of steps) for (const doc of step.docs) {
     const { before, after } = await endpoints(store, step, doc.kind, doc.id);
     doc.summary = describeChanges(before, after, doc.kind);
+    doc.pieces = piecesOf(before, after, doc.kind, doc.summary);
   }
-  // A document whose change the owner cannot see (times, revisions, a status that became derived) is not unread.
-  for (const step of steps) step.docs = step.docs.filter(doc => doc.summary !== "metadata changed");
+  // A document whose change holds nothing the owner can see (times, revisions, a status that became derived) is not unread.
+  for (const step of steps) step.docs = step.docs.filter(doc => doc.pieces.log + doc.pieces.reply + doc.pieces.other > 0);
   return steps.filter(step => step.docs.length);
 }
 

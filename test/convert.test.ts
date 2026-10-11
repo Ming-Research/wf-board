@@ -134,7 +134,8 @@ test("asRead reconstructs snapshots and logs, excludes new items and removes unr
   assert.deepEqual(out.asRead.items.old!.log, [{ at: t1, by: "Old writer", text: "Old #11" }]);
   assert.equal(out.asRead.items.new, undefined);
   assert.deepEqual(out.asRead.items.fold, out.current.items.fold);
-  assert.deepEqual(Object.keys(out.asRead.decisions), ["card", "legacyPlace"]);
+  // As on the old page, an undated card ("shared") is not known to be new, so the read state keeps it.
+  assert.deepEqual(Object.keys(out.asRead.decisions), ["card", "shared", "legacyPlace"]);
   assert.equal(out.asRead.notes.reply!.reply, undefined);
   assert.equal(out.asRead.notes.reply!.repliedAt, undefined);
   assert.equal(out.asRead.notes.reply!.repliedBy, undefined);
@@ -404,4 +405,18 @@ test("project conversion derives ordered distinct area agents and drops child as
   assert.deepEqual(verifyConverted(source,out),[]);
   const bad=structuredClone(out); bad.board.projects[1]!.agents.push("Child session");
   assert.ok(verifyConverted(source,bad).some(s=>s.startsWith("board metadata")));
+});
+
+test("a card is new in the read state as on the old page: dated after its item's read, unless read on its own", () => {
+  const input = fullFixture();
+  // Item "old" was read at t2; both cards are dated t3, after that read.
+  input.decisions.push(row("newCard", { item: "old", question: "New?", background: "B", options: [{ key: "A", text: "A" }], status: "open", at: t3 }));
+  input.decisions.push(row("seenCard", { item: "old", question: "Seen?", background: "B", options: [{ key: "A", text: "A" }], status: "open", at: t3 }));
+  input.decisions.push(row("undated", { item: "old", question: "Undated?", background: "B", options: [{ key: "A", text: "A" }], status: "open" }));
+  input.reads.push(row("q:seenCard", { at: t4 }));
+  const out = convertExport(input);
+  assert.equal(out.asRead.decisions.newCard, undefined, "dated after the item's read: new");
+  assert.ok(out.asRead.decisions.seenCard, "read on its own: not new");
+  assert.ok(out.asRead.decisions.undated, "undated: not known to be new");
+  assert.deepEqual(verifyConverted(input, out), []);
 });
