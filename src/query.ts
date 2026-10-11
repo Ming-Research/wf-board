@@ -38,12 +38,12 @@ interface Field { field: string; text: string; rank: number; time?: string; inde
 function fields(s: Snapshot, kind: Kind, id: string): Field[] {
   if (kind === "item") {
     const it = s.items[id]!;
-    return [{ field: "title", text: it.title, rank: 0 }, ...["head", "data"] .map(field => ({ field, text: it[field as "head" | "data"] ?? "", rank: 1 })),
+    return [{ field: "id", text: id, rank: 0 }, { field: "title", text: it.title, rank: 0 }, ...["head", "data"] .map(field => ({ field, text: it[field as "head" | "data"] ?? "", rank: 1 })),
       { field: "ask", text: it.ask?.text ?? "", rank: 1 }, ...it.log.map((l, i) => ({ field: `log[${i}]`, text: `${l.at} ${l.by ?? ""} ${l.text}`, rank: 2, time: l.at, index: i }))];
   }
   if (kind === "card") {
     const card = s.decisions[id]!;
-    return ["question", "background", "ruling"].map(field => ({ field, text: card[field as "question" | "background" | "ruling"] ?? "", rank: 1 }))
+    return [{ field: "id", text: id, rank: 0 }, ...["question", "background", "ruling"].map(field => ({ field, text: card[field as "question" | "background" | "ruling"] ?? "", rank: 1 }))]
       .concat(card.options.map(o => ({ field: `option.${o.key}`, text: o.text, rank: 1 })));
   }
   const n = s.notes[id]!;
@@ -58,6 +58,19 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
   validateScope(s, f);
   if (!query.trim()) throw new Error("query: provide nonempty substring text");
   const hits: Array<Hit & { rank: number; index: number }> = [], needle = query.toLowerCase();
+  // A PR-shaped query ("Whitefoot#343", "Whitefoot #343", "Whitefoot PR #343") also finds the
+  // documents the PR index attributes to it, however their text spells the reference.
+  const pr = /^\s*([A-Za-z0-9_.-]+)\s*(?:PR\s*)?#(\d+)\s*$/i.exec(query);
+  if (pr) {
+    const found = prs(s, r, pr[1]!, Number(pr[2]));
+    for (const [list, rank, label] of [[found.qualified, 0, `${pr[1]}#${pr[2]}`], [found.unknown, 2, `#${pr[2]}（未写仓库，可能是别的仓库）`]] as const)
+      for (const h of list) {
+        if (f.kind && !f.kind.includes(h.kind)) continue;
+        const owner = itemId(s, h.kind, h.id);
+        if (!inScope(r, owner, f) || f.status && !f.status.includes(r.statusOf(owner))) continue;
+        hits.push({ ...h, field: "pr", snippet: `«${label}»`, rank, index: 0 });
+      }
+  }
   for (const kind of f.kind ?? ["item", "card", "note"]) {
     const docs = kind === "item" ? s.items : kind === "card" ? s.decisions : s.notes;
     for (const id of Object.keys(docs)) {

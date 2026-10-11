@@ -205,3 +205,22 @@ test("timestamp filters and newest-first order honor milliseconds, with later ap
   assert.deepEqual(q.notes(mixed).map(n => n.id), ["note-2", "note-1"]);
   assert.deepEqual(q.notes(mixed, { since: threshold }).map(n => n.id), ["note-2"]);
 });
+
+test("search finds a document by its key, and a PR-shaped query through the PR index", async t => {
+  const { store } = await board(t), s = store.snapshot(), r = rules(s);
+  const byKey = q.search(s, r, "choice");
+  assert.equal(byKey[0]!.id, "choice"); assert.equal(byKey[0]!.field, "id");
+  // "Whitefoot#341" appears verbatim only in a's head; the PR index also attributes
+  // "Whitefoot PR #341" (card) and "Whitefoot #341" (note) to it, and b's bare #341 to an unknown repository.
+  const pr = q.search(s, r, "Whitefoot#341", { limit: 50 }).filter(h => h.field === "pr");
+  assert.deepEqual(pr.filter(h => h.snippet === "«Whitefoot#341»").map(h => `${h.kind}:${h.id}`).sort(), ["card:choice", "item:a", "note:note-1"]);
+  assert.ok(pr.some(h => h.id === "b" && h.snippet.includes("未写仓库")));
+  assert.deepEqual(q.search(s, r, "Whitefoot #341", { kind: ["note"] }).filter(h => h.field === "pr").map(h => h.id), ["note-1", "note-2"]);
+});
+
+test("context names the responsible session, saying when it is inherited", async t => {
+  const { formatContext } = await import("../src/mcp.ts");
+  const { store } = await board(t), s = store.snapshot(), r = rules(s);
+  assert.match(formatContext(q.context(s, r, "a")), /^agent: MCP session \(inherited from an ancestor\)$/m);
+  assert.match(formatContext(q.context(s, r, "area")), /^agent: MCP session$/m);
+});
