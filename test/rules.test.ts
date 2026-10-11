@@ -7,8 +7,8 @@ import { rules } from "../src/rules.ts";
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}, archived: Record<string, string> = {}): Snapshot {
   return {
-    board: { title: "Synthetic" }, head: "0".repeat(40),
-    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, agent: "session", updated: T0, rev: 1, ...fields })])),
+    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name,agents:["session"]})) }, head: "0".repeat(40),
+    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
     owner: { archived },
@@ -20,8 +20,8 @@ const card = (key: string, why = "needs ruling") => ({ card: key, why });
 test("tree lookup, unsorted children, grouped areas, inheritance and missing ids", () => {
   const s = snapshot({
     a: { group: "First", order: 9 }, z: { group: "Second", order: -4 }, a2: { group: "First", order: 1 },
-    c2: { parent: "a", order: 2, agent: undefined }, c1: { parent: "a", order: 1, agent: "handover" },
-    leaf: { parent: "c1", agent: undefined }, orphan: { parent: "absent", agent: undefined },
+    c2: { parent: "a", order: 2 }, c1: { parent: "a", order: 1 },
+    leaf: { parent: "c1" }, orphan: { parent: "absent" },
   });
   const r = rules(s);
   assert.equal(r.item("a"), s.items.a);
@@ -38,14 +38,14 @@ test("tree lookup, unsorted children, grouped areas, inheritance and missing ids
   assert.equal(r.lineOf("leaf"), "a");
   assert.equal(r.lineOf("a"), "a");
   assert.equal(r.groupOf("leaf"), "First");
-  assert.equal(r.agentFor("c2"), "session");
-  assert.equal(r.agentFor("leaf"), "handover");
-  assert.equal(r.agentFor("orphan"), "");
+  assert.deepEqual(r.agentsFor("c2"), ["session"]);
+  assert.deepEqual(r.agentsFor("leaf"), ["session"]);
+  assert.deepEqual(r.agentsFor("orphan"), ["session"]);
   assert.equal(r.isLeaf("a"), false);
   assert.equal(r.isLeaf("leaf"), true);
   assert.equal(r.lineOf("absent"), "absent");
   assert.equal(r.groupOf("absent"), "");
-  assert.equal(r.agentFor("absent"), "");
+  assert.deepEqual(r.agentsFor("absent"), []);
   assert.equal(r.isLeaf("absent"), false); // dangling children remain indexed
   assert.equal(r.statusOf("unknown"), "todo");
   assert.equal(r.priorityOf("unknown"), "");
@@ -217,11 +217,11 @@ test("archives use the latest update, any log and replied notes with legacy time
 
 const C = {
   missing: "依赖的条目不存在：missing", missingCard: "依赖的决策卡不存在：absent", cancelled: "依赖的条目已取消",
-  why: "依赖没写为什么：", cycle: "依赖成环", agent: "顶层条目没有负责会话（agent）", parent: "上级条目不存在：missing",
+  why: "依赖没写为什么：", cycle: "依赖成环", project: "项目没有配置：", parent: "上级条目不存在：missing",
   unlisted: "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", unblock: "可解除阻塞：等的都已完成",
   blocker: "卡住了，但没写在等什么", wip: "标为进行中，但还在等别的",
 };
-test("every legacy check has the exact text, condition, suppression and target", () => {
+test("legacy checks apart from superseded per-item ownership have the exact text, condition, suppression and target", () => {
   const cases: Array<[Partial<Item>, Record<string, Partial<Item>>, Array<{ text: string; target?: { kind: "item"; id: string } }>]> = [
     [{ deps: [dep("missing")] }, {}, [{ text: C.missing }]],
     [{ deps: [dep("cancelled", "")] }, { cancelled: { status: "cancelled" } }, [{ text: C.cancelled, target: { kind: "item", id: "cancelled" } }]],
@@ -229,7 +229,7 @@ test("every legacy check has the exact text, condition, suppression and target",
     [{ status: "done", deps: [dep("other", "")] }, { other: {} }, []],
     [{ status: "cancelled", deps: [dep("other", "")] }, { other: {} }, []],
     [{ deps: [dep("a")] }, {}, [{ text: C.cycle }]],
-    [{ agent: undefined }, {}, [{ text: C.agent }]],
+    [{ group: undefined }, {}, [{ text: C.project }]],
     [{ parent: "missing" }, {}, [{ text: C.parent }]],
     [{ parent: "p" }, { p: {} }, [{ text: C.unlisted, target: { kind: "item", id: "p" } }]],
     [{ parent: "p", status: "done" }, { p: {} }, []],
@@ -294,4 +294,17 @@ test("cached result arrays are isolated and rules never mutate the snapshot", ()
   const next = { ...s, items: { ...s.items, b: { ...s.items.b!, status: "done" as const, priority: "P0" as const } } };
   assert.equal(rules(next).statusOf("a"), "done");
   assert.equal(r.statusOf("a"), "todo");
+});
+
+test("project rules resolve membership, flag configuration and separate ordered inboxes", () => {
+  const s: Snapshot = {board:{title:"Projects",projects:[{name:"P",agents:["a","b"]},{name:"Empty",agents:[]}]},head:"",owner:{archived:{}},notes:{},decisions:{},items:{}};
+  for (const [id, fields] of Object.entries({area:{group:"P"},child:{parent:"area"},empty:{group:"Empty"},missing:{group:"Missing"},newer:{group:"P",request:{by:"x",at:T2}},older:{group:"P",request:{by:"x",at:T1}},closed:{group:"P",request:{by:"x",at:T0},status:"cancelled"}})) s.items[id] = Item.parse({title:id,updated:T0,rev:1,...fields});
+  const r = rules(s);
+  assert.deepEqual(r.agentsFor("child"),["a","b"]); assert.equal(r.projectOf("child"),"P");
+  const copy = r.agentsFor("child"); copy.pop(); assert.deepEqual(r.agentsFor("child"),["a","b"]);
+  assert.deepEqual(r.agentsFor("missing"),[]);
+  assert.deepEqual(r.checks("empty").map(c=>c.text),["项目没有负责的会话：Empty"]);
+  assert.deepEqual(r.checks("missing").map(c=>c.text),["项目没有配置：Missing"]);
+  assert.deepEqual(r.inbox("P"),["older","newer"]); assert.equal(r.isRequest("closed"),false);
+  assert.ok(!r.areas().includes("older")); assert.ok(!r.areas().includes("newer"));
 });

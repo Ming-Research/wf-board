@@ -83,7 +83,7 @@ test("graph follows up/down item and card deps, marks cycles and open blocked ch
 test("overview/list/notes honor derived statuses, effective priority, inheritance and each filter", async t => {
   const { store, op } = await board(t);
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
-  const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" });
+  const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P0"], agent: author }).map(it => it.id), ["b"]);
@@ -108,7 +108,7 @@ test("PR index separates qualified text, links, cards, notes and bare refs, avoi
 });
 
 test("changes summarizes net fields over commits, groups areas, and history/diff reproduce evidence", async t => {
-  const { store, op } = await board(t), baseline = store.snapshot().head;
+  const { store, op } = await board(t, {sharedProjects:true}), baseline = store.snapshot().head;
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
@@ -219,9 +219,54 @@ test("search finds a document by its key, and a PR-shaped query through the PR i
   assert.deepEqual(q.search(s, r, "Whitefoot #341", { kind: ["note"] }).filter(h => h.field === "pr").map(h => h.id), ["note-1", "note-2"]);
 });
 
-test("context names the responsible session, saying when it is inherited", async t => {
+test("context names the responsible project and its agents", async t => {
   const { formatContext } = await import("../src/mcp.ts");
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
-  assert.match(formatContext(q.context(s, r, "a")), /^agent: MCP session \(inherited from an ancestor\)$/m);
-  assert.match(formatContext(q.context(s, r, "area")), /^agent: MCP session$/m);
+  assert.match(formatContext(q.context(s, r, "a")), /^agents: MCP session \(project Whitefoot\)$/m);
+  assert.match(formatContext(q.context(s, r, "area")), /^agents: MCP session \(project Whitefoot\)$/m);
+});
+
+test("project brief and projects include inbox, sent notes, checks, work and outgoing requests", async t => {
+  const {store,op} = await board(t);
+  await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",priority:"P0",why:"Need help"});
+  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",priority:"P2",why:"Need feature",from:"a"});
+  await op.setStatus({author,id:"a",status:"done",log:"Ready"});
+  await op.ruleCard({author,key:"choice",choice:"A",ruling:"Chosen"});
+  await store.commit({author:"Fixture",message:"Card note and work",puts:[
+    {kind:"note",id:"sent-card",expectRev:null,doc:{target:"q:choice",kind:"done",text:"Card handled?",state:"sent",at,sentAt:at}},
+    ...Array.from({length:12},(_,i)=>({kind:"item" as const,id:`todo-${i}`,expectRev:null,doc:{title:`Todo ${i}`,group:"Whitefoot",status:"todo",priority:i===11?"P0":"P2",updated:at}})),
+    {kind:"item",id:"working",expectRev:null,doc:{title:"Working",group:"Whitefoot",status:"wip",priority:"P1",updated:at}},
+  ]});
+  await op.writeCard({author,key:"open-card",item:"working",question:"Choose?",background:"Why",options:[{key:"A",text:"A"}]});
+  const s = store.snapshot(), r = rules(s);
+  const brief = q.brief(s,r,"Whitefoot");
+  assert.deepEqual(brief.agents,[author]);
+  assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Visitor",why:"Need help"}]);
+  assert.deepEqual(brief.notes.map(x=>x.id).sort(),["note-1","sent-card"]);
+  assert.equal(brief.notes.find(x=>x.id==="sent-card")!.title,"中文方案？");
+  assert.ok(brief.checks.some(x=>x.id==="b" && x.checks.some(c=>c.text.startsWith("可解除阻塞"))));
+  assert.deepEqual(brief.cards.map(x=>x.id),["open-card"]);
+  assert.deepEqual(brief.wip.map(x=>x.id),["working"]);
+  assert.equal(brief.todo.length,10); assert.equal(brief.todo[0]!.id,"todo-11");
+  assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"]);
+  const project = q.projects(s,r)[0]!;
+  assert.equal(project.repo,"Ming-Research/Whitefoot"); assert.equal(project.inbox,1); assert.equal(project.areas,14);
+  assert.deepEqual(project.openLeaves,{todo:12,wip:1,blocked:1});
+  assert.throws(()=>q.brief(s,r,"Missing"),/project/);
+  assert.ok(q.list(s,r,{agent:author}).every(x=>x.agents.includes(author)));
+});
+
+test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
+  const {store,op} = await board(t);
+  await op.createRequest({author:"Visitor",project:"Firn",key:"old-request",title:"Old",head:"Detail",priority:"P1",why:"Need"});
+  const s = structuredClone(store.snapshot());
+  s.items["old-request"]!.request!.at=at;
+  s.notes.fresh={...s.notes["note-1"]!,sentAt:later};
+  s.notes.draft={...s.notes["note-1"]!,state:"draft"};
+  const r=rules(s), cutoff = new Date(Date.parse(at)+60*60000).toISOString();
+  assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[],requests:[]});
+  const f=q.followups(s,r,{minutes:59},cutoff);
+  assert.deepEqual(f.notes.map(n=>n.id),["note-1"]);
+  assert.deepEqual(f.requests.map(n=>[n.id,n.project,n.agents]),[["old-request","Firn",["Other session"]]]);
+  assert.throws(()=>q.followups(s,r,{minutes:-1},cutoff),/minutes/);
 });

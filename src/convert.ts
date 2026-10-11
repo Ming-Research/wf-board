@@ -91,6 +91,19 @@ export function convertExport(exportJson: unknown): Converted {
     parents[id] = string(raw.parent) ?? string(raw.area);
     if (raw.area !== undefined) report("Fold area into parent (a nonempty parent wins, else area)", id);
   }
+  const areas = input.items.filter(row => !parents[row.id]).slice().sort((a,b) => Number(a.data.order || 0) - Number(b.data.order || 0));
+  for (const { id, data: raw } of areas) {
+    const name = string(raw.group);
+    if (!name) continue; // Existing malformed areas remain visible through rules checks.
+    let project = board.projects.find(p => p.name === name);
+    if (!project) { project = { name, agents: [] }; board.projects.push(project); }
+    const agent = string(raw.agent);
+    if (agent && !project.agents.includes(agent)) project.agents.push(agent);
+  }
+  for (const [id, raw] of Object.entries(items)) if (raw.agent !== undefined) {
+    z.string().parse(raw.agent);
+    report(parents[id] ? "Drop child agent" : "Drop area agent", id);
+  }
   const hasChildren = new Set(Object.values(parents).filter((p): p is string => p !== undefined));
   function exists(target: unknown): boolean {
     if (typeof target !== "string") return false;
@@ -118,7 +131,7 @@ export function convertExport(exportJson: unknown): Converted {
 
   for (const id of Object.keys(items)) rootGroup(id);
   for (const [id, raw] of Object.entries(items)) {
-    const doc: Raw = optionalFields(raw, ["title", "agent", "group", "order", "status", "priority", "data", "links"]);
+    const doc: Raw = optionalFields(raw, ["title", "group", "order", "status", "priority", "data", "links"]);
     // Area short names labelled dependency rows; the owner reads projects, not areas, so they are dropped.
     if (raw.short !== undefined && raw.short !== "") report("Drop area short name", id);
     if (parents[id]) doc.parent = parents[id];

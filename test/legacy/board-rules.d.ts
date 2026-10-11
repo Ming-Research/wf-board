@@ -2,6 +2,7 @@ import type { Decision, Item, Note } from "../../src/model.ts";
 
 export interface LegacyItem extends Partial<Omit<Item, "ask" | "deps">> {
   id: string;
+  agent?: string;
   area?: string;
   text?: string;
   ask?: string;

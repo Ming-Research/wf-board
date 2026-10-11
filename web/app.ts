@@ -33,7 +33,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板" }, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let shownStop: string | null = null;
@@ -164,7 +164,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
   function groupOf(it: ViewItem) { return derived.groupOf(it.id); }
-  function agentFor(it: ViewItem | null | undefined) { return it ? derived.agentFor(it.id) : ""; }
+  function agentsFor(it: ViewItem | null | undefined) { return it ? derived.agentsFor(it.id) : []; }
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
@@ -275,7 +275,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function boardOrderNow() {
     const out: ViewItem[] = [];
     const walk = (list: ViewItem[]) => list.forEach(i => { out.push(i); walk(kids(i.id)); });
-    walk(tops());
+    for (const g of projectGroups()) { walk(derived.inbox(g.name).map(id => index().byId.get(id)!)); walk(g.items); }
     return out;
   }
   function homeOf(d: ViewDecision) { return index().byId.has(d.item) ? d.item : null; }
@@ -985,7 +985,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     if (raised) pb.title = "写的是 " + (wrote || "未设") + "；因为「" + plain(raised.title) + "」(" + effPriorityOf(raised) + ") 在等它";
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
-    // The responsible session shows where it is set and differs from the parent's: on a top-level item, or on a handed-over one.
     head.appendChild(el("span", "item-title", inline(it.title)));
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
@@ -1098,7 +1097,44 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       sub.forEach(k => ul.appendChild(itemNode(k, inArchive)));
       li.appendChild(ul);
     }
+    if (derived.isRequest(it.id)) {
+      const prefix = `${it.request!.by} 提出：`, first = it.log[0]?.text || "";
+      li.appendChild(el("div", "request-meta", esc(it.request!.by) + " · " + esc(day(it.request!.at)) + " · " + inline(first.startsWith(prefix) ? first.slice(prefix.length) : first)));
+    }
     return li;
+  }
+  function projectGroups() {
+    const groups: Array<{name:string;items:ViewItem[]}> = snapshot.board.projects.map(p => ({name:p.name,items:[]}));
+    tops().forEach(t => { const name = t.group || ""; let group = groups.find(g => g.name === name); if (!group) { group = {name,items:[]}; groups.push(group); } group.items.push(t); });
+    return groups;
+  }
+  const requestDrafts = new Map<string, {title:string;text:string;priority:string;sending:boolean}>();
+  function requestForm(project: string) {
+    const draft = requestDrafts.get(project)!;
+    const form = el("div", "request-form");
+    const title = el("input"); title.value = draft.title; title.placeholder = "标题"; title.setAttribute("aria-label", "需求标题");
+    const text = el("textarea"); text.value = draft.text; text.placeholder = "需求内容"; text.setAttribute("aria-label", "需求内容"); text.id = "request-text-" + project;
+    const priority = el("select"); priority.setAttribute("aria-label", "优先级");
+    for (const p of ["P0","P1","P2"]) { const option = el("option", null, p); option.value = p; priority.appendChild(option); }
+    priority.value = draft.priority;
+    title.addEventListener("input", () => { draft.title = title.value; });
+    text.addEventListener("input", () => { draft.text = text.value; });
+    priority.addEventListener("input", () => { draft.priority = priority.value; });
+    const submit = el("button", "sendbtn", draft.sending ? "提交中…" : "提交"); submit.type = "button"; submit.disabled = draft.sending;
+    submit.addEventListener("click", async () => {
+      if (draft.sending) return;
+      if (!draft.title.trim() || !draft.text.trim()) { showError(new Error("请填写标题和需求内容。")); return; }
+      draft.sending = true; submit.disabled = true;
+      try {
+        await api("/api/requests", {project,title:draft.title,text:draft.text,priority:draft.priority});
+        requestDrafts.delete(project); renderAreas();
+      } catch (e) { showError(e); }
+      finally { draft.sending = false; renderAreas(); }
+    });
+    const cancel = el("button", "topbtn", "取消"); cancel.type = "button"; cancel.disabled = draft.sending;
+    cancel.addEventListener("click", () => { if (!draft.sending) { requestDrafts.delete(project); renderAreas(); } });
+    form.appendChild(title); form.appendChild(text); form.appendChild(priority); form.appendChild(submit); form.appendChild(cancel);
+    return form;
   }
   function renderAreas() {
     const root = get("areas");
@@ -1106,20 +1142,33 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     root.innerHTML = ""; nav.innerHTML = "";
     countBelow();
     // Top-level items render under their project group; under a dependency filter only those holding a match show.
-    const top = tops();
-    if (!top.length) { root.appendChild(el("p", "empty", "看板还没有内容。")); appendStep(root, "history"); return; }
+    const groups = projectGroups();
+    if (!groups.length) { root.appendChild(el("p", "empty", "看板还没有内容。")); appendStep(root, "history"); return; }
     const wrap = el("div"); wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "34px";
-    const groups: Array<{name:string;items:ViewItem[]}> = [];
-    top.forEach(t => { const g = t.group || ""; let e = groups.find(x => x.name === g); if (!e) { e = { name: g, items: [] }; groups.push(e); } e.items.push(t); });
     groups.forEach((g, gi) => {
       const box = el("section", "group");
       box.id = "group-" + gi;
       box.dataset.title = plain(g.name || "其他");
       const gh = el("h2", "group-head", inline(g.name || "其他"));
+      const project = snapshot.board.projects.find(p => p.name === g.name);
+      gh.appendChild(el("span", "project-agents", "负责：" + esc(project?.agents.join("、") || "未指定")));
+      if (project) {
+        const request = el("button", "topbtn", "提需求"); request.type = "button";
+        request.addEventListener("click", () => { if (!requestDrafts.has(g.name)) requestDrafts.set(g.name,{title:"",text:"",priority:"P1",sending:false}); renderAreas(); });
+        gh.appendChild(request);
+      }
       const xs = crossSummary(g.name);
       if (xs) { const x = el("button", "xdeps", esc(xs)); x.type = "button"; x.title = "只看跨项目依赖"; x.addEventListener("click", () => setDepFilter(g.name, "cross")); gh.appendChild(x); }
       box.appendChild(gh);
       const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl);
+      if (requestDrafts.has(g.name)) box.appendChild(requestForm(g.name));
+      const requests = derived.inbox(g.name);
+      if (requests.length) {
+        const inbox = el("section", "inbox"); inbox.appendChild(el("h3", null, "收件箱 " + requests.length));
+        const rows = el("ul", "tree lines");
+        for (const id of requests) rows.appendChild(itemNode(index().byId.get(id)!));
+        inbox.appendChild(rows); box.appendChild(inbox);
+      }
       box.appendChild(filterRow(g.name));
       const shown = g.items.filter(passes);
       if (shown.length) { const ul = el("ul", "tree lines"); shown.forEach(t => ul.appendChild(itemNode(t))); box.appendChild(ul); }
@@ -1298,10 +1347,10 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   get<HTMLButtonElement>("send-all").addEventListener("click", async () => {
     if (sending) return; sending = true; sendMessage = ""; renderSend();
     try {
-      const result = await api<{sent: Array<{agent: string}>}>("/api/send", {});
+      const result = await api<{sent: Array<{agents: string[]}>}>("/api/send", {});
       const counts = new Map<string,number>();
-      result.sent.forEach(n => counts.set(n.agent || "未指定负责会话", (counts.get(n.agent || "未指定负责会话") || 0) + 1));
-      sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([agent,n]) => agent + "×" + n).join(" … ");
+      result.sent.forEach(n => (n.agents.length ? n.agents : ["未指定负责会话"]).forEach(agent => counts.set(agent, (counts.get(agent) || 0) + 1)));
+      sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([agent,n]) => agent + "×" + n).join(" · ");
     } catch(e) { showError(e); } finally { sending = false; renderSend(); }
   });
 
@@ -1419,7 +1468,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     changedFields(box,shown,after,[
       ["status","状态", v => v == null ? "未设" : STATUS[String(v)] || String(v)],
       ["priority","优先级"], ["data","数字"], ["ask","请求",askText],
-      ["agent","负责会话"], ["parent","上级",itemName],
+      ["parent","上级",itemName],
       ["group","项目"], ["order","排序"],
     ]);
     if (before && after) {

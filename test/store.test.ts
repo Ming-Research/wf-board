@@ -403,3 +403,10 @@ test("R1 case aliases are refused before disk writes, including aliases in a sin
     assert.deepEqual(store.snapshot(), before);
   }
 });
+
+test("project schema defaults, uniqueness and nonempty configuration", async () => {
+  const { Board } = await import("../src/model.ts");
+  assert.deepEqual(Board.parse({ title: "Old board" }).projects, []);
+  assert.deepEqual(Board.parse({ title: "Board", projects: [{ name: "P", agents: ["a", "b"], repo: "Org/P" }] }).projects, [{ name: "P", agents: ["a", "b"], repo: "Org/P" }]);
+  for (const projects of [[{ name: "P", agents: [] }, { name: "P", agents: [] }], [{ name: "P", agents: ["a", "a"] }], [{ name: "", agents: [] }], [{ name: "P", agents: [""] }], [{ name: "P", agents: [], repo: "" }]]) assert.equal(Board.safeParse({ title: "Board", projects }).success, false);
+});

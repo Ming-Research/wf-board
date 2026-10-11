@@ -2,7 +2,11 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { Priority } from "./model.ts";
+import type { Item, Note } from "./model.ts";
+import { rules } from "./rules.ts";
+import { randomInt, randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -92,14 +96,18 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       }
     }
     if (method === "POST") {
+      if (path === "/api/requests") {
+        const parsed = z.object({project:z.string().min(1),title:z.string().min(1),text:z.string().min(1),priority:Priority}).strict().safeParse(await body(req));
+        if (!parsed.success) throw new OpError(parsed.error.message);
+        const a = parsed.data;
+        let key: string;
+        do { key = "req-" + Array.from({length:10}, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(store.snapshot().items,key) || Object.hasOwn(store.snapshot().decisions,key));
+        const result = await deps.ops.createRequest({author:"owner",project:a.project,key,title:a.title,head:a.text,priority:a.priority,why:a.text});
+        json(res,200,{id:result.id}); return;
+      }
       if (path === "/api/notes") { const result = await ownerOps.createNote(args(await body(req))); json(res, 200, { id: result.id }); return; }
       if (path === "/api/send") {
-        const result = await ownerOps.send(), s = store.snapshot();
-        for (const note of result.sent) {
-          const title = note.target.startsWith("it:") ? s.items[note.target.slice(3)]?.title : s.decisions[note.target.slice(2)]?.question;
-          const data = JSON.stringify({ note: note.id, target: note.target, kind: note.kind, agent: note.agent, title: title ?? note.target });
-          for (const connection of connections) if ((connection.session === "*" || connection.session === note.agent) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
-        }
+        const result = await ownerOps.send();
         json(res, 200, result); return;
       }
       if (path === "/api/archive") { ownerOps.archive(args(await body(req))); json(res, 200, { ok: true }); return; }
@@ -128,7 +136,23 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       socket.on("close", () => connections.delete(connection));
     });
   });
+  function wake(event: { agents: string[] } & Record<string, unknown>) {
+    const data = JSON.stringify(event);
+    for (const connection of connections) if ((connection.session === "*" || event.agents.includes(connection.session)) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
+  }
   const off = store.onChange(change => {
+    const s = store.snapshot(), r = rules(s);
+    for (const doc of change.changed) {
+      if (doc.kind === "item" && doc.before === null && (doc.after as Item | null)?.request) {
+        const it = doc.after as Item;
+        wake({event:"request",item:doc.id,title:it.title,project:r.projectOf(doc.id),agents:r.agentsFor(doc.id),by:it.request!.by});
+      }
+      if (doc.kind === "note" && (doc.after as Note | null)?.state === "sent" && (doc.before as Note | null)?.state !== "sent") {
+        const n = doc.after as Note, card = n.target.startsWith("q:") ? s.decisions[n.target.slice(2)] : undefined;
+        const item = card?.item ?? n.target.slice(3);
+        wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item),agents:r.agentsFor(item)});
+      }
+    }
     const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
     for (const stream of streams) stream.write(data);
   });

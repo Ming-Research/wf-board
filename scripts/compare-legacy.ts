@@ -31,10 +31,11 @@ export function compareExport(data: LegacyExport) {
     archived: Object.fromEntries(data.archived.map(({ id, data: fields }) => [id, fields])),
   };
   const legacy = legacyRules(old);
-  const snapshot: Pick<Snapshot, "items" | "decisions" | "notes" | "owner"> = {
+  const snapshot: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> = {
+    board: { title: "Legacy comparison", projects: [] },
     items: Object.fromEntries(old.items.map(it => [it.id, Item.parse({
       title: it.title || it.id, parent: it.parent || it.area || undefined,
-      agent: it.agent || undefined, group: it.group || undefined, order: it.order,
+      group: it.group || undefined, order: it.order,
       status: it.status, priority: it.priority, head: it.head || it.text || undefined,
       ask: it.ask ? { text: it.ask, url: it.askUrl || undefined, chat: it.askChat } : undefined,
       log: (it.log || []).map(e => ({ ...e, at: fixTime(e.at) })), deps: (it.deps || []).map(e => typeof e === "string" ? { id: e, why: "" } : { id: e.id, why: e.why || "" }),

@@ -46,14 +46,13 @@ export type Ask = z.infer<typeof Ask>;
 
 /**
  * An item. An item without `parent` is an area: a line of work with its
- * responsible session (`agent`) and the project heading it renders under
- * (`group`). `status` and `priority` belong to leaves; a parent's are derived
+ * project heading (`group`); responsibility comes from Board.projects. `status` and `priority` belong to leaves; a parent's are derived
  * from its sub-items (src/rules.ts).
  */
 export const Item = z.object({
   title: z.string().min(1),
   parent: Key.optional(),
-  agent: z.string().min(1).optional(),
+  request: z.object({ by: z.string().min(1), at: Time }).strict().optional(),
   group: z.string().min(1).optional(),
   order: z.number().optional(),
   status: Status.optional(),
@@ -125,7 +124,15 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
+export const Project = z.object({
+  name: z.string().min(1),
+  agents: z.array(z.string().min(1)).refine(a => new Set(a).size === a.length, "Project agents must be unique"),
+  repo: z.string().min(1).optional(),
+}).strict();
+export type Project = z.infer<typeof Project>;
+
 export const Board = z.object({
+  projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
   title: z.string().min(1),
   eyebrow: z.string().optional(),
   goal: z.string().optional(),
