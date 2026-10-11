@@ -9,9 +9,9 @@ import { describeChanges } from "./query.ts";
 export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev: number; summary: string }
 export interface Ops {
-  createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; parentOwnWork?: { key: string; title: string }; links?: Link[]; data?: string; agent?: string; group?: string; short?: string; order?: number }): Promise<Result>;
+  createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; parentOwnWork?: { key: string; title: string }; links?: Link[]; data?: string; agent?: string; group?: string; order?: number }): Promise<Result>;
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
-  updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number; agent?: string | null; short?: string | null }): Promise<Result>;
+  updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number; agent?: string | null }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; parent: string; parentWhy: string; parentOwnWork?: { key: string; title: string }; sourceStatus?: Status; sourcePriority?: Priority }): Promise<Result>;
   setAsk(a: { author: string; id: string; text: string; url?: string; chat?: boolean }): Promise<Result>;
@@ -146,7 +146,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
       const doc = { ...it, updated: at };
-      for (const key of ["title", "head", "deps", "links", "priority", "data", "order", "agent", "short"] as const) {
+      for (const key of ["title", "head", "deps", "links", "priority", "data", "order", "agent"] as const) {
         const value = a[key];
         if (value === null) delete doc[key];
         else if (value !== undefined) Object.assign(doc, { [key]: value });

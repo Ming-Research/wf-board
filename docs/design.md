@@ -330,7 +330,7 @@ cite them.
    otherwise its earliest update/note time, or export time, supplies the available
    dating evidence. This cannot recover an undated card's actual
    creation time. Card contents and rulings were not snapshotted and stay
-   current for cards that remain. Item parent, agent, group, short, order,
+   current for cards that remain. Item parent, agent, group, order,
    links, ask and created also stay current; older snapshots leave any missing
    fields current. Note contents stay current except unread replies are hidden using
    target/all read times (the legacy item freshness floor does not read replies).

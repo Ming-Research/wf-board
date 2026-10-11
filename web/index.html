@@ -186,6 +186,9 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .ref.q.shown { border-color: var(--accent); }
 .asktag { font-size: 12px; font-weight: 600; background: var(--ask); color: var(--surface); padding: 0 7px; border-radius: 4px; }
 .body { display: flex; flex-direction: column; gap: 4px; padding-left: 1.6em; }
+/* Each part of an open item (被依赖, 正文, 依赖, 进展, request, cards, checks, links) sits under a rule; the numbers line belongs to the head. */
+.body > * + * { border-top: 1px solid var(--rule); padding-top: 8px; margin-top: 4px; }
+.body > .rich + .data { border-top: 0; padding-top: 0; margin-top: 0; }
 .body p { margin: 0; max-width: 78ch; font-size: 14px; }
 .body .data { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ask { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 14.5px; font-weight: 500; max-width: 78ch; }

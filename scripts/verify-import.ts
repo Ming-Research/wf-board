@@ -53,7 +53,7 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
   const expected: { items: Record<string, Raw>; decisions: Record<string, Raw>; notes: Record<string, Raw> } = { items: {}, decisions: {}, notes: {} };
   const dependency = (target: string, why: unknown) => !itemMap.has(target) && decisionIds.has(target) ? { card: target, why } : { id: target, why };
   for (const { id, data: raw } of items) {
-    const doc = fields(raw, ["title", "agent", "group", "short", "order", "status", "priority", "data", "links"]);
+    const doc = fields(raw, ["title", "agent", "group", "order", "status", "priority", "data", "links"]);
     doc.title ??= `（缺标题）${id}`;
     if (parent(raw)) doc.parent = parent(raw);
     const head = optional(raw.head ?? raw.text);

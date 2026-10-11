@@ -1418,7 +1418,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       ["status","状态", v => v == null ? "未设" : STATUS[String(v)] || String(v)],
       ["priority","优先级"], ["data","数字"], ["ask","请求",askText],
       ["agent","负责会话"], ["parent","上级",itemName],
-      ["group","项目"], ["short","简称"], ["order","排序"],
+      ["group","项目"], ["order","排序"],
     ]);
     if (before && after) {
       if (before.head !== after.head) box.appendChild(headChanges(before.head || "",after.head || ""));

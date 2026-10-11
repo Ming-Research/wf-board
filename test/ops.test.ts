@@ -86,15 +86,15 @@ test("each operation records its effects, author and single atomic commit", asyn
     assert.deepEqual(log[0]!.files.slice().sort(), files.sort());
     return result;
   }
-  await committed(() => op.createItem({ author, key: "new", parent: "area", parentWhy: "Delivers proof", title: "New", head: "Stable", priority: "P2", links: [], agent: "Child session", short: "N", order: 4, data: "4 cases" }), "create_item new", ["items/new.yaml", "items/area.yaml"]);
+  await committed(() => op.createItem({ author, key: "new", parent: "area", parentWhy: "Delivers proof", title: "New", head: "Stable", priority: "P2", links: [], agent: "Child session", order: 4, data: "4 cases" }), "create_item new", ["items/new.yaml", "items/area.yaml"]);
   assert.deepEqual(store.snapshot().items.area!.deps.at(-1), { id: "new", why: "Delivers proof" });
   assert.equal(store.snapshot().items.new!.created, later); assert.equal(store.snapshot().items.new!.status, "todo");
   await committed(() => op.appendLog({ author, id: "new", text: "Evidence" }), "append_log new", ["items/new.yaml"]);
   assert.deepEqual(store.snapshot().items.new!.log[0], { at: later, by: author, text: "Evidence" });
-  await committed(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", deps: [{ card: "choice", why: "Needs ruling" }], links: [{ label: "PR", url: "https://github.com/Ming-Research/Whitefoot/pull/1" }], priority: "P0", data: null, agent: null, short: null, order: 2 }), "update_item new", ["items/new.yaml"]);
+  await committed(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", deps: [{ card: "choice", why: "Needs ruling" }], links: [{ label: "PR", url: "https://github.com/Ming-Research/Whitefoot/pull/1" }], priority: "P0", data: null, agent: null, order: 2 }), "update_item new", ["items/new.yaml"]);
   const revised = store.snapshot().items.new!;
   assert.equal(revised.head, "Revised"); assert.equal(revised.title, "Revised title"); assert.equal(revised.order, 2); assert.equal(revised.priority, "P0");
-  assert.equal(revised.data, undefined); assert.equal(revised.agent, undefined); assert.equal(revised.short, undefined);
+  assert.equal(revised.data, undefined); assert.equal(revised.agent, undefined);
   assert.deepEqual(revised.log.at(-1), { at: later, by: author, text: "改了 head：Scope settled" });
   await committed(() => op.setStatus({ author, id: "new", status: "blocked", log: "Waits on choice" }), "set_status new blocked", ["items/new.yaml"]);
   assert.equal(store.snapshot().items.new!.status, "blocked");
