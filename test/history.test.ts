@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { board, author } from "./helpers.ts";
+import { board, author, later } from "./helpers.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
@@ -37,4 +37,15 @@ test("multi-document writes are separate steps and deletion keeps its before doc
   assert.equal(steps.length, 3); assert.equal(steps[0]!.docs.length, 3); // child, own-work sub-item, parent
   const diff = await stepDiff(store, steps.find(s => s.id === deleted.commit)!, "note", "note-1");
   assert.deepEqual(diff.before, note); assert.equal(diff.after, null); assert.match(diff.diff, /-text: .*中文意见/);
+});
+
+test("commits that change no item, card or note are not steps", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  const a = await op.appendLog({ author, id: "a", text: "before settings" });
+  await store.commit({ author, message: "retitle board", board: { title: "Renamed board" } });
+  store.setOwner({ archived: { other: later } });
+  await store.flushOwner(author);
+  const b = await op.appendLog({ author, id: "a", text: "after settings" });
+  const steps = await unreadSteps(store, cursor);
+  assert.deepEqual(steps.map(s => s.commits), [[a.commit], [b.commit]]);
 });

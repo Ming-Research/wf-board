@@ -301,7 +301,22 @@ export async function importExport(store: Store, exportJson: unknown): Promise<{
     return (await store.commit({ author: "migration", message, board: converted.board, puts, deletes })).commit;
   }
   const asReadCommit = await write(converted.asRead, "Import the board as the owner last read it");
-  const currentCommit = await write(converted.current, "Import the board's changes since the owner's last read");
+  // The changes since the read land one document per commit, oldest first, so the owner reads them as separate
+  // steps in time order; a document the read state already matches makes no commit.
+  const timeOf = (kind: DocKind, doc: Item | Decision | Note | undefined) => !doc ? "" : kind === "note" ? (doc as Note).repliedAt ?? (doc as Note).sentAt ?? (doc as Note).at : (doc as Item | Decision).updated;
+  const changes: Array<{ kind: DocKind; id: string; at: string }> = [];
+  for (const [kind, collection] of [["item", "items"], ["decision", "decisions"], ["note", "notes"]] as const) {
+    for (const id of new Set([...Object.keys(converted.asRead[collection]), ...Object.keys(converted.current[collection])]))
+      changes.push({ kind, id, at: timeOf(kind, converted.current[collection][id] ?? converted.asRead[collection][id]) });
+  }
+  changes.sort((x, y) => x.at.localeCompare(y.at) || x.kind.localeCompare(y.kind) || x.id.localeCompare(y.id));
+  let currentCommit = asReadCommit;
+  for (const { kind, id } of changes) {
+    const collection = ({ item: "items", decision: "decisions", note: "notes" } as const)[kind];
+    const existing = store.snapshot()[collection][id], doc = converted.current[collection][id];
+    const txn = doc ? { puts: [{ kind, id, doc, expectRev: existing ? existing.rev : null }] } : { deletes: [{ kind, id, expectRev: existing!.rev }] };
+    currentCommit = (await store.commit({ author: "migration", message: `Import ${kind} ${id} as changed since the owner's last read`, ...txn })).commit;
+  }
   store.setOwner({ cursor: asReadCommit, archived: converted.owner.archived });
   return { asReadCommit, currentCommit };
 }

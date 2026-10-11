@@ -109,7 +109,7 @@ test("filtered parent navigation opens its body, shows the step diff and reads o
   const filter = p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "进行中 2") ?? p.all().find(e => e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "));
   assert.ok(filter); await filter.click();
   p.key("n"); await setImmediate();
-  const step = p.all().find(e => e.id === "step:" + id); assert.ok(step, "selected parent's body must contain its step");
+  const step = p.all().find(e => e.id.startsWith("step:" + id + "|")); assert.ok(step, "selected parent's body must contain its step");
   const raw = descendants(step).find(e => e.className === "raw-diff"); assert.ok(raw);
   assert.equal(raw.tagName,"DETAILS"); assert.ok(!("open" in raw.attributes));
   assert.equal(raw.children[0]!.innerHTML,"原始 diff");
@@ -128,7 +128,7 @@ test("unread logs expand with two preceding entries, highlight duplicate appends
   p.key("n"); await setImmediate();
   const rows = () => p.all().filter(e => e.id.startsWith("log-area-"));
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,3);
-  const step = p.all().find(e => e.id === "step:" + id)!;
+  const step = p.all().find(e => e.id.startsWith("step:" + id + "|"))!;
   await step.children.find(e => e.tagName === "BUTTON")!.click(); await setImmediate();
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,0);
 });
@@ -139,7 +139,7 @@ async function changeView(s: Snapshot, kind: "item" | "decision" | "note", doc: 
   const id = "d".repeat(40);
   const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind,id:doc,summary:"synthetic change"}]}],before,after);
   p.key("n"); await setImmediate(); await setImmediate();
-  const step = p.all().find(e => e.id === "step:" + id); assert.ok(step,"the selected unread step must render");
+  const step = p.all().find(e => e.id.startsWith("step:" + id + "|")); assert.ok(step,"the selected unread step must render");
   const view = step.children.find(e => e.className === "document-change"); assert.ok(view,"the step must render a document change view");
   assert.equal(step.children.filter(e => e.tagName === "PRE").length,0,"raw YAML must not be the default view");
   return {p,step,view};
@@ -310,4 +310,26 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
     assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "等你决定"), r.cardWaiting("q"));
     assert.equal(p.all().some(e => e.id === "ask-child"), r.askPending("child"));
   }
+});
+
+test("each document of a step is its own stop under its own item, archived items are not new, and only the step's last stop reads", async () => {
+  const s = snapshot(), id = "e".repeat(40);
+  s.items.other = { title: "Archived", parent: "area", status: "done", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.items.area!.deps.push({ id: "other", why: "needs other" });
+  s.owner.archived = { other: "2026-10-11T05:00:00Z" };
+  const p = await page(s, [{ id, commits: [id], author: "Session A", at, docs: [
+    { kind: "item", id: "child", summary: "status todo→wip" }, { kind: "item", id: "other", summary: "status wip→done" }, { kind: "item", id: "area", summary: "+1 log" },
+  ] }]);
+  const shown = () => p.all().filter(e => e.id.startsWith("step:" + id + "|"));
+  p.key("n"); await setImmediate();
+  assert.deepEqual(shown().map(e => e.id), ["step:" + id + "|item|child"]);
+  assert.equal(p.all().find(e => e.id === "it-child")!.children.some(c => descendants(c).includes(shown()[0]!)), true, "the stop renders inside its own item");
+  const next = shown()[0]!.children.find(e => e.tagName === "BUTTON")!;
+  assert.match(next.innerHTML, /下一处/); await next.click(); await setImmediate();
+  assert.ok(!p.calls.some(c => c.path === "/api/read"), "a stop before the step's last does not move the cursor");
+  // The archived item's stop is skipped: the next stop is the area's.
+  assert.deepEqual(shown().map(e => e.id), ["step:" + id + "|item|area"]);
+  const read = shown()[0]!.children.find(e => e.tagName === "BUTTON")!;
+  assert.match(read.innerHTML, /已阅/); await read.click(); await setImmediate();
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body), [{ through: id }]);
 });

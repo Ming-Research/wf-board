@@ -6,7 +6,7 @@ type ViewItem = Item & { id: string };
 type ViewDecision = Decision & { id: string };
 type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
-interface FreshStop { step: string; kinds: string[]; sel: string; item: string | null; container: string; card?: string; notes?: string }
+interface FreshStop { key: string; step: string; doc: Step["docs"][number]; last: boolean; kinds: string[]; sel: string; item: string | null; container: string; card?: string; notes?: string }
 
 interface LineGroup { kind: "same" | "added" | "removed"; lines: string[] }
 /** Longest common subsequence of physical lines; replacements remove before adding. */
@@ -36,7 +36,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   let snapshot: Snapshot = { board: { title: "进度板" }, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
-  let shownStep: string | null = null;
+  let shownStop: string | null = null;
   const pendingDiffs = new Set<string>();
   const diffs = new Map<string, { before: unknown; after: unknown; diff: string }>();
   let sendMessage = "";
@@ -179,25 +179,22 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function cardNew(d: ViewDecision) { return touched("decision",d.id); }
   function cardFresh(d: ViewDecision) { return cardNew(d) || notesOf("q:" + d.id).some(n => touched("note",n.id)); }
   function newReplies(key: string) { return notesOf(key).filter(n => n.reply && touched("note",n.id)); }
-  function stepKinds(step: Step): string[] {
+  function docKinds(doc: Step["docs"][number]): string[] {
     const kinds = new Set<string>();
-    for (const doc of step.docs) {
-      const changes = doc.summary.split(", ");
-      const reply = changes.includes("new reply") || changes.includes("reply changed");
-      for (const change of changes) {
-        if (/^(\+\d+ log|log changed)$/.test(change)) kinds.add("log");
-        else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
-        else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
-      }
+    const changes = doc.summary.split(", ");
+    const reply = changes.includes("new reply") || changes.includes("reply changed");
+    for (const change of changes) {
+      if (/^(\+\d+ log|log changed)$/.test(change)) kinds.add("log");
+      else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
+      else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
     }
     return kinds.size ? [...kinds] : ["other"];
   }
-  function stepTouches(step: Step, key: string): boolean {
-    return step.docs.some(doc => {
-      if (key.startsWith("q:")) return doc.kind === "decision" && doc.id === key.slice(2) || doc.kind === "note" && snapshot.notes[doc.id]?.target === key;
-      const id = key.slice(3);
-      return doc.kind === "item" && doc.id === id || doc.kind === "decision" && snapshot.decisions[doc.id]?.item === id || doc.kind === "note" && (snapshot.notes[doc.id]?.target === key || snapshot.decisions[snapshot.notes[doc.id]?.target.slice(2) || ""]?.item === id);
-    });
+  function stopTouches(st: FreshStop, key: string): boolean {
+    const doc = st.doc;
+    if (key.startsWith("q:")) return doc.kind === "decision" && doc.id === key.slice(2) || doc.kind === "note" && snapshot.notes[doc.id]?.target === key;
+    const id = key.slice(3);
+    return doc.kind === "item" && doc.id === id || doc.kind === "decision" && snapshot.decisions[doc.id]?.item === id || doc.kind === "note" && (snapshot.notes[doc.id]?.target === key || snapshot.decisions[snapshot.notes[doc.id]?.target.slice(2) || ""]?.item === id);
   }
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
@@ -306,19 +303,23 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     renderAll();
   }
   function toggleFresh(kind: string) { setFreshSel(freshSel.includes(kind) ? freshSel.filter(k => k !== kind) : freshSel.concat(kind)); }
-  // A step can include multiple kinds of changes; a filter includes the step once.
+  // Each document a step changed is its own stop, shown under its own item or card. A change inside an archived item
+  // is not new: archiving says the owner is done with it; reading a later stop still moves the cursor past it.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
-  function freshShown(i: ViewItem) { return freshStops().some(st => stepTouches(steps.find(s => s.id === st.step)!, "it:" + i.id)); }
+  function freshShown(i: ViewItem) { return freshStops().some(st => stopTouches(st, "it:" + i.id)); }
   function freshStopsNow(): FreshStop[] {
-    return steps.map(step => {
-      const d = step.docs[0];
+    const out = steps.flatMap(step => step.docs.map((d): FreshStop => {
       let card: string | undefined, item: string | null = null, notes: string | undefined;
-      if (d?.kind === "item") item = d.id;
-      if (d?.kind === "decision") { card = d.id; item = snapshot.decisions[d.id]?.item || null; }
-      if (d?.kind === "note") { const n = snapshot.notes[d.id]; notes = n?.target; if (notes?.startsWith("q:")) { card = notes.slice(2); item = snapshot.decisions[card]?.item || null; } else item = notes?.slice(3) || null; }
-      return { step: step.id, kinds: stepKinds(step), sel: "step:" + step.id, item, card, notes, container: card ? "q:" + card : item ? "it:" + item : "history" };
-    });
+      if (d.kind === "item") item = d.id;
+      if (d.kind === "decision") { card = d.id; item = snapshot.decisions[d.id]?.item || null; }
+      if (d.kind === "note") { const n = snapshot.notes[d.id]; notes = n?.target; if (notes?.startsWith("q:")) { card = notes.slice(2); item = snapshot.decisions[card]?.item || null; } else item = notes?.slice(3) || null; }
+      const key = step.id + "|" + d.kind + "|" + d.id;
+      return { key, step: step.id, doc: d, last: false, kinds: docKinds(d), sel: "step:" + key, item, card, notes, container: card ? "q:" + card : item ? "it:" + item : "history" };
+    })).filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item)));
+    // The cursor moves by whole commits, so only a step's last shown stop offers 已阅.
+    out.forEach((st, k) => { st.last = out[k + 1]?.step !== st.step; });
+    return out;
   }
 
   function noteId(n: ViewNote) { return "note-" + String(n.id).replace(/[^A-Za-z0-9_-]/g, "_"); }
@@ -328,9 +329,8 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const all = freshStops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
-    shownStep = st.step;
-    const selected = steps.find(s => s.id === st.step)!;
-    for (const doc of selected.docs) void loadDiff(selected, doc);
+    shownStop = st.key;
+    void loadDiff(steps.find(s => s.id === st.step)!, st.doc);
     if (st.item && snapshot.items[st.item] && derived.inArchive(st.item)) { const g = derived.groupOf(st.item), f = groupFilter(g); filters[g] = { ...f, status: ["archived"] }; }
     if (st.card) { const d = index().decById.get(st.card); if (d && d.status !== "open" && !ruledOpen[d.id]) { ruledOpen[d.id] = true; saveRuled(); } }
     if (st.notes && !notesOpen[st.notes]) { notesOpen[st.notes] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {} }
@@ -338,10 +338,10 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const e = stopEl(st) || (st.item ? get("it-" + st.item) : null);
     if (e) { jump(e); setCurrent(e); }
   }
-  // A chip counts unread steps touching this item or card; a click opens its oldest step.
+  // A chip counts the unread stops touching this item or card; a click opens the oldest.
   function freshChip(key: string) {
     const all = freshStops();
-    const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => stepTouches(steps.find(s => s.id === st.step)!, key));
+    const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => stopTouches(st, key));
     const c = el("span", "newtag freshchip", "新 " + Math.max(1, mine.length));
     c.title = "点一下到这里的第一条新内容；n 走到下一条，r 标为已阅";
     if (mine.length) {
@@ -352,22 +352,26 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     }
     return c;
   }
+  function shownFresh() { return shownStop ? allFreshStops().find(st => st.key === shownStop) || null : null; }
   async function markRead(key: string) {
-    const step = key.startsWith("step:") ? key.slice(5) : shownStep;
-    if (!step || !steps.some(s => s.id === step)) return false;
-    try { for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true; await api("/api/read", { through: step }); shownStep = null; await refreshOwner(); return true; } catch (e) { showError(e); return false; }
+    const st = key.startsWith("step:") ? allFreshStops().find(s => s.key === key.slice(5)) : shownFresh();
+    return st ? readThrough(st.step) : false;
+  }
+  async function readThrough(step: string) {
+    if (!steps.some(s => s.id === step)) return false;
+    try { for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; await refreshOwner(); return true; } catch (e) { showError(e); return false; }
   }
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
-    const at = all.findIndex(s => s.step === shownStep);
+    const at = all.findIndex(s => s.key === shownStop);
     goFresh(at < 0 ? 0 : at + 1);
   }
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
-    const at = all.findIndex(s => s.step === shownStep);
+    const at = all.findIndex(s => s.key === shownStop);
     goFresh(at < 0 ? all.length - 1 : at - 1);
   }
-  function selectedFresh() { return shownStep && steps.some(s => s.id === shownStep) && onScreen(selEl("step:" + shownStep)) ? { key: "step:" + shownStep } : null; }
+  function selectedFresh() { return shownFresh() && onScreen(selEl("step:" + shownStop)) ? { key: "step:" + shownStop } : null; }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
   // r, c, e and a act on it, or on the item or card that holds it.
@@ -384,7 +388,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   // The item or card a selection belongs to.
   function containerOf(key: string | null) {
     if (!key) return null;
-    if (key.startsWith("step:")) return allFreshStops().find(st => st.step === key.slice(5))?.container || null;
+    if (key.startsWith("step:")) return allFreshStops().find(st => st.key === key.slice(5))?.container || null;
     if (key.startsWith("it:") || key.startsWith("q:")) return key;
     if (key.startsWith("log:")) return "it:" + key.slice(4, key.indexOf("@"));
     if (key.startsWith("dep:")) return "it:" + key.slice(4, key.indexOf("@"));
@@ -877,7 +881,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
         const yes = sbtn("s-read", "确认", "", async () => {
           yes.disabled = true;
           try {
-            await markRead("step:" + steps.at(-1)!.id);
+            await readThrough(steps.at(-1)!.id);
           } catch (e) { yes.disabled = false; }
         });
         const no = sbtn("s-plain", "取消", "", () => ask.replaceWith(all));
@@ -1323,7 +1327,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const result = await api<{cursor?: string; steps: Step[]}>("/api/unread");
     if (generation !== unreadGeneration) return;
     steps = result.steps; snapshot.owner.cursor = result.cursor;
-    if (shownStep && !steps.some(s => s.id === shownStep)) shownStep = null;
+    if (shownStop && !steps.some(s => shownStop!.startsWith(s.id + "|"))) shownStop = null;
     renderAll();
   }
   async function refreshOwner() { await loadSnapshot(); await refreshUnread(); }
@@ -1494,14 +1498,15 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     return box;
   }
   function appendStep(parent: HTMLElement, key: string) {
-    if (!shownStep) return;
-    const st = allFreshStops().find(s => s.step === shownStep), step = steps.find(s => s.id === shownStep);
+    const st = shownFresh(), step = st && steps.find(s => s.id === st.step);
     if (!st || !step) return;
     const missing = st.item && !snapshot.items[st.item] || st.card && !snapshot.decisions[st.card];
     if ((missing ? "history" : st.container) !== key) return;
-    const box = el("section", "unread-step"); box.id = "step:" + step.id; box.dataset.sel = box.id;
-    box.appendChild(el("div", "log-meta", esc(day(step.at)) + " · " + esc(step.author) + " · " + step.commits.length + " 次提交"));
-    for (const doc of step.docs) {
+    const box = el("section", "unread-step"); box.id = "step:" + st.key; box.dataset.sel = box.id;
+    const others = allFreshStops().filter(s => s.step === st.step).length - 1;
+    box.appendChild(el("div", "log-meta", esc(day(step.at)) + " · " + esc(step.author) + " · " + step.commits.length + " 次提交" + (others ? " · 同一步还改了 " + others + " 处" : "")));
+    {
+      const doc = st.doc;
       const diff = diffs.get(step.id + ":" + doc.kind + ":" + doc.id);
       const historical = (diff?.after || diff?.before) as Item | Decision | Note | undefined;
       const title = doc.kind === "item" ? (historical as Item | undefined)?.title || snapshot.items[doc.id]?.title :
@@ -1510,9 +1515,8 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       box.appendChild(el("div", "sub", esc(title || doc.id) + " · " + esc(doc.summary)));
       box.appendChild(diff ? documentChange(doc,diff) : el("div", "change-same", "正在读取变化…"));
     }
-    if (!step.docs.length) box.appendChild(el("p", null, "看板元数据更新"));
-    const read = el("button", "freshbtn", "已阅（包括此前所有变化）"); read.type = "button";
-    read.addEventListener("click", ev => { ev.stopPropagation(); void markRead("step:" + step.id); }); box.appendChild(read); parent.appendChild(box);
+    const read = el("button", "freshbtn", st.last ? "已阅（包括此前所有变化）" : "下一处（这一步看完再标已阅）"); read.type = "button";
+    read.addEventListener("click", ev => { ev.stopPropagation(); if (st.last) void markRead("step:" + st.key); else goNextFresh(); }); box.appendChild(read); parent.appendChild(box);
   }
   let retry: ReturnType<typeof setTimeout> | undefined;
   let source: EventSource | undefined;
