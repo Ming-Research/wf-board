@@ -314,11 +314,11 @@ test("inline note stops select the existing fresh reply row without duplicated t
   s.notes.n = {...before,state:"done",reply:"**Reply**：Answer",repliedAt:at};
   const p = await page(s,unread("note","n"),before); p.key("n"); await p.flush();
   const row = p.all().find(e => e.id === "note-n")!;
-  assert.ok(row.className.includes("cur") && row.className.includes("newbar"));
+  assert.ok(row.className.includes("cur") && !row.className.includes("newbar") && row.children.some(e => e.className.includes("reply") && e.className.includes("newbar")));
   assert.equal(p.all().filter(e => e.className.startsWith("note ")).length,1);
   p.key("r"); await setImmediate(); await setImmediate();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"note:n",through:stepId}]);
-  assert.ok(!p.all().find(e => e.id === "note-n")!.className.includes("newbar"));
+  assert.ok(!descendants(p.all().find(e => e.id === "note-n")!).some(e => e.className.includes("newbar")));
 });
 
 test("inline deleted document stops render no body but remain countable walkable and readable", async () => {
@@ -565,18 +565,18 @@ test("new note without a reply receives a blue row bar inside its comment list",
   assert.ok(row.children.some(e=>e.className === "who" && e.innerHTML.includes("已发送，等处理")));
 });
 
-test("new reply marks both note row and reply itself without any bookkeeping diff", async () => {
+test("new reply marks only the reply, not the owner's own comment, without any bookkeeping diff", async () => {
   const css=await readFile("web/index.html","utf8");
   assert.ok(/[^{}]*\.reply\.newbar[^{}]*\{[^}]*var\(--fresh\)/.test(css),"reply bar CSS must use the fresh token");
   const s=snapshot(), before:Note={target:"it:child",kind:"comment",text:"Question",at,state:"sent",rev:1};
   s.notes.n={...before,state:"done",reply:"Answer",repliedAt:at,repliedBy:"Project"};
   const p=await page(s,unread("note","n"),before); p.key("n"); await settle();
   const row=p.all().find(e=>e.id === "note-n")!, reply=row.children.find(e=>e.className.includes("reply"))!;
-  assert.ok(row.className.includes("newbar") && reply.className.includes("newbar"));
+  assert.ok(!row.className.includes("newbar") && reply.className.includes("newbar"),"one line, beside the reply");
   assert.ok(!markup(p.roots.get("areas")!).includes("状态：") && !markup(p.roots.get("areas")!).includes("回复项目"));
   assert.equal(p.all().filter(e=>e.className.includes("reply rich")).length,1);
   p.key("r"); await settle();
-  assert.ok(!p.all().find(e=>e.id === "note-n")!.className.includes("newbar"));
+  assert.ok(!descendants(p.all().find(e=>e.id === "note-n")!).some(e=>e.className.includes("newbar")));
 });
 
 test("note bookkeeping changes do not mark an unchanged reply or open its collapsed list", async () => {
