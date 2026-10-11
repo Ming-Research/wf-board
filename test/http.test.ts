@@ -137,27 +137,20 @@ test("JSON body decoding preserves Chinese codepoints split across request chunk
   assert.equal(store.snapshot().notes[created.data.id]!.text,"中文意见");
 });
 
-test("project request endpoint and wake routing reach all members and coordinator exactly once", async t => {
+test("project wake routing reaches all members and the coordinator exactly once", async t => {
   const {url,api,store,op} = await server(t);
   await op.claimProject({author:"Second",project:"Whitefoot",reason:"Shared"});
   const sockets=[author,"Second","Other session","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
   t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
   const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
   sockets.forEach((s,i)=>s.on("message",data=>frames[i]!.push(JSON.parse(data.toString()))));
-  const res=await api("/api/requests",{project:"Whitefoot",title:"Owner request",text:"Please add feature",priority:"P0"});
-  assert.equal(res.status,200); assert.match(res.data.id,/^req-[a-z0-9]{10}$/);
-  assert.equal(store.snapshot().items[res.data.id]!.request!.by,"owner");
-  assert.equal(store.snapshot().items[res.data.id]!.head,"Please add feature");
-  await op.appendLog({author,id:res.data.id,text:"Seen"});
+  const made=await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",priority:"P0",why:"Need it"});
+  await op.appendLog({author,id:made.id,text:"Seen"});
   const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
   for (const socket of sockets) { const pong=once(socket,"pong"); socket.ping(); await pong; }
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:res.data.id,title:"Owner request",project:"Whitefoot",agents:[author,"Second"],by:"owner"});
+  assert.deepEqual(frames[0]![0],{event:"request",item:"incoming",title:"Visitor request",project:"Whitefoot",agents:[author,"Second"],by:"Visitor"});
   assert.deepEqual(frames[0]![1],{event:"note",note:note.data.id,target:"it:a",kind:"comment",title:"中文检查",project:"Whitefoot",agents:[author,"Second"]});
-  const before=store.snapshot();
-  assert.equal((await api("/api/requests",{project:"Missing",title:"Bad",text:"Bad",priority:"P1"})).status,400);
-  assert.equal((await api("/api/requests",{project:"Whitefoot",title:"Bad",text:"Bad",priority:"P9"})).status,400);
-  assert.deepEqual(store.snapshot(),before);
 });
 
 // Exercise the real HTTP handler and upgrade routing without binding a port.
@@ -190,9 +183,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
     });
     http.emit("request",req,res); req.push(Buffer.from(JSON.stringify(data)));req.push(null); return done;
   }
-  const made=await api("/api/requests",{project:"Whitefoot",title:"Owner request",text:"Need a feature",priority:"P0"});
-  assert.equal(made.status,200); const id=String(made.data.id); assert.match(id,/^req-[a-z0-9]{10}$/);
-  assert.deepEqual(store.snapshot().items[id]!.request?.by,"owner"); assert.equal(store.snapshot().items[id]!.head,"Need a feature");
+  const {id}=await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",priority:"P0",why:"Need it"});
   await op.appendLog({author,id,text:"Seen"});
   const note=await owner.createNote({target:"q:choice",kind:"explain",text:"Explain"});
   assert.deepEqual(frames.map(f=>f.length),[1,1,0,1,0]);
@@ -200,11 +191,8 @@ test("project HTTP handlers route committed requests and sent notes without a li
   assert.deepEqual(sent.data.sent,[{id:note.id,target:"q:choice",kind:"explain",agents:[author,"Second"]}]);
   await api("/api/send",{});
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Owner request",project:"Whitefoot",agents:[author,"Second"],by:"owner"});
+  assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",agents:[author,"Second"],by:"Visitor"});
   assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot",agents:[author,"Second"]});
   await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",priority:"P2",why:"Need",from:"a"});
   assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
-  const before=store.snapshot();
-  for (const change of [{project:"Missing"},{title:""},{text:""},{priority:"P9"},{extra:true}]) assert.equal((await api("/api/requests",{project:"Whitefoot",title:"Title",text:"Text",priority:"P1",...change})).status,400);
-  assert.deepEqual(store.snapshot(),before);
 });

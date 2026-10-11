@@ -81,7 +81,6 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         value = { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
       }
       else if (path === "/api/send") value = { sent: [{agents: ["Session A","Session B"]}, {agents: ["Session A"]}, {agents: []}] };
-      else if (path === "/api/requests") value = {id:"req-new"};
       else if (path === "/api/read") { unread = []; value = { ok: true }; }
       else throw new Error("Unexpected page request " + path);
       return { ok: true, status: 200, json: async () => structuredClone(value) };
@@ -358,7 +357,7 @@ test("a dependency row names its project only when the project differs from the 
   assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
 });
 
-test("project page shows agents, inbox requests and an inline request form including empty projects", async () => {
+test("project page shows agents and inbox requests, including empty projects", async () => {
   const s=snapshot(); s.board.projects.push({name:"Empty",agents:[]});
   s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
@@ -370,19 +369,6 @@ test("project page shows agents, inbox requests and an inline request form inclu
   await descendants(item).find(e=>e.className==="item-head")!.click();
   assert.match(markup(p.all().find(e=>e.id==="it-incoming")!),/Request body/);
   assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
-  await p.all().filter(e=>e.tagName==="BUTTON" && e.innerHTML==="提需求")[1]!.click();
-  let form=p.all().find(e=>e.className==="request-form"); assert.ok(form);
-  const inputs=descendants(form);
-  inputs.find(e=>e.tagName==="INPUT")!.value="New title";
-  inputs.find(e=>e.tagName==="TEXTAREA")!.value="New text";
-  inputs.find(e=>e.tagName==="SELECT")!.value="P0";
-  for (const input of inputs.filter(e=>["INPUT","TEXTAREA","SELECT"].includes(e.tagName))) for (const fn of input.handlers.get("input") ?? []) fn({});
-  await inputs.find(e=>e.tagName==="BUTTON" && e.innerHTML==="提交")!.click();
-  assert.deepEqual(p.calls.find(c=>c.path==="/api/requests")!.body,{project:"Empty",title:"New title",text:"New text",priority:"P0"});
-  await p.all().filter(e=>e.tagName==="BUTTON" && e.innerHTML==="提需求")[0]!.click();
-  form=p.all().find(e=>e.className==="request-form")!;
-  await descendants(form).find(e=>e.tagName==="BUTTON" && e.innerHTML==="取消")!.click();
-  assert.ok(!p.all().some(e=>e.className==="request-form"));
 });
 
 test("the 新 counts add up pieces while n walks one document at a time", async () => {
@@ -407,17 +393,19 @@ test("the 新 counts add up pieces while n walks one document at a time", async 
   assert.deepEqual(p.all().filter(e => e.id.startsWith("step:" + id + "|")).map(e => e.id), ["step:" + id + "|item|child"]);
 });
 
-test("a request title being typed keeps its focus, text and caret across a live re-render", async () => {
-  const s = snapshot(); s.board.projects = [{ name: "Project", agents: ["Session A"] }];
-  const p = await page(s, []);
-  await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "提需求")!.click();
-  const input = p.all().find(e => e.id === "request-title-Project")!;
-  assert.ok(input, "the form has a title field with a stable id");
+test("a note being typed keeps its focus, text and caret across a live re-render", async () => {
+  const id = "f".repeat(40);
+  const p = await page(snapshot(), [{ id, commits: [id], author: "Session A", at, docs: [{ kind: "item", id: "area", summary: "+1 log", pieces: { log: 1, reply: 0, other: 0 } }] }]);
+  // n selects the changed item; c opens a note on the selection.
+  p.key("n"); await setImmediate();
+  p.key("c"); await setImmediate();
+  const input = p.all().find(e => e.id === "ed-it_area")!;
+  assert.ok(input, "the note editor has a stable id");
   input.value = "Half typed"; await input.handlers.get("input")![0]!({});
   input.focus(); input.setSelectionRange(4, 4);
-  // A live update (another session's write) re-renders the page and rebuilds the form.
+  // A live update (another session's write) re-renders the page and rebuilds the editor.
   await p.change("b".repeat(40));
-  const again = p.all().find(e => e.id === "request-title-Project")!;
+  const again = p.all().find(e => e.id === "ed-it_area")!;
   assert.notEqual(again, input, "the field was rebuilt");
   assert.equal(p.document.activeElement, again);
   assert.equal(again.value, "Half typed");
