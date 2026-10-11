@@ -1,0 +1,330 @@
+# wf-board design (proposal)
+
+Status: proposal for the owner's review, 2026-10-11. Nothing here is
+implemented yet. After the owner rules, the decisions move into a design tree
+(`design/`, checked by the Design-skill submodule) and this document is
+deleted.
+
+## 1. Problem
+
+The status board that the owner and every agent session share was a claude.ai
+artifact. Its data lived in
+the artifact's database, read and written with the ArtifactData tool, and its
+"发给 Claude" button woke the watching session through the artifact runtime's
+comment API (`comments.sendToClaude`).
+
+The board was tied to the account that published it: from another account,
+Claude Code can read the page but not its data ("that organization doesn't let
+invited editors use artifact data from Claude Code"), and the help center
+documents no setting that lifts this for outside invitees. An account switch
+therefore cuts every session off from it.
+
+The board is more than a progress display. Its 835 items, 161 decision cards
+and 374 owner notes are the shared context of all projects: what each line of
+work is, why it was chosen, what it waits on and what the owner ruled. Agents
+read and write it all day (from the session transcripts since 2026-10-06:
+about 720 item reads, 800 item writes, 600 batches, 130 queries for sent
+notes).
+
+## 2. Goals
+
+1. The board works independently of any claude.ai account.
+2. Agents find context easily: search across everything, the history of an
+   item, why it exists, what it depends on and what depends on it, what
+   changed while they were away.
+3. Writes are hard to get wrong: the server stamps times, checks the board's
+   rules (deps carry a why, a parent lists its open sub-items, a blocked item
+   names its blocker, a cancelled item says why), and refuses a stale
+   overwrite. Today these rules are prose in AGENTS.md that agents must
+   remember, and the page only flags violations after the fact.
+4. Every change is kept with who made it and when, and nothing is lost.
+5. The owner keeps the page as it is today, opened in the desktop app's
+   browser pane, including one-click "发给 Claude".
+
+Non-goals for now: access from the owner's phone or other machines, cloud
+sessions, multiple human users, authentication beyond binding to localhost.
+
+## 3. What the data shows
+
+From the export of 2026-10-11 07:17 UTC (`wf-board-data/import/`):
+
+| Fact | Consequence for the design |
+|---|---|
+| Item bodies total about 900k characters; half the items have no log, the largest has 19k characters and 35 log entries | Nobody can read the board whole. Search first, then expand; context returns recent log entries by default and the rest on request |
+| 23 areas (top-level items), depth at most 4, 126 parents, one with 77 children | Listings page and summarize |
+| 649 deps, 631 with a why; 61 cross areas and 48 cross projects | The dependency graph must span projects and always carry the why; that is where context crosses sessions |
+| 150 of 161 decision cards are ruled, each with background, options and ruling | Ruled cards are the main record of why; search covers cards and notes, not only items |
+| 1536 bare `#NNN` references in 269 items, without the repository | Index PR references per repository; new text writes `Repo#N` |
+| 478 read records holding a full snapshot each (473 KB) | With git history a read needs only a commit id; the snapshot goes |
+| `agent` appears only on the 23 areas; no sub-item ever used the handover field | Responsibility is effectively per area plus prose in logs; see section 9 |
+| Agents' own pattern: read an item, append a log entry, write the item back with its version (the majority of all writes); 5 version conflicts and several malformed calls in the transcripts | `append_log` becomes one call without a version; appends never conflict |
+
+## 4. Architecture
+
+One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
+`127.0.0.1` only. It serves three things from one process:
+
+1. **The page** for the owner, at `http://127.0.0.1:7417/`, with live updates
+   pushed over server-sent events.
+2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
+   Codex session on the Mac connects to the same process.
+3. **The wake stream** at `/wake` (WebSocket), which turns "发给 Claude" into
+   a notification in the waiting session.
+
+**Why one daemon rather than an MCP subprocess per session.** The usual MCP
+setup starts one server process per session (stdio). Several processes
+writing the same files would need cross-process locking and could not push
+changes to the page. A single process is the only writer, serializes all
+writes, and pushes every change to the page and to waiting sessions.
+
+**Why TypeScript.** The page's derived rules (a parent's status from its
+sub-items, effective priority, the 需核对 flags, freshness) are JavaScript
+today. One module, `src/rules.ts`, serves both the page and the server, so an
+agent sees exactly the flags the owner sees. MCP has an official TypeScript
+SDK.
+
+**Storage.** The data is a git working tree, `~/dev/wf-board-data`, with the
+private remote `Ming-Research/wf-board-data`. The server is the only writer:
+each logical operation is one commit whose author is the writing session and
+whose message summarizes the operation. The server pushes to the remote when
+it has new commits, at most every ten minutes, and on shutdown. If the server
+is down, agents can still read the files with Grep and Read; nothing is
+hidden in a database.
+
+**Running.** A launchd agent starts the daemon at login and restarts it on
+exit. `GET /health` reports its state; the page shows a banner when the server
+does not answer, and every MCP tool error names the cause.
+
+**Connecting.** `claude mcp add --scope user --transport http wf-board
+http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
+`~/.codex/config.toml` for Codex. Whether the desktop app's Code sessions read
+the user-scope configuration must be checked on the first session.
+
+## 5. Data format
+
+The server writes, agents and the owner read. The format serves three
+readers: the server, which needs every field unambiguous; git, whose diffs
+should show the changed lines of prose rather than one rewritten line; and an
+agent reading with Grep or Read when the server is down.
+
+```
+wf-board-data/
+  board.yaml              title, eyebrow, goal, group order
+  items/<id>.yaml         one file per item
+  decisions/<key>.yaml    one file per decision card
+  notes/<id>.yaml         one file per owner note with its reply
+  state/owner.yaml        the owner's read cursor and archived items
+  import/                 the original artifact export, kept as provenance
+```
+
+Each file is one YAML document; prose fields are literal blocks (`|`), which
+keep their lines exactly as written. An item file:
+
+```yaml
+title: 示例：换账号时交接当前状态
+parent: example-parent
+status: wip
+priority: P1
+deps:
+  - id: example-merge
+    why: 交接时的合并队列状态取自这里。
+links:
+  - label: Whitefoot#341
+    url: https://github.com/Ming-Research/Whitefoot/pull/341
+created: 2026-10-11T06:15:40Z
+updated: 2026-10-11T06:15:40Z
+rev: 3
+head: |
+  **是什么**：总管（协调会话）换账号时的交接快照。……
+
+  **看板访问**：……
+log:
+  - at: 2026-10-11T06:15:40Z
+    by: 总管
+    text: |
+      写下交接快照；总管职责写进 agents_config 的 coordinator.md。
+```
+
+- **Why not JSON.** JSON stores a paragraph as one line with `\n` escapes, so
+  a one-word edit shows in git as a whole rewritten line, and Grep and Read
+  show escaped text. Its structure is exact, which YAML keeps.
+- **Why not Markdown with front matter.** Structured fields live in the front
+  matter, but anything structured inside the body, such as a log entry's time
+  and author, must be encoded in reserved heading lines, and every new field
+  on a log entry (a link, a kind) would stretch that encoding. In YAML the
+  whole document is structured and prose stays readable.
+- YAML's known traps (unquoted `no` read as false, times read as dates) do not
+  reach the data: the server is the only writer, writes through one
+  serializer that quotes where needed, and validates every document against
+  a schema on read and write.
+- `rev` counts writes to the file. A write that replaces content names the
+  `rev` it read and fails on a mismatch with the current content in the
+  error. Appends (log entries, note replies) carry no `rev` and never
+  conflict.
+- Areas are items without a parent, as today. The fields keep their current
+  meanings; `area` is folded into `parent`, `text` into `head`, bare-string
+  deps into `{id, why}` entries flagged for a why.
+- A decision file holds its status, item, confidence, time and options in the
+  front matter, and background and ruling as body sections. `confidence`
+  becomes `{score: 1-5, reason}`, and a ruled card records `ruledAt`.
+- Each fact is stored once. The export shows what duplication costs: 27 cards
+  whose `item` names an item whose `qs` omits them, 572 items carrying both
+  `parent` and `area`, 13 notes whose stored title went stale. So a card's
+  place is its `item` alone (an item's cards are derived), an item's place is
+  `parent` alone, and a note's title is derived from its target.
+- A dep may name a decision card as well as an item. Four blocked items in
+  the export wait on an open card, which the current model cannot express,
+  so the page flags them as blocked without a blocker; with card deps the
+  check "a blocked leaf has an open dep or an ask" holds for them.
+- Empty strings are absent fields (`ask: ""` on 117 items, `parent: ""` on
+  161).
+- A note keeps its original id, so ids that sessions recorded and anchors
+  that point at notes stay valid.
+- **The read cursor.** The board's history is the git log, an ordered list of
+  changes. The owner's reading state is one cursor into it, a commit id: what
+  lies after the cursor is unread. The page walks the unread changes oldest
+  first, showing each as its diff; 已阅 moves the cursor past the change shown,
+  and 全部已阅 moves it to the head. This replaces the 478 per-item read
+  records and their snapshots. A step groups consecutive commits by the same
+  author on the same item, so five quick log appends read as one change, and
+  the owner's own actions (notes, archiving) never count as unread. Scrubbing
+  back through earlier changes with a slider uses the same history and is
+  deferred until needed. Owner state is committed with the next data commit,
+  never on its own, so moving the cursor makes no commit noise.
+
+## 6. MCP tools
+
+Every tool returns compact text built for an agent's context: ids, titles,
+status and the relevant lines, never whole files unless asked. Writes take
+`author`, the writing session's name as the session list prints it, because
+the server cannot tell sessions apart (several share one repository).
+
+### Finding things
+
+| Tool | Answers | Returns |
+|---|---|---|
+| `search(query, filters)` | Where is X mentioned? | Hits across item heads and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
+| `context(id, log?)` | What is this and how did it get here? | The item; its ancestors with status; its sub-items summarized; its deps and its dependents, each with the why and status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `graph(id, direction, depth)` | What does this wait on, what waits on it? | The dependency and parent tree around the item as an indented list with whys, marking blocked chains and cycles |
+| `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
+| `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
+| `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
+| `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
+| `list(filters)` | Structured browsing | Compact rows for items matching status, priority, area subtree, open ask, flags, updated-since |
+| `overview(group?)` | The board at a glance | Per area: counts by status, owner actions waiting, blocked items, flags |
+| `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
+
+### Changing things
+
+| Tool | Does | Checks |
+|---|---|---|
+| `create_item(parent, key, title, head, priority, deps, parent_why, links)` | Adds an item and lists it in the parent's deps with `parent_why` | Key is new and well formed; deps exist and carry a why; leaf priority set |
+| `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
+| `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why |
+| `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
+| `move_item(id, new_parent, parent_why)` | Reparents | No cycle; updates both parents' deps |
+| `set_ask(id, text, url?, chat?)`, `clear_ask(id, log)` | Owner actions | |
+| `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
+| `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
+| `reply_note(id, reply)` | Answers a note, stamps `repliedAt`, marks it done | |
+
+## 7. The page
+
+The current template is kept. Its data layer, `window.claude.use("db")` and
+`window.claude.use("comments")`, is replaced by a small client that loads a
+snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
+the owner's notes, reads and archive actions to `/api/...`. The rules module
+moves out of the page into `src/rules.ts` and is loaded by both.
+
+## 8. Waking sessions
+
+"发给 Claude" posts to `/api/send`. The server marks the drafts sent and sends
+one line per note on `/wake`: the note id, its target, kind and the
+responsible session.
+
+A session listens with Claude Code's Monitor tool (`ws` source on
+`ws://127.0.0.1:7417/wake?session=<name>`); each frame wakes it. A monitor
+expires after at most 30 minutes, so a listening session is woken at expiry to
+re-arm it, which costs a small turn every 30 minutes per listening session.
+
+Initially only the coordinator listens and forwards, as today. Later, each
+session can listen for its own notes and the relay step disappears; that
+depends on section 9.
+
+**Why not MCP push.** Plain MCP lets a server send notifications, but Claude
+Code does not start a turn in an idle session for them. Claude Code's
+*channels* do exactly that (`notifications/claude/channel` from a server
+declaring the `claude/channel` capability), but as of 2026-10-11 they are a
+research preview: a channel must be a stdio subprocess of the session, and a
+custom channel loads only when the session is started from the command line
+with `--dangerously-load-development-channels`, which the desktop app's Code
+sessions cannot pass. The wake events are therefore defined independently of
+transport, so a thin stdio channel that relays `/wake` can replace the
+Monitor once channels allow it, without changing the server.
+
+## 9. Open question: responsibility
+
+The owner's observation (2026-10-11): sessions' assignments change often, so
+an `agent` field written on items helps little today; yet responsibility
+decides who changes what, so it matters. The data agrees: only the 23 areas
+name a session, and handovers happen in log prose. This proposal keeps the
+current fields unchanged and defers a design, to be brought as a decision card
+with options after the server runs. Questions it must answer: what a session
+is responsible for (areas, items, repositories), how a handover is recorded
+and seen, how a note reaches the right session, and how a session finds its
+work after a restart or an account switch.
+
+Keys bear on it. The rule that every key starts with its session's prefix
+exists so that sessions writing one database never collide. The server now
+refuses a duplicate key, so the prefix no longer prevents anything, and after
+a handover it names the wrong session: the export holds 236 `old-prefix-*`
+items under other sessions' areas and 21 more items whose prefix differs from
+their area's session. The owner chose (2026-10-11, option A): new keys need
+not carry a session prefix; existing keys stay, because notes and log text
+cite them.
+
+## 10. Migration
+
+1. Convert the export into the file format, keeping every id, in one commit.
+   The survey of the export found no broken dependency, cycle, bad timestamp
+   or invalid status; the conversion applies these mechanical cleanups:
+   - fold `area` into `parent` and `text` into `head`; drop empty strings and
+     the ignored status and priority on 17 and 6 parents;
+   - turn the 18 bare-string deps (all on done queue items) into entries
+     whose why says it was not recorded;
+   - add the 2 unfinished sub-items their parents do not list (under
+     example-rules and example-proof), with a why taken from the sub-item's
+     title;
+   - set `updated` to the newest log time on the 5 items where it is missing
+     or older; take a ruled card's `ruledAt` from the owner's choice note;
+     parse `confidence` into score and reason;
+   - qualify bare `#NNN` references in the 41 items whose project has one
+     repository; the other 192 items keep their text, and `prs` reports
+     their references as repository unknown;
+   - move the 50 notes and 49 reads whose target was deleted to
+     `import/orphans.json` instead of dropping them.
+
+   Judgment cleanups go to the responsible sessions as items after the
+   migration: 3 asks whose cards are all ruled, 3 done items with an open
+   dep, 2 archived items still open, 35 heads holding dated progress, the
+   example-queue history (75 done queue entries), the 236 `old-prefix-*`
+   backlog items living under other sessions' areas, and 4 near-duplicate
+   pairs.
+2. Verify the conversion against an oracle independent of the converter: for
+   every document of the export, the server's view of it reproduces each
+   field.
+3. Point the page at the server and check it against the artifact page side
+   by side.
+4. Rewrite the board sections of `agents_config` (AGENTS.md "Status board",
+   coordinator.md) for the new tools, tell every session, and leave the
+   artifact as a read-only pointer to the new board.
+
+## 11. Testing
+
+- Unit tests for the rules module, the file format round trip, `rev`
+  conflicts, append ordering and every write check, each shown to fail on the
+  wrong input it guards against.
+- An MCP integration test with the SDK client against a server on a temporary
+  data directory.
+- The conversion check of section 10.
+- CI on GitHub-hosted runners for every push.
