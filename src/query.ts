@@ -9,7 +9,8 @@ export type Kind = "item" | "card" | "note";
 export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string; agent: string }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
-export interface Hit extends Row { field: string; time?: string; snippet: string }
+/** One hit per matching field; `more` counts further matches in the same field. */
+export interface Hit extends Row { field: string; time?: string; snippet: string; more?: number }
 function requireId(s: Snapshot, id: string): Kind {
   if (Object.hasOwn(s.items, id)) return "item";
   if (Object.hasOwn(s.decisions, id)) return "card";
@@ -67,9 +68,11 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
         const time = field.time ?? ("updated" in doc ? doc.updated : doc.at);
         if (f.since && Date.parse(time) < Date.parse(f.since)) continue;
         const lower = field.text.toLowerCase();
-        for (let pos = lower.indexOf(needle); pos !== -1; pos = lower.indexOf(needle, pos + needle.length)) {
-          hits.push({ ...row(s, r, kind, id), field: field.field, ...(field.time ? { time: field.time } : {}), snippet: snippet(field.text, pos, query.length), rank: field.rank, index: field.index ?? 0 });
-        }
+        const first = lower.indexOf(needle);
+        if (first === -1) continue;
+        let more = 0;
+        for (let pos = lower.indexOf(needle, first + needle.length); pos !== -1; pos = lower.indexOf(needle, pos + needle.length)) more++;
+        hits.push({ ...row(s, r, kind, id), field: field.field, ...(field.time ? { time: field.time } : {}), snippet: snippet(field.text, first, query.length), ...(more ? { more } : {}), rank: field.rank, index: field.index ?? 0 });
       }
     }
   }

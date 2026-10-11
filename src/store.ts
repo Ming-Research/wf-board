@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
@@ -93,6 +94,70 @@ function frozen<T>(value: T): T {
   return value;
 }
 
+/**
+ * One long-lived `git cat-file --batch` that reads `<rev>:<path>` objects in
+ * order, so history queries cost no process per document. The process keeps
+ * Node alive only while a read is pending, and restarts after a failure.
+ */
+class BlobReader {
+  private readonly dir: string;
+  private child: ChildProcessWithoutNullStreams | undefined;
+  private buffer = Buffer.alloc(0);
+  private waiting: Array<{ resolve: (b: Buffer | null) => void; reject: (e: Error) => void }> = [];
+
+  constructor(dir: string) { this.dir = dir; }
+
+  read(spec: string): Promise<Buffer | null> {
+    if (/[\n\r\0]/.test(spec)) return Promise.reject(new Error(`invalid object name: ${JSON.stringify(spec)}`));
+    const child = this.start();
+    if (!this.waiting.length) this.hold(child, true);
+    return new Promise((resolve, reject) => {
+      this.waiting.push({ resolve, reject });
+      child.stdin.write(spec + "\n");
+    });
+  }
+
+  private start(): ChildProcessWithoutNullStreams {
+    if (this.child) return this.child;
+    const child = spawn("git", ["cat-file", "--batch"], { cwd: this.dir });
+    this.hold(child, false);
+    child.stdout.on("data", (chunk: Buffer) => { this.buffer = Buffer.concat([this.buffer, chunk]); this.drain(); });
+    const fail = (error: Error) => {
+      if (this.child !== child) return;
+      this.child = undefined;
+      this.buffer = Buffer.alloc(0);
+      for (const w of this.waiting.splice(0)) w.reject(error);
+    };
+    child.on("error", fail);
+    child.on("exit", code => fail(new Error(`git cat-file exited with ${code}`)));
+    child.stdin.on("error", fail);
+    this.child = child;
+    return child;
+  }
+
+  private hold(child: ChildProcessWithoutNullStreams, on: boolean): void {
+    const handles = [child, child.stdin, child.stdout, child.stderr] as unknown as Array<{ ref?: () => void; unref?: () => void }>;
+    for (const h of handles) (on ? h.ref : h.unref)?.call(h);
+  }
+
+  private drain(): void {
+    if (this.child && !this.waiting.length) return;
+    while (this.waiting.length) {
+      const nl = this.buffer.indexOf(0x0a);
+      if (nl === -1) return;
+      const header = this.buffer.subarray(0, nl).toString("utf8");
+      const m = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+      if (!m) { this.buffer = this.buffer.subarray(nl + 1); this.waiting.shift()!.resolve(null); if (!this.waiting.length && this.child) this.hold(this.child, false); continue; }
+      const size = Number(m[2]);
+      if (this.buffer.length < nl + 1 + size + 1) return;
+      const body = this.buffer.subarray(nl + 1, nl + 1 + size);
+      this.buffer = this.buffer.subarray(nl + 1 + size + 1);
+      this.waiting.shift()!.resolve(m[1] === "blob" ? Buffer.from(body) : null);
+    }
+    if (!this.waiting.length && this.child) this.hold(this.child, false);
+  }
+}
+
 /** The daemon is the sole writer. All git mutations share the transaction queue. */
 export class Store {
   readonly dir: string;
@@ -104,9 +169,11 @@ export class Store {
   private queue: Promise<unknown> = Promise.resolve();
   private listeners = new Set<(change: Change) => void>();
   private writing = false;
+  private readonly blobs: BlobReader;
 
   private constructor(dir: string, state: Snapshot) {
     this.dir = dir;
+    this.blobs = new BlobReader(dir);
     this.state = state;
     this.committedOwner = structuredClone(state.owner);
   }
@@ -382,8 +449,14 @@ export class Store {
     return infos;
   }
 
+  private readonly resolved = new Map<string, string>();
+  /** Full commit id of a ref. A full id, or one followed by ^, always names the same commit, so its answer is cached. */
   private async resolveCommit(ref: string): Promise<string> {
-    return (await this.git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+    const cached = this.resolved.get(ref);
+    if (cached) return cached;
+    const hash = (await this.git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+    if (/^[0-9a-f]{40}\^?$/.test(ref)) this.resolved.set(ref, hash);
+    return hash;
   }
 
   async diff(kind: DocKind, id: string, from: string, to = "HEAD"): Promise<string> {
@@ -393,9 +466,9 @@ export class Store {
   }
 
   private async readAt(path: string, commit: string): Promise<unknown | null> {
-    const exists = await this.git(["ls-tree", "--name-only", commit, "--", path]);
-    if (!exists.trim()) return null;
-    try { return parse(await this.git(["show", `${commit}:${path}`]), { version: "1.2", schema: "core" }); }
+    const blob = await this.blobs.read(`${commit}:${path}`);
+    if (blob === null) return null;
+    try { return parse(blob.toString("utf8"), { version: "1.2", schema: "core" }); }
     catch (error) { throw new ValidationError([{ path: `${commit}:${path}`, issues: String(error) }]); }
   }
 

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createMcpServer } from "../src/mcp.ts";
+import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { board, author } from "./helpers.ts";
 
 test("SDK client discovers exactly twenty described tools, reads/writes fresh state and receives tool errors", async t => {
@@ -56,4 +56,13 @@ test("cached rules refresh when owner state changes without a new commit", async
   assert.equal(store.snapshot().head, head);
   const archived = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
   assert.match(JSON.stringify(archived.content), /No items/);
+});
+
+test("changes output stops at the limit and says how many documents it left out", () => {
+  const doc = (id: string) => ({ kind: "item" as const, id, title: id, summary: "new item", commits: [{ commit: "a".repeat(40), at: "2026-10-11T00:00:00Z", author: "migration", message: "Import", files: [] }] });
+  const groups = [{ areaId: "x", area: "X", documents: [doc("a"), doc("b")] }, { areaId: "y", area: "Y", documents: [doc("c")] }] as unknown as Parameters<typeof formatChanges>[0];
+  const text = formatChanges(groups, 2);
+  assert.match(text, /item:a/); assert.match(text, /item:b/); assert.doesNotMatch(text, /item:c/);
+  assert.match(text, /… 1 more changed documents/);
+  assert.doesNotMatch(formatChanges(groups), /more changed documents/);
 });
