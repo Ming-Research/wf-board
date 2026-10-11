@@ -8,16 +8,21 @@ import { describeChanges } from "./query.ts";
 export interface Pieces { log: number; reply: number; other: number }
 export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary: string): Pieces {
   const visible = summary !== "metadata changed";
-  // A note counts through its reply; a state change alone (sent, closed) is not news, a deleted note is.
-  if (kind === "note") return { log: 0, reply: /(new reply|reply changed)/.test(summary) ? 1 : 0, other: before === null || after === null ? 1 : 0 };
+  // A note counts through its reply; its state alone (sent, closed) is not news, but any other visible change is.
+  if (kind === "note") {
+    const parts = visible ? summary.split(", ") : [];
+    return { log: 0, reply: parts.some(p => p === "new reply" || p === "reply changed") ? 1 : 0, other: before === null || after === null || parts.some(p => !["new reply", "reply changed", "state changed", "sentAt changed"].includes(p)) ? 1 : 0 };
+  }
   if (kind === "decision") return { log: 0, reply: 0, other: visible ? 1 : 0 };
-  const key = (e: { at: string; text: string }) => e.at + "\u0000" + e.text;
+  const key = (e: { at: string; by?: string; text: string }) => e.at + "\u0000" + (e.by ?? "") + "\u0000" + e.text;
   const old = new Map<string, number>();
   for (const e of (before as Item | null)?.log ?? []) old.set(key(e), (old.get(key(e)) ?? 0) + 1);
   let log = 0;
   for (const e of (after as Item | null)?.log ?? []) { const n = old.get(key(e)) ?? 0; if (n) old.set(key(e), n - 1); else log++; }
+  // An entry removed or rewritten in place is a change too, though not a new entry.
+  const logRewritten = [...old.values()].some(n => n > 0);
   // A new item counts through its log entries, as the old page did; one without entries counts once.
-  const otherChange = before === null ? log === 0 : summary.split(", ").some(part => visible && !/^(\+\d+ log|log changed)$/.test(part));
+  const otherChange = before === null ? log === 0 : logRewritten || summary.split(", ").some(part => visible && !/^(\+\d+ log|log changed)$/.test(part));
   return { log, reply: 0, other: otherChange ? 1 : 0 };
 }
 
