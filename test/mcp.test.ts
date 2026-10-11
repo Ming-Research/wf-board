@@ -66,3 +66,24 @@ test("changes output stops at the limit and says how many documents it left out"
   assert.match(text, /… 1 more changed documents/);
   assert.doesNotMatch(formatChanges(groups), /more changed documents/);
 });
+
+test("writes answer with the state they produced; refusals and context name the sub-items behind a derived status", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Test agent", version: "1" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ type: string; text: string }>).map(c => c.text).join("\n");
+  // area's sub-items: a (todo) and b (blocked) → area BLOCK. Finishing b's blocker does not change area; finishing a and b does.
+  const done = text(await client.callTool({ name: "set_status", arguments: { author, id: "a", status: "done", log: "Finished" } }));
+  assert.match(done, /^a · DONE /m);
+  assert.doesNotMatch(done, /ancestor area/); // still BLOCK because of b
+  const unblocked = text(await client.callTool({ name: "set_status", arguments: { author, id: "b", status: "done", log: "Finished too" } }));
+  assert.match(unblocked, /^ancestor area now DONE \S* \(was BLOCK \S*\)$/m);
+  const refused = text(await client.callTool({ name: "set_status", arguments: { author, id: "area", status: "todo", log: "Not a leaf" } }));
+  assert.match(refused, /area's status is derived from its sub-items \(.*a done.*b done.*\)|area's status is derived from its sub-items \(.*b done.*a done.*\)/);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "area" } })), /^status and priority derived from 2 sub-items: .*a DONE/m);
+  const prs = text(await client.callTool({ name: "search", arguments: { query: "Whitefoot#341" } }));
+  assert.equal(prs.split("\n").filter(l => l.includes("without repository")).length, 1);
+  assert.match(prs, /also a bare #341 without repository \(may be another repository's PR\) in: .*item:b/);
+});
