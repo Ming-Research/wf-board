@@ -326,3 +326,29 @@ test("push sends an ahead branch to origin and skips an up-to-date branch", asyn
   assert.equal(await store.push(), false);
   assert.equal(await git(dir, "rev-parse", "HEAD"), localHead);
 });
+
+test("inHistory accepts HEAD and its ancestors only; unpushed counts commits origin lacks", async t => {
+  const { dir, store } = await setup(t);
+  const first = store.snapshot().head;
+  await store.commit({ author: "a", message: "Second", puts: [put("a", item())] });
+  const second = store.snapshot().head;
+  assert.equal(await store.inHistory(first), first);
+  assert.equal(await store.inHistory(second.slice(0, 12)), second);
+  assert.equal(await store.inHistory("f".repeat(40)), null);
+  await git(dir, "branch", "side", first);
+  await git(dir, "checkout", "-q", "side");
+  await git(dir, "-c", "user.name=O", "-c", "user.email=o@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Off the history");
+  const side = await git(dir, "rev-parse", "HEAD");
+  await git(dir, "checkout", "-q", "main");
+  assert.equal(await store.inHistory(side), null);
+  assert.equal(await store.unpushed(), 0, "no remote");
+  const remote = await mkdtemp(join(tmpdir(), "wf-board-remote-"));
+  t.after(() => rm(remote, { recursive: true, force: true }));
+  await git(remote, "init", "-q", "--bare", "-b", "main");
+  await git(dir, "remote", "add", "origin", remote);
+  assert.equal(await store.unpushed(), 2, "never pushed: every commit");
+  await store.push();
+  assert.equal(await store.unpushed(), 0);
+  await store.commit({ author: "a", message: "Third", puts: [put("b", item())] });
+  assert.equal(await store.unpushed(), 1);
+});

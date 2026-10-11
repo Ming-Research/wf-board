@@ -406,6 +406,21 @@ export class Store {
     return doc === null ? null : validated(schemas[kind], doc, `${hash}:${path}`);
   }
 
+  /** The full commit id of `ref` when it is HEAD or an ancestor of HEAD; null when unknown or off the history. */
+  async inHistory(ref: string): Promise<string | null> {
+    let hash: string;
+    try { hash = await this.resolveCommit(ref); } catch { return null; }
+    try { await this.git(["merge-base", "--is-ancestor", hash, "HEAD"]); return hash; } catch { return null; }
+  }
+
+  /** Commits on HEAD that origin's branch, as this clone last saw it, lacks; 0 without a remote. */
+  async unpushed(): Promise<number> {
+    if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return 0;
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+    const range = await this.inHistory(`refs/remotes/origin/${branch}`) ? [`refs/remotes/origin/${branch}..HEAD`] : ["HEAD"];
+    return Number((await this.git(["rev-list", "--count", ...range])).trim());
+  }
+
   push(): Promise<boolean> {
     return this.enqueue(async () => {
       if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return false;
