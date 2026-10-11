@@ -86,7 +86,7 @@ test("overview/list/notes honor derived statuses, effective priority, inheritanc
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
-  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P0"], agent: author }).map(it => it.id), ["b"]);
+  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P0"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["a"]);
   assert.deepEqual(q.list(s, r, { hasChecks: true }), []);
   assert.equal(q.list(s, r, { group: "Firn", limit: 1 })[0]!.id, "other");
@@ -108,11 +108,11 @@ test("PR index separates qualified text, links, cards, notes and bare refs, avoi
 });
 
 test("changes summarizes net fields over commits, groups areas, and history/diff reproduce evidence", async t => {
-  const { store, op } = await board(t, {sharedProjects:true}), baseline = store.snapshot().head;
+  const { store, op } = await board(t), baseline = store.snapshot().head;
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author, key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", priority: "P2", parentOwnWork: { key: "other-own", title: "other own work" } });
+  await op.createItem({ author: "Firn", key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", priority: "P2", parentOwnWork: { key: "other-own", title: "other own work" } });
   await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;
@@ -219,16 +219,19 @@ test("search finds a document by its key, and a PR-shaped query through the PR i
   assert.deepEqual(q.search(s, r, "Whitefoot #341", { kind: ["note"] }).filter(h => h.field === "pr").map(h => h.id), ["note-1", "note-2"]);
 });
 
-test("context names the responsible project and its agents", async t => {
+test("context names the responsible project without agents", async t => {
   const { formatContext } = await import("../src/mcp.ts");
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
-  assert.match(formatContext(q.context(s, r, "a")), /^agents: MCP session \(project Whitefoot\)$/m);
-  assert.match(formatContext(q.context(s, r, "area")), /^agents: MCP session \(project Whitefoot\)$/m);
+  for (const id of ["a", "area"]) {
+    const text = formatContext(q.context(s, r, id));
+    assert.match(text, /Whitefoot › area/);
+    assert.doesNotMatch(text, /agents:/);
+  }
 });
 
 test("project brief and projects include inbox, sent notes, checks, work and outgoing requests", async t => {
   const {store,op} = await board(t);
-  await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",priority:"P0",why:"Need help"});
+  await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",priority:"P0",why:"Need help"});
   await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",priority:"P2",why:"Need feature",from:"a"});
   await op.setStatus({author,id:"a",status:"done",log:"Ready"});
   await op.ruleCard({author,key:"choice",choice:"A",ruling:"Chosen"});
@@ -240,8 +243,8 @@ test("project brief and projects include inbox, sent notes, checks, work and out
   await op.writeCard({author,key:"open-card",item:"working",question:"Choose?",background:"Why",options:[{key:"A",text:"A"}]});
   const s = store.snapshot(), r = rules(s);
   const brief = q.brief(s,r,"Whitefoot");
-  assert.deepEqual(brief.agents,[author]);
-  assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Visitor",why:"Need help"}]);
+  assert.equal(Object.hasOwn(brief,"agents"),false);
+  assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Firn",why:"Need help"}]);
   assert.deepEqual(brief.notes.map(x=>x.id).sort(),["note-1","sent-card"]);
   assert.equal(brief.notes.find(x=>x.id==="sent-card")!.title,"中文方案？");
   assert.ok(brief.checks.some(x=>x.id==="b" && x.checks.some(c=>c.text.startsWith("可解除阻塞"))));
@@ -253,17 +256,17 @@ test("project brief and projects include inbox, sent notes, checks, work and out
   assert.equal(project.repo,"Ming-Research/Whitefoot"); assert.equal(project.inbox,1); assert.equal(project.areas,14);
   assert.deepEqual(project.openLeaves,{todo:12,wip:1,blocked:1});
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
-  assert.ok(q.list(s,r,{agent:author}).every(x=>x.agents.includes(author)));
+  assert.ok(q.list(s,r,{group:author}).every(x=>x.group===author));
 });
 
 test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
   const {store,op} = await board(t);
-  await op.createRequest({author:"Visitor",project:"Firn",key:"old-request",title:"Old",head:"Detail",priority:"P1",why:"Need"});
-  await op.createRequest({author:"Visitor",project:"Firn",key:"handled-request",title:"Handled",head:"Detail",priority:"P1",why:"Need"});
-  await op.triageRequest({author:"Other session",id:"handled-request",priority:"P2",log:"Taken as an area"});
+  await op.createRequest({author,project:"Firn",key:"old-request",title:"Old",head:"Detail",priority:"P1",why:"Need"});
+  await op.createRequest({author,project:"Firn",key:"handled-request",title:"Handled",head:"Detail",priority:"P1",why:"Need"});
+  await op.triageRequest({author:"Firn",id:"handled-request",priority:"P2",log:"Taken as an area"});
   const s = structuredClone(store.snapshot());
   s.items["handled-request"]!.log[0]!.at=at;
-  s.notes.closed={...s.notes["note-1"]!,state:"done",repliedAt:later,repliedBy:"Other session"};
+  s.notes.closed={...s.notes["note-1"]!,state:"done",repliedAt:later,repliedBy:"Firn"};
   assert.ok(!q.list(s,rules(s),{}).some(x=>x.id==="old-request"),"an untriaged request is not listed as work");
   assert.ok(q.list(s,rules(s),{}).some(x=>x.id==="handled-request"),"a triaged request is ordinary work");
   s.items["old-request"]!.request!.at=at;
@@ -273,6 +276,27 @@ test("project followups use strict age boundary and omit drafts, replies, closur
   assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[],requests:[]});
   const f=q.followups(s,r,{minutes:59},cutoff);
   assert.deepEqual(f.notes.map(n=>n.id),["note-1"]);
-  assert.deepEqual(f.requests.map(n=>[n.id,n.project,n.agents]),[["old-request","Firn",["Other session"]]]);
+  assert.deepEqual(f.requests.map(n=>[n.id,n.project,n.by]),[["old-request","Firn",author]]);
+  for (const entry of [...f.notes,...f.requests]) assert.equal(Object.hasOwn(entry,"agents"),false);
   assert.throws(()=>q.followups(s,r,{minutes:-1},cutoff),/minutes/);
+});
+
+
+test("project identity read shapes omit agents and outgoing requests use requesting project without a dependency", async t => {
+  const { store } = await board(t);
+  const s = structuredClone(store.snapshot());
+  s.items["outgoing-alone"] = { ...s.items.other!, title: "Unlinked request", log: [{ at, by: "Whitefoot", text: "Whitefoot 提出：Needed" }], request: { by: "Whitefoot", at } };
+  s.items["foreign-request"] = { ...s.items.other!, title: "Other project's request", log: [], request: { by: "Firn", at } };
+  const r = rules(s), summary = q.brief(s, r, "Whitefoot");
+  await t.test("outgoing selection", () => assert.deepEqual(summary.outgoing.map(it => it.id), ["outgoing-alone"]));
+  await t.test("brief shape", () => assert.equal(Object.hasOwn(summary, "agents"), false));
+  const followups = q.followups(s, r, { minutes: 0 }, later);
+  const groups = { row: [q.row(s, r, "item", "a")], list: q.list(s, r), projects: q.projects(s, r), overview: q.overview(s, r), notes: followups.notes, requests: followups.requests };
+  for (const [name, rows] of Object.entries(groups)) {
+    await t.test(`${name} shape`, () => {
+      assert.ok(rows.length > 0, "the shape guard observes at least one result");
+      for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
+    });
+  }
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openLeaves: { todo: 1, wip: 0, blocked: 1 }, inbox: 0 }));
 });

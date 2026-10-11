@@ -164,7 +164,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
   function groupOf(it: ViewItem) { return derived.groupOf(it.id); }
-  function agentsFor(it: ViewItem | null | undefined) { return it ? derived.agentsFor(it.id) : []; }
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
@@ -1134,8 +1133,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       box.id = "group-" + gi;
       box.dataset.title = plain(g.name || "其他");
       const gh = el("h2", "group-head", inline(g.name || "其他"));
-      const project = snapshot.board.projects.find(p => p.name === g.name);
-      gh.appendChild(el("span", "project-agents", "负责：" + esc(project?.agents.join("、") || "未指定")));
       const xs = crossSummary(g.name);
       if (xs) { const x = el("button", "xdeps", esc(xs)); x.type = "button"; x.title = "只看跨项目依赖"; x.addEventListener("click", () => setDepFilter(g.name, "cross")); gh.appendChild(x); }
       box.appendChild(gh);
@@ -1326,10 +1323,10 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   get<HTMLButtonElement>("send-all").addEventListener("click", async () => {
     if (sending) return; sending = true; sendMessage = ""; renderSend();
     try {
-      const result = await api<{sent: Array<{agents: string[]}>}>("/api/send", {});
+      const result = await api<{sent: Array<{project: string}>}>("/api/send", {});
       const counts = new Map<string,number>();
-      result.sent.forEach(n => (n.agents.length ? n.agents : ["未指定负责会话"]).forEach(agent => counts.set(agent, (counts.get(agent) || 0) + 1)));
-      sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([agent,n]) => agent + "×" + n).join(" · ");
+      result.sent.forEach(n => counts.set(n.project, (counts.get(n.project) || 0) + 1));
+      sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([project,n]) => project + "×" + n).join(" · ");
     } catch(e) { showError(e); } finally { sending = false; renderSend(); }
   });
 
@@ -1511,7 +1508,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     changedFields(box,before,after,[
       ["state","状态",v => NOTE_STATE[v as Note["state"]] || "未设"], ["kind","类型",noteKind],
       ["target","所属条目",v => v == null ? "未设" : titleOf(String(v))], ["choice","选择"],
-      ["repliedBy","回复会话"], ["repliedAt","回复时间",v => day(v as string | undefined) || "未设"],
+      ["repliedBy","回复项目"], ["repliedAt","回复时间",v => day(v as string | undefined) || "未设"],
     ]);
     return box;
   }

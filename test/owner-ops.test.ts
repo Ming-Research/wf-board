@@ -6,7 +6,7 @@ import { board, later, author } from "./helpers.ts";
 import { rules } from "../src/rules.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
-test("draft notes validate targets and choices, delete only drafts, send atomically with inherited agents", async t => {
+test("draft notes validate targets and choices, delete only drafts, send atomically with target projects", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later);
   const one = await own.createNote({ target: "it:a", kind: "comment", text: "hello", anchor: { kind: "note", id: "note-1" } });
   assert.match(one.id, /^[a-z0-9]{20}$/); assert.equal(store.snapshot().notes[one.id]!.state, "draft");
@@ -20,7 +20,7 @@ test("draft notes validate targets and choices, delete only drafts, send atomica
   const c = await own.createNote({ target: "it:other", kind: "explain", text: "explain" });
   const before = (await store.log()).length;
   const sent = await own.send();
-  assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "approve", agents: [author] }, { id: b.id, target: "q:choice", kind: "choice", agents: [author] }, { id: c.id, target: "it:other", kind: "explain", agents: ["Other session"] }]);
+  assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "approve", project: "Whitefoot" }, { id: b.id, target: "q:choice", kind: "choice", project: "Whitefoot" }, { id: c.id, target: "it:other", kind: "explain", project: "Firn" }]);
   assert.equal((await store.log()).length, before + 1);
   for (const { id } of sent.sent) { assert.equal(store.snapshot().notes[id]!.state, "sent"); assert.equal(store.snapshot().notes[id]!.sentAt, later); }
   await assert.rejects(own.deleteNote({ id: a.id }), /Only draft/);
@@ -29,8 +29,8 @@ test("draft notes validate targets and choices, delete only drafts, send atomica
   const head = store.snapshot().head; assert.deepEqual(await own.send(), { sent: [] }); assert.equal(store.snapshot().head, head);
 });
 
-test("send reports the agents responsible when a concurrent replacement claim commits first", async t => {
-  const { store, op } = await board(t), own = ownerOps(store, () => later);
+test("send reports the committed target project after a concurrent owner change", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
   const note = await own.createNote({ target: "it:a", kind: "comment", text: "Deliver after handover" });
   let signalReached!: () => void, release!: () => void;
   const reached = new Promise<void>(resolve => { signalReached = resolve; });
@@ -40,17 +40,17 @@ test("send reports the agents responsible when a concurrent replacement claim co
     if (txn.message.startsWith("send ")) { signalReached(); await resume; }
     return commit(txn);
   });
-  let deliveredTo: string[] | undefined;
+  let deliveredTo: string | undefined;
   t.after(store.onChange(change => {
-    if (change.message.startsWith("send ")) deliveredTo = rules(store.snapshot()).agentsFor("a");
+    if (change.message.startsWith("send ")) deliveredTo = rules(store.snapshot()).projectOf("a");
   }));
   const sending = own.send();
   await reached;
-  try { await op.claimProject({ author: "Replacement", project: "Whitefoot", replace: [author], reason: "Session departed" }); }
+  try { const area = store.snapshot().items.area!; await store.commit({ author: "owner", message: "Move area to Firn", puts: [{ kind: "item", id: "area", expectRev: area.rev, doc: { ...area, group: "Firn" } }] }); }
   finally { release(); }
   const result = await sending;
-  assert.deepEqual(deliveredTo, ["Replacement"]);
-  assert.deepEqual(result.sent, [{ id: note.id, target: "it:a", kind: "comment", agents: deliveredTo }]);
+  assert.equal(deliveredTo, "Firn");
+  assert.deepEqual(result.sent, [{ id: note.id, target: "it:a", kind: "comment", project: deliveredTo }]);
 });
 
 test("read advances monotonically; unknown, off-history and merged sibling commits are refused", async t => {

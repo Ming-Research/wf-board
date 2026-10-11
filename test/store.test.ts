@@ -407,6 +407,11 @@ test("R1 case aliases are refused before disk writes, including aliases in a sin
 test("project schema defaults, uniqueness and nonempty configuration", async () => {
   const { Board } = await import("../src/model.ts");
   assert.deepEqual(Board.parse({ title: "Old board" }).projects, []);
-  assert.deepEqual(Board.parse({ title: "Board", projects: [{ name: "P", agents: ["a", "b"], repo: "Org/P" }] }).projects, [{ name: "P", agents: ["a", "b"], repo: "Org/P" }]);
-  for (const projects of [[{ name: "P", agents: [] }, { name: "P", agents: [] }], [{ name: "P", agents: ["a", "a"] }], [{ name: "", agents: [] }], [{ name: "P", agents: [""] }], [{ name: "P", agents: [], repo: "" }]]) assert.equal(Board.safeParse({ title: "Board", projects }).success, false);
+  for (const projects of [[{ name: "P", agents: [] }], [{ name: "P", agents: ["a", "b"], repo: "Org/P" }]]) {
+    const parsed = Board.safeParse({ title: "Board", projects });
+    assert.equal(parsed.success, false, "past project agents are refused as unknown fields");
+    if (!parsed.success) assert.ok(parsed.error.issues.some(i => i.code === "unrecognized_keys" && i.keys.includes("agents")));
+  }
+  assert.deepEqual(Board.parse({ title: "Board", projects: [{ name: "P", repo: "Org/P" }, { name: "Q" }] }).projects, [{ name: "P", repo: "Org/P" }, { name: "Q" }]);
+  for (const projects of [[{ name: "P" }, { name: "P" }], [{ name: "" }], [{ name: "P", repo: "" }]]) assert.equal(Board.safeParse({ title: "Board", projects }).success, false);
 });

@@ -92,13 +92,10 @@ export function convertExport(exportJson: unknown): Converted {
     if (raw.area !== undefined) report("Fold area into parent (a nonempty parent wins, else area)", id);
   }
   const areas = input.items.filter(row => !parents[row.id]).slice().sort((a,b) => Number(a.data.order || 0) - Number(b.data.order || 0));
-  for (const { id, data: raw } of areas) {
+  for (const { data: raw } of areas) {
     const name = string(raw.group);
     if (!name) continue; // Existing malformed areas remain visible through rules checks.
-    let project = board.projects.find(p => p.name === name);
-    if (!project) { project = { name, agents: [] }; board.projects.push(project); }
-    const agent = string(raw.agent);
-    if (agent && !project.agents.includes(agent)) project.agents.push(agent);
+    if (!board.projects.some(p => p.name === name)) board.projects.push({ name });
   }
   for (const [id, raw] of Object.entries(items)) if (raw.agent !== undefined) {
     z.string().parse(raw.agent);

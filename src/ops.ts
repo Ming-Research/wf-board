@@ -10,7 +10,7 @@ export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev?: number; summary: string }
 export interface Ops {
   createProject(a: { author: string; name: string; repo?: string }): Promise<Result>;
-  claimProject(a: { author: string; project: string; replace?: string[]; reason?: string }): Promise<Result>;
+  updateProject(a: { author: string; name: string; repo: string }): Promise<Result>;
   createRequest(a: { author: string; project: string; key: string; title: string; head: string; priority: Priority; why: string; from?: string }): Promise<Result>;
   triageRequest(a: { author: string; id: string; parent?: string; parentWhy?: string; parentOwnWork?: { key: string; title: string }; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; id: string; log: string }): Promise<Result>;
@@ -60,13 +60,17 @@ function requireProject(s: Snapshot, name: string) {
   if (!project) throw new OpError(`project ${name}: choose a configured project with projects`);
   return project;
 }
-function member(s: Snapshot, project: string, author: string, id: string): void {
-  const agents = s.board.projects.find(p => p.name === project)?.agents ?? [];
-  if (!agents.includes(author)) throw new OpError(`item ${id} belongs to project ${project} (agents: ${agents.join(", ")}); file a request into ${project} with create_request instead`);
+function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
+  if (!s.board.projects.some(p => p.name === author)) throw new OpError(`${prefix}author ${author}: choose a configured project (${s.board.projects.map(p => p.name).join(", ")}); call projects and use the project whose repo matches your repository`);
+}
+function requireOwnership(s: Snapshot, project: string, author: string, id: string): void {
+  const refusal = `item ${id} belongs to project ${project}; file a request into ${project} with create_request instead`;
+  requireAuthor(s, author, author === project ? "" : `${refusal}. `);
+  if (author !== project) throw new OpError(refusal);
 }
 function ownedItem(s: Snapshot, id: string, author: string, field = "id"): Item {
   const it = requireItem(s, id, field);
-  member(s, rules(s).projectOf(id), author, id);
+  requireOwnership(s, rules(s).projectOf(id), author, id);
   return it;
 }
 function ownedNote(s: Snapshot, id: string, author: string): { note: Note; item: string } {
@@ -91,13 +95,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (!Number.isSafeInteger(rev) || rev < 1) throw new OpError("rev: provide the positive integer revision read from context");
     if (rev !== doc.rev) await stale(kind, id, rev, doc);
   }
-  function run(a: { author: string }, make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false): Promise<Result> {
+  function run(a: { author: string }, make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       nonempty(a);
-      if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your session name without <, >, newlines or NUL");
+      if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
       for (;;) {
         const s = store.snapshot();
         const work = await make(s, now());
+        if (!anyAuthor) requireAuthor(s, a.author);
         // Validate the prospective board, including indirect effects on children,
         // dependents and items whose owner actions a card/note write changes.
         const next = structuredClone(s);
@@ -157,19 +162,19 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   return {
     createProject: a => run(a, s => {
       if (s.board.projects.some(p => p.name === a.name)) throw new OpError(`project ${a.name}: already exists`);
-      const board = parse(Board, { ...s.board, projects: [...s.board.projects, { name: a.name, agents: [a.author], ...(a.repo === undefined ? {} : { repo: a.repo }) }] });
+      const board = parse(Board, { ...s.board, projects: [...s.board.projects, { name: a.name, ...(a.repo === undefined ? {} : { repo: a.repo }) }] });
       return { id: a.name, kind: "board", board, puts: [], message: `create_project ${a.name} ${a.author}` };
-    }),
-    claimProject: a => run(a, s => {
-      const project = requireProject(s, a.project);
-      if (project.agents.includes(a.author)) throw new OpError(`project ${a.project}: ${a.author} already listed`);
-      if (a.replace !== undefined && !a.reason?.trim()) throw new OpError("reason: explain the replacement");
-      for (const agent of a.replace ?? []) if (!project.agents.includes(agent)) throw new OpError(`replace ${agent}: must be listed in project ${a.project}`);
-      const updated = { ...project, agents: [...project.agents.filter(n => !a.replace?.includes(n)), a.author] };
-      const board = { ...s.board, projects: s.board.projects.map(p => p.name === a.project ? updated : p) };
-      return { id: a.project, kind: "board", board, puts: [], message: `claim_project ${a.project} ${a.author}` + (a.reason ? `\n\n${a.reason}` : "") };
+    }, false, true),
+    updateProject: a => run(a, s => {
+      const project = requireProject(s, a.name);
+      requireAuthor(s, a.author, `project ${a.name}: `);
+      if (a.author !== a.name && a.author !== "跨项目") throw new OpError(`project ${a.name}: only that project or 跨项目 may update its repo`);
+      if (typeof a.repo !== "string") throw new OpError("repo: provide the repository identifier");
+      const board = parse(Board, { ...s.board, projects: s.board.projects.map(p => p.name === a.name ? { ...project, repo: a.repo } : p) });
+      return { id: a.name, kind: "board", board, puts: [], message: `update_project ${a.name}` };
     }),
     createRequest: a => run(a, (s, at) => {
+      requireAuthor(s, a.author);
       requireProject(s, a.project); newKey(s, a.key);
       if (!a.priority) throw new OpError("priority: new request requires P0, P1 or P2");
       const doc = parse(Item, { title: a.title, group: a.project, head: a.head, priority: a.priority, status: "todo", request: { by: a.author, at }, created: at, updated: at, rev: 1, log: [entry(a.author, at, `${a.author} 提出：${a.why}`)] });
@@ -214,7 +219,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.parent) ownedItem(s, a.parent, a.author, "parent");
       else {
         if (!a.group) throw new OpError("group: a new area requires its project");
-        requireProject(s, a.group); member(s, a.group, a.author, a.key);
+        requireProject(s, a.group); requireOwnership(s, a.group, a.author, a.key);
       }
       const { author: _author, key: _key, parentWhy: _why, parentOwnWork: _own, ...fields } = a;
       const doc = parse(Item, { ...fields, status: a.status ?? "todo", created: at, updated: at, rev: 1 });

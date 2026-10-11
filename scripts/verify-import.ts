@@ -45,13 +45,11 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
   const parent = (raw: Raw) => optional(raw.parent) ?? optional(raw.area);
   const parents = new Set(items.map(r => parent(r.data)).filter(Boolean));
   const archived = Object.fromEntries(archives.map(r => [r.id, date(r.data.at)]));
-  const projects: Array<{name:string;agents:string[]}> = [];
+  const projects: Array<{name:string}> = [];
   for (const area of items.filter(r => !parent(r.data)).sort((a,b) => Number(a.data.order ?? 0) - Number(b.data.order ?? 0))) {
     if (!area.data.group) continue;
     const name = String(area.data.group);
-    if (!projects.some(p => p.name === name)) projects.push({name,agents:[]});
-    const agents = projects.find(p => p.name === name)!.agents;
-    if (area.data.agent && !agents.includes(String(area.data.agent))) agents.push(String(area.data.agent));
+    if (!projects.some(p => p.name === name)) projects.push({name});
   }
   equal("board metadata", converted.board, {...fields(meta, ["title", "eyebrow", "goal"]),projects});
   equal("owner archive state", converted.owner, { archived });

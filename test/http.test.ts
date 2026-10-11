@@ -48,7 +48,7 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   const draft = await api("/api/notes", { target: "it:a", kind: "comment", text: "delete this" });
   assert.equal((await api("/api/notes/" + draft.data.id, {}, "DELETE")).status, 200);
   assert.equal(store.snapshot().notes[draft.data.id], undefined);
-  const sent = await api("/api/send", {}); assert.deepEqual(sent.data.sent, [{ id: note.data.id, target: "q:choice", kind: "choice", agents: [author] }]);
+  const sent = await api("/api/send", {}); assert.deepEqual(sent.data.sent, [{ id: note.data.id, target: "q:choice", kind: "choice", project: "Whitefoot" }]);
   assert.equal((await api("/api/notes/" + note.data.id, {}, "DELETE")).status, 400);
   assert.equal((await api("/api/notes/missing", {}, "DELETE")).status, 404);
   assert.equal((await api("/api/notes", { target: "it:missing", kind: "comment", text: "bad" })).status, 404);
@@ -82,12 +82,12 @@ test("exact Host and same-Origin enforced for writes and WebSocket upgrades", as
   assert.equal(await hostStatus(`localhost:${port + 1}`), 403);
 });
 
-test("wake delivers only sent notes to their session and wildcard, exactly once", async t => {
+test("wake delivers only sent notes to their project and wildcard, exactly once", async t => {
   const { url, api } = await server(t);
-  const sockets = [author, "Other session", "*", "unrelated"].map(session => new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session)));
+  const sockets = ["Whitefoot", "Firn", "*", "unrelated"].map(session => new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session)));
   t.after(() => { sockets.forEach(s => s.terminate()); });
   await Promise.all(sockets.map(s => once(s, "open")));
-  const frames: Array<Array<{note: string; target: string; kind: string; agents: string[]; title: string}>> = sockets.map(() => []);
+  const frames: Array<Array<{note: string; target: string; kind: string; project: string; title: string}>> = sockets.map(() => []);
   sockets.forEach((s,i) => s.on("message", data => frames[i]!.push(JSON.parse(data.toString()))));
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "q:choice", kind: "explain", text: "two" });
@@ -96,7 +96,7 @@ test("wake delivers only sent notes to their session and wildcard, exactly once"
   // Ping/pong is a wire-order barrier after every send, avoiding timing sleeps.
   for (const socket of sockets) { const pong = once(socket, "pong"); socket.ping(); await pong; }
   assert.deepEqual(frames.map(f => f.map(n => n.note)), [[one.data.id, two.data.id], [three.data.id], [one.data.id, two.data.id, three.data.id], []]);
-  assert.deepEqual(frames[0]![1], { event: "note", project: "Whitefoot", note: two.data.id, target: "q:choice", kind: "explain", agents: [author], title: "中文方案？" });
+  assert.deepEqual(frames[0]![1], { event: "note", project: "Whitefoot", note: two.data.id, target: "q:choice", kind: "explain", title: "中文方案？" });
   await api("/api/send", {});
   for (const socket of sockets) { const pong = once(socket, "pong"); socket.ping(); await pong; }
   assert.deepEqual(frames.map(f => f.length), [2, 1, 3, 0]);
@@ -137,20 +137,19 @@ test("JSON body decoding preserves Chinese codepoints split across request chunk
   assert.equal(store.snapshot().notes[created.data.id]!.text,"中文意见");
 });
 
-test("project wake routing reaches all members and the coordinator exactly once", async t => {
+test("project wake routing reaches matching project sockets and the coordinator exactly once", async t => {
   const {url,api,store,op} = await server(t);
-  await op.claimProject({author:"Second",project:"Whitefoot",reason:"Shared"});
-  const sockets=[author,"Second","Other session","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
+  const sockets=["Whitefoot","Whitefoot","Firn","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
   t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
   const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
   sockets.forEach((s,i)=>s.on("message",data=>frames[i]!.push(JSON.parse(data.toString()))));
-  const made=await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",priority:"P0",why:"Need it"});
+  const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",priority:"P0",why:"Need it"});
   await op.appendLog({author,id:made.id,text:"Seen"});
   const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
   for (const socket of sockets) { const pong=once(socket,"pong"); socket.ping(); await pong; }
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:"incoming",title:"Visitor request",project:"Whitefoot",agents:[author,"Second"],by:"Visitor"});
-  assert.deepEqual(frames[0]![1],{event:"note",note:note.data.id,target:"it:a",kind:"comment",title:"中文检查",project:"Whitefoot",agents:[author,"Second"]});
+  assert.deepEqual(frames[0]![0],{event:"request",item:"incoming",title:"Visitor request",project:"Whitefoot",by:"Firn"});
+  assert.deepEqual(frames[0]![1],{event:"note",note:note.data.id,target:"it:a",kind:"comment",title:"中文检查",project:"Whitefoot"});
 });
 
 // Exercise the real HTTP handler and upgrade routing without binding a port.
@@ -161,7 +160,6 @@ test("project HTTP handlers route committed requests and sent notes without a li
   const {EventEmitter} = await import("node:events");
   const {store,op} = await board(t);
   const owner = ownerOps(store);
-  await op.claimProject({author:"Second",project:"Whitefoot",reason:"Shared"});
   const http = createHttpServer({store,ops:op,ownerOps:owner,webDir:"web",createMcp:()=>createMcpServer({store,ops:op})});
   t.after(()=>{http.close();});
   const frames: Array<Array<Record<string,unknown>>> = [];
@@ -174,7 +172,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
     const socket=new Socket(); t.after(()=>socket.destroy()); Object.defineProperty(socket,"localPort",{value:7417});
     const req=new IncomingMessage(socket); req.method=method; req.url=path; req.headers={host:"127.0.0.1:7417"}; return req;
   }
-  for (const name of [author,"Second","Other session","*","outsider"]) { const req=request("/wake?session="+encodeURIComponent(name),"GET"); http.emit("upgrade",req,req.socket,Buffer.alloc(0)); }
+  for (const name of ["Whitefoot","Whitefoot","Firn","*","outsider"]) { const req=request("/wake?session="+encodeURIComponent(name),"GET"); http.emit("upgrade",req,req.socket,Buffer.alloc(0)); }
   async function api(path:string,data:unknown) {
     const req=request(path), res=new ServerResponse(req);
     const done = new Promise<{status:number;data:Record<string,unknown>}>(resolve=>{
@@ -183,16 +181,16 @@ test("project HTTP handlers route committed requests and sent notes without a li
     });
     http.emit("request",req,res); req.push(Buffer.from(JSON.stringify(data)));req.push(null); return done;
   }
-  const {id}=await op.createRequest({author:"Visitor",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",priority:"P0",why:"Need it"});
+  const {id}=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",priority:"P0",why:"Need it"});
   await op.appendLog({author,id,text:"Seen"});
   const note=await owner.createNote({target:"q:choice",kind:"explain",text:"Explain"});
   assert.deepEqual(frames.map(f=>f.length),[1,1,0,1,0]);
   const sent=await api("/api/send",{});
-  assert.deepEqual(sent.data.sent,[{id:note.id,target:"q:choice",kind:"explain",agents:[author,"Second"]}]);
+  assert.deepEqual(sent.data.sent,[{id:note.id,target:"q:choice",kind:"explain",project:"Whitefoot"}]);
   await api("/api/send",{});
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",agents:[author,"Second"],by:"Visitor"});
-  assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot",agents:[author,"Second"]});
+  assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",by:"Firn"});
+  assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot"});
   await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",priority:"P2",why:"Need",from:"a"});
   assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
 });

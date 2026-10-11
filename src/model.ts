@@ -20,7 +20,7 @@ export type Priority = z.infer<typeof Priority>;
 
 export const LogEntry = z.object({
   at: Time,
-  /** The writing session; absent when the source recorded no author. */
+  /** The writing project; absent when the source recorded no author. */
   by: z.string().min(1).optional(),
   text: z.string().min(1),
 });
@@ -104,7 +104,7 @@ export const Target = z.string().regex(/^(it|q):[A-Za-z0-9][A-Za-z0-9_.-]{0,199}
 
 export const NOTE_KINDS = ["comment", "explain", "approve", "choice", "done"] as const;
 
-/** An owner note on an item or card, and the responsible session's reply. Its title is derived from the target. */
+/** An owner note on an item or card, and the responsible project's reply. Its title is derived from the target. */
 export const Note = z.object({
   target: Target,
   kind: z.enum(NOTE_KINDS),
@@ -126,7 +126,6 @@ export type Note = z.infer<typeof Note>;
 
 export const Project = z.object({
   name: z.string().min(1),
-  agents: z.array(z.string().min(1)).refine(a => new Set(a).size === a.length, "Project agents must be unique"),
   repo: z.string().min(1).optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
