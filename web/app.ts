@@ -982,7 +982,6 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
     // The responsible session shows where it is set and differs from the parent's: on a top-level item, or on a handed-over one.
-    if (it.agent && it.agent !== agentFor(upItem(it))) head.appendChild(el("span", "agent-chip", "Agent: " + esc(it.agent)));
     head.appendChild(el("span", "item-title", inline(it.title)));
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
