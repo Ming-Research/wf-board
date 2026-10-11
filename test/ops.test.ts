@@ -325,6 +325,8 @@ for (const [name, args] of [
 test("project enforcement checks destination and previous card owner", async t => {
   const {store,op} = await board(t), before = store.snapshot();
   await assert.rejects(op.moveItem({author,id:"a",parent:"other",parentWhy:"Move",parentOwnWork:{key:"own",title:"Own"}}), /project Firn/);
+  // Firn owns the destination but not the source: only the source check can refuse this.
+  await assert.rejects(op.moveItem({author:"Firn",id:"a",parent:"other",parentWhy:"Move",parentOwnWork:{key:"own",title:"Own"}}), /item a belongs to project Whitefoot/);
   await assert.rejects(op.writeCard({author:"Firn",key:"choice",rev:1,item:"other",question:"Q",background:"B",options:[{key:"A",text:"A"}]}), /project Whitefoot/);
   assert.deepEqual(store.snapshot(),before);
 });

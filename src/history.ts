@@ -49,6 +49,8 @@ export function unreadSteps(store: Store, cursor: string | undefined): Promise<S
   return steps;
 }
 
+const described = new WeakMap<Store, Map<string, { summary: string; pieces: Pieces }>>();
+
 async function computeSteps(store: Store, cursor: string | undefined): Promise<Step[]> {
   if (cursor && !(await store.inHistory(cursor))) throw new Error(`Read cursor ${cursor} is not in board history`);
   const commits = (await store.log(cursor ? { since: cursor } : {})).reverse();
@@ -74,10 +76,20 @@ async function computeSteps(store: Store, cursor: string | undefined): Promise<S
     }
     if (!single) previous = undefined;
   }
+  // A document's change between two commits never changes, so each is read from git once per server run; a new
+  // commit then costs only the steps it creates or extends.
+  let cache = described.get(store);
+  if (!cache) { cache = new Map(); described.set(store, cache); }
   for (const step of steps) for (const doc of step.docs) {
-    const { before, after } = await endpoints(store, step, doc.kind, doc.id);
-    doc.summary = describeChanges(before, after, doc.kind);
-    doc.pieces = piecesOf(before, after, doc.kind, doc.summary);
+    const key = (step.parent ?? "") + "|" + step.id + "|" + doc.kind + "|" + doc.id;
+    let hit = cache.get(key);
+    if (!hit) {
+      const { before, after } = await endpoints(store, step, doc.kind, doc.id);
+      const summary = describeChanges(before, after, doc.kind);
+      hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
+      cache.set(key, hit);
+    }
+    doc.summary = hit.summary; doc.pieces = { ...hit.pieces };
   }
   // A document whose change holds nothing the owner can see (times, revisions, a status that became derived) is not unread.
   for (const step of steps) step.docs = step.docs.filter(doc => doc.pieces.log + doc.pieces.reply + doc.pieces.other > 0);
