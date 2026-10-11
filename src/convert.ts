@@ -164,7 +164,7 @@ export function convertExport(exportJson: unknown): Converted {
     }
     if (raw.ask !== undefined && typeof raw.ask !== "string") throw new Error(`items.${id}.ask: expected legacy request text`);
     const ask = string(raw.ask);
-    if (!ask && (string(raw.askUrl) || (raw.askChat !== undefined && raw.askChat !== ""))) throw new Error(`items.${id}.ask: cannot preserve askUrl/askChat without request text`);
+    if (!ask && (string(raw.askUrl) || raw.askChat === true)) throw new Error(`items.${id}.ask: cannot preserve askUrl/askChat without request text`);
     if (ask) {
       doc.ask = { text: ask, ...optionalFields({ url: raw.askUrl, chat: raw.askChat }, ["url", "chat"]) };
       report("Convert ask to structured request", id);
