@@ -437,7 +437,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const id = key.startsWith("it:") ? key.slice(3) : null;
     const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => id ? !!st.item && (st.item === id || derived.ancestors(st.item).includes(id)) : stopTouches(st, key));
     const c = el("span", "newtag freshchip", "新 " + Math.max(1, n));
-    c.title = (own ? "这一条有新内容" + (n > 1 ? "，下面还有 " + (n - 1) + " 条" : "") : "下面有 " + n + " 条有新内容") + "；点一下到第一处，n 走到下一处，r 把整条标为已阅";
+    c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，r 把这一条标为已阅（子条目不动）"
+      : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 r";
     if (mine.length) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
       const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(mine[0]![1]); };
@@ -473,7 +474,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   async function markRead() {
     const unit = selectedUnit();
     const docs = unit ? [...new Set(allFreshStops().filter(st => unitOf(st) === unit).map(st => st.doc.kind + ":" + st.doc.id))] : [];
-    if (!docs.length) { showHint("这里没有新内容"); return false; }
+    if (!docs.length) {
+      const id = unit?.startsWith("it:") ? unit.slice(3) : null;
+      const below = id ? countOf(freshStops().filter(st => st.item && derived.ancestors(st.item).includes(id))) : 0;
+      showHint(below ? "这一条本身没有新内容；新的 " + below + " 条在下面的子条目里，按 n 过去" : "这里没有新内容");
+      return false;
+    }
     return (await Promise.all(docs.map(markDocRead))).every(Boolean);
   }
   async function markDocRead(doc: string) {
@@ -1297,8 +1303,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const waitingBelow = below.wait[it.id] || 0;
       if (waitingBelow) head.appendChild(el("span", "asktag", "等 " + waitingBelow)).title = "下面有 " + waitingBelow + " 处等你处理";
     }
-    // The blue bar follows the 新 chip: a box whose head counts something new carries it, so a folded box shows it too.
-    if (freshCount) box.classList.add("fresh");
+    // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
+    // parent with nothing new of its own shows them only in its 新 chip.
+    if (ownFresh) box.classList.add("fresh");
     // Opening or closing changes only this item's own subtree, so only that subtree is rebuilt.
     head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true}); });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.

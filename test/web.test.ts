@@ -405,8 +405,9 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").children[0]!.children[0]!).filter(e=>e.className === "newtag freshchip");
   assert.deepEqual(areaChip.map(e=>e.innerHTML),["新 1"],"the parent's one chip now counts only the sub-item");
-  assert.match(areaChip[0]!.title,/下面有 1 条/);
-  assert.ok(item(p,"area").className.includes("fresh"),"its bar stays while 新 still counts the unread sub-item");
+  assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 1 条/);
+  assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
+  p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 1 条在下面的子条目里/,"r says where the new content is");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
 });
 
@@ -526,7 +527,7 @@ async function settle() { await setImmediate(); await setImmediate(); }
 function geom(e:Element) { return {top:e.id.startsWith("note-") ? 1700 : 600,height:e.id.startsWith("note-") ? 100 : 2400}; }
 function endpoints(s:Snapshot, p:URLSearchParams, before:unknown) { const id=p.get("doc")!, kind=p.get("kind"); return {before,after:kind === "item" ? s.items[id] : kind === "decision" ? s.decisions[id] : s.notes[id],diff:""}; }
 
-test("the blue bar follows the 新 chip: new and changed items, parents of new content, not untouched items", async () => {
+test("the blue line marks an item's own new content: new and changed items, not parents of new content or untouched items", async () => {
   const css = await readFile("web/index.html","utf8");
   assert.ok(/[^{}]*\.item\.fresh[^{}]*\{[^}]*var\(--fresh\)/.test(css),"new item bar CSS must use the fresh token");
   const s=snapshot(); s.items.child!.deps=[{id:"area",why:"Created dependency"}]; s.items.child!.links=[{label:"Created link",url:"https://example.com/new"}];
@@ -539,7 +540,8 @@ test("the blue bar follows the 新 chip: new and changed items, parents of new c
   s.items.plain={title:"Untouched",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   const changed=await page(s,unread(),{...s.items.child!,head:"Before"}); await expand(changed);
   assert.ok(item(changed).className.split(" ").includes("fresh"),"a changed item shows 新 and so carries the bar");
-  assert.ok(item(changed,"area").className.split(" ").includes("fresh"),"a parent counting new content below carries the bar, folded or not");
+  assert.ok(!item(changed,"area").className.split(" ").includes("fresh"),"a parent with only new content below carries no line, only its 新 chip");
+  assert.ok(descendants(item(changed,"area").children[0]!.children[0]!).some(e=>e.className === "newtag freshchip"),"that parent still counts the sub-item");
   assert.ok(!item(changed,"plain").className.split(" ").includes("fresh"),"an item with nothing new carries no bar");
 });
 
