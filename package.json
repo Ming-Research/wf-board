@@ -1,0 +1,26 @@
+{
+  "name": "wf-board",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local board and MCP server for coordinating agent sessions across the Whitefoot projects",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test 'test/**/*.test.ts'",
+    "build:web": "esbuild web/app.ts --bundle --format=esm --target=es2022 --outfile=web/dist/app.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ws": "8.22.0",
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
