@@ -293,7 +293,7 @@ claims the project with `claim_project` unless already listed, then reads
 `brief(project)`. A claim adds its author and may remove named departed
 agents, each of which must already be listed. Replacements require a reason.
 The commit records the claim, with the reason in its body; no board log or
-`.mcp.json` change is needed. `create_project` configures a new project with
+configuration file changes. `create_project` configures a new project with
 its author as its first agent. Both run in the same operations queue as item
 writes, including prospective board checks; concurrent claims cannot lose
 one another.
