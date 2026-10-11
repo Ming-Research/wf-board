@@ -1490,11 +1490,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       doc.kind === "item" ? itemChanges(diff.before as Item | null,diff.after as Item | null) :
       doc.kind === "decision" ? decisionChanges(diff.before as Decision | null,diff.after as Decision | null,doc.id) :
       noteChanges(diff.before as Note | null,diff.after as Note | null);
-    if (!box.children.length && !box.innerHTML) box.appendChild(el("div", "change-same", "其他字段变化（详见原始 diff）"));
-    const raw = el("details", "raw-diff");
-    raw.appendChild(el("summary", null, "原始 diff"));
-    raw.appendChild(el("pre", "step-diff", esc(diff.diff)));
-    box.appendChild(raw);
+    if (!box.children.length && !box.innerHTML) box.appendChild(el("div", "change-same", "其他字段变化"));
     return box;
   }
   function appendStep(parent: HTMLElement, key: string) {

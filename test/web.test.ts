@@ -110,10 +110,9 @@ test("filtered parent navigation opens its body, shows the step diff and reads o
   assert.ok(filter); await filter.click();
   p.key("n"); await setImmediate();
   const step = p.all().find(e => e.id.startsWith("step:" + id + "|")); assert.ok(step, "selected parent's body must contain its step");
-  const raw = descendants(step).find(e => e.className === "raw-diff"); assert.ok(raw);
-  assert.equal(raw.tagName,"DETAILS"); assert.ok(!("open" in raw.attributes));
-  assert.equal(raw.children[0]!.innerHTML,"原始 diff");
-  assert.ok(raw.children.some(e => e.tagName === "PRE" && e.innerHTML.includes("synthetic changed text")));
+  // The change shows field by field; the raw git diff is not shown.
+  assert.ok(!descendants(step).some(e => e.innerHTML.includes("synthetic changed text") || e.innerHTML.includes("原始 diff")));
+  assert.match(markup(step), /Parent · title changed/);
   const read = step.children.find(e => e.tagName === "BUTTON"); assert.ok(read); await read.click();
   await setImmediate();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body), [{through:id}]);
