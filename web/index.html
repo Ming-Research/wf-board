@@ -154,6 +154,8 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .cbtns { display: flex; gap: 6px; flex: none; }
 .cbtn:hover { color: var(--accent); border-color: var(--accent); }
 .item-head { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; background: none; border: 0; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%; }
+/* Rows rendered as buttons carry text the reader copies: titles, dependencies, references, options, comment lists. */
+.item-head, .deprow, .ref, .optbtn, .notes-toggle { -webkit-user-select: text; user-select: text; }
 .item-head:focus-visible, a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .caret { font-family: var(--font-mono); font-size: 12px; color: var(--muted); width: 1em; flex: none; }
 .st { font-family: var(--font-mono); font-size: 12px; padding: 0 7px; border-radius: 4px; line-height: 1.7; white-space: nowrap; }
