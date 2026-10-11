@@ -441,7 +441,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const add = (kind: Step["docs"][number]["kind"], id: string) => {
       const step = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
       const doc = step?.docs.find(d => d.kind === kind && d.id === id);
-      if (step && doc) required.set(step.id + ":" + kind + ":" + id,{step,doc});
+      if (step && doc) required.set(baselineKey(step,doc),{step,doc});
     };
     const notes = (key:string) => {
       // An explicit fold stays folded as marks load; an unspecified list may still auto-open for fresh content.
@@ -480,13 +480,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function shownFresh() { return shownStop ? allFreshStops().find(st => st.key === shownStop) || null : null; }
   function selectedDocument() {
-    if (current?.startsWith("it:")) return "item:" + current.slice(3);
-    if (current?.startsWith("q:")) return "decision:" + current.slice(2);
-    if (current?.startsWith("note:")) return current;
-    if (current?.startsWith("log:") || current?.startsWith("dep:")) return "item:" + current.slice(4, current.indexOf("@"));
-    // Deleted documents have no selectable body, but n still exposes their logical stop.
+    // Deleted documents have no selectable body, but n still exposes their logical stop before the displayed item.
     const st = shownFresh();
     if (!current && st && !(st.doc.kind === "item" ? snapshot.items[st.doc.id] : st.doc.kind === "decision" ? snapshot.decisions[st.doc.id] : snapshot.notes[st.doc.id])) return st.doc.kind + ":" + st.doc.id;
+    const key=effectiveSelection();
+    if (key?.startsWith("it:")) return "item:" + key.slice(3);
+    if (key?.startsWith("q:")) return "decision:" + key.slice(2);
+    if (key?.startsWith("note:")) return key;
+    if (key?.startsWith("log:") || key?.startsWith("dep:")) return "item:" + key.slice(4, key.indexOf("@"));
     return null;
   }
   // What r reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
@@ -572,6 +573,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
   // r, c, e and a act on it, or on the item or card that holds it.
   let current: string | null = null;
+  function effectiveSelection() { return current ?? (wide && selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
   function selEl(key: string | null) {
     if (!key) return null;
@@ -680,9 +682,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The actions behind the shortcut keys; the menu (☰) lists them and runs them on a click as well.
   // Each acts on the selected item or card while it is on screen, else on the one at the top of the screen.
   function itemOfSelection() {
-    const box = current && boxOfKey(current);
-    if (!box || !onScreen(box)) return null;
-    const key=containerOf(current);
+    const selection=effectiveSelection();
+    if (!selection || current && !onScreen(boxOfKey(selection))) return null;
+    const key=containerOf(selection);
     const id=key?.startsWith("it:") ? key.slice(3) : key?.startsWith("q:") ? snapshot.decisions[key.slice(2)]?.item : null;
     return id ? index().byId.get(id) : null;
   }
@@ -695,7 +697,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!list.length) return;
     const bar = get("crumbs");
     const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
-    const sel = wide && current?.startsWith("it:") ? get("it-"+current.slice(3)) : selEl(current);
+    const selection=effectiveSelection();
+    const sel = wide && selection?.startsWith("it:") ? get("it-"+selection.slice(3)) : selEl(selection);
     const selectedBox = sel && (sel.matches(".item, .card") ? sel : sel.closest<HTMLElement>(".card, .item"));
     const box = wide && selectedBox && get("item-detail").contains(selectedBox) ? get("it-"+selectedItem) : selectedBox;
     let k = box ? list.indexOf(box) : -1;
@@ -713,7 +716,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     else if (r.bottom > innerHeight - 4) glideTo(scrollY + Math.min(r.top - topEdge - 8, r.bottom - innerHeight + 8));
   }
   function toggleFocused(focusedHead?:HTMLElement) {
-    const sel = selEl(current);
+    const sel = selEl(effectiveSelection());
     const box = sel && (sel.matches(".item") ? sel : sel.closest<HTMLElement>(".item"));
     const head = focusedHead || box && box.querySelector<HTMLButtonElement>(":scope > .item-row > .item-head");
     if (!head) return false;
@@ -726,7 +729,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function stepStop(dir: number) {
     const all = stops();
     if (!all.length) return;
-    const key = containerOf(current);
+    const key = containerOf(effectiveSelection());
     let k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
     if (k >= 0) { goStop(k + dir); return; }
     const bar = get("crumbs");
@@ -1949,6 +1952,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   let unreadGeneration = 0;
   let unreadFlight:{signal?:AbortSignal;promise:Promise<boolean>} | undefined;
+  function unreadContributions(list:Step[]) {
+    const docs=new Map<string,Array<{step:string;parent:string | null;doc:Step["docs"][number]}>>();
+    for (const step of list) for (const doc of step.docs) {
+      const key=doc.kind+":"+doc.id, entries=docs.get(key) || [];
+      entries.push({step:step.id,parent:step.parent ?? null,doc}); docs.set(key,entries);
+    }
+    return docs;
+  }
   function refreshUnread(active: () => boolean = () => true, signal?: AbortSignal):Promise<boolean> {
     if (unreadFlight && unreadFlight.signal === signal) return unreadFlight.promise;
     const generation = ++unreadGeneration;
@@ -1958,18 +1969,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const result = await api<{cursor?: string; steps: Step[]}>("/api/unread",undefined,"GET",signal);
         if (generation !== unreadGeneration || !active()) return false;
         if (revision !== eventGeneration) continue;
-        const previous=steps, failed=failedDiffs.size > 0;
+        const previous=steps, before=unreadContributions(previous), failed=new Set(failedDiffs);
         serverSteps = result.steps;
         for (const [doc, overlay] of pendingReads) {
           if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
         }
         applyReadMarks(); snapshot.owner.cursor = result.cursor; failedDiffs.clear();
         if (shownStop && !allFreshStops().some(st => st.key === shownStop)) shownStop = null;
-        if (!sameValue(previous,steps) || failed) {
-          const scope=new Set<string>();
-          [...previous,...steps].forEach(s => s.docs.forEach(d => scopeForDoc(d.kind,d.id,snapshot.notes[d.id]?.target).forEach(k => scope.add(k))));
-          scheduleRender(...scope);
+        const after=unreadContributions(steps), scope=new Set<string>();
+        // A step can contain several documents; only a changed document contribution invalidates its content.
+        for (const key of new Set([...before.keys(),...after.keys()])) {
+          if (sameValue(before.get(key),after.get(key))) continue;
+          const doc=(after.get(key) || before.get(key))![0]!.doc;
+          scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target).forEach(k => scope.add(k));
         }
+        if (!scope.size && !sameValue(previous,steps)) scope.add("header");
+        for (const step of steps) for (const doc of step.docs) if (failed.has(baselineKey(step,doc))) void loadDiff(step,doc);
+        if (scope.size) scheduleRender(...scope);
         return true;
       }
     })();
@@ -1989,19 +2005,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     try { await loadSnapshot(active,signal); if (active()) await refreshUnread(active,signal); }
     catch (e) { if (active()) throw e; }
   }
+  function baselineKey(step:Step,doc:Step["docs"][number]) { return JSON.stringify([step.id,step.parent ?? null,doc.kind,doc.id]); }
   function loadDiff(step: Step, doc: Step["docs"][number]): Promise<void> {
-    const key = step.id + ":" + doc.kind + ":" + doc.id;
+    const key = baselineKey(step,doc);
+    const relevant=() => steps.some(s => s.docs.some(d => baselineKey(s,d) === key));
     if (diffs.has(key) || failedDiffs.has(key)) return Promise.resolve();
     const pending = pendingDiffs.get(key);
     if (pending) return pending;
     const request = (async () => {
       try {
         const diff = await api<{before: unknown; after: unknown; diff: string}>("/api/step?id=" + step.id + "&kind=" + doc.kind + "&doc=" + encodeURIComponent(doc.id));
-        diffs.set(key,diff); scheduleRender(...scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target));
+        diffs.set(key,diff); if (relevant()) scheduleRender(...scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target));
       } catch(e) {
         // A failed baseline cannot keep a render/navigation drain retrying forever. The next unread refresh or unread walk retries it.
         failedDiffs.add(key);
-        if (steps.some(s => s.id === step.id)) showError(e);
+        if (relevant()) showError(e);
       } finally { pendingDiffs.delete(key); }
     })();
     pendingDiffs.set(key,request);
@@ -2029,7 +2047,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const first = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
     if (!first) return undefined;
     const doc = first.docs.find(d => d.kind === kind && d.id === id)!;
-    const diff = diffs.get(first.id + ":" + kind + ":" + id);
+    const diff = diffs.get(baselineKey(first,doc));
     if (!diff) { void loadDiff(first,doc); return undefined; }
     return diff.before as T | null;
   }
