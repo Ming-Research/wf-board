@@ -290,6 +290,9 @@ details.ruled li { scroll-margin-top: 24px; }
   .tree .tree { padding-left: 10px; margin-left: 4px; }
   .body { padding-left: .4em; }
 }
+/* A passing hint sits at the bottom, out of the reader's line, and leaves by itself. */
+#hint { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 40; font-size: 13px; padding: 4px 14px; border-radius: 999px; background: var(--ink, #222); color: var(--surface, #fff); opacity: .9; pointer-events: none; }
+#hint[hidden] { display: none; }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
 .chg-add { background: var(--chg-add) !important; color: var(--ink); border-radius: 3px; }
 .chg-del { background: var(--chg-del); color: var(--chg-del-ink); border-radius: 3px; }
@@ -302,6 +305,7 @@ details.ruled li { scroll-margin-top: 24px; }
 </style>
 
 <div id="server-banner" role="alert" hidden></div>
+<div id="hint" role="status" hidden></div>
 <div class="wrap">
   <nav class="crumbbar" id="crumbs" aria-label="当前位置" hidden></nav>
   <header class="top">

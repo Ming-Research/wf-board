@@ -190,7 +190,11 @@ log:
   change to the same document is new again without reviving its read changes.
   Moving the cursor removes marks it passes; reading every document in a
   prefix advances the cursor over that prefix and removes its marks.
-  The page walks unread changes oldest first with `n` or their 新 chips.
+  `n` walks the documents with unread changes in page order, top to bottom:
+  an item, its comments, then each of its cards and that card's comments,
+  with documents the page does not place last, oldest first. Each document is
+  one stop holding all its unread changes; after `r` reads a stop, `n` goes on
+  to the next stop below it. A 新 chip jumps to its document's stop.
   `r` reads all unread changes of the selected document, however selected,
   leaving other documents' read state unchanged; 全部已阅 moves the cursor to the
   head after confirmation. Expanded items and cards mark changes in their own
