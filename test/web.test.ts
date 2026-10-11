@@ -1597,11 +1597,36 @@ test("wide selected-item live update rerenders its detail and keeps the independ
 });
 
 test("wide unrelated-item live update preserves the selected detail DOM identity", async () => {
+  const s=snapshot(), frames=new Frames();
+  s.items.picked={title:"Independent selection",group:"Project",status:"wip",priority:"P1",head:"Selected detail",updated:at,rev:1,deps:[],links:[],log:[]};
+  let fresh=unread("item","picked");
+  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,{...s.items[params.get("doc")!]!,head:"Earlier detail"}),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
+  await selectWide(p,"picked");
+  const old=detailItem(p,"picked"); assert.ok(old,"the already-unread selected detail is rendered before an unrelated update");
+  assert.match(markup(old),/Earlier detail/);
+  const reads=p.calls.filter(c=>c.path === "/api/unread").length;
+  fresh=[...fresh,...unread("item","area","e".repeat(40))];
+  s.items.area={...s.items.area!,head:"Other detail"};
+  p.emit("b".repeat(40),[{kind:"item",id:"area",after:s.items.area}]); await p.flush();
+  assert.ok(p.calls.filter(c=>c.path === "/api/unread").length>reads,"the live update refreshes changed unread data");
+  assert.equal(detailItem(p,"picked"),old,"adding another item's unread change never rebuilds unchanged selected unread content");
+});
+
+test("wide same-id unread parent changes reload the selected baseline and removed unread clears its marks", async () => {
   const s=snapshot(), frames=new Frames(); s.items.area!.head="Selected detail";
-  const p=await page(s,[],null,undefined,{wide:true,frames}); await selectWide(p);
-  const old=detailItem(p); assert.ok(old,"selected detail is rendered before an unrelated update");
-  p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Other detail"}}]); await p.flush();
-  assert.equal(detailItem(p),old,"an unrelated update never rebuilds the selected detail");
+  let fresh=[{...unread("item","area")[0]!,parent:"a".repeat(40)}], before={...s.items.area!,head:"Original baseline"};
+  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,before),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
+  await selectWide(p); const old=detailItem(p)!;
+  assert.match(markup(old),/Original baseline/);
+  const baselines=p.calls.filter(c=>c.path.includes("kind=item&doc=area")).length;
+  before={...before,head:"Changed baseline"}; fresh=[{...fresh[0]!,parent:"f".repeat(40)}];
+  p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Unrelated update"}}]); await p.flush();
+  assert.ok(p.calls.filter(c=>c.path.includes("kind=item&doc=area")).length>baselines,"a changed parent reloads the baseline despite the unchanged step id");
+  assert.notEqual(detailItem(p),old); assert.match(markup(detailItem(p)!),/Changed baseline/);
+  const changed=detailItem(p); fresh=[];
+  p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Another unrelated update"}}]); await p.flush();
+  assert.notEqual(detailItem(p),changed,"removing the selected item's unread data refreshes its detail");
+  assert.ok(!detailItem(p)!.className.includes("fresh")); assert.ok(!markup(detailItem(p)!).includes('class="chg-del"'));
 });
 
 test("wide-to-narrow width change restores inline bodies and narrow head toggling", async () => {
@@ -1731,5 +1756,36 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
     const loose=p.document.getElementById("q-loose")!;
     assert.ok(loose.className.includes("cur")); assert.ok(!p.roots.get("item-detail")!.contains(loose),"a loose card stays in the decisions section");
     assert.ok(p.scrollY>1000,"a loose card retains window navigation");
+  });
+});
+
+test("wide blank clicks clear the current selection while actions fall back to the displayed item", async t => {
+  for (const action of ["r","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
+    const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
+    s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
+    s.items.other={title:"Following root",group:"Project",status:"todo",priority:"P2",ask:{text:"Other ask"},updated:at,rev:1,deps:[],links:[],log:[]};
+    const p=await page(s,fresh,null,undefined,{wide:true,geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100}),response:(path,input)=> {
+      if (path !== "/api/archive") return undefined;
+      const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]=at; else delete s.owner.archived[id];
+      return reply({ok:true});
+    }});
+    await wideCaret(p).click(); await p.flush(); await selectWide(p,"child");
+    const displayed=detailItem(p,"child"); assert.ok(displayed);
+    const blank=p.document.createElement("div"); blank.focus(); await blank.click();
+    assert.equal(p.all().filter(e=>e.classList.contains("cur")).length,0,"blank space clears the current item or sub-selection");
+    assert.equal(detailItem(p,"child"),displayed,"clearing current leaves the displayed item intact");
+    const prevented=p.key(action); await p.flush();
+    if (action === "r") {
+      assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:"e".repeat(40)}]);
+      assert.ok(item(p,"area").className.includes("fresh"),"fallback read leaves the parent's own unread content alone");
+    } else if (action === "a") assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"child",on:true}]);
+    else if (action === "c") { assert.ok(p.document.getElementById("ed-it_child")); assert.equal(p.document.getElementById("ed-it_area"),null); }
+    else if (action === "e") assert.equal((p.calls.find(c=>c.path === "/api/draft")!.body as {target:string}).target,"it:child");
+    else if (action === "Enter") { assert.equal(prevented,true); assert.ok(item(p,"child").className.includes("cur"),"Enter selects the displayed item's head after a blank click"); }
+    else if (action === "j" || action === "k") {
+      assert.ok(item(p,action === "j" ? "other" : "area").className.includes("cur"),"tree focus starts from the displayed item's row");
+      assert.equal(detailItem(p,"child"),displayed,"moving focus leaves the displayed detail intact");
+    } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "other" : "area"),"owner-work navigation starts from the displayed item's ask");
+    else assert.ok(detailItem(p,action === "n" ? "area" : "child"),"fresh navigation retains its global cursor and selects its stop");
   });
 });
