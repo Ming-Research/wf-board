@@ -730,7 +730,10 @@ function cssContract(html:string) {
     assert.ok(has(sel,/text-decoration:\s*line-through/));
     assert.ok(has(sel,/color:\s*var\(--chg-del-ink\)\s*!important/),sel+" keeps rich descendants red");
   }
-  for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel,/(?:box-shadow|border-left):[^;]*var\(--fresh\)/),sel+" has blue bar CSS");
+  for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
+  // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
+  assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
+  assert.ok(has(".item.fresh > .body::before",/background:\s*var\(--fresh\)/),"an open item's line runs beside its body text");
   for (const sel of [".item-head",".deprow",".ref",".optbtn",".notes-toggle"]) assert.ok(has(sel,/(?<!-)user-select:\s*text/) && has(sel,/-webkit-user-select:\s*text/),sel+" text is selectable");
 }
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
