@@ -264,7 +264,7 @@ coordinate among themselves; sessions may be renamed freely.
 | `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
 | `move_item(id, new_parent, parent_why, parent_own_work?, source_status?, source_priority?)` | Reparents, preserving a destination leaf's own work in a new child | No cycle; updates both parents' deps; the source's last child requires its new leaf status and priority |
-| `set_ask(id, text, url?, chat?)`, `clear_ask(id, log)` | Owner actions | |
+| `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |

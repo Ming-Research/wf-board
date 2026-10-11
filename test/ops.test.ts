@@ -15,7 +15,6 @@ test("every operation refuses empty author, missing target and whitespace text w
     { name: "updateItem", args: { id: "a", rev: 1, title: "Changed" }, text: "title", missing: "id" },
     { name: "setStatus", args: { id: "a", status: "done", log: "Complete" }, text: "log", missing: "id" },
     { name: "moveItem", args: { id: "a", parent: "other", parentWhy: "Transfer" }, text: "parentWhy", missing: "id" },
-    { name: "setAsk", args: { id: "a", text: "Approve" }, text: "text", missing: "id" },
     { name: "clearAsk", args: { id: "a", log: "Approved" }, text: "log", missing: "id" },
     { name: "writeCard", args: { key: "new-card", item: "a", question: "Choose?", background: "Why", options: [{ key: "A", text: "A" }] }, text: "background", missing: "item" },
     { name: "ruleCard", args: { key: "choice", choice: "A", ruling: "Chosen" }, text: "ruling", missing: "key" },
@@ -57,7 +56,6 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.moveItem({ author, id: "area", parent: "a", parentWhy: "Descendant" }), /parent.*cycle/],
     [() => op.moveItem({ author, id: "a", parent: "missing", parentWhy: "Unknown" }), /parent.*existing/],
     [() => op.moveItem({ author, id: "a", parent: "other", parentWhy: undefined! }), /parentWhy.*explain/],
-    [() => op.setAsk({ author, id: "a", text: "Ask", url: "invalid" }), /ask.url.*fix/],
     [() => op.writeCard({ ...card, key: "a" }), /key.*new/],
     [() => op.writeCard({ ...card, key: "choice" }), /key.*new/],
     [() => op.writeCard({ ...card, options: [] }), /options.*fix/],
@@ -98,7 +96,8 @@ test("each operation records its effects, author and single atomic commit", asyn
   assert.deepEqual(revised.log.at(-1), { at: later, by: author, text: "改了 head：Scope settled" });
   await committed(() => op.setStatus({ author, id: "new", status: "blocked", log: "Waits on choice" }), "set_status new blocked", ["items/new.yaml"]);
   assert.equal(store.snapshot().items.new!.status, "blocked");
-  await committed(() => op.setAsk({ author, id: "new", text: "Approve", url: "https://example.com/approve", chat: true }), "set_ask new", ["items/new.yaml"]);
+  const legacyAskItem = store.snapshot().items.new!;
+  await store.commit({ author: "Fixture", message: "Legacy ask", puts: [{ kind: "item", id: "new", expectRev: legacyAskItem.rev, doc: { ...legacyAskItem, ask: { text: "Approve", url: "https://example.com/approve", chat: true } } }] });
   await committed(() => op.setStatus({ author, id: "new", status: "done", log: "Finished" }), "set_status new done", ["items/new.yaml"]);
   assert.equal(store.snapshot().items.new!.ask!.text, "Approve"); assert.equal(store.snapshot().items.new!.deps.length, 1);
   await committed(() => op.setStatus({ author, id: "new", status: "cancelled", log: "Superseded" }), "set_status new cancelled", ["items/new.yaml"]);
@@ -184,7 +183,8 @@ test("new areas stamp required metadata and same-parent moves replace the depend
 test("asks and open cards allow blocked status; wip remains allowed; closed deps do not block", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   await op.setStatus({ author, id: "b", status: "wip", log: "Working alongside dependencies" });
-  await op.setAsk({ author, id: "other", text: "Owner approves" });
+  const legacyAskItem = store.snapshot().items.other!;
+  await store.commit({ author: "Fixture", message: "Legacy ask", puts: [{ kind: "item", id: "other", expectRev: legacyAskItem.rev, doc: { ...legacyAskItem, ask: { text: "Owner approves" } } }] });
   await op.setStatus({ author, id: "other", status: "blocked", log: "Waits on owner" });
   await assert.rejects(op.createItem({ author, key: "blocked-split", parent: "other", parentWhy: "Work", title: "Split", priority: "P2", parentOwnWork: { key: "blocked-own", title: "Own" } }), /blocked-own.*卡住了，但没写在等什么/);
   await op.setStatus({ author, id: "other", status: "todo", log: "Schedule own work before splitting" });
@@ -260,7 +260,8 @@ test("R7 prospective validation rejects newly introduced checks on affected item
   await assert.rejects(op.createItem({ author, key: "stuck", title: "Stuck", parent: "area", parentWhy: "Work", priority: "P2", status: "blocked" }), /stuck.*卡住了，但没写在等什么/);
   await assert.rejects(op.updateItem({ author, id: "area", rev: 1, deps: [{ id: "b", why: "Keep b" }] }), /a.*上级没有把它列在依赖里/);
   assert.deepEqual(store.snapshot(), before);
-  await op.setAsk({ author, id: "other", text: "Approve" });
+  const legacyAskItem = store.snapshot().items.other!;
+  await store.commit({ author: "Fixture", message: "Legacy ask", puts: [{ kind: "item", id: "other", expectRev: legacyAskItem.rev, doc: { ...legacyAskItem, ask: { text: "Approve" } } }] });
   await op.setStatus({ author, id: "other", status: "blocked", log: "Wait" });
   const blocked = store.snapshot();
   await assert.rejects(op.clearAsk({ author, id: "other", log: "Remove" }), /other.*卡住了，但没写在等什么/);
@@ -293,7 +294,6 @@ for (const [name, args] of [
   ["appendLog", { id: "a", text: "Writer" }],
   ["updateItem", { id: "a", rev: 1, title: "Writer" }],
   ["setStatus", { id: "a", status: "done", log: "Writer" }],
-  ["setAsk", { id: "a", text: "Writer" }],
   ["clearAsk", { id: "a", log: "Writer" }],
   ["moveItem", { id: "a", parent: "area", parentWhy: "Move" }],
   ["writeCard", { key: "new-card", item: "a", question: "Q?", background: "Why", options: [{ key: "A", text: "A" }] }],
