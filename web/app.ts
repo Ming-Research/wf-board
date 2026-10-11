@@ -995,7 +995,8 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       if (waitingBelow) head.appendChild(el("span", "asktag", "等 " + waitingBelow)).title = "下面有 " + waitingBelow + " 处等你处理";
       if (freshBelow) head.appendChild(el("span", "newtag", "新 " + freshBelow)).title = "下面有 " + freshBelow + " 条新内容";
     }
-    head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); renderAreas(); const n = get("it-" + it.id); if (n) n.querySelector<HTMLElement>(".item-head")?.focus(); });
+    // Opening or closing changes only this item's own subtree, so only that subtree is rebuilt.
+    head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); const next = itemNode(it, inArchive); li.replaceWith(next); next.querySelector<HTMLElement>(".item-head")?.focus({ preventScroll: true }); });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
     const row = el("div", "item-row");
     row.appendChild(head);
