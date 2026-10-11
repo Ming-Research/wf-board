@@ -328,7 +328,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     shownStop = st.key;
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
   }
-  interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string }
+  interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
     const active=() => navigation === freshNavigation && valid();
@@ -361,7 +361,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const e=get(target.id);
     if (!e) return;
     glideToTarget(e);
-    setCurrent(target.note ? e : e.closest<HTMLElement>(".card, .item"));
+    setCurrent(target.note || target.selection ? e : e.closest<HTMLElement>(".card, .item"));
   }
   function navigationBaselines(st: NavigationTarget) {
     const required = new Map<string,{step:Step;doc:Step["docs"][number]}>();
@@ -685,7 +685,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const card=name.startsWith("q-") ? name.slice(2) : box?.id.startsWith("q-") ? box.id.slice(2) : undefined;
     const item=name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("it-") ? box.id.slice(3) : null;
     const note=e?.dataset.sel?.startsWith("note:") ? e.dataset.sel.slice(5) : undefined;
-    if (item || card || note) { void navigate({id:name,item,card,note,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
+    if (item || card || note) { void navigate({id:name,item,card,note,selection:e?.dataset.sel,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
     if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
   }
   function openPath(id: string) {
@@ -1209,6 +1209,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const r = d ? whyRow(d, it, e.why) : el("button", "deprow", inline(e.kind === "card" ? snapshot.decisions[e.id]?.question || e.id : e.id) + '<span class="why">' + inline(e.why) + '</span>');
           if (!d && e.kind === "card") r.addEventListener("click", () => followCard(e.id));
           r.dataset.sel = "dep:" + it.id + "@" + e.id;
+          r.id = "sel-" + encodeURIComponent(JSON.stringify([r.dataset.sel,e.mark === "chg-del"]));
           if (e.mark) r.classList.add(e.mark);
           if (e.mark === "chg-add" || before === null) r.classList.add("fresh");
           if (current === r.dataset.sel) r.classList.add("cur");
@@ -1552,6 +1553,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (scope.has("all") || scope.has("cards")) renderCardsDOM();
     if (!scope.has("all")) {
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
+      // Areas/groups paint hosted content; the cards scope paints only loose cards.
+      const paintedHome=(home:string | null) => home ? scope.has("areas") || scope.has("group:"+derived.groupOf(home)) : scope.has("cards");
       for (const key of scope) {
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
@@ -1569,12 +1572,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           if (it) derived.ancestors(id).forEach(p => heads.add(p));
         } else if (kind === "card") {
-          const d=index().decById.get(id); if (d && !scope.has("areas") && !scope.has("cards") && !drawnCards.has(id) && !scope.has("group:"+derived.groupOf(d.item))) { reconcileCard(id); drawnCards.add(id); }
+          const d=index().decById.get(id); if (d && !paintedHome(homeOf(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
           if (d) refs.add(d.item);
         } else if (kind === "notes") {
           const card=id.startsWith("q:") ? id.slice(2) : null;
-          if (!scope.has("areas") && !scope.has("cards") && !(card && drawnCards.has(card)) && !(id.startsWith("it:") && drawnItems.has(id.slice(3)))) { replaceNotes(id); if (card) drawnCards.add(card); }
+          const d=card ? index().decById.get(card) : undefined, home=card ? d ? homeOf(d) : null : id.slice(3);
+          if (!paintedHome(home) && !(card && drawnCards.has(card)) && !(id.startsWith("it:") && drawnItems.has(id.slice(3)))) { replaceNotes(id); if (card) drawnCards.add(card); }
           const item=id.startsWith("it:") ? id.slice(3) : snapshot.decisions[id.slice(2)]?.item;
           if (item) { heads.add(item); derived.ancestors(item).forEach(p => heads.add(p)); }
           if (item && card) refs.add(item);
