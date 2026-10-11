@@ -515,6 +515,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return r.bottom > topEdge && r.top < innerHeight;
   }
   function clearCurrent() { const old = boxOfKey(current); if (old) old.classList.remove("cur"); current = null; }
+  // A drag that selects text ends in a click on the row where it started; that click must not toggle, follow or
+  // re-render the row, or the selection is gone. Movement is required: a press on a button keeps a selection made
+  // elsewhere, so a plain click with text still selected is a click.
+  let pressedAt: {x:number;y:number} | null = null;
+  document.addEventListener("mousedown", ev => { pressedAt = {x: ev.clientX, y: ev.clientY}; }, true);
+  document.addEventListener("click", ev => {
+    const moved = pressedAt && Math.abs(ev.clientX - pressedAt.x) + Math.abs(ev.clientY - pressedAt.y) > 4;
+    const sel = getSelection();
+    if (moved && sel && !sel.isCollapsed) { ev.stopPropagation(); ev.preventDefault(); }
+  }, true);
   // A click on an item or card selects it; a click on blank space (not on a control) clears the selection.
   document.addEventListener("click", ev => {
     const t = ev.target as HTMLElement & {type?: string};

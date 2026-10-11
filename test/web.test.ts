@@ -34,8 +34,9 @@ class Element {
   replaceWith(e: Element) { const p = this.parentElement; if (!p) return; p.children[p.children.indexOf(this)] = e; e.parentElement = p; this.parentElement = null; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
-  captureClick?:()=>void;
-  async click() { this.captureClick?.(); for (const fn of this.handlers.get("click") ?? []) await fn({ stopPropagation() {}, preventDefault() {} }); }
+  captureClick?:(at:{clientX:number;clientY:number})=>boolean;
+  // A click at a point; a document capture listener that stops propagation keeps it from the element, as in a browser.
+  async click(at={clientX:0,clientY:0}) { if (this.captureClick?.(at) === false) return; for (const fn of this.handlers.get("click") ?? []) await fn({ ...at, stopPropagation() {}, preventDefault() {} }); }
   selectionStart = 0; selectionEnd = 0;
   focus() { focused.current = this; } blur() { if (focused.current === this) focused.current = null; } scrollIntoView() {}
   setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
@@ -72,7 +73,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
   const calls: Array<{path: string; body?: unknown}> = [];
   const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [];
-  const renders:unknown[]=[]; let scrollPosition=0;
+  const renders:unknown[]=[]; let scrollPosition=0, selected=false;
   const frame = options.frames?.request ?? ((fn:(now:number)=>void)=> { void setImmediate().then(()=>fn(performance.now())); return 1; });
   const windowListeners=new Map<string,Array<(event:unknown)=>unknown>>();
   const listeners = new Map<string,Array<{fn:(event:unknown)=>unknown;capture:boolean}>>();
@@ -84,7 +85,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     createTextNode: (text:string) => { const e=new Element("#text"); e.textContent=text; return e; },
     createElement: (tag: string) => {
       const e = new Element(tag);
-      e.captureClick=()=>dispatch("click",{isTrusted:true,target:e},true);
+      e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,stopPropagation() { go=false; },preventDefault() {}},true); return go; };
       if (options.geometry) e.geometry = () => { const r = options.geometry!(e,all); measurements.push({id:e.id,...r}); return {...r,bottom:r.top+r.height,left:0,width:900}; };
       return e;
     },
@@ -102,6 +103,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   }
   const context = {
     BoardPage: undefined,
+    getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null, setItem() {} },
     matchMedia: () => ({ matches: options.reducedMotion !== false }), getComputedStyle: () => ({ scrollMarginTop: "0" }),
@@ -156,7 +158,9 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   return { roots, all, calls, document, change, emit, measurements, scrolls, sources, renders,flush, get scrollY() { return scrollPosition; },
     user:(kind:string)=> { if (kind === "scroll") scrollPosition+=100; dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
-    key: (key: string) => dispatch("keydown",{key,isTrusted:true,target:new Element("div"),preventDefault(){}}) };
+    key: (key: string) => dispatch("keydown",{key,isTrusted:true,target:new Element("div"),preventDefault(){}}),
+    // The reader presses the mouse at a point, leaving text selected or not when the button is released.
+    press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
@@ -349,6 +353,27 @@ test("unread logs expand with preceding entries highlight duplicate appends and 
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,3);
   p.key("r"); await setImmediate(); await setImmediate();
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,0);
+});
+
+test("a drag that leaves text selected in a row neither toggles nor follows it; a click still does", async () => {
+  const s = snapshot(); s.items.area!.deps.push({ id: "far", why: "needs far" });
+  s.items.far = { title: "Far area", group: "Other project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  const p = await page(s, []);
+  const head = () => p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!, open = () => p.all().some(e => e.id === "it-child");
+  const before = open();
+  p.press(10, 10, true); await head().click({ clientX: 120, clientY: 12 }); await p.flush();
+  assert.equal(open(), before, "a drag ending in a selection leaves the item as it was");
+  p.press(10, 10, false); await head().click({ clientX: 120, clientY: 12 }); await p.flush();
+  assert.notEqual(open(), before, "a moved press that selects nothing is a click");
+  p.press(10, 10, true); await head().click({ clientX: 10, clientY: 10 }); await p.flush();
+  assert.equal(open(), before, "a click in place toggles even while text elsewhere stays selected");
+  if (!open()) { p.press(0, 0, false); await head().click(); await p.flush(); }
+  const far = descendants(p.all().find(e => e.id === "it-area")!).find(e => e.className.startsWith("deprow") && e.innerHTML.includes("Far area"))!;
+  const scrolled = p.scrolls.length;
+  p.press(10, 10, true); await far.click({ clientX: 200, clientY: 10 }); await p.flush();
+  assert.equal(p.scrolls.length, scrolled, "a drag over a dependency row does not follow it");
+  p.press(10, 10, false); await far.click({ clientX: 10, clientY: 10 }); await p.flush();
+  assert.ok(p.scrolls.length > scrolled, "a click on a dependency row follows it");
 });
 
 test("R9 owner controls follow shared ask/card predicates through draft and sent answers", async () => {
@@ -682,6 +707,7 @@ function cssContract(html:string) {
     assert.ok(has(sel,/color:\s*var\(--chg-del-ink\)\s*!important/),sel+" keeps rich descendants red");
   }
   for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel,/(?:box-shadow|border-left):[^;]*var\(--fresh\)/),sel+" has blue bar CSS");
+  for (const sel of [".item-head",".deprow",".ref",".optbtn",".notes-toggle"]) assert.ok(has(sel,/(?<!-)user-select:\s*text/) && has(sel,/-webkit-user-select:\s*text/),sel+" text is selectable");
 }
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
 test("CSS contract detects removed theme tokens mark declarations and blue selectors", async t => {
@@ -701,6 +727,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
     ["descendant red ink override",/color:\s*var\(--chg-del-ink\)\s*!important;/g],
     ["strike",/text-decoration:\s*line-through;/g],
   ] as const) await t.test(name,()=> { assert.match(html,pattern); assert.throws(()=>cssContract(html.replaceAll(pattern,""))); });
+  await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
   for (const selector of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
