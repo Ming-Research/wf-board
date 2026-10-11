@@ -66,14 +66,14 @@ test("conversion applies every cleanup, preserves prose and validates every resu
   const original = structuredClone(input);
   const out = convertExport(input);
   assert.deepEqual(input, original);
-  assert.deepEqual(out.board, { title: "Synthetic board", eyebrow: "实验", goal: "Preserve every field", projects: [{name:"Halo-wf",agents:[]},{name:"Firn-wf",agents:[]},{name:"Snowghost-wf",agents:["Store"]}] });
+  assert.deepEqual(out.board, { title: "Synthetic board", eyebrow: "实验", goal: "Preserve every field", projects: [{name:"Halo-wf"},{name:"Firn-wf"},{name:"Snowghost-wf"}] });
   assert.equal(out.current.items.old!.parent, "snow");
   assert.equal(out.current.items.fold!.parent, "snow");
   // The old page read up(it) = it.parent || it.area: an empty parent falls back to area.
   assert.equal(out.current.items.empty!.parent, "snow");
   assert.equal(out.current.items.snow!.status, undefined);
   assert.equal(out.current.items.snow!.priority, undefined);
-  assert.deepEqual(out.board.projects.find(p => p.name === "Snowghost-wf")!.agents, ["Store"]);
+  assert.ok(out.board.projects.every(p => !Object.hasOwn(p, "agents")));
   assert.ok(!Object.hasOwn(out.current.items.snow!, "agent"));
   assert.equal(out.current.items.snow!.group, "Snowghost-wf");
   assert.equal("short" in out.current.items.snow!, false, "area short names are dropped");
@@ -389,7 +389,7 @@ test("R3 latest snapshots remain authoritative when an unchanged leaf acquired a
   assert.deepEqual(verifyConverted(input, newer), []);
 });
 
-test("project conversion derives ordered distinct area agents and drops child assignments", () => {
+test("project conversion derives distinct projects in area order and drops all assignments", () => {
   const source = {exportedAt:t1,meta:{title:"Synthetic"},items:[
     row("a",{title:"A",group:"P",agent:"One",order:2}),
     row("b",{title:"B",group:"Q",agent:"Two",order:1}),
@@ -398,12 +398,12 @@ test("project conversion derives ordered distinct area agents and drops child as
     row("child",{title:"Child",parent:"a",agent:"Child session"}),
   ],decisions:[],notes:[],reads:[],archived:[]};
   const out=convertExport(source);
-  assert.deepEqual(out.board.projects,[{name:"Q",agents:["Two"]},{name:"P",agents:["One","Three"]}]);
+  assert.deepEqual(out.board.projects,[{name:"Q"},{name:"P"}]);
   assert.ok(Object.values(out.current.items).every(it=>!Object.hasOwn(it,"agent")));
   assert.ok(out.report.some(s=>s.startsWith("Drop area agent: 4")));
   assert.ok(out.report.some(s=>s.startsWith("Drop child agent: 1")));
   assert.deepEqual(verifyConverted(source,out),[]);
-  const bad=structuredClone(out); bad.board.projects[1]!.agents.push("Child session");
+  const bad=structuredClone(out); Object.assign(bad.board.projects[1]!, {agents:["Child session"]});
   assert.ok(verifyConverted(source,bad).some(s=>s.startsWith("board metadata")));
 });
 

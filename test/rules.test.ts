@@ -7,7 +7,7 @@ import { rules } from "../src/rules.ts";
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}, archived: Record<string, string> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name,agents:["session"]})) }, head: "0".repeat(40),
+    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name})) }, head: "0".repeat(40),
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
@@ -38,14 +38,14 @@ test("tree lookup, unsorted children, grouped areas, inheritance and missing ids
   assert.equal(r.lineOf("leaf"), "a");
   assert.equal(r.lineOf("a"), "a");
   assert.equal(r.groupOf("leaf"), "First");
-  assert.deepEqual(r.agentsFor("c2"), ["session"]);
-  assert.deepEqual(r.agentsFor("leaf"), ["session"]);
-  assert.deepEqual(r.agentsFor("orphan"), ["session"]);
+  assert.equal(r.projectOf("c2"), "First");
+  assert.equal(r.projectOf("leaf"), "First");
+  assert.equal(r.projectOf("orphan"), "Default");
   assert.equal(r.isLeaf("a"), false);
   assert.equal(r.isLeaf("leaf"), true);
   assert.equal(r.lineOf("absent"), "absent");
   assert.equal(r.groupOf("absent"), "");
-  assert.deepEqual(r.agentsFor("absent"), []);
+  assert.equal(r.projectOf("absent"), "");
   assert.equal(r.isLeaf("absent"), false); // dangling children remain indexed
   assert.equal(r.statusOf("unknown"), "todo");
   assert.equal(r.priorityOf("unknown"), "");
@@ -296,15 +296,14 @@ test("cached result arrays are isolated and rules never mutate the snapshot", ()
   assert.equal(r.statusOf("a"), "todo");
 });
 
-test("project rules resolve membership, flag configuration and separate ordered inboxes", () => {
-  const s: Snapshot = {board:{title:"Projects",projects:[{name:"P",agents:["a","b"]},{name:"Empty",agents:[]}]},head:"",owner:{archived:{}},notes:{},decisions:{},items:{}};
-  for (const [id, fields] of Object.entries({area:{group:"P"},child:{parent:"area"},empty:{group:"Empty"},missing:{group:"Missing"},newer:{group:"P",request:{by:"x",at:T2}},older:{group:"P",request:{by:"x",at:T1}},closed:{group:"P",request:{by:"x",at:T0},status:"cancelled"}})) s.items[id] = Item.parse({title:id,updated:T0,rev:1,...fields});
+test("project rules resolve identity, flag configuration and separate ordered inboxes", () => {
+  const s: Snapshot = { board: { title: "Projects", projects: [{ name: "P" }, { name: "Empty" }] }, head: "", owner: { archived: {} }, notes: {}, decisions: {}, items: {} };
+  for (const [id, fields] of Object.entries({ area: { group: "P" }, child: { parent: "area" }, empty: { group: "Empty" }, missing: { group: "Missing" }, newer: { group: "P", request: { by: "x", at: T2 } }, older: { group: "P", request: { by: "x", at: T1 } }, closed: { group: "P", request: { by: "x", at: T0 }, status: "cancelled" } })) s.items[id] = Item.parse({ title: id, updated: T0, rev: 1, ...fields });
   const r = rules(s);
-  assert.deepEqual(r.agentsFor("child"),["a","b"]); assert.equal(r.projectOf("child"),"P");
-  const copy = r.agentsFor("child"); copy.pop(); assert.deepEqual(r.agentsFor("child"),["a","b"]);
-  assert.deepEqual(r.agentsFor("missing"),[]);
-  assert.deepEqual(r.checks("empty").map(c=>c.text),["项目没有负责的会话：Empty"]);
-  assert.deepEqual(r.checks("missing").map(c=>c.text),["项目没有配置：Missing"]);
-  assert.deepEqual(r.inbox("P"),["older","newer"]); assert.equal(r.isRequest("closed"),false);
+  assert.equal(r.projectOf("child"), "P");
+  assert.equal(Object.hasOwn(r, "agentsFor"), false);
+  assert.deepEqual(r.checks("empty"), []);
+  assert.deepEqual(r.checks("missing").map(c => c.text), ["项目没有配置：Missing"]);
+  assert.deepEqual(r.inbox("P"), ["older", "newer"]); assert.equal(r.isRequest("closed"), false);
   assert.ok(!r.areas().includes("older")); assert.ok(!r.areas().includes("newer"));
 });

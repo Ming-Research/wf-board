@@ -18,7 +18,7 @@ export function compare(old: LegacyState, snapshot: Pick<Snapshot, "board" | "it
       ["needsOwner", legacy.needsOwner(it), current.needsOwner(it.id)],
       ["onCycle", legacy.onCycle().has(it.id), current.onCycle(it.id)],
       ["inArchive", legacy.inArchive(it), current.inArchive(it.id)],
-      ["checks", legacy.checksOf(it).map(c => c.text).filter(t => t !== "顶层条目没有负责会话（agent）"), current.checks(it.id).map(c => c.text).filter(t => !/^项目没有(配置|负责的会话)：/.test(t))],
+      ["checks", legacy.checksOf(it).map(c => c.text).filter(t => t !== "顶层条目没有负责会话（agent）"), current.checks(it.id).map(c => c.text).filter(t => !/^项目没有配置：/.test(t))],
     ];
     for (const [rule, before, after] of values) if (JSON.stringify(before) !== JSON.stringify(after)) disagreements.push({ id: it.id, rule, old: before, new: after });
   }

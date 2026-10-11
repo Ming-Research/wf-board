@@ -175,7 +175,7 @@ test("new areas stamp required metadata and same-parent moves replace the depend
   const { store, op } = await board(t, { sharedProjects: true });
   await op.createItem({ author, key: "new-area", title: "New area", priority: "P1", status: "wip", group: "Whitefoot" });
   assert.equal(store.snapshot().items["new-area"]!.created, later); assert.equal(store.snapshot().items["new-area"]!.updated, later);
-  assert.equal(store.snapshot().items["new-area"]!.group, "Whitefoot"); assert.deepEqual(rules(store.snapshot()).agentsFor("new-area"), [author]);
+  assert.equal(store.snapshot().items["new-area"]!.group, "Whitefoot"); assert.equal(rules(store.snapshot()).projectOf("new-area"), author);
   await op.moveItem({ author, id: "a", parent: "area", parentWhy: "Updated relationship" });
   assert.deepEqual(store.snapshot().items.area!.deps.filter(d => "id" in d && d.id === "a"), [{ id: "a", why: "Updated relationship" }]);
   assert.ok(store.snapshot().items.area!.deps.some(d => "id" in d && d.id === "b"));
@@ -242,16 +242,14 @@ test("R2 moves require and atomically preserve both leaf transitions", async t =
 
 test("R4 concurrent replies refuse replacement unless explicitly requested", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
-  await op.claimProject({author:"First",project:"Whitefoot",reason:"Shared replies"});
-  await op.claimProject({author:"Second",project:"Whitefoot",reason:"Shared replies"});
   const results = await Promise.allSettled([
-    op.replyNote({ author: "First", id: "note-1", reply: "First answer" }),
-    ops(store, () => later).replyNote({ author: "Second", id: "note-1", reply: "Second answer" }),
+    op.replyNote({ author, id: "note-1", reply: "First answer" }),
+    ops(store, () => later).replyNote({ author, id: "note-1", reply: "Second answer" }),
   ]);
   assert.deepEqual(results.map(r => r.status), ["fulfilled", "rejected"]);
-  assert.match(String((results[1] as PromiseRejectedResult).reason), /First.*2026-10-11T02:03:04Z/);
+  assert.match(String((results[1] as PromiseRejectedResult).reason), /Whitefoot.*2026-10-11T02:03:04Z/);
   assert.equal(store.snapshot().notes["note-1"]!.reply, "First answer");
-  await op.replyNote({ author: "Second", id: "note-1", reply: "Correction", replace: true });
+  await op.replyNote({ author, id: "note-1", reply: "Correction", replace: true });
   assert.equal(store.snapshot().notes["note-1"]!.reply, "Correction");
   assert.equal((await store.log({ kind: "note", id: "note-1" })).length, 3);
 });
@@ -292,29 +290,42 @@ test("R7 missing targets and reasons quote checks and the affected item; cards a
 for (const [name, args] of [
   ["createItem", { key: "new", title: "New", parent: "area", parentWhy: "Need", priority: "P1" }],
   ["createItem", { key: "new", title: "New", group: "Whitefoot", priority: "P1" }],
-  ["appendLog", { id: "a", text: "Wrong writer" }],
-  ["updateItem", { id: "a", rev: 1, title: "Wrong writer" }],
-  ["setStatus", { id: "a", status: "done", log: "Wrong writer" }],
-  ["setAsk", { id: "a", text: "Wrong writer" }],
-  ["clearAsk", { id: "a", log: "Wrong writer" }],
+  ["appendLog", { id: "a", text: "Writer" }],
+  ["updateItem", { id: "a", rev: 1, title: "Writer" }],
+  ["setStatus", { id: "a", status: "done", log: "Writer" }],
+  ["setAsk", { id: "a", text: "Writer" }],
+  ["clearAsk", { id: "a", log: "Writer" }],
   ["moveItem", { id: "a", parent: "area", parentWhy: "Move" }],
-  ["writeCard", { key: "new-card", item: "a", question: "Q?", background: "Why", options: [{key:"A",text:"A"}] }],
-  ["ruleCard", { key: "choice", ruling: "Wrong writer" }],
-  ["replyNote", { id: "note-1", reply: "Wrong writer" }],
-  ["replyNote", { id: "note-2", reply: "Wrong writer", replace: true }],
-  ["closeNote", { id: "note-1", log: "Wrong writer" }],
+  ["writeCard", { key: "new-card", item: "a", question: "Q?", background: "Why", options: [{ key: "A", text: "A" }] }],
+  ["ruleCard", { key: "choice", ruling: "Writer" }],
+  ["replyNote", { id: "note-1", reply: "Writer" }],
+  ["replyNote", { id: "note-2", reply: "Writer", replace: true }],
+  ["closeNote", { id: "note-1", log: "Writer" }],
+  ["closeNote", { id: "note-2", log: "Writer" }],
+  ["triageRequest", { id: "req", log: "Writer" }],
 ] as const) test(`project enforcement ${name} ${JSON.stringify(args)}`, async t => {
-  const {store, op, dir} = await board(t), before = store.snapshot();
+  const { store, op, dir } = await board(t);
+  await store.commit({ author: "Fixture", message: "Request", puts: [{ kind: "item", id: "req", expectRev: null, doc: { title: "Request", group: "Whitefoot", status: "todo", priority: "P1", updated: at, request: { by: "Firn", at } } }] });
+  const before = store.snapshot();
   const call = op[name] as (a: Record<string, unknown>) => Promise<unknown>;
-  await assert.rejects(() => call({author:"Outsider",...args}), /item .* belongs to project Whitefoot \(agents: MCP session\); file a request into Whitefoot with create_request instead/);
-  assert.deepEqual(store.snapshot(), before);
-  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  for (const writer of ["Firn", "Outsider"]) {
+    await assert.rejects(() => call({ author: writer, ...args }), e => {
+      assert.ok(e instanceof OpError);
+      assert.match(e.message, /item .* belongs to project Whitefoot; file a request into Whitefoot with create_request instead/);
+      if (writer === "Outsider") assert.match(e.message, /author.*configured project.*Whitefoot.*Firn.*call projects.*repo.*repository/);
+      return true;
+    });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  }
+  await call({ author: "Whitefoot", ...args });
+  assert.notEqual(store.snapshot().head, before.head, "the owning project succeeds");
 });
 
 test("project enforcement checks destination and previous card owner", async t => {
   const {store,op} = await board(t), before = store.snapshot();
-  await assert.rejects(op.moveItem({author,id:"a",parent:"other",parentWhy:"Move",parentOwnWork:{key:"own",title:"Own"}}), /project Firn \(agents: Other session\)/);
-  await assert.rejects(op.writeCard({author:"Other session",key:"choice",rev:1,item:"other",question:"Q",background:"B",options:[{key:"A",text:"A"}]}), /project Whitefoot/);
+  await assert.rejects(op.moveItem({author,id:"a",parent:"other",parentWhy:"Move",parentOwnWork:{key:"own",title:"Own"}}), /project Firn/);
+  await assert.rejects(op.writeCard({author:"Firn",key:"choice",rev:1,item:"other",question:"Q",background:"B",options:[{key:"A",text:"A"}]}), /project Whitefoot/);
   assert.deepEqual(store.snapshot(),before);
 });
 
@@ -331,24 +342,24 @@ test("project requests atomically link the filing project, triage both ways, mov
   await assert.rejects(op.createRequest({...request,key:"bad",from:"other"}),/project Firn/);
   await assert.rejects(op.createRequest({...request,key:"bad",project:"Missing"}),/project.*Missing/);
   await assert.rejects(op.triageRequest({author,id:"req",log:"Mine"}),/project Firn/);
-  await assert.rejects(op.triageRequest({author:"Other session",id:"req",parent:"area",parentWhy:"Wrong project",log:"Place"}),/project/);
+  await assert.rejects(op.triageRequest({author:"Firn",id:"req",parent:"area",parentWhy:"Wrong project",log:"Place"}),/project/);
   assert.deepEqual(store.snapshot(),unchanged);
-  await op.triageRequest({author:"Other session",id:"req",parent:"other",parentWhy:"Need",parentOwnWork:{key:"own",title:"Own"},priority:"P1",log:"Scheduled"});
+  await op.triageRequest({author:"Firn",id:"req",parent:"other",parentWhy:"Need",parentOwnWork:{key:"own",title:"Own"},priority:"P1",log:"Scheduled"});
   const s = store.snapshot();
   assert.equal(s.items.req!.request,undefined); assert.equal(s.items.req!.parent,"other"); assert.equal(s.items.req!.priority,"P1");
   assert.equal(s.items.req!.log.at(-1)!.text,"Scheduled"); assert.equal(s.items.own!.status,"todo");
   assert.equal(s.items.req!.log.at(-2)!.text,"分拣：放到 other：Need");
   assert.ok(s.items.other!.deps.some(d => "id" in d && d.id === "req" && d.why === "Need"));
-  await assert.rejects(op.triageRequest({author:"Other session",id:"req",log:"Again"}),/request/);
+  await assert.rejects(op.triageRequest({author:"Firn",id:"req",log:"Again"}),/request/);
   await op.createRequest({...request,key:"area-req"});
-  await op.triageRequest({author:"Other session",id:"area-req",log:"Own area"});
+  await op.triageRequest({author:"Firn",id:"area-req",log:"Own area"});
   assert.equal(store.snapshot().items["area-req"]!.parent,undefined); assert.equal(store.snapshot().items["area-req"]!.request,undefined);
   await op.createRequest({...request,key:"move-req"});
-  await op.moveItem({author:"Other session",id:"move-req",parent:"other",parentWhy:"Placement"});
+  await op.moveItem({author:"Firn",id:"move-req",parent:"other",parentWhy:"Placement"});
   assert.equal(store.snapshot().items["move-req"]!.request,undefined);
   assert.equal(store.snapshot().items["move-req"]!.log.at(-1)!.text,"分拣：放到 other：Placement");
   await op.createRequest({...request,key:"declined"});
-  await op.setStatus({author:"Other session",id:"declined",status:"cancelled",log:"Not needed"});
+  await op.setStatus({author:"Firn",id:"declined",status:"cancelled",log:"Not needed"});
   assert.equal(store.snapshot().items.declined!.request,undefined); assert.equal(store.snapshot().items.declined!.status,"cancelled");
 });
 
@@ -371,22 +382,41 @@ test("project closeNote handles sent card/item notes atomically and refuses draf
   }
 });
 
-test("project claims serialize, record replacement reasons, reject duplicates and create projects", async t => {
-  const {store,op,dir} = await board(t);
-  await Promise.all([op.claimProject({author:"New A",project:"Whitefoot",reason:"Joining"}),ops(store).claimProject({author:"New B",project:"Whitefoot",reason:"Joining"})]);
-  assert.deepEqual(store.snapshot().board.projects[0]!.agents,[author,"New A","New B"]);
-  await op.claimProject({author:"New C",project:"Whitefoot",replace:[author],reason:"Departed"});
-  assert.deepEqual(store.snapshot().board.projects[0]!.agents,["New A","New B","New C"]);
-  const latest = (await store.log({limit:1}))[0]!;
-  assert.match(latest.message,/^claim_project Whitefoot New C/); assert.match(latest.message,/Departed/);
+test("project creation accepts any author and repo updates require the project or coordinator", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createProject({ author: "Unconfigured caller", name: "New project", repo: "Org/New" });
+  assert.deepEqual(store.snapshot().board.projects.at(-1), { name: "New project", repo: "Org/New" });
+  await assert.rejects(op.createProject({ author: "Unconfigured caller", name: "New project" }), /already/);
+  await op.createProject({ author: "Unconfigured caller", name: "No repository" });
+  assert.deepEqual(store.snapshot().board.projects.at(-1), { name: "No repository" });
   const before = store.snapshot();
-  await assert.rejects(op.claimProject({author:"New A",project:"Whitefoot",reason:"Again"}),/already/);
-  await assert.rejects(op.claimProject({author:"New D",project:"Whitefoot",replace:["absent"],reason:"Gone"}),/absent.*listed/);
-  await assert.rejects(op.claimProject({author:"New D",project:"Whitefoot",replace:["New B"]}),/reason/);
-  assert.deepEqual(store.snapshot(),before);
-  await op.createProject({author:"Solo",name:"New project",repo:"Org/New"});
-  assert.deepEqual(store.snapshot().board.projects.at(-1),{name:"New project",agents:["Solo"],repo:"Org/New"});
-  await assert.rejects(op.createProject({author:"Solo",name:"New project"}),/already/);
-  await op.createItem({author:"Solo",key:"new-area",title:"Area",group:"New project",priority:"P2"});
-  assert.deepEqual((await Store.open(dir)).snapshot(),store.snapshot());
+  for (const writer of ["Firn", "Outsider"]) {
+    await assert.rejects(op.updateProject({ author: writer, name: "Whitefoot", repo: "Org/Changed" }), e => {
+      assert.ok(e instanceof OpError); assert.match(e.message, /project Whitefoot/);
+      if (writer === "Outsider") assert.match(e.message, /configured project.*call projects.*repo.*repository/);
+      return true;
+    });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  }
+  await op.updateProject({ author: "No repository", name: "No repository", repo: "Org/First" });
+  assert.deepEqual(store.snapshot().board.projects.at(-1), { name: "No repository", repo: "Org/First" });
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
+  assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Changed");
+  assert.equal((await store.log({ limit: 1 }))[0]!.message, "update_project Whitefoot");
+  await op.updateProject({ author: "跨项目", name: "Whitefoot", repo: "Org/Coordinated" });
+  assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Coordinated");
+  assert.equal((await store.log({ limit: 1 }))[0]!.author, "跨项目");
+  const unchanged = store.snapshot();
+  await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Missing", repo: "Org/Missing" }), /project Missing.*configured/);
+  assert.deepEqual(store.snapshot(), unchanged);
+  await op.createItem({ author: "New project", key: "new-area", title: "Area", group: "New project", priority: "P2" });
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
+test("unconfigured request authors are refused before creating an inbox item", async t => {
+  const { store, op, dir } = await board(t), before = store.snapshot();
+  await assert.rejects(op.createRequest({ author: "Outsider", project: "Firn", key: "unknown-request", title: "Request", head: "Evidence", priority: "P1", why: "Need" }), /author.*configured project.*Whitefoot.*Firn.*call projects.*repo.*repository/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
 });

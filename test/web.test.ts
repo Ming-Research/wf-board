@@ -80,7 +80,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         const collection = params.get("kind") === "item" ? snapshot.items : params.get("kind") === "decision" ? snapshot.decisions : snapshot.notes;
         value = { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
       }
-      else if (path === "/api/send") value = { sent: [{agents: ["Session A","Session B"]}, {agents: ["Session A"]}, {agents: []}] };
+      else if (path === "/api/send") value = { sent: [{project: "Halo-wf"}, {project: "Halo-wf"}, {project: "Firn-wf"}] };
       else if (path === "/api/read") { unread = []; value = { ok: true }; }
       else throw new Error("Unexpected page request " + path);
       return { ok: true, status: 200, json: async () => structuredClone(value) };
@@ -96,18 +96,18 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",agents:["Session A","Session B"]}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project"}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
     area: { title: "Parent", group: "Project", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
 }
-test("bundled page renders board metadata and the recorded-send count by session", async () => {
+test("bundled page renders board metadata and the recorded-send count by project", async () => {
   const s = snapshot(); s.notes.n = { target: "it:child", kind: "comment", text: "draft", at, state: "draft", rev: 1 };
   const p = await page(s, []);
   assert.equal(p.roots.get("goal-title")!.textContent, "Synthetic title");
   assert.equal(p.roots.get("eyebrow")!.textContent, "Synthetic eyebrow");
   await p.roots.get("send-all")!.click();
-  assert.equal(p.roots.get("send-note")!.textContent, "已发出 3 条：Session A×2 · Session B×1 · 未指定负责会话×1");
+  assert.equal(p.roots.get("send-note")!.textContent, "已发出 3 条：Halo-wf×2 · Firn-wf×1");
 });
 test("filtered parent navigation opens its body, shows the step diff and reads only through a shown commit", async () => {
   const id = "b".repeat(40);
@@ -357,11 +357,11 @@ test("a dependency row names its project only when the project differs from the 
   assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
 });
 
-test("project page shows agents and inbox requests, including empty projects", async () => {
-  const s=snapshot(); s.board.projects.push({name:"Empty",agents:[]});
+test("project page omits session assignments and shows inbox requests, including empty projects", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Empty"});
   s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
-  assert.equal(headings.length,2); assert.match(markup(headings[0]!),/负责：Session A、Session B/); assert.match(markup(headings[1]!),/负责：未指定/);
+  assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
   assert.ok(p.all().some(e=>e.innerHTML==="等你处理 1 ›"));
   const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
   assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/); assert.match(markup(inbox),/Visitor/); assert.match(markup(inbox),/Need feature/);

@@ -12,8 +12,9 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
   const own = ownerOps(store);
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
   const d = await op.appendLog({ author, id: "b", text: "after owner" });
-  await op.claimProject({author:"other",project:"Whitefoot",reason:"Second writer"});
-  const e = await op.appendLog({ author: "other", id: "b", text: "other author" });
+  // Store history also retains authors from before project identity replaced sessions.
+  const previous = store.snapshot().items.b!;
+  const e = await store.commit({ author: "other", message: "Historical session append", puts: [{ kind: "item", id: "b", expectRev: previous.rev, doc: { ...previous, updated: later, log: [...previous.log, { by: "other", at: later, text: "other author" }] } }] });
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit, b.commit], [c.commit], [d.commit], [e.commit]]);
   assert.equal(steps[0]!.id, b.commit); assert.equal(steps[0]!.docs[0]!.summary, "+2 log");

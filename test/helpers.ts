@@ -6,15 +6,15 @@ import { ops } from "../src/ops.ts";
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
-export const author = "MCP session";
+export const author = "Whitefoot";
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", agents: [author], repo: "Ming-Research/Whitefoot" }, { name: "Firn", agents: options.sharedProjects ? ["Other session", author] : ["Other session"] }] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "跨项目" }] } });
   const item = (title: string, fields: object = {}) => ({ title, priority: "P1", status: "todo", updated: at, ...fields });
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
     { kind: "item", id: "area", expectRev: null, doc: item("解释器工作", { group: "Whitefoot", deps: [{ id: "a", why: "需要检查结果" }, { id: "b", why: "需要语言证据" }] }) },
-    { kind: "item", id: "other", expectRev: null, doc: item("其他项目", { group: "Firn" }) },
+    { kind: "item", id: "other", expectRev: null, doc: item("其他项目", { group: options.sharedProjects ? "Whitefoot" : "Firn" }) },
     { kind: "item", id: "a", expectRev: null, doc: item("中文检查", { parent: "area", head: "稳定中文背景 Whitefoot#341", data: "中文数据", ask: { text: "批准中文检查" }, links: [{ label: "Pull request", url: "https://github.com/Ming-Research/Whitefoot/pull/341" }],
       log: Array.from({ length: 7 }, (_, i) => ({ at: `2026-10-11T01:02:0${i}Z`, by: i === 0 ? "中文作者" : author, text: i === 0 ? "早期中文记录" : i === 6 ? "最新中文记录" : `Progress ${i}` })) }) },
     { kind: "item", id: "b", expectRev: null, doc: item("阻塞证据", { parent: "area", status: "blocked", priority: "P0", head: "未注明仓库 #341; Other#341", deps: [{ id: "a", why: "需要检查" }, { card: "choice", why: "需要决策" }] }) },

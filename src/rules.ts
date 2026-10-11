@@ -17,7 +17,6 @@ export interface Rules {
   ancestors(id: string): string[];
   lineOf(id: string): string;
   groupOf(id: string): string;
-  agentsFor(id: string): string[];
   projectOf(id: string): string;
   isRequest(id: string): boolean;
   inbox(project: string): string[];
@@ -260,7 +259,6 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if (!it.parent) {
         const project = s.board.projects.find(p => p.name === it.group);
         if (!project) out.push({ text: "项目没有配置：" + (it.group || "") });
-        else if (!project.agents.length) out.push({ text: "项目没有负责的会话：" + it.group });
       }
       if (it.parent && !parent) out.push({ text: "上级条目不存在：" + it.parent });
       if (parent && !ended(id) && !depsOf(parent).some(e => e.kind === "item" && e.id === id)) out.push({ text: "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", target: { kind: "item", id: parent } });
@@ -274,7 +272,6 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   return {
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    agentsFor: id => s.board.projects.find(p => p.name === groupOf(id))?.agents.slice() || [],
     isRequest, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
     isLeaf, statusOf, priorityOf, effectivePriorityOf, raisedBy,
     depsOf: id => depsOf(id).map(e => ({ ...e })),

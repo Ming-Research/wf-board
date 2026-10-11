@@ -125,21 +125,21 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       socket.on("close", () => connections.delete(connection));
     });
   });
-  function wake(event: { agents: string[] } & Record<string, unknown>) {
+  function wake(event: { project: string } & Record<string, unknown>) {
     const data = JSON.stringify(event);
-    for (const connection of connections) if ((connection.session === "*" || event.agents.includes(connection.session)) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
+    for (const connection of connections) if ((connection.session === "*" || event.project === connection.session) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
   }
   const off = store.onChange(change => {
     const s = store.snapshot(), r = rules(s);
     for (const doc of change.changed) {
       if (doc.kind === "item" && doc.before === null && (doc.after as Item | null)?.request) {
         const it = doc.after as Item;
-        wake({event:"request",item:doc.id,title:it.title,project:r.projectOf(doc.id),agents:r.agentsFor(doc.id),by:it.request!.by});
+        wake({event:"request",item:doc.id,title:it.title,project:r.projectOf(doc.id),by:it.request!.by});
       }
       if (doc.kind === "note" && (doc.after as Note | null)?.state === "sent" && (doc.before as Note | null)?.state !== "sent") {
         const n = doc.after as Note, card = n.target.startsWith("q:") ? s.decisions[n.target.slice(2)] : undefined;
         const item = card?.item ?? n.target.slice(3);
-        wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item),agents:r.agentsFor(item)});
+        wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item)});
       }
     }
     const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;

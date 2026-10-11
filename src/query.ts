@@ -6,7 +6,7 @@ import { rules as makeRules } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string; agents: string[] }
+export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -26,7 +26,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   return { kind, id, title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
     ...(kind === "item" ? { priority: r.effectivePriorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
-    group: r.groupOf(owner), agents: r.agentsFor(owner) };
+    group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
   if (scope.under !== undefined && !Object.hasOwn(s.items, scope.under)) throw new Error(`under ${scope.under}: choose an existing item subtree`);
@@ -92,7 +92,7 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
   return hits.sort((a, b) => a.rank - b.rank || Date.parse(b.time ?? "1970-01-01T00:00:00Z") - Date.parse(a.time ?? "1970-01-01T00:00:00Z") || a.id.localeCompare(b.id) || b.index - a.index).slice(0, f.limit ?? 20).map(({ rank: _rank, index: _index, ...hit }) => hit);
 }
 
-export interface ListFilters extends Scope { status?: Status[]; priority?: Priority[]; agent?: string; needsOwner?: boolean; hasChecks?: boolean; updatedSince?: string; limit?: number }
+export interface ListFilters extends Scope { status?: Status[]; priority?: Priority[]; needsOwner?: boolean; hasChecks?: boolean; updatedSince?: string; limit?: number }
 export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
   validateScope(s, f);
   const out: Array<Row & { updated: string; needsOwner: boolean; checks: ReturnType<Rules["checks"]> }> = [];
@@ -103,7 +103,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
     if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.effectivePriorityOf(id))) &&
-      (f.agent === undefined || r.agentsFor(id).includes(f.agent)) && (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
+      (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
   }
@@ -164,17 +164,17 @@ export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
   const areas = r.areas().filter(id => f.group === undefined || r.groupOf(id) === f.group).map(id => {
     const rows = list(s, r, { under: id, limit: Object.keys(s.items).length }), leaves = rows.filter(it => r.isLeaf(it.id));
     const counts = Object.fromEntries(STATUSES.map(st => [st, leaves.filter(it => it.status === st).length])) as Record<Status, number>;
-    const { agents: _agents, ...area } = row(s, r, "item", id);
+    const area = row(s, r, "item", id);
     return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
   });
   const names = [...new Set([...s.board.projects.map(p => p.name), ...areas.map(a => a.group)])];
-  return names.filter(name => f.group === undefined || name === f.group).map(name => ({ project: name, agents: s.board.projects.find(p => p.name === name)?.agents ?? [], inbox: r.inbox(name).length, areas: areas.filter(a => a.group === name) }));
+  return names.filter(name => f.group === undefined || name === f.group).map(name => ({ project: name, inbox: r.inbox(name).length, areas: areas.filter(a => a.group === name) }));
 }
 
 export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
     const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && r.isLeaf(id) && !r.isRequest(id));
-    return { ...project, agents: project.agents.slice(), areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
+    return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
       openLeaves: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
   });
 }
@@ -182,19 +182,19 @@ function requestRow(s: Snapshot, r: Rules, id: string) {
   const it = s.items[id]!, request = it.request!;
   const prefix = `${request.by} 提出：`;
   const first = it.log[0]?.text ?? "";
-  return { id, title: it.title, project: r.projectOf(id), agents: r.agentsFor(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
+  return { id, title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
   return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, sentAt: n.sentAt ?? n.at,
-    project: r.projectOf(noteItem(s,n)), agents: r.agentsFor(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
+    project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
   const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
-  const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && config.agents.includes(s.items[id]!.request!.by)));
+  const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
   for (const id of ids) for (const dep of r.depsOf(id)) if (dep.kind === "item" && dep.open && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
-  return { project, agents: config.agents.slice(), inbox: r.inbox(project).map(id => requestRow(s,r,id)),
+  return { project, inbox: r.inbox(project).map(id => requestRow(s,r,id)),
     notes: sentNotes(s,r).filter(n => n.project === project),
     checks: ids.map(id => ({ id, title: s.items[id]!.title, checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question})),
