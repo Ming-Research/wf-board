@@ -706,22 +706,23 @@ test("explicitly collapsed ancestor comments do not block child navigation on pe
   });
 });
 
-test("filtered ancestor comments can auto-open without its body and navigation waits for their final geometry", async () => {
+test("a folded item hides its comments, new ones included, and navigation does not wait for them", async () => {
   const s=snapshot(), hold=deferred<unknown>(); s.items.area!.head="Ancestor body stays folded";
   s.notes.above={target:"it:area",kind:"comment",text:"New ancestor comment",at,state:"sent",rev:1};
-  const p=await page(s,[...unread(),...unread("note","above","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "above" ? hold.promise : endpoints(s,params,null),undefined,{geometry:(e,all)=>({top:e.id === "it-child" ? (all().some(v=>v.id === "note-above") ? 2100 : 1200) : 600,height:e.id === "it-child" ? 100 : 2400})});
+  const p=await page(s,[...unread(),...unread("note","above","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "above" ? hold.promise : endpoints(s,params,null),undefined,{geometry:e=>({top:e.id === "it-child" ? 1200 : 600,height:e.id === "it-child" ? 100 : 2400})});
   const filter=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!; await filter.click();
   assert.ok(p.all().some(e=>e.id === "it-child"),"filter opens the ancestor path");
   assert.ok(!markup(item(p,"area")).includes("Ancestor body stays folded"));
-  assert.ok(!p.all().some(e=>e.id === "note-above"));
+  assert.ok(!descendants(item(p,"area")).some(e=>e.className.includes("notes")),"a folded item shows no comment list");
+  assert.ok(item(p,"area").className.includes("fresh") && /新 2/.test(markup(item(p,"area").children[0]!)),"its 新 chip and line still say it holds something new");
   // The child is the last stop on the page, so N reaches it first.
   p.key("N"); await settle();
-  assert.equal(p.scrolls.length,0,"visible ancestor comments must finish loading even with its body folded");
+  assert.equal(p.scrolls.length,1,"navigation does not wait for comments a folded item hides");
+  assert.equal(p.measurements[0]!.id,"it-child"); assert.equal(p.measurements[0]!.top,1200);
   hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=above"),null)); await settle();
-  assert.ok(p.all().some(e=>e.id === "note-above"),"fresh ancestor comment auto-opens");
-  assert.ok(!markup(item(p,"area")).includes("Ancestor body stays folded"),"ancestor body remains manually folded");
-  assert.equal(p.measurements[0]!.id,"it-child"); assert.equal(p.measurements[0]!.top,2100);
-  assert.equal(p.scrolls.length,1);
+  assert.ok(!p.all().some(e=>e.id === "note-above"),"the new comment stays folded with its item");
+  p.key("N"); await settle();
+  assert.ok(p.all().some(e=>e.id === "note-above"),"n on the comment opens its item and shows it");
 });
 
 async function questionContract(tail:string, transform?:PageOptions["transform"]) {
@@ -933,7 +934,7 @@ test("approve done and explain feedback is synchronous and failure restores it",
 });
 
 test("SSE burst renders once per frame and fetches unread once", async () => {
-  const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); const renders=p.renders.length, reads=p.calls.filter(c=>c.path === "/api/unread").length;
+  const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush(); const renders=p.renders.length, reads=p.calls.filter(c=>c.path === "/api/unread").length;
   for(let i=0;i<10;i++) p.emit(String(i).repeat(40),[{kind:"note",id:"burst",after:{target:"it:area",kind:"comment",text:"Burst "+i,at,state:"sent",rev:i+1}}]);
   assert.equal(p.renders.length,renders,"asynchronous events do not render before the frame");
   await p.flush(); assert.equal(p.renders.length-renders,1); assert.equal(p.calls.filter(c=>c.path === "/api/unread").length-reads,1);
@@ -1044,7 +1045,7 @@ test("card closure and a filtered item update preserve unrelated card identities
 });
 
 test("frame fallback works without requestAnimationFrame and smooth jump follows changes during its glide", async t => {
-  await t.test("no rAF",async()=> { const p=await page(snapshot(),[],null,undefined,{noFrames:true,clock:new FakeClock(),notesOpen:{"it:area":true}}); const count=p.renders.length; p.emit("b".repeat(40),[{kind:"note",id:"n",after:{target:"it:area",kind:"comment",text:"Fallback note",at,state:"sent",rev:1}}]); assert.equal(p.renders.length,count,"timer fallback also defers to its frame"); await p.flush(); assert.match(markup(item(p,"area")),/Fallback note/); });
+  await t.test("no rAF",async()=> { const p=await page(snapshot(),[],null,undefined,{noFrames:true,clock:new FakeClock(),notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush(); const count=p.renders.length; p.emit("b".repeat(40),[{kind:"note",id:"n",after:{target:"it:area",kind:"comment",text:"Fallback note",at,state:"sent",rev:1}}]); assert.equal(p.renders.length,count,"timer fallback also defers to its frame"); await p.flush(); assert.match(markup(item(p,"area")),/Fallback note/); });
   await t.test("smooth glide",async()=> {
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>, above=0;
     p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);

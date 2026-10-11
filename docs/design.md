@@ -219,7 +219,9 @@ log:
   green, without per-block marks. An item or card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. New log entries, new notes and replies, and added dependency and link
+  and carries no line, since `r` leaves sub-items alone. A folded item shows its head row
+  alone: its body, cards and comment list fold together, and its 新 chip
+  still counts what is new inside. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar; a new reply also marks the reply itself. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,

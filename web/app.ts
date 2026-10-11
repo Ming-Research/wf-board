@@ -420,9 +420,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const card = (id:string) => { if (!get("q-" + id)) return; add("decision",id); notes("q:" + id); };
     if (st.item) for (const id of [st.item,...derived.ancestors(st.item)]) {
       if (!get("it-" + id)) continue;
-      // Comments render outside the manually opened body, including ancestors opened only by a filter.
-      notes("it:" + id);
+      // Comments render with the manually opened body; a folded item shows neither.
       if (!manual[id]) continue;
+      notes("it:" + id);
       add("item",id);
       derived.cardsOf(id).forEach(card);
     }
@@ -1365,9 +1365,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       const refs=refsRow(it,before); if (refs) body.appendChild(refs);
       box.appendChild(body);
+      // Comments belong to the body: a folded item hides them with everything else below its head.
+      const nb = noteBlock("it:" + it.id, it.title);
+      if (nb) box.appendChild(nb);
     }
-    const nb = noteBlock("it:" + it.id, it.title);
-    if (nb) box.appendChild(nb);
     li.appendChild(box);
     if (open && sub.length && !boxOnly) {
       const ul = el("ul", "tree");
@@ -1647,7 +1648,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       reconcileCard(target.slice(2)); return;
     }
     const it=index().byId.get(target.slice(3)), box=get("it-"+target.slice(3)); if (!it || !box) return;
-    const old=[...box.children].find(e => e.classList.contains("notes")), next=noteBlock(target,it.title);
+    const old=[...box.children].find(e => e.classList.contains("notes")), next=manual[it.id] ? noteBlock(target,it.title) : null;
     if (old && next) old.replaceWith(next); else if (old) old.remove(); else if (next) box.appendChild(next);
     const ask=get("ask-"+it.id), nextAsk=askRow(it,unreadBefore<Item>("item",it.id));
     const body=[...box.children].find(e => e.classList.contains("body"));
