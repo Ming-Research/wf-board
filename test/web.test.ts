@@ -377,3 +377,16 @@ test("project page shows agents, inbox requests and an inline request form inclu
   await descendants(form).find(e=>e.tagName==="BUTTON" && e.innerHTML==="取消")!.click();
   assert.ok(!p.all().some(e=>e.className==="request-form"));
 });
+
+test("the 新 counts add up pieces while n walks one document at a time", async () => {
+  const s = snapshot(), id = "f".repeat(40);
+  const p = await page(s, [{ id, commits: [id], author: "Session A", at, docs: [
+    { kind: "item", id: "child", summary: "head changed, +3 log", pieces: { log: 3, reply: 0, other: 1 } },
+    { kind: "item", id: "area", summary: "+2 log", pieces: { log: 2, reply: 0, other: 0 } },
+  ] }]);
+  const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
+  assert.ok(buttons.includes("新 6 ›"), buttons.join(" | "));
+  assert.ok(buttons.includes("进展 5") && buttons.includes("其他 1"));
+  p.key("n"); await setImmediate();
+  assert.deepEqual(p.all().filter(e => e.id.startsWith("step:" + id + "|")).map(e => e.id), ["step:" + id + "|item|child"]);
+});

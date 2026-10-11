@@ -98,7 +98,8 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
   const out: Array<Row & { updated: string; needsOwner: boolean; checks: ReturnType<Rules["checks"]> }> = [];
   const seen = new Set<string>();
   function walk(id: string): void {
-    if (seen.has(id) || !s.items[id]) return;
+    // An untriaged request is not work yet: it shows in its project's inbox (brief, projects), not in lists.
+    if (seen.has(id) || !s.items[id] || r.isRequest(id)) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
     if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.effectivePriorityOf(id))) &&

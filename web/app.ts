@@ -179,7 +179,17 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function cardNew(d: ViewDecision) { return touched("decision",d.id); }
   function cardFresh(d: ViewDecision) { return cardNew(d) || notesOf("q:" + d.id).some(n => touched("note",n.id)); }
   function newReplies(key: string) { return notesOf(key).filter(n => n.reply && touched("note",n.id)); }
-  function docKinds(doc: Step["docs"][number]): string[] {
+  // How many new things a document holds (server-counted; derived from the summary for a step without counts).
+  function piecesOf(doc: Step["docs"][number]): {log:number;reply:number;other:number} {
+    if (doc.pieces) return doc.pieces;
+    const k = legacyKinds(doc);
+    return { log: k.includes("log") ? Number(/\+(\d+) log/.exec(doc.summary)?.[1] ?? 1) : 0, reply: k.includes("reply") ? 1 : 0, other: k.includes("other") ? 1 : 0 };
+  }
+  function docKinds(doc: Step["docs"][number]): string[] { const p = piecesOf(doc); return (["log","reply","other"] as const).filter(k => p[k] > 0); }
+  // The pieces of a stop the kind filter keeps: what the 新 counts add up.
+  function stopCount(st: FreshStop) { const p = piecesOf(st.doc); return (["log","reply","other"] as const).reduce((n, k) => n + (fon(k) ? p[k] : 0), 0); }
+  function countOf(list: FreshStop[]) { return list.reduce((n, st) => n + stopCount(st), 0); }
+  function legacyKinds(doc: Step["docs"][number]): string[] {
     const kinds = new Set<string>();
     const changes = doc.summary.split(", ");
     const reply = changes.includes("new reply") || changes.includes("reply changed");
@@ -264,10 +274,10 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   let below: {wait: Record<string,number>;fresh: Record<string,number>} = {wait:{},fresh:{}};
   function countBelow() {
     const byId = new Map(state.items.map(i => [i.id, i]));
-    const tally = (list: Array<{item: string | null}>, into: Record<string,number>) => list.forEach(x => { const it = x.item && byId.get(x.item); if (it) ancestors(it).forEach(a => { into[a.id] = (into[a.id] || 0) + 1; }); });
+    const tally = <T extends {item: string | null}>(list: T[], into: Record<string,number>, weight: (x: T) => number) => list.forEach(x => { const it = x.item && byId.get(x.item); if (it) ancestors(it).forEach(a => { into[a.id] = (into[a.id] || 0) + weight(x); }); });
     below = { wait: {}, fresh: {} };
-    tally(stops(), below.wait);
-    tally(freshStops(), below.fresh);
+    tally(stops(), below.wait, () => 1);
+    tally(freshStops(), below.fresh, stopCount);
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
   function tops() { return derived.areas(id => !derived.isArchived(id) || showsArchived(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
@@ -342,7 +352,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function freshChip(key: string) {
     const all = freshStops();
     const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => stopTouches(st, key));
-    const c = el("span", "newtag freshchip", "新 " + Math.max(1, mine.length));
+    const c = el("span", "newtag freshchip", "新 " + Math.max(1, countOf(mine.map(([st]) => st))));
     c.title = "点一下到这里的第一条新内容；n 走到下一条，r 标为已阅";
     if (mine.length) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
@@ -865,12 +875,14 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     const sbtn = (cls: string, text: string, title: string, onClick: () => void) => { const b = el("button", "sbtn " + cls, text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", onClick); return b; };
     const waiting = stops().length;
     if (waiting) acts.appendChild(sbtn("s-wait", "等你处理 " + waiting + " ›", "从第一条开始", () => goStop(0)));
-    const fresh = freshStops().length;
+    // Counts are pieces, as the page always counted (each new log entry, each new reply, each other change); n walks
+    // one document at a time and shows all of its pieces.
+    const fresh = countOf(freshStops());
     if (fresh) acts.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
     // Which kinds of new things count, picked like the project filters; each shows how many new pieces it has.
     const everyFresh = allFreshStops();
     FRESH_KINDS.forEach(([kind, label, title]) => {
-      const n = everyFresh.filter(st => st.kinds.includes(kind)).length, on = freshSel.includes(kind);
+      const n = everyFresh.reduce((sum, st) => sum + piecesOf(st.doc)[kind as "log" | "reply" | "other"], 0), on = freshSel.includes(kind);
       if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); acts.appendChild(b); }
     });
     if (freshSel.length) acts.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
@@ -1112,7 +1124,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function requestForm(project: string) {
     const draft = requestDrafts.get(project)!;
     const form = el("div", "request-form");
-    const title = el("input"); title.value = draft.title; title.placeholder = "标题"; title.setAttribute("aria-label", "需求标题");
+    const title = el("input"); title.id = "request-title-" + project; title.value = draft.title; title.placeholder = "标题"; title.setAttribute("aria-label", "需求标题");
     const text = el("textarea"); text.value = draft.text; text.placeholder = "需求内容"; text.setAttribute("aria-label", "需求内容"); text.id = "request-text-" + project;
     const priority = el("select"); priority.setAttribute("aria-label", "优先级");
     for (const p of ["P0","P1","P2"]) { const option = el("option", null, p); option.value = p; priority.appendChild(option); }
@@ -1332,13 +1344,14 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   }
   function renderAll() {
     invalidate();
-    const a = document.activeElement as HTMLTextAreaElement | null;
-    const keep = a && a.tagName === "TEXTAREA" ? { id: a.id, start: a.selectionStart, end: a.selectionEnd } : null;
+    // Live updates rebuild the page; a text field being typed in keeps its focus and caret.
+    const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
+    const keep = a && a.id && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") ? { id: a.id, start: a.selectionStart, end: a.selectionEnd } : null;
     const anchor = window.scrollY > 0 ? scrollAnchor() : null;
     renderHeader(); renderAreas(); renderCards(); renderSend(); renderMenu();
     if (anchor) { const e = get(anchor.id); if (e) { const d = e.getBoundingClientRect().top - anchor.top; if (d) window.scrollBy(0, d); } }
     crumbKey = null; updateCrumbs();
-    if (keep) { const t = get<HTMLTextAreaElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
+    if (keep) { const t = get<HTMLTextAreaElement | HTMLInputElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
   }
   renderAll();
 

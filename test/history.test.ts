@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { board, author, later } from "./helpers.ts";
-import { unreadSteps, stepDiff } from "../src/history.ts";
+import { unreadSteps, stepDiff, piecesOf } from "../src/history.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 test("cursor range, single-document grouping, author boundaries and endpoint diff", async t => {
@@ -74,4 +74,16 @@ test("a status that became derived and changes the owner cannot see are not unre
   const parent = steps[0]!.docs.find(d => d.id === "a")!;
   assert.doesNotMatch(parent.summary, /status|priority/);
   assert.match(parent.summary, /\+1 log/);
+});
+
+test("pieces count each new log entry, each new reply and one other change, as the old page counted", () => {
+  const item = (log: Array<{ at: string; text: string }>, head = "h") => ({ title: "t", head, log, updated: later, deps: [], links: [], rev: 1 });
+  const e = (n: number) => ({ at: `2026-10-11T0${n}:00:00Z`, text: `entry ${n}` });
+  assert.deepEqual(piecesOf(null, item([e(1), e(2), e(3)]), "item", "new item"), { log: 3, reply: 0, other: 0 }, "a new item counts through its entries");
+  assert.deepEqual(piecesOf(null, item([]), "item", "new item"), { log: 0, reply: 0, other: 1 });
+  assert.deepEqual(piecesOf(item([e(1)]), item([e(1), e(2), e(3)], "changed"), "item", "head changed, +2 log"), { log: 2, reply: 0, other: 1 });
+  assert.deepEqual(piecesOf(item([e(1)]), item([e(1)]), "item", "metadata changed"), { log: 0, reply: 0, other: 0 });
+  assert.deepEqual(piecesOf({}, {}, "note", "state changed, new reply"), { log: 0, reply: 1, other: 0 });
+  assert.deepEqual(piecesOf({}, {}, "note", "state changed"), { log: 0, reply: 0, other: 0 });
+  assert.deepEqual(piecesOf(null, {}, "decision", "new card"), { log: 0, reply: 0, other: 1 });
 });

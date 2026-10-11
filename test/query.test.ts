@@ -259,7 +259,13 @@ test("project brief and projects include inbox, sent notes, checks, work and out
 test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
   const {store,op} = await board(t);
   await op.createRequest({author:"Visitor",project:"Firn",key:"old-request",title:"Old",head:"Detail",priority:"P1",why:"Need"});
+  await op.createRequest({author:"Visitor",project:"Firn",key:"handled-request",title:"Handled",head:"Detail",priority:"P1",why:"Need"});
+  await op.triageRequest({author:"Other session",id:"handled-request",priority:"P2",log:"Taken as an area"});
   const s = structuredClone(store.snapshot());
+  s.items["handled-request"]!.log[0]!.at=at;
+  s.notes.closed={...s.notes["note-1"]!,state:"done",repliedAt:later,repliedBy:"Other session"};
+  assert.ok(!q.list(s,rules(s),{}).some(x=>x.id==="old-request"),"an untriaged request is not listed as work");
+  assert.ok(q.list(s,rules(s),{}).some(x=>x.id==="handled-request"),"a triaged request is ordinary work");
   s.items["old-request"]!.request!.at=at;
   s.notes.fresh={...s.notes["note-1"]!,sentAt:later};
   s.notes.draft={...s.notes["note-1"]!,state:"draft"};

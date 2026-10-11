@@ -280,12 +280,9 @@ export function convertExport(exportJson: unknown): Converted {
     const seen = Array.isArray(snap?.qs) ? z.array(z.string()).parse(snap.qs) : undefined;
     const currentQs = items[card.item]?.qs;
     const addedSinceSnapshot = seen !== undefined && !seen.includes(id) && Array.isArray(currentQs) && currentQs.includes(id);
-    // qs proves an undated card already existed at that read. Otherwise date
-    // it from the earliest update/note evidence, or the export checkpoint.
-    const noteTimes = Object.values(notes).filter(n => n.target === `q:${id}`).map(n => time(n.at)!).sort((a, b) => Date.parse(a) - Date.parse(b));
-    const evidence = [time(decisions[id]!.updated), ...noteTimes].filter((t): t is string => t !== undefined).sort((a,b) => Date.parse(a) - Date.parse(b))[0];
-    const dated = card.at ?? (seen?.includes(id) ? undefined : evidence ?? exportedAt);
-    if ((dated && later(dated, readAt)) || (addedSinceSnapshot && (!readAt || !later(readAt, time(reads[`it:${card.item}`]?.at))))) {
+    // The page's own rule for a new card: created after its item's read, or added to the item's cards since the
+    // read's snapshot; a card the owner read on its own is not new, and an undated card is not known to be new.
+    if (reads[`q:${id}`] === undefined && ((card.at && later(card.at, readAt)) || (addedSinceSnapshot && (!readAt || !later(readAt, time(reads[`it:${card.item}`]?.at)))))) {
       delete asRead.decisions[id]; report("Exclude new card from as-read state", id);
     }
   }

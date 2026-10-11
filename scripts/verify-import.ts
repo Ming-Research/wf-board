@@ -157,10 +157,8 @@ export function verifyConverted(exportJson: unknown, converted: Converted): stri
     const knownCards = Array.isArray(snap.qs) ? snap.qs : undefined;
     const currentCards = itemMap.get(home)?.qs;
     const added = knownCards && !knownCards.includes(id) && Array.isArray(currentCards) && currentCards.includes(id) && !after(cutoff, read?.at);
-    const evidence = notes.filter(n => n.data.target === `q:${id}`).map(n => date(n.data.at)!).sort((a,b) => Date.parse(a) - Date.parse(b))[0];
-    const earliest = [date(raw.updated), evidence].filter((t): t is string => !!t).sort((a,b) => Date.parse(a) - Date.parse(b))[0];
-    const dated = date(raw.at) ?? (knownCards?.includes(id) ? undefined : earliest ?? exportTime);
-    if (after(dated, cutoff) || added) delete readState.decisions[id];
+    const dated = date(raw.at);
+    if (!readMap.has(`q:${id}`) && ((dated && after(dated, cutoff)) || added)) delete readState.decisions[id];
   }
   for (const doc of Object.values(readState.notes)) {
     const cutoff = newest([readMap.get(String(doc.target))?.at, readMap.get("all")?.at]);
