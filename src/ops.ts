@@ -9,7 +9,7 @@ import { describeChanges } from "./query.ts";
 export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev: number; summary: string }
 export interface Ops {
-  createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; links?: Link[]; data?: string; agent?: string; group?: string; short?: string; order?: number }): Promise<Result>;
+  createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; parentOwnWork?: { key: string; title: string }; links?: Link[]; data?: string; agent?: string; group?: string; short?: string; order?: number }): Promise<Result>;
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number; agent?: string | null; short?: string | null }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
@@ -103,14 +103,29 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       newKey(s, a.key);
       if (!a.priority) throw new OpError("priority: new leaf requires P0, P1 or P2");
       if (!a.parent && (!a.agent || !a.group)) throw new OpError("agent and group: a new area requires its responsible session and project group");
-      const { author: _author, key: _key, parentWhy: _why, ...fields } = a;
+      const { author: _author, key: _key, parentWhy: _why, parentOwnWork: _own, ...fields } = a;
       const doc = parse(Item, { ...fields, status: a.status ?? "todo", created: at, updated: at, rev: 1 });
       depsExist(s, doc.deps);
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       if (a.parent) {
         const parent = requireItem(s, a.parent, "parent");
         if (!a.parentWhy?.trim()) throw new OpError("parentWhy: explain what the parent needs this child for");
-        puts.push(itemPut(a.parent, { ...parent, updated: at, deps: [...parent.deps.filter(d => !("id" in d && d.id === a.key)), { id: a.key, why: a.parentWhy }] }));
+        let deps = [...parent.deps.filter(d => !("id" in d && d.id === a.key)), { id: a.key, why: a.parentWhy }];
+        const next: Item = { ...parent, updated: at };
+        // A leaf that gets its first sub-item becomes a parent, whose status and priority
+        // are derived; its own work moves into a sub-item so nothing it said is lost.
+        if (rules(s).isLeaf(a.parent)) {
+          if (!a.parentOwnWork) throw new OpError(`parentOwnWork: ${a.parent} is a leaf (${parent.status ?? "todo"} ${parent.priority ?? ""}); with a first sub-item its status becomes derived. Give parentOwnWork {key, title} for a sub-item that takes over its own work, status and priority, in the same commit`);
+          newKey(s, a.parentOwnWork.key);
+          if (a.parentOwnWork.key === a.key) throw new OpError("parentOwnWork.key: choose a key other than the new item's");
+          const own = parse(Item, { title: a.parentOwnWork.title, parent: a.parent, status: parent.status ?? "todo", priority: parent.priority ?? a.priority, created: at, updated: at, rev: 1,
+            log: [entry(a.author, at, `接过 ${a.parent} 自己的工作（原状态 ${parent.status ?? "todo"}，优先级 ${parent.priority ?? "未设"}）。`)] });
+          puts.push({ kind: "item", id: a.parentOwnWork.key, doc: own, expectRev: null });
+          deps = [...deps, { id: a.parentOwnWork.key, why: "它自己的工作" }];
+          delete next.status; delete next.priority;
+          next.log = [...parent.log, entry(a.author, at, `加了子条目 ${a.key}；自己的工作移到 ${a.parentOwnWork.key}。`)];
+        } else if (a.parentOwnWork) throw new OpError(`parentOwnWork: ${a.parent} already has sub-items; omit parentOwnWork`);
+        puts.push(itemPut(a.parent, { ...next, deps }));
       }
       return { id: a.key, kind: "item", message: `create_item ${a.key}`, puts };
     }),

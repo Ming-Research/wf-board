@@ -28,15 +28,16 @@ test("context includes relationships, page order, open/ruled cards, replies, che
   const { store, op } = await board(t);
   const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
   assert.ok("raisedBy" in leaf); assert.equal(leaf.item.priority, "P1"); assert.equal(leaf.priority, "P0"); assert.equal(leaf.raisedBy, "b");
-  await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", priority: "P2", order: 0 });
+  await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", priority: "P2", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
   await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", priority: "P0", order: 5 });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
   assert.ok("children" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
-  assert.equal(c.item.priority, "P1"); assert.equal(c.priority, "P0"); assert.equal(c.raisedBy, null); // parent's P0 is now intrinsic to its children
-  assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, 2);
+  // a's own priority moved to its own-work sub-item with its first child; its P0 is now intrinsic to its children.
+  assert.equal(c.item.priority, undefined); assert.equal(s.items["a-own"]!.priority, "P1"); assert.equal(c.priority, "P0"); assert.equal(c.raisedBy, null);
+  assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, 3); // 7 seeded + the first-child entry
   assert.deepEqual(c.ancestors.map(it => it.id), ["area"]);
-  assert.deepEqual(c.children.map(it => [it.id, it.priority]), [["child-low", "P0"], ["child-high", "P0"]]); // raised priority ties, so page order breaks the tie
+  assert.deepEqual(c.children.map(it => [it.id, it.priority]), [["child-low", "P0"], ["a-own", "P0"], ["child-high", "P0"]]); // raised priority ties, so page order breaks the tie
   assert.ok(c.deps.some(d => d.id === "child-high" && d.why === "High priority evidence"));
   assert.deepEqual(c.dependents.map(d => [d.id, d.why]), [["area", "需要检查结果"], ["b", "需要检查"]]);
   const open = c.cards.find(card => card.key === "choice")!;
@@ -46,7 +47,7 @@ test("context includes relationships, page order, open/ruled cards, replies, che
   assert.equal(c.notes.length, 2); assert.equal(c.notes[0]!.reply, "中文回复");
   assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
-  assert.ok("earlierLogs" in all && "earlierLogs" in none); assert.equal(all.earlierLogs, 0); assert.equal(none.earlierLogs, 7);
+  assert.ok("earlierLogs" in all && "earlierLogs" in none); assert.equal(all.earlierLogs, 0); assert.equal(none.earlierLogs, 8);
   const card = q.context(s, r, "choice"); assert.equal(card.kind, "card");
   assert.equal(card.card!.confidence!.score, 4); assert.equal(card.item.title, "中文检查"); assert.equal(card.notes[0]!.id, "note-2");
   assert.throws(() => q.context(s, r, "missing"), /Unknown id/);
@@ -111,7 +112,7 @@ test("changes summarizes net fields over commits, groups areas, and history/diff
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author, key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", priority: "P2" });
+  await op.createItem({ author, key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", priority: "P2", parentOwnWork: { key: "other-own", title: "other own work" } });
   await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;

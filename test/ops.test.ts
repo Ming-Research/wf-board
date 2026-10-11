@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops, OpError } from "../src/ops.ts";
+import { rules } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
@@ -185,10 +186,27 @@ test("asks and open cards allow blocked status; wip remains allowed; closed deps
   await op.setStatus({ author, id: "b", status: "wip", log: "Working alongside dependencies" });
   await op.setAsk({ author, id: "other", text: "Owner approves" });
   await op.setStatus({ author, id: "other", status: "blocked", log: "Waits on owner" });
-  await op.createItem({ author, key: "card-waiter", parent: "other", parentWhy: "Ruling", title: "Waiter", priority: "P2", deps: [{ card: "choice", why: "Ruling" }] });
+  await op.createItem({ author, key: "card-waiter", parent: "other", parentWhy: "Ruling", title: "Waiter", priority: "P2", deps: [{ card: "choice", why: "Ruling" }], parentOwnWork: { key: "other-own", title: "other own work" } });
   await op.setStatus({ author, id: "card-waiter", status: "blocked", log: "Waits on card" });
   await op.ruleCard({ author, key: "choice", ruling: "Settled without an option" });
   const before = store.snapshot();
   await assert.rejects(op.setStatus({ author, id: "card-waiter", status: "blocked", log: "Stale blocker" }), /open dependency or an ask/);
   assert.deepEqual(store.snapshot(), before);
+});
+
+test("a leaf's first sub-item moves its own work, status and priority into a sub-item in the same commit", async t => {
+  const { store, op } = await board(t);
+  const before = store.snapshot().items.b!; // blocked P0 leaf
+  const head = store.snapshot().head;
+  await assert.rejects(op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", priority: "P2" }), /parentOwnWork: b is a leaf \(blocked P0\)/);
+  assert.equal(store.snapshot().head, head);
+  const result = await op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", priority: "P2", parentOwnWork: { key: "b-own", title: "b 自己的工作" } });
+  const s = store.snapshot(), b = s.items.b!, own = s.items["b-own"]!;
+  assert.equal(b.status, undefined); assert.equal(b.priority, undefined);
+  assert.equal(own.status, before.status); assert.equal(own.priority, before.priority); assert.equal(own.parent, "b");
+  assert.deepEqual(b.deps.slice(-2), [{ id: "kid", why: "Evidence" }, { id: "b-own", why: "它自己的工作" }]);
+  assert.equal(rules(s).statusOf("b"), "blocked"); // derived from b-own, as before the split
+  assert.equal((await store.log({ limit: 1 }))[0]!.commit, result.commit);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/b-own.yaml", "items/b.yaml", "items/kid.yaml"]);
+  await assert.rejects(op.createItem({ author, key: "kid2", parent: "b", parentWhy: "More", title: "Kid 2", priority: "P2", parentOwnWork: { key: "b-own2", title: "x" } }), /already has sub-items/);
 });

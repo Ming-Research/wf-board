@@ -219,7 +219,7 @@ the server cannot tell sessions apart (several share one repository).
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(parent, key, title, head, priority, deps, parent_why, links)` | Adds an item and lists it in the parent's deps with `parent_why` | Key is new and well formed; deps exist and carry a why; leaf priority set |
+| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work, status and priority move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP P1 silently became its new child's TODO P2) | Key is new and well formed; deps exist and carry a why; leaf priority set |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
