@@ -20,5 +20,7 @@ export function compare(old: LegacyState, snapshot: Pick<Snapshot, "items" | "de
     ];
     for (const [rule, before, after] of values) if (JSON.stringify(before) !== JSON.stringify(after)) disagreements.push({ id: it.id, rule, old: before, new: after });
   }
+  const before = legacy.tops().map(it => it.id), after = current.areas(id => !current.isArchived(id));
+  if (JSON.stringify(before) !== JSON.stringify(after)) disagreements.push({ id: "board", rule: "areas", old: before, new: after });
   return disagreements;
 }

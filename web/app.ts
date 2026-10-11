@@ -157,8 +157,8 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)).sort(byPriority); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
-  function askPending(it: ViewItem) { return !!it.ask && derived.needsOwner(it.id) && !notesOf("it:" + it.id).some(n => (n.state === "sent" || n.state === "done") && (n.kind === "approve" || n.kind === "done") && n.text === ANSWER[n.kind]!.prefix + it.ask!.text); }
-  function waitsQ(d: ViewDecision) { return d.status === "open" && !notesOf("q:" + d.id).some(n => n.kind === "choice" && n.state !== "draft"); }
+  function askPending(it: ViewItem) { return derived.askPending(it.id); }
+  function waitsQ(d: ViewDecision) { return derived.cardWaiting(d.id); }
   function needsOwner(it: ViewItem) { return derived.needsOwner(it.id); }
   const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it));
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
@@ -273,7 +273,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     tally(freshStops(), below.fresh);
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
-  function tops() { return derived.areas().map(id => index().byId.get(id)!).filter(t => visible(t) || showsArchived(t.group || "")); }
+  function tops() { return derived.areas(id => !derived.isArchived(id) || showsArchived(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
   function boardOrder() { return cached("boardOrder", boardOrderNow); }
   function boardOrderNow() {
     const out: ViewItem[] = [];
@@ -1172,7 +1172,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
       });
       c.appendChild(ol);
     }
-    if (d.confidence) c.appendChild(el("p", null, '<span class="lbl">信心：</span>' + inline(d.confidence.score + "/5：" + d.confidence.reason)));
+    if (d.confidence) c.appendChild(el("p", null, '<span class="lbl">信心：</span>' + inline((d.confidence.score === undefined ? "" : d.confidence.score + "/5：") + d.confidence.reason)));
     if (!historical) appendStep(c, "q:" + d.id);
     const nb = historical ? null : noteBlock("q:" + d.id, d.question || "决策");
     if (nb) c.appendChild(nb);
@@ -1457,7 +1457,7 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     changedFields(box,before,after,[
       ["question","问题"], ["background","背景"],
       ["options","选项", v => (v as Decision["options"]).map(o => o.key + "：" + o.text + (o.recommended ? "（推荐）" : "")).join("；")],
-      ["confidence","信心", v => { const c = v as Decision["confidence"]; return c ? c.score + "/5：" + c.reason : "未设"; }],
+      ["confidence","信心", v => { const c = v as Decision["confidence"]; return c ? (c.score === undefined ? "" : c.score + "/5：") + c.reason : "未设"; }],
       ["status","状态",v => CARD_STATUS[v as Decision["status"]]], ["item","所属条目",itemName],
       ["ruledAt","裁决时间",v => day(v as string | undefined) || "未设"], ["order","排序"], ["at","创建时间",v => day(v as string | undefined) || "未设"],
     ]);

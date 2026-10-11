@@ -160,14 +160,15 @@ log:
   a schema on read and write.
 - `rev` counts writes to the file. A write that replaces content names the
   `rev` it read and fails on a mismatch with the current content in the
-  error. Appends (log entries, note replies) carry no `rev` and never
-  conflict.
+  error. Only log entries are conflict-free appends and carry no `rev`.
+  Replying to an answered note is refused with the previous author and time;
+  deliberate replacement requires `replace: true`.
 - Areas are items without a parent, as today. The fields keep their current
   meanings; `area` is folded into `parent`, `text` into `head`, bare-string
   deps into `{id, why}` entries flagged for a why.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
-  becomes `{score: 1-5, reason}`, and a ruled card records `ruledAt`.
+  becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
 - Each fact is stored once. The export shows what duplication costs: 27 cards
   whose `item` names an item whose `qs` omits them, 572 items carrying both
   `parent` and `area`, 13 notes whose stored title went stale. So a card's
@@ -223,11 +224,11 @@ the server cannot tell sessions apart (several share one repository).
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent, parent_why)` | Reparents | No cycle; updates both parents' deps |
+| `move_item(id, new_parent, parent_why, parent_own_work?, source_status?, source_priority?)` | Reparents, preserving a destination leaf's own work in a new child | No cycle; updates both parents' deps; the source's last child requires its new leaf status and priority |
 | `set_ask(id, text, url?, chat?)`, `clear_ask(id, log)` | Owner actions | |
 | `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
-| `reply_note(id, reply)` | Answers a note, stamps `repliedAt`, marks it done | |
+| `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 
 ## 7. The page
 
@@ -298,7 +299,8 @@ cite them.
      title;
    - set `updated` to the newest log time on the 5 items where it is missing
      or older; take a ruled card's `ruledAt` from the owner's choice note;
-     parse `confidence` into score and reason;
+     parse `confidence` into optional score and reason, preserving unscored
+     text verbatim and every recorded log author;
    - leave bare `#NNN` references as written: a project's items also cite
      other repositories' pull requests (Snowghost items cite `Whitefoot #348`),
      so the item's project does not name the repository; `prs` reads both
@@ -307,6 +309,38 @@ cite them.
      after the migration;
    - move the 50 notes and 49 reads whose target was deleted to
      `import/orphans.json` instead of dropping them.
+
+   The legacy schema's redundant fields are folded as follows: a nonempty
+   `parent` wins over `area`, an existing `head` wins over `text`, card `item`
+   owns placement instead of item `qs`, and note titles derive from their
+   targets. Null note anchors and empty optional strings are omitted. Board
+   `updated` and `revision` belong to the replaced artifact store; git history
+   replaces them, and `freshSince` participates in read reconstruction instead
+   of becoming current board metadata. Reply metadata is retained even when
+   no reply text exists. Unknown nonempty fields are refused, not discarded.
+
+   Migration records an as-read checkpoint followed by the current checkpoint.
+   Item snapshots restore title, head (or legacy text), data, status, priority
+   and dependency signatures; `qs` supplies evidence of which cards existed.
+   The latest item snapshot applies even without a newer item update timestamp;
+   a later all-read or freshness floor supersedes that snapshot.
+   Log entries after the effective read time are excluded. Cards dated after
+   their item's read are excluded even if the item itself has not changed.
+   Without `at`, a card listed in the snapshot is known to have existed;
+   otherwise its earliest update/note time, or export time, supplies the available
+   dating evidence. This cannot recover an undated card's actual
+   creation time. Card contents and rulings were not snapshotted and stay
+   current for cards that remain. Item parent, agent, group, short, order,
+   links, ask and created also stay current; older snapshots leave any missing
+   fields current. Note contents stay current except unread replies are hidden using
+   target/all read times (the legacy item freshness floor does not read replies).
+
+   Every agent operation checks the prospective board and refuses newly
+   introduced missing blockers, parent dependency omissions, missing dependency
+   targets or missing reasons. Existing imported flags can still receive
+   progress. This also means splitting a blocked leaf is refused if its new
+   own-work child would have no blocker; a split does not silently relocate
+   owner actions or their notes.
 
    Judgment cleanups go to the responsible sessions as items after the
    migration: 3 asks whose cards are all ruled, 3 done items with an open
