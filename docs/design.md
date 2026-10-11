@@ -203,9 +203,10 @@ log:
   block comparison as heads, keeping unchanged paragraphs once. Changed
   status, priority and request rows are green, as are added or changed
   dependency and link rows; removed
-  dependencies and links remain struck. New items and cards carry the blue
-  left bar on their whole box and mark their title green, without per-block
-  marks. New log entries, new notes and replies, and added dependency and link
+  dependencies and links remain struck. New items and cards mark their title
+  green, without per-block marks. Every item or card whose head shows a 新
+  chip, for its own unread changes or for new content below it, carries the
+  blue left bar on its whole box, so a folded box shows it too. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar; a new reply also marks the reply itself. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,

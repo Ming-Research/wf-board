@@ -402,7 +402,9 @@ test("n selects one existing document at a time skips archived documents and r r
   assert.ok(!item(p).className.includes("cur"));
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"same-step sibling stays unread");
-  assert.ok(!item(p,"area").className.includes("fresh"));
+  const areaHead=item(p,"area").children[0]!.children[0]!;
+  assert.ok(!areaHead.children.some(e=>e.className === "newtag freshchip"),"the read item's own 新 chip is gone");
+  assert.ok(item(p,"area").className.includes("fresh"),"its bar stays while 新 still counts the unread sub-item");
 });
 
 test("a dependency row names its project only when the project differs from the depending item's", async () => {
@@ -482,7 +484,7 @@ async function settle() { await setImmediate(); await setImmediate(); }
 function geom(e:Element) { return {top:e.id.startsWith("note-") ? 1700 : 600,height:e.id.startsWith("note-") ? 100 : 2400}; }
 function endpoints(s:Snapshot, p:URLSearchParams, before:unknown) { const id=p.get("doc")!, kind=p.get("kind"); return {before,after:kind === "item" ? s.items[id] : kind === "decision" ? s.decisions[id] : s.notes[id],diff:""}; }
 
-test("new item blue bar has CSS support and an existing changed item has no blue creation bar", async () => {
+test("the blue bar follows the 新 chip: new and changed items, parents of new content, not untouched items", async () => {
   const css = await readFile("web/index.html","utf8");
   assert.ok(/[^{}]*\.item\.fresh[^{}]*\{[^}]*var\(--fresh\)/.test(css),"new item bar CSS must use the fresh token");
   const s=snapshot(); s.items.child!.deps=[{id:"area",why:"Created dependency"}]; s.items.child!.links=[{label:"Created link",url:"https://example.com/new"}];
@@ -492,17 +494,20 @@ test("new item blue bar has CSS support and an existing changed item has no blue
   const dep=rows.find(e=>e.className.includes("deprow") && markup(e).includes("Created dependency"))!, link=rows.find(e=>e.tagName === "A" && e.innerHTML === "Created link")!;
   assert.ok(dep.className.split(" ").includes("fresh") && link.className.split(" ").includes("fresh"),"new item dependency and link rows also need blue bars");
   assert.ok(!dep.className.includes("chg-add") && !link.className.includes("chg-add"),"new item retains title-only green marks");
+  s.items.plain={title:"Untouched",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   const changed=await page(s,unread(),{...s.items.child!,head:"Before"}); await expand(changed);
-  assert.ok(!item(changed).className.split(" ").includes("fresh"));
+  assert.ok(item(changed).className.split(" ").includes("fresh"),"a changed item shows 新 and so carries the bar");
+  assert.ok(item(changed,"area").className.split(" ").includes("fresh"),"a parent counting new content below carries the bar, folded or not");
+  assert.ok(!item(changed,"plain").className.split(" ").includes("fresh"),"an item with nothing new carries no bar");
 });
 
-test("new card has a blue creation bar while an existing changed card only has inline marks", async () => {
+test("new and changed cards carry the blue bar with their 新 chip; a changed card also keeps its inline marks", async () => {
   const s=snapshot(); s.decisions.q=card();
   const created=await page(s,unread("decision","q"),null); await expand(created);
   assert.ok(created.all().find(e=>e.id === "q-q")!.className.split(" ").includes("fresh"));
   const changed=await page(s,unread("decision","q"),{...card(),question:"Old question"}); await expand(changed);
   const c=changed.all().find(e=>e.id === "q-q")!;
-  assert.ok(!c.className.split(" ").includes("fresh"));
+  assert.ok(c.className.split(" ").includes("fresh"));
   assert.ok(descendants(c).some(e=>e.className.includes("chg-add")));
 });
 
