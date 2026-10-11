@@ -1001,6 +1001,19 @@ test("identical draft ACK cannot restart unread fetch already begun after its SS
   assert.equal(p.calls.filter(c=>c.path === "/api/unread").length-before,1); assert.ok(option(p,"A").className.includes("sel"));
 });
 
+test("a dependency on a card shows the card's state and its why under the question, like an item row", async () => {
+  const s=snapshot(); s.decisions.q={...card(),item:"area"}; s.decisions.r={...card(),question:"已定的问题",item:"area",status:"ruled",ruling:"A",choice:"A"};
+  s.items.child!.status="blocked"; s.items.child!.deps=[{card:"q",why:"Needs ruling"},{card:"r",why:"Was ruled"},{card:"gone",why:"Deleted card"}];
+  const p=await page(s,[]); await expand(p,"child");
+  const rows=descendants(item(p,"child")).filter(e=>e.className.startsWith("deprow"));
+  const row=(text:string)=>rows.find(e=>e.innerHTML.includes(text))!;
+  for (const [text,tag,why] of [["如何显示","asktag\">等你决定","Needs ruling"],["已定的问题","st done\">已裁定","Was ruled"],["gone","st cancelled\">已删除","Deleted card"]] as const) {
+    const r=row(text); assert.ok(r,text);
+    assert.ok(r.innerHTML.startsWith('<span class="'+tag),text+" starts with its state tag");
+    assert.match(r.innerHTML,new RegExp('<span class="t">[^]*<span class="why">'+why+'</span></span>$'),text+" keeps its why under the question");
+  }
+});
+
 test("card and item rule changes refresh dependency consumers and transitive priority", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q={...card(),item:"area"};
   s.items.child!.status="blocked"; s.items.child!.deps=[{card:"q",why:"Needs ruling"}];
