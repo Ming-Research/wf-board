@@ -205,7 +205,7 @@ test("orphan note ids remain verbatim even when they are unsuitable as new filen
   assert.deepEqual(verifyConverted(input, out), []);
 });
 
-test("importExport writes two migration commits, keeps the cursor at asRead and round trips through Store", async t => {
+test("importExport writes the read state, then one commit per changed document in time order, keeps the cursor at asRead and round trips through Store", async t => {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-import-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await Store.open(dir, { init: true, board: { title: "Empty" } });
@@ -214,10 +214,24 @@ test("importExport writes two migration commits, keeps the cursor at asRead and 
   const initial = store.snapshot().head;
   const { asReadCommit, currentCommit } = await importExport(store, input);
   assert.notEqual(asReadCommit, currentCommit);
-  const log = await store.log({ since: initial });
-  assert.equal(log.length, 2);
-  assert.deepEqual(log.map(c => c.author), ["migration", "migration"]);
-  assert.deepEqual(log.map(c => c.message), ["Import the board's changes since the owner's last read", "Import the board as the owner last read it"]);
+  const log = (await store.log({ since: initial })).reverse();
+  assert.ok(log.every(c => c.author === "migration"));
+  assert.equal(log[0]!.message, "Import the board as the owner last read it");
+  // Every later commit changes exactly one document, and only documents that differ from the read state.
+  const later = log.slice(1);
+  assert.ok(later.length >= 2);
+  assert.ok(later.every(c => c.files.filter(f => /^(items|decisions|notes)\//.test(f)).length === 1));
+  const changedIds = later.map(c => c.files.find(f => /^(items|decisions|notes)\//.test(f))!);
+  assert.equal(new Set(changedIds).size, changedIds.length);
+  assert.ok(changedIds.includes("items/old.yaml") && changedIds.includes("items/new.yaml"));
+  assert.ok(!changedIds.includes("decisions/card.yaml"), "a document the read state matches makes no commit");
+  const times = await Promise.all(changedIds.map(async (f, k) => {
+    const [dir, file] = f.split("/"); const kind = ({ items: "item", decisions: "decision", notes: "note" } as const)[dir as "items"];
+    const doc = await store.show(kind, file!.replace(/\.yaml$/, ""), later[k]!.commit) as { updated?: string; repliedAt?: string; sentAt?: string; at?: string };
+    return doc.repliedAt ?? doc.sentAt ?? doc.updated ?? doc.at ?? "";
+  }));
+  assert.deepEqual(times, [...times].sort(), "changed documents land oldest first");
+  assert.equal(currentCommit, later.at(-1)!.commit);
   assert.equal(store.snapshot().owner.cursor, asReadCommit);
   assert.deepEqual(store.snapshot().owner.archived, expected.owner.archived);
   assert.deepEqual(await store.show("item", "old", asReadCommit), expected.asRead.items.old);

@@ -24,6 +24,8 @@ export async function unreadSteps(store: Store, cursor: string | undefined): Pro
       const kind = ({ items: "item", decisions: "decision", notes: "note" } as const)[m[1] as "items" | "decisions" | "notes"];
       return [{ kind, id: m[2]!, summary: "" }];
     });
+    // A commit that changes no item, card or note (board settings, owner state) has nothing to read.
+    if (!docs.length) { previous = undefined; continue; }
     const single = docs.length === 1 && commit.files.every(f => f === "state/owner.yaml" || /^(items|decisions|notes)\//.test(f));
     if (single && previous?.docs.length === 1 && previous.author === commit.author && previous.docs[0]!.kind === docs[0]!.kind && previous.docs[0]!.id === docs[0]!.id) {
       previous.commits.push(commit.commit); previous.id = commit.commit; previous.at = commit.at;
