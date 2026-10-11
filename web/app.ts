@@ -1414,7 +1414,9 @@ export function lineDiff(before: string, after: string): LineGroup[] {
     } else {
       changedFields(box,before,after,[["title","标题"]]);
     }
-    changedFields(box,before,after,[
+    // An item that gained sub-items loses its own status and priority, which are now derived: not a change to show.
+    const shown = before && after ? { ...before, ...(after.status === undefined ? { status: undefined } : {}), ...(after.priority === undefined ? { priority: undefined } : {}) } : before;
+    changedFields(box,shown,after,[
       ["status","状态", v => v == null ? "未设" : STATUS[String(v)] || String(v)],
       ["priority","优先级"], ["data","数字"], ["ask","请求",askText],
       ["agent","负责会话"], ["parent","上级",itemName],

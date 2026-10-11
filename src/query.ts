@@ -212,6 +212,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   const a = before as Record<string, unknown>, b = after as Record<string, unknown>, changes: string[] = [];
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (["rev", "updated"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
+    // An item that gained sub-items loses its own status and priority, now derived from them; its log records the split.
+    if (kind === "item" && (key === "status" || key === "priority") && b[key] === undefined) continue;
     if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);
