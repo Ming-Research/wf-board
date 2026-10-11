@@ -49,3 +49,28 @@ test("commits that change no item, card or note are not steps", async t => {
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit], [b.commit]]);
 });
+
+test("unread steps are reused until HEAD or the cursor moves", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  await op.appendLog({ author, id: "a", text: "one" });
+  const first = unreadSteps(store, cursor);
+  assert.equal(unreadSteps(store, cursor), first, "same HEAD and cursor reuse the computation");
+  await first;
+  await op.appendLog({ author, id: "b", text: "two" });
+  const moved = await unreadSteps(store, cursor);
+  assert.equal(moved.length, (await first).length + 1, "a new commit is seen");
+  assert.notEqual(unreadSteps(store, undefined), unreadSteps(store, cursor));
+  assert.equal(moved[0]!.parent, cursor, "a step's before state is the commit preceding it");
+});
+
+test("a status that became derived and changes the owner cannot see are not unread", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", priority: "P1", parentOwnWork: { key: "a-own", title: "a own" } });
+  const { rev, ...doc } = store.snapshot().items.other!;
+  await store.commit({ author, message: "touch time only", puts: [{ kind: "item", id: "other", doc: { ...doc, updated: "2026-10-11T09:09:09Z" }, expectRev: rev }] });
+  const steps = await unreadSteps(store, cursor);
+  assert.equal(steps.length, 1, "the time-only commit is not a step");
+  const parent = steps[0]!.docs.find(d => d.id === "a")!;
+  assert.doesNotMatch(parent.summary, /status|priority/);
+  assert.match(parent.summary, /\+1 log/);
+});

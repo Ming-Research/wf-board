@@ -17,7 +17,7 @@ export interface Del { kind: DocKind; id: string; expectRev: number }
 export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: Board }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
-export interface CommitInfo { commit: string; at: string; author: string; message: string; files: string[] }
+export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
 
 type Doc = Item | Decision | Note;
 const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note };
@@ -418,7 +418,7 @@ export class Store {
 
   async log(opts: { kind?: DocKind; id?: string; since?: string; limit?: number } = {}): Promise<CommitInfo[]> {
     if ((opts.kind === undefined) !== (opts.id === undefined)) throw new Error("History path needs both kind and id");
-    const args = ["log", "--format=%H%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z"];
+    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z"];
     if (opts.limit !== undefined) {
       if (!Number.isSafeInteger(opts.limit) || opts.limit < 0) throw new Error("History limit must be a nonnegative integer");
       args.push(`--max-count=${opts.limit}`);
@@ -442,6 +442,7 @@ export class Store {
       const hash = fields[index++]?.trim();
       if (!hash) continue;
       if (!/^[0-9a-f]{40}$/.test(hash)) throw new Error("Unexpected git log record");
+      const parents = fields[index++]!.split(" ").filter(Boolean);
       const at = new Date(fields[index++]!).toISOString();
       const author = fields[index++]!;
       const message = fields[index++]!.trimEnd();
@@ -451,7 +452,9 @@ export class Store {
         const file = fields[index++]!.replace(/^\n/, "");
         if (file) files.push(file);
       }
-      infos.push({ commit: hash, at, author, message, files });
+      // git just named these as commits, so later reads of them need no rev-parse.
+      for (const c of [hash, ...parents]) this.resolved.set(c, c);
+      infos.push({ commit: hash, parents, at, author, message, files });
     }
     return infos;
   }
