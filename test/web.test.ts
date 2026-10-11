@@ -24,6 +24,7 @@ class Element {
   };
   appendChild(e: Element) { this.children.push(e); e.parentElement = this; return e; }
   insertBefore(e: Element) { this.children.unshift(e); e.parentElement = this; }
+  replaceWith(e: Element) { const p = this.parentElement; if (!p) return; p.children[p.children.indexOf(this)] = e; e.parentElement = p; this.parentElement = null; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   async click() { for (const fn of this.handlers.get("click") ?? []) await fn({ stopPropagation() {}, preventDefault() {} }); }
