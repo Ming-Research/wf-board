@@ -1240,6 +1240,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (waitingBelow) head.appendChild(el("span", "asktag", "等 " + waitingBelow)).title = "下面有 " + waitingBelow + " 处等你处理";
       if (freshBelow) head.appendChild(el("span", "newtag", "新 " + freshBelow)).title = "下面有 " + freshBelow + " 条新内容";
     }
+    // The blue bar follows the 新 chip: a box whose head counts something new carries it, so a folded box shows it too.
+    if (freshShown(it) || sub.length && below.fresh[it.id]) box.classList.add("fresh");
     // Opening or closing changes only this item's own subtree, so only that subtree is rebuilt.
     head.addEventListener("click", () => { manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true}); });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
@@ -1386,7 +1388,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (proseBlocks(d.question).length > 1 || before && proseBlocks(before.question).length > 1) {
       h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),markedBlocks(before?.question,d.question)));
     } else appendTitle(h,d.question || "",before === null ? null : before?.question);
-    if (cardFresh(d)) h.appendChild(freshChip("q:" + d.id));
+    if (cardFresh(d)) { h.appendChild(freshChip("q:" + d.id)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
     if (pc) h.appendChild(pc);
     top.appendChild(h);
