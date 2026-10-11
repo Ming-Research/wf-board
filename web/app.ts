@@ -661,12 +661,13 @@ export function lineDiff(before: string, after: string): LineGroup[] {
   // another one), and its title; a click follows it.
   function depRow(d: ViewItem, from: ViewItem, extra?: string) {
     const st = statusOf(d), pr = effPriorityOf(d);
+    // The area label shows only where the dependency lives elsewhere: another area, and another project's name too.
     const line = lineOf(d), lname = plain(line.short || line.title || "");
-    const where = groupOf(d) !== groupOf(from) ? (groupOf(d) || "其他") + " · " + lname : lname;
+    const where = groupOf(d) !== groupOf(from) ? (groupOf(d) || "其他") + " · " + lname : line !== lineOf(from) ? lname : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
       '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>"
       + '<span class="prio ' + (pr ? pr.toLowerCase() : "none") + '">' + (pr || "P?") + "</span>"
-      + '<span class="where">' + inline(where) + "</span>"
+      + (where ? '<span class="where">' + inline(where) + "</span>" : "")
       + '<span class="t">' + inline(d.title) + "</span>" + (extra ? '<span class="where">' + extra + "</span>" : ""));
     b.type = "button";
     b.addEventListener("click", ev => { ev.stopPropagation(); follow(d.id); });
