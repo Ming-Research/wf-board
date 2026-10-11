@@ -8,6 +8,8 @@ import type { Snapshot, Decision, Note } from "../src/model.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM. No browser or listener
 // is needed: these regressions concern event handlers and text, not layout.
+// The element the page last focused; document.activeElement reads it.
+const focused: { current: Element | null } = { current: null };
 class Element {
   tagName: string;
   id = ""; className = ""; textContent = ""; private html = ""; hidden = false;
@@ -29,7 +31,9 @@ class Element {
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   async click() { for (const fn of this.handlers.get("click") ?? []) await fn({ stopPropagation() {}, preventDefault() {} }); }
-  focus() {} blur() {} scrollIntoView() {}
+  selectionStart = 0; selectionEnd = 0;
+  focus() { focused.current = this; } blur() { if (focused.current === this) focused.current = null; } scrollIntoView() {}
+  setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
   getBoundingClientRect() { return { left: 0, width: 900, height: 100, top: 50, bottom: 150 }; }
   matches(selector: string) { return selector.split(/,\s*/).some(s => s.startsWith(".") && this.className.split(" ").includes(s.slice(1))); }
   closest(selector: string): Element | null { return this.matches(selector.replace("#areas ", "")) ? this : this.parentElement?.closest(selector) ?? null; }
@@ -50,14 +54,15 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const calls: Array<{path: string; body?: unknown}> = [];
   const listeners = new Map<string, (event: unknown) => unknown>();
   const document = {
-    body, activeElement: null, documentElement: { scrollHeight: 1000 },
+    body, get activeElement() { return focused.current; }, documentElement: { scrollHeight: 1000 },
     getElementById: (id: string) => all().find(e => e.id === id) ?? null,
     createElement: (tag: string) => new Element(tag),
     querySelector: (selector: string) => selector === ".wrap" ? wrap : selector === "header.top" ? header : null,
     querySelectorAll: () => [], elementFromPoint: () => null,
     addEventListener: (kind: string, fn: (event: unknown) => unknown) => listeners.set(kind, fn),
   };
-  class EventSource { addEventListener() {} close() {} }
+  const sse = new Map<string, (event: unknown) => unknown>();
+  class EventSource { addEventListener(kind: string, fn: (event: unknown) => unknown) { sse.set(kind, fn); } close() {} }
   const context = {
     BoardPage: undefined as unknown as { lineDiff: (a: string, b: string) => LineGroup[] },
     document, HTMLElement: Element, EventSource, console, CSS: { escape: (s: string) => s },
@@ -84,7 +89,9 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   };
   runInNewContext(code, context);
   await setImmediate(); await setImmediate();
-  return { roots, all, calls,
+  // A live update from the server, as the page's event stream delivers it.
+  const change = async (commit: string) => { sse.get("change")!({ data: JSON.stringify({ commit, changed: [] }) }); await setImmediate(); };
+  return { roots, all, calls, document, change,
     lineDiff: (a: string, b: string): LineGroup[] => JSON.parse(JSON.stringify(context.BoardPage.lineDiff(a,b))),
     key: (key: string) => listeners.get("keydown")!({key,target:new Element("div"),preventDefault(){}}) };
 }
@@ -387,6 +394,32 @@ test("the 新 counts add up pieces while n walks one document at a time", async 
   const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
   assert.ok(buttons.includes("新 6 ›"), buttons.join(" | "));
   assert.ok(buttons.includes("进展 5") && buttons.includes("其他 1"));
+  await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
+  const chip = (itemId: string) => descendants(p.all().find(e => e.id === "it-" + itemId)!.children[0]!).filter(e => e.className.includes("newtag")).map(e => e.innerHTML);
+  assert.ok(chip("child").includes("新 4"), "the item's chip adds its pieces: " + chip("child"));
+  assert.ok(chip("area").includes("新 4") && chip("area").includes("新 2"), "the parent shows its own 2 and the 4 below it: " + chip("area"));
+  // Keeping only progress: 3 + 2 pieces.
+  await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "进展 5")!.click();
+  const after = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
+  assert.ok(after.includes("新 5 ›"), after.join(" | "));
+  assert.ok(chip("child").includes("新 3") && chip("area").includes("新 3"));
   p.key("n"); await setImmediate();
   assert.deepEqual(p.all().filter(e => e.id.startsWith("step:" + id + "|")).map(e => e.id), ["step:" + id + "|item|child"]);
+});
+
+test("a request title being typed keeps its focus, text and caret across a live re-render", async () => {
+  const s = snapshot(); s.board.projects = [{ name: "Project", agents: ["Session A"] }];
+  const p = await page(s, []);
+  await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "提需求")!.click();
+  const input = p.all().find(e => e.id === "request-title-Project")!;
+  assert.ok(input, "the form has a title field with a stable id");
+  input.value = "Half typed"; await input.handlers.get("input")![0]!({});
+  input.focus(); input.setSelectionRange(4, 4);
+  // A live update (another session's write) re-renders the page and rebuilds the form.
+  await p.change("b".repeat(40));
+  const again = p.all().find(e => e.id === "request-title-Project")!;
+  assert.notEqual(again, input, "the field was rebuilt");
+  assert.equal(p.document.activeElement, again);
+  assert.equal(again.value, "Half typed");
+  assert.deepEqual([again.selectionStart, again.selectionEnd], [4, 4]);
 });

@@ -86,4 +86,8 @@ test("pieces count each new log entry, each new reply and one other change, as t
   assert.deepEqual(piecesOf({}, {}, "note", "state changed, new reply"), { log: 0, reply: 1, other: 0 });
   assert.deepEqual(piecesOf({}, {}, "note", "state changed"), { log: 0, reply: 0, other: 0 });
   assert.deepEqual(piecesOf(null, {}, "decision", "new card"), { log: 0, reply: 0, other: 1 });
+  assert.deepEqual(piecesOf(item([e(1), e(2)]), item([e(1)]), "item", "log changed"), { log: 0, reply: 0, other: 1 }, "a removed entry is a change");
+  assert.deepEqual(piecesOf(item([{ ...e(1), by: "A" } as never]), item([{ ...e(1), by: "B" } as never]), "item", "log changed").other, 1, "an entry's author rewritten in place is a change");
+  assert.deepEqual(piecesOf({}, {}, "note", "text changed"), { log: 0, reply: 0, other: 1 }, "an edited note is a change");
+  assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), { log: 0, reply: 0, other: 1 }, "a cleared reply is a change");
 });
