@@ -67,7 +67,7 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const body = new Element("body"), wrap = new Element("div"), header = new Element("header");
   if (options.pointId) header.geometry=()=>({top:-200,bottom:-100,height:100,left:0,width:900});
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
@@ -396,15 +396,31 @@ test("n selects one existing document at a time skips archived documents and r r
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
   const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"+1 log"}]}]);
   p.key("r"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
-  p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"));
-  assert.ok(!p.calls.some(c => c.path === "/api/read"));
+  // The page shows the parent above its child, so n reaches the parent first although the step lists the child first.
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
   assert.ok(!item(p).className.includes("cur"));
+  assert.ok(!p.calls.some(c => c.path === "/api/read"));
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"same-step sibling stays unread");
   const areaHead=item(p,"area").children[0]!.children[0]!;
   assert.ok(!areaHead.children.some(e=>e.className === "newtag freshchip"),"the read item's own 新 chip is gone");
   assert.ok(item(p,"area").className.includes("fresh"),"its bar stays while 新 still counts the unread sub-item");
+  p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
+});
+
+test("n walks the page from top to bottom, one stop per document, and goes on from a read stop", async () => {
+  const s = snapshot(), [a,b,c] = ["a","b","c"].map(x => x.repeat(40)) as [string,string,string];
+  s.items.plain = {title:"Plain",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  const doc = (id:string) => ({kind:"item" as const,id,summary:"+1 log",pieces:{log:1,reply:0,other:0}});
+  // Commit order is plain, child, area, area again; the page order is area, its child, then plain.
+  const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]},{id:c,commits:[c],author:"Session A",at,docs:[doc("area")]}]);
+  const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
+  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 4 ›"),"counts still add every piece");
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
+  assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "新 2"),"both changes to area make one stop");
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"area's second change is not a second stop");
+  p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after r, n continues below the read stop instead of starting over");
 });
 
 test("a dependency row names its project only when the project differs from the depending item's", async () => {
@@ -456,7 +472,7 @@ test("the 新 counts add up pieces while n walks one document at a time", async 
   assert.ok(after.includes("新 5 ›"), after.join(" | "));
   assert.ok(chip("child").includes("新 3") && chip("area").includes("新 3"));
   p.key("n"); await p.flush();
-  assert.ok(item(p).className.includes("cur"));
+  assert.ok(item(p,"area").className.includes("cur"),"the parent sits above its child on the page");
 });
 
 test("a note being typed keeps its focus, text and caret across a live re-render", async () => {
@@ -576,7 +592,8 @@ test("n waits for an already pending ancestor mark request before measuring and 
   const changes=[...unread("note","n"),...unread("item","area","e".repeat(40))];
   const p=await page(s,changes,(params:URLSearchParams)=>params.get("doc") === "area" ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},geometry:(e,all)=>({top:e.id === "note-n" ? (all().some(v=>v.innerHTML.includes('class="chg-del"')) ? 2100 : 1200) : 600,height:e.id === "note-n" ? 100 : 2400})});
   await expand(p,"area"); assert.ok(p.calls.some(c=>c.path.includes("doc=area")));
-  p.key("n"); await settle();
+  // The child is the last stop on the page, so N reaches it first.
+  p.key("N"); await settle();
   assert.equal(p.scrolls.length,0,"scroll cannot precede the already pending ancestor request");
   hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=area"),{...s.items.area!,head:"Removed ancestor\n\nCurrent ancestor"})); await settle();
   assert.equal(p.measurements[0]!.id,"note-n"); assert.equal(p.measurements[0]!.top,2100);
@@ -652,7 +669,8 @@ test("explicitly collapsed ancestor comments do not block child navigation on pe
     await expand(p,"area"); assert.equal(attempts,1,"rendering checks whether the hidden note is fresh");
     assert.ok(!p.all().some(e=>e.id === "note-hidden"));
     if (state === "failed") { hold.reject(new Error("Hidden ancestor note unavailable")); await settle(); }
-    p.key("n"); await settle();
+    // The child is the last stop on the page, so N reaches it first.
+    p.key("N"); await settle();
     assert.equal(p.scrolls.length,1,"an explicitly hidden ancestor note cannot change target geometry");
     assert.equal(p.measurements[0]!.id,"it-child");
     assert.equal(attempts,1,"navigation does not retry hidden failed notes");
@@ -668,7 +686,8 @@ test("filtered ancestor comments can auto-open without its body and navigation w
   assert.ok(p.all().some(e=>e.id === "it-child"),"filter opens the ancestor path");
   assert.ok(!markup(item(p,"area")).includes("Ancestor body stays folded"));
   assert.ok(!p.all().some(e=>e.id === "note-above"));
-  p.key("n"); await settle();
+  // The child is the last stop on the page, so N reaches it first.
+  p.key("N"); await settle();
   assert.equal(p.scrolls.length,0,"visible ancestor comments must finish loading even with its body folded");
   hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=above"),null)); await settle();
   assert.ok(p.all().some(e=>e.id === "note-above"),"fresh ancestor comment auto-opens");
@@ -1324,11 +1343,16 @@ test("r reads the card selected by 下一条 while an earlier unread item stays 
   assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
 });
 
-test("r on a read selection visibly says there is no new content and writes nothing", async () => {
-  const p=await page(snapshot(),[]); await item(p,"area").children[0]!.click(); p.key("r");
-  assert.equal(p.roots.get("server-banner")!.hidden,false);
-  assert.match(p.roots.get("server-banner")!.textContent,/这里没有新内容/);
+test("r on a read selection shows a passing hint, not a kept error, and writes nothing", async () => {
+  const clock=new FakeClock();
+  const p=await page(snapshot(),[],null,undefined,{clock}); await item(p,"area").children[0]!.click(); p.key("r");
+  const hint=p.roots.get("hint")!;
+  assert.equal(hint.hidden,false); assert.match(hint.textContent,/这里没有新内容/);
+  assert.equal(p.roots.get("server-banner")!.hidden,true,"the error banner stays for errors");
   assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0);
+  clock.advance(3000); assert.equal(hint.hidden,true,"the hint leaves by itself");
+  p.key("r"); assert.equal(hint.hidden,false);
+  p.key("j"); assert.equal(hint.hidden,true,"the next key clears it");
 });
 
 test("r reads all selected document steps from item card note and log clicks", async t => {

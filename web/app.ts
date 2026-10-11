@@ -6,7 +6,7 @@ type ViewItem = Item & { id: string };
 type ViewDecision = Decision & { id: string };
 type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
-interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string }
+interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
@@ -28,6 +28,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     invalidate();
   }
   let shownStop: string | null = null;
+  // Where the last stop n showed sits on the page, so the walk continues after it once r has read it.
+  let shownAt: number[] | null = null;
   const pendingDiffs = new Map<string, Promise<void>>();
   const failedDiffs = new Set<string>();
   let freshNavigation = 0;
@@ -314,22 +316,37 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     renderAll();
   }
   function toggleFresh(kind: string) { setFreshSel(freshSel.includes(kind) ? freshSel.filter(k => k !== kind) : freshSel.concat(kind)); }
-  // Each document a step changed is its own stop, shown under its own item or card. A change inside an archived item
+  // Each document with unread changes is one stop, holding the pieces of every step that changed it, shown under its
+  // own item or card. Stops follow the page from top to bottom: an item, then its comments, then each of its cards and
+  // that card's comments; what the page does not place comes last, in commit order. A change inside an archived item
   // is hidden from this walk: archiving says the owner is done with it. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
   function freshShown(i: ViewItem) { return freshStops().some(st => stopTouches(st, "it:" + i.id)); }
   function freshStopsNow(): FreshStop[] {
-    const out = steps.flatMap(step => step.docs.map((d): FreshStop => {
+    const place = new Map<string, number>();
+    boardOrder().forEach((it, k) => { if (!place.has(it.id)) place.set(it.id, k); });
+    const merged = new Map<string, FreshStop>();
+    steps.forEach((step, k) => step.docs.forEach(d => {
+      const key = d.kind + ":" + d.id, seen = merged.get(key);
+      if (seen) {
+        const a = piecesOf(seen.doc), b = piecesOf(d);
+        seen.doc = { ...d, summary: seen.doc.summary + ", " + d.summary, pieces: { log: a.log + b.log, reply: a.reply + b.reply, other: a.other + b.other } };
+        seen.kinds = docKinds(seen.doc); seen.step = step.id;
+        return;
+      }
       let card: string | undefined, item: string | null = null, notes: string | undefined;
       if (d.kind === "item") item = d.id;
       if (d.kind === "decision") { card = d.id; item = snapshot.decisions[d.id]?.item || null; }
       if (d.kind === "note") { const n = snapshot.notes[d.id]; notes = n?.target; if (notes?.startsWith("q:")) { card = notes.slice(2); item = snapshot.decisions[card]?.item || null; } else item = notes?.slice(3) || null; }
-      const key = step.id + "|" + d.kind + "|" + d.id;
-      return { key, step: step.id, doc: d, kinds: docKinds(d), sel: d.kind === "item" ? "it:" + d.id : d.kind === "decision" ? "q:" + d.id : "note:" + d.id, item, card, notes };
-    })).filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item)));
-    return out;
+      const row = item !== null && place.has(item) ? place.get(item)! : Number.MAX_SAFE_INTEGER;
+      const cardRank = card ? 1 + Math.max(0, item ? derived.cardsOf(item).indexOf(card) : 0) : 0;
+      merged.set(key, { key, step: step.id, doc: d, kinds: docKinds(d), sel: d.kind === "item" ? "it:" + d.id : d.kind === "decision" ? "q:" + d.id : "note:" + d.id, item, card, notes,
+        at: [row, cardRank, d.kind === "note" ? 1 : 0, row === Number.MAX_SAFE_INTEGER ? k : 0] });
+    }));
+    return [...merged.values()].filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item))).sort((a, b) => compareAt(a.at, b.at));
   }
+  function compareAt(a: number[], b: number[]) { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! - b[i]!; return 0; }
 
   function noteElementId(id:string) { return "note-"+id.replace(/[^A-Za-z0-9_-]/g,"_"); }
   function noteId(n: ViewNote) { return noteElementId(n.id); }
@@ -339,7 +356,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const all = freshStops();
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
-    shownStop = st.key;
+    shownStop = st.key; shownAt = st.at;
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
   }
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string }
@@ -431,7 +448,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const doc = selectedDocument();
     if (doc && pendingReads.get(doc)?.saving) return false;
     const latest = doc && steps.findLast(step => step.docs.some(d => d.kind + ":" + d.id === doc));
-    if (!doc || !latest) { showError(new Error("这里没有新内容")); return false; }
+    if (!doc || !latest) { showHint("这里没有新内容"); return false; }
     const selected = latest.docs.find(d => d.kind + ":" + d.id === doc)!;
     const scope = scopeForDoc(selected.kind, selected.id, snapshot.notes[selected.id]?.target);
     if (!scope.length) scope.push("header");
@@ -462,15 +479,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     freshNavigation++;
     try { for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
+  // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
     const at = all.findIndex(s => s.key === shownStop);
-    goFresh(at < 0 ? 0 : at + 1);
+    if (at >= 0) { goFresh(at + 1); return; }
+    const after = shownAt ? all.findIndex(s => compareAt(s.at, shownAt!) > 0) : 0;
+    goFresh(after < 0 ? 0 : after);
   }
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
     const at = all.findIndex(s => s.key === shownStop);
-    goFresh(at < 0 ? all.length - 1 : at - 1);
+    if (at >= 0) { goFresh(at - 1); return; }
+    const before = shownAt ? all.findLastIndex(s => compareAt(s.at, shownAt!) < 0) : -1;
+    goFresh(before < 0 ? all.length - 1 : before);
   }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
@@ -707,7 +729,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // The reader's own wheel or touch stops a glide.
   ["wheel", "touchstart"].forEach(t => addEventListener(t, releaseLanding, { passive: true }));
-  ["keydown","click"].forEach(t => document.addEventListener(t, ev => { if (ev.isTrusted !== false) releaseLanding(); }, {capture:true}));
+  ["keydown","click"].forEach(t => document.addEventListener(t, ev => { if (ev.isTrusted !== false) { releaseLanding(); hideHint(); } }, {capture:true}));
   function glideToEl(t: HTMLElement, block: string) {
     const r = t.getBoundingClientRect();
     const margin = parseFloat(getComputedStyle(t).scrollMarginTop) || 0;
@@ -1722,6 +1744,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       })]);
     } finally { if (deadline !== undefined) clearTimeout(deadline); }
   }
+  // A hint answers a key that found nothing to act on. Unlike an error it is not kept: it leaves after a few seconds or
+  // at the next key or click.
+  let hintTimer: ReturnType<typeof setTimeout> | undefined;
+  function showHint(text: string) { const h = get("hint"); h.textContent = text; h.hidden = false; clearTimeout(hintTimer); hintTimer = setTimeout(hideHint, 3000); }
+  function hideHint() { clearTimeout(hintTimer); hintTimer = undefined; const h = get("hint"); if (h) h.hidden = true; }
   function showError(e: unknown) { get("server-banner").hidden = false; get("server-banner").textContent = e instanceof Error ? e.message : String(e); }
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
@@ -1751,7 +1778,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
         }
         applyReadMarks(); snapshot.owner.cursor = result.cursor; failedDiffs.clear();
-        if (shownStop && !steps.some(s => shownStop!.startsWith(s.id + "|"))) shownStop = null;
+        if (shownStop && !allFreshStops().some(st => st.key === shownStop)) shownStop = null;
         if (!sameValue(previous,steps) || failed) {
           const scope=new Set<string>();
           [...previous,...steps].forEach(s => s.docs.forEach(d => scopeForDoc(d.kind,d.id,snapshot.notes[d.id]?.target).forEach(k => scope.add(k))));
