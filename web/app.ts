@@ -13,6 +13,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
+  let serverSteps: Step[] = [];
+  const pendingReads = new Map<string, { covered: Set<string>; saving: boolean }>();
+  function pendingReadCovers(doc: string, step: Step) {
+    const overlay = pendingReads.get(doc);
+    // A pending mark can split a coalesced step. Wait for the server's split before showing its later portion.
+    return overlay && (overlay.covered.has(step.id) || step.commits.some(id => overlay.covered.has(id)));
+  }
+  function applyReadMarks() {
+    steps = serverSteps.flatMap(step => {
+      const docs = step.docs.filter(doc => !pendingReadCovers(doc.kind + ":" + doc.id, step));
+      return docs.length ? [{ ...step, docs }] : [];
+    });
+    invalidate();
+  }
   let shownStop: string | null = null;
   const pendingDiffs = new Map<string, Promise<void>>();
   const failedDiffs = new Set<string>();
@@ -301,7 +315,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function toggleFresh(kind: string) { setFreshSel(freshSel.includes(kind) ? freshSel.filter(k => k !== kind) : freshSel.concat(kind)); }
   // Each document a step changed is its own stop, shown under its own item or card. A change inside an archived item
-  // is not new: archiving says the owner is done with it; reading a later stop still moves the cursor past it.
+  // is hidden from this walk: archiving says the owner is done with it. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
   function freshShown(i: ViewItem) { return freshStops().some(st => stopTouches(st, "it:" + i.id)); }
@@ -403,9 +417,45 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return c;
   }
   function shownFresh() { return shownStop ? allFreshStops().find(st => st.key === shownStop) || null : null; }
-  async function markRead(key: string) {
-    const st = key.startsWith("step:") ? allFreshStops().find(s => s.key === key.slice(5)) : shownFresh();
-    return st ? readThrough(st.step) : false;
+  function selectedDocument() {
+    if (current?.startsWith("it:")) return "item:" + current.slice(3);
+    if (current?.startsWith("q:")) return "decision:" + current.slice(2);
+    if (current?.startsWith("note:")) return current;
+    if (current?.startsWith("log:") || current?.startsWith("dep:")) return "item:" + current.slice(4, current.indexOf("@"));
+    // Deleted documents have no selectable body, but n still exposes their logical stop.
+    const st = shownFresh();
+    if (!current && st && !(st.doc.kind === "item" ? snapshot.items[st.doc.id] : st.doc.kind === "decision" ? snapshot.decisions[st.doc.id] : snapshot.notes[st.doc.id])) return st.doc.kind + ":" + st.doc.id;
+    return null;
+  }
+  async function markRead() {
+    const doc = selectedDocument();
+    if (doc && pendingReads.get(doc)?.saving) return false;
+    const latest = doc && steps.findLast(step => step.docs.some(d => d.kind + ":" + d.id === doc));
+    if (!doc || !latest) { showError(new Error("这里没有新内容")); return false; }
+    const selected = latest.docs.find(d => d.kind + ":" + d.id === doc)!;
+    const scope = scopeForDoc(selected.kind, selected.id, snapshot.notes[selected.id]?.target);
+    if (!scope.length) scope.push("header");
+    const previous = pendingReads.get(doc);
+    const overlay = { covered: new Set(serverSteps.slice(0, serverSteps.findIndex(step => step.id === latest.id) + 1).map(step => step.id)), saving: true };
+    pendingReads.set(doc, overlay);
+    freshNavigation++;
+    for (const id of Object.keys(logShown)) if (manual[id]) logHold[id] = true;
+    applyReadMarks(); renderNow(...scope);
+    try {
+      await api("/api/read", { doc, through: latest.id });
+      overlay.saving = false;
+      if (shownStop && !allFreshStops().some(st => st.key === shownStop)) shownStop = null;
+      // A GET begun before acknowledgement must not supply the authoritative read result.
+      unreadGeneration++; unreadFlight = undefined;
+      void refreshOwner().catch(showError);
+      return true;
+    } catch (e) {
+      if (pendingReads.get(doc) === overlay) {
+        if (previous) pendingReads.set(doc, previous); else pendingReads.delete(doc);
+      }
+      applyReadMarks(); renderNow(...scope); showError(e);
+      return false;
+    }
   }
   async function readThrough(step: string) {
     if (!steps.some(s => s.id === step)) return false;
@@ -421,12 +471,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const all = freshStops(); if (!all.length) return;
     const at = all.findIndex(s => s.key === shownStop);
     goFresh(at < 0 ? all.length - 1 : at - 1);
-  }
-  function selectedFresh() {
-    const st = shownFresh();
-    // A deleted document has no selectable body, but its logical stop still advances the read cursor.
-    const missing = st && (st.doc.kind === "item" ? !snapshot.items[st.doc.id] : st.doc.kind === "decision" ? !snapshot.decisions[st.doc.id] : !snapshot.notes[st.doc.id]);
-    return st && (missing ? current === null : current === st.sel && onScreen(stopEl(st))) ? { key: "step:" + st.key } : null;
   }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
@@ -573,7 +617,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你处理", run: () => { stepStop(1); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
-    { key: "r", label: "标为已阅", db: true, run: () => { const st = selectedFresh(); if (st) markRead(st.key); return !!st; } },
+    { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
     { key: "c", label: "评论选中的内容（条目、卡片、某条进展或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
     { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
@@ -1676,10 +1720,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const result = await api<{cursor?: string; steps: Step[]}>("/api/unread",undefined,"GET",signal);
         if (generation !== unreadGeneration || !active()) return false;
         if (revision !== eventGeneration) continue;
-        const previous=steps, changed=!sameValue(previous,result.steps) || failedDiffs.size > 0;
-        steps = result.steps; snapshot.owner.cursor = result.cursor; failedDiffs.clear(); invalidate();
+        const previous=steps, failed=failedDiffs.size > 0;
+        serverSteps = result.steps;
+        for (const [doc, overlay] of pendingReads) {
+          if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
+        }
+        applyReadMarks(); snapshot.owner.cursor = result.cursor; failedDiffs.clear();
         if (shownStop && !steps.some(s => shownStop!.startsWith(s.id + "|"))) shownStop = null;
-        if (changed) {
+        if (!sameValue(previous,steps) || failed) {
           const scope=new Set<string>();
           [...previous,...steps].forEach(s => s.docs.forEach(d => scopeForDoc(d.kind,d.id,snapshot.notes[d.id]?.target).forEach(k => scope.add(k))));
           scheduleRender(...scope);

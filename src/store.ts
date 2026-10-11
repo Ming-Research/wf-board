@@ -416,8 +416,9 @@ export class Store {
     return () => { this.listeners.delete(fn); };
   }
 
-  async log(opts: { kind?: DocKind; id?: string; since?: string; limit?: number } = {}): Promise<CommitInfo[]> {
+  async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number } = {}): Promise<CommitInfo[]> {
     if ((opts.kind === undefined) !== (opts.id === undefined)) throw new Error("History path needs both kind and id");
+    const at = opts.at === undefined ? "HEAD" : await this.resolveCommit(opts.at);
     const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z"];
     if (opts.limit !== undefined) {
       if (!Number.isSafeInteger(opts.limit) || opts.limit < 0) throw new Error("History limit must be a nonnegative integer");
@@ -426,12 +427,12 @@ export class Store {
     if (opts.since) {
       if (/^\d{4}-\d{2}-\d{2}T/.test(opts.since)) {
         if (!Number.isFinite(Date.parse(opts.since))) throw new Error("Invalid history time");
-        args.push(`--since=@${Math.floor(Date.parse(opts.since) / 1000)}`);
+        args.push(`--since=@${Math.floor(Date.parse(opts.since) / 1000)}`, at);
       } else {
         const commit = await this.resolveCommit(opts.since);
-        args.push(`${commit}..HEAD`);
+        args.push(`${commit}..${at}`);
       }
-    }
+    } else args.push(at);
     args.push("--");
     if (opts.kind && opts.id) args.push(docPath(opts.kind, opts.id));
     const output = await this.git(args);
@@ -489,11 +490,13 @@ export class Store {
     return this.readAt(path, hash);
   }
 
-  /** The full commit id of `ref` when it is HEAD or an ancestor of HEAD; null when unknown or off the history. */
-  async inHistory(ref: string): Promise<string | null> {
-    let hash: string;
-    try { hash = await this.resolveCommit(ref); } catch { return null; }
-    try { await this.git(["merge-base", "--is-ancestor", hash, "HEAD"]); return hash; } catch { return null; }
+  /** The full commit id of `ref` when it is `at` or an ancestor of it; null when either ref is unknown or ancestry fails. */
+  async inHistory(ref: string, at = "HEAD"): Promise<string | null> {
+    try {
+      const hash = await this.resolveCommit(ref), head = await this.resolveCommit(at);
+      await this.git(["merge-base", "--is-ancestor", hash, head]);
+      return hash;
+    } catch { return null; }
   }
 
   /** Commits on HEAD that origin's branch, as this clone last saw it, lacks; 0 without a remote. */

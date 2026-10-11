@@ -122,7 +122,17 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         value = typeof before === "function" ? await before(params) : { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
       }
       else if (path === "/api/send") value = { sent: [{project: "Halo-wf"}, {project: "Halo-wf"}, {project: "Firn-wf"}] };
-      else if (path === "/api/read") { const through = (input as {through: string}).through; const stop = unread.findIndex(s => (s as {id:string}).id === through); unread = through === "all" ? [] : unread.slice(stop + 1); value = { ok: true }; }
+      else if (path === "/api/read") {
+        const {doc,through} = input as {doc?:string;through:string};
+        const stop = unread.findIndex(s => (s as {id:string}).id === through);
+        if (doc) unread = unread.flatMap((value,k) => {
+          const step=value as {id:string;docs:Array<{kind:string;id:string}>};
+          const docs=k <= stop ? step.docs.filter(d => d.kind+":"+d.id !== doc) : step.docs;
+          return docs.length ? [{...step,docs}] : [];
+        });
+        else unread = through === "all" ? [] : unread.slice(stop + 1);
+        value = { ok: true };
+      }
       else if (path === "/api/draft") {
         const a=input as {target:string;kind:Note["kind"];on:boolean;text:string;choice?:string};
         const deleted=Object.keys(snapshot.notes).filter(id=>snapshot.notes[id]!.target === a.target && snapshot.notes[id]!.kind === a.kind && snapshot.notes[id]!.state === "draft");
@@ -239,13 +249,12 @@ test("inline removed non-HTTPS link remains struck without an active href", asyn
   assert.ok(!Object.hasOwn(row,"href"),"non-HTTPS links must not receive an active href");
 });
 
-test("expanded unread marks show before n and disappear after r reads their stop", async () => {
+test("expanded unread marks disappear when r reads the selected item without an n walk", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"Old body"}; s.items.child!.head = "New body";
   const p = await page(s,unread(),before); await expand(p);
   assert.match(markup(item(p)), /chg-add/);
-  p.key("r"); assert.equal(p.calls.filter(c => c.path === "/api/read").length,0);
-  p.key("n"); await setImmediate(); p.key("r"); await p.flush();
-  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:stepId}]);
+  p.key("r"); await p.flush();
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:child",through:stepId}]);
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Old body"));
 });
 
@@ -257,12 +266,8 @@ test("inline baseline is first unread before and after is current snapshot rathe
   assert.match(markup(item(p)), /class="chg-add"[^>]*><p>Current<\/p>/);
   assert.ok(!markup(item(p)).includes("Intermediate"));
   p.key("n"); await setImmediate(); p.key("r"); await p.flush();
-  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:first}]);
-  assert.match(markup(item(p)), /class="chg-del"[^>]*><p>Intermediate<\/p>/);
-  assert.match(markup(item(p)), /class="chg-add"[^>]*><p>Current<\/p>/);
-  assert.ok(p.all().some(e => e.innerHTML === "新 1 ›"));
-  p.key("n"); await setImmediate(); p.key("r"); await setImmediate(); await setImmediate();
-  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:first},{through:last}]);
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:child",through:last}]);
+  assert.ok(!p.all().some(e => e.innerHTML === "新 1 ›"));
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Intermediate"));
 });
 
@@ -307,7 +312,7 @@ test("inline note stops select the existing fresh reply row without duplicated t
   assert.ok(row.className.includes("cur") && row.className.includes("newbar"));
   assert.equal(p.all().filter(e => e.className.startsWith("note ")).length,1);
   p.key("r"); await setImmediate(); await setImmediate();
-  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:stepId}]);
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"note:n",through:stepId}]);
   assert.ok(!p.all().find(e => e.id === "note-n")!.className.includes("newbar"));
 });
 
@@ -319,7 +324,7 @@ test("inline deleted document stops render no body but remain countable walkable
     p.key("n"); await setImmediate();
     assert.ok(!markup(p.roots.get("areas")!).includes("Deleted body") && !p.all().some(e => e.className.includes("unread-step")));
     p.key("r"); await setImmediate();
-    assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:stepId}]);
+    assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:kind+":gone",through:stepId}]);
   }
 });
 
@@ -332,7 +337,7 @@ test("filtered parent n stop opens its body and selects its own item", async () 
   assert.ok(item(p,"area").className.includes("cur"));
   assert.match(markup(item(p,"area")), /class="chg-add"[^>]*><p>After<\/p>/);
   p.key("r"); await setImmediate();
-  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:stepId}]);
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:stepId}]);
 });
 
 test("unread logs expand with preceding entries highlight duplicate appends and stay open after reading", async () => {
@@ -360,7 +365,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n selects one existing document at a time skips archived documents and r reads its exact step", async () => {
+test("n selects one existing document at a time skips archived documents and r reads only its document", async () => {
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
@@ -370,7 +375,9 @@ test("n selects one existing document at a time skips archived documents and r r
   assert.ok(!p.calls.some(c => c.path === "/api/read"));
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
   assert.ok(!item(p).className.includes("cur"));
-  p.key("r"); await setImmediate(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{through:id}]);
+  p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
+  assert.ok(item(p).className.includes("fresh"),"same-step sibling stays unread");
+  assert.ok(!item(p,"area").className.includes("fresh"));
 });
 
 test("a dependency row names its project only when the project differs from the depending item's", async () => {
@@ -1256,4 +1263,135 @@ test("loose-card scope does not suppress a coalesced item-note update", async ()
   frames.flush(); await settle();
   assert.deepEqual([...p.renders.at(-1) as Set<string>].sort(),["cards","card:loose","notes:it:child"].sort());
   assert.match(markup(item(p)),/Updated comment/); assert.ok(p.all().some(e=>e.id === "q-loose"));
+});
+
+
+test("r reads the card selected by 下一条 while an earlier unread item stays new", async () => {
+  const s=snapshot(), later="e".repeat(40); s.decisions.q=card(); s.items.child!.ask={text:"Approve"};
+  const p=await page(s,[...unread("item","area"),...unread("decision","q",later)]); await expand(p);
+  await button(p,"下一条（2/2）").click(); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+  p.key("r"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
+  assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
+  assert.ok(!descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
+  assert.ok(item(p,"area").className.includes("fresh"),"earlier item remains unread");
+  assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+});
+
+test("r on a read selection visibly says there is no new content and writes nothing", async () => {
+  const p=await page(snapshot(),[]); await item(p,"area").children[0]!.click(); p.key("r");
+  assert.equal(p.roots.get("server-banner")!.hidden,false);
+  assert.match(p.roots.get("server-banner")!.textContent,/这里没有新内容/);
+  assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0);
+});
+
+test("r reads all selected document steps from item card note and log clicks", async t => {
+  for(const selection of ["item","decision","note","log"] as const) await t.test(selection,async()=> {
+    const s=snapshot(), first="e".repeat(40), last="f".repeat(40), kind=selection === "log" ? "item" : selection;
+    s.decisions.q=card(); s.items.child!.log=[{at,text:"Latest log"}];
+    s.notes.n={target:"it:child",kind:"comment",text:"Question",at,state:"done",reply:"Answer",rev:1};
+    const id=kind === "item" ? "child" : kind === "decision" ? "q" : "n";
+    const p=await page(s,[...unread("item","area"),...unread(kind,id,first),...unread(kind,id,last)],null,undefined,{notesOpen:{"it:child":true}}); await expand(p);
+    const box=selection === "item" ? item(p) : selection === "decision" ? p.all().find(e=>e.id === "q-q")! : selection === "note" ? p.all().find(e=>e.id === "note-n")! : p.all().find(e=>e.dataset.sel?.startsWith("log:child@"))!;
+    await box.click(); p.key("r"); await p.flush();
+    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:last}]);
+    assert.ok(item(p,"area").className.includes("fresh"));
+    assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"),"all steps of the selected document were read");
+  });
+});
+
+test("selected document read clears immediately and restores on error or eight-second deadline without retry", async t => {
+  for(const failure of ["refused","deadline"] as const) await t.test(failure,async()=> {
+    const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card(); let signal:AbortSignal|undefined;
+    const p=await page(s,[...unread("item","area"),...unread("decision","q","e".repeat(40))],null,undefined,{clock,response:(path,_body,init)=> { if(path === "/api/read") { signal=init.signal; return hold.promise; } }}); await expand(p);
+    await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+    assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"read is painted before fetch settles");
+    assert.ok(!descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
+    assert.ok(item(p,"area").className.includes("fresh"));
+    assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+    p.key("r"); assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1,"pending read is not repeated");
+    if(failure === "refused") hold.resolve({ok:false,status:400,json:async()=>({error:"Read refused"})});
+    else { clock.advance(7999); await settle(); assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh")); clock.advance(1); }
+    await settle(); await p.flush();
+    assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
+    assert.ok(descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
+    assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
+    assert.match(p.roots.get("server-banner")!.textContent,failure === "refused" ? /Read refused/ : /没有响应.*刷新/);
+    if(failure === "deadline") { assert.equal(signal?.aborted,true); hold.resolve(reply({ok:true})); await settle(); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"late acknowledgement cannot reapply timed-out read"); }
+    assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1);
+  });
+});
+
+test("pending selected read survives unread refresh and leaves a later change visible", async () => {
+  const s=snapshot(), frames=new Frames(), hold=deferred<FakeResponse>(), later="f".repeat(40); s.decisions.q=card();
+  let fresh=[...unread("item","area"),...unread("decision","q","e".repeat(40))];
+  const p=await page(s,fresh,null,undefined,{frames,response:path=>path === "/api/read" ? hold.promise : path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p);
+  await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+  p.emit("b".repeat(40)); await p.flush(); assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"stale unread response must respect pending read");
+  fresh=[...fresh,...unread("decision","q",later)]; p.emit("c".repeat(40)); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"later change remains unread");
+  assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:"e".repeat(40)}]);
+  fresh=[fresh[0]!,fresh.at(-1)!]; hold.resolve(reply({ok:true})); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
+  assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
+});
+
+
+test("pending document read hides a coalesced step until acknowledgement splits its later change", async t => {
+  for(const accepted of [true,false]) await t.test(accepted ? "acknowledged split" : "refused restores combined step",async()=> {
+    const s=snapshot(), frames=new Frames(), hold=deferred<FakeResponse>(), first="e".repeat(40), later="f".repeat(40); s.decisions.q=card();
+    let fresh=[...unread("item","area"),...unread("decision","q",first)];
+    const p=await page(s,fresh,null,undefined,{frames,response:path=>path === "/api/read" ? hold.promise : path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p);
+    await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+    fresh=[fresh[0]!,{...unread("decision","q",later)[0]!,commits:[first,later]}];
+    p.emit("b".repeat(40)); await p.flush();
+    assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"overlapping combined step must not restore the old blue marks");
+    if(accepted) { fresh=[fresh[0]!,unread("decision","q",later)[0]!]; hold.resolve(reply({ok:true})); }
+    else hold.resolve({ok:false,status:400,json:async()=>({error:"Read refused"})});
+    await p.flush();
+    assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"later unread change or refused mark remains visible");
+    assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
+    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:first}]);
+    if(!accepted) assert.match(p.roots.get("server-banner")!.textContent,/Read refused/);
+  });
+});
+
+
+test("r reads every selected document kind even when the fresh filter hides its latest step", async () => {
+  const s=snapshot(), first="e".repeat(40), last="f".repeat(40); s.items.child!.log=[{at,text:"Progress"}];
+  const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"+1 log",pieces:{log:1,reply:0,other:0}}]},...unread("item","child",last)];
+  const p=await page(s,fresh); await expand(p); await button(p,"进展 1").click();
+  p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"));
+  p.key("r"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:last}]);
+  await button(p,"进展 0").click();
+  assert.ok(item(p,"area").className.includes("fresh"));
+  assert.ok(!item(p).className.includes("fresh"));
+  assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+});
+
+async function dependencyReadContract(transform?: PageOptions["transform"]) {
+  const s=snapshot(), later="e".repeat(40); s.decisions.q=card(); s.items.child!.deps=[{card:"q",why:"Needs decision"}];
+  const p=await page(s,[...unread("item","area"),...unread("decision","q",later)],null,undefined,{transform});
+  p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
+  await item(p).children[0]!.children[0]!.click(); await descendants(item(p)).find(e=>e.dataset.sel === "dep:child@q")!.click(); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+  p.key("r"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
+  assert.ok(item(p,"area").className.includes("fresh"));
+  assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
+}
+test("r follows a dependency-selected card instead of the document previously shown by n", async () => {
+  await dependencyReadContract();
+  let mutated=false;
+  await assert.rejects(()=>dependencyReadContract(code=> {
+    const old=code.replace("async function markRead() {", "async function markRead() { if (current !== shownFresh()?.sel) return false;");
+    mutated=old !== code; return old;
+  }), (error: unknown) => {
+    const failure=error as {code?:string;actual?:unknown[];expected?:unknown[]};
+    return failure.code === "ERR_ASSERTION" && failure.actual?.length === 0 && failure.expected?.length === 1;
+  });
+  assert.ok(mutated,"restoring the old shownFresh selection restriction must make the document read disappear");
 });

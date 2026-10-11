@@ -230,3 +230,30 @@ test("project HTTP handlers route committed requests and sent notes without a li
   await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",priority:"P2",why:"Need",from:"a"});
   assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
 });
+
+
+test("HTTP document reads leave earlier documents unread and hide read step diffs", async t => {
+  const { store, op } = await board(t);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }) });
+  t.after(() => { http.close(); });
+  async function api(path: string, data?: unknown) {
+    const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", { value: 7417 });
+    const req = new IncomingMessage(socket); req.method = data === undefined ? "GET" : "POST"; req.url = path; req.headers = { host: "127.0.0.1:7417" };
+    const res = new ServerResponse(req);
+    const response = new Promise<{ status: number; data: { steps?: Array<{id: string}> } }>(resolve => {
+      res.writeHead = status => { res.statusCode = status; return res; };
+      res.end = ((body: string) => { resolve({ status: res.statusCode, data: JSON.parse(body) }); return res; }) as typeof res.end;
+    });
+    http.emit("request", req, res); if (data !== undefined) req.push(Buffer.from(JSON.stringify(data))); req.push(null);
+    return response;
+  }
+  await api("/api/read", {through: store.snapshot().head});
+  const a = await op.appendLog({author, id: "a", text: "earlier unread"});
+  const card = store.snapshot().decisions.choice!;
+  const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, background: "new background"}}]});
+  assert.equal((await api("/api/read", {doc: "decision:choice", through: b.commit})).status, 200);
+  assert.deepEqual((await api("/api/unread")).data.steps!.map(s => s.id), [a.commit]);
+  assert.equal((await api(`/api/step?id=${b.commit}&kind=decision&doc=choice`)).status, 404);
+  assert.equal((await api("/api/read", {doc: "decision:missing"})).status, 400);
+  assert.equal((await api("/api/read", {doc: "decision:choice", through: "bad"})).status, 400);
+});

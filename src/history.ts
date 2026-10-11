@@ -1,5 +1,6 @@
 import { stringify } from "yaml";
 import type { Store, DocKind } from "./store.ts";
+import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
 
@@ -26,7 +27,10 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
   return { log, reply: 0, other: otherChange ? 1 : 0 };
 }
 
+/** An unread stop. Read marks split consecutive changes at their baseline;
+ * docs contains only unread documents, including the unread part of a shared commit. */
 export interface Step {
+  /** The final commit of this consecutive unread change. */
   id: string;
   commits: string[];
   /** The commit before the step's first, or null for a root commit: the step's "before" state. */
@@ -36,14 +40,15 @@ export interface Step {
   docs: Array<{ kind: DocKind; id: string; summary: string; pieces: Pieces }>;
 }
 
-// Steps depend only on HEAD and the cursor, and past commits never change, so one computation serves every
+// Steps depend only on the captured head, the cursor and document read marks, and past commits never change, so one computation serves every
 // request until either moves (the page asks for steps and for each step's documents many times per read).
 const memo = new WeakMap<Store, { key: string; steps: Promise<Step[]> }>();
-export function unreadSteps(store: Store, cursor: string | undefined): Promise<Step[]> {
-  const key = store.snapshot().head + "|" + (cursor ?? "");
+export function unreadSteps(store: Store, cursor: string | undefined, readMarks: Record<string, string> = {}, head = store.snapshot().head): Promise<Step[]> {
+  const marks = { ...readMarks };
+  const key = head + "|" + (cursor ?? "") + "|" + JSON.stringify(Object.entries(marks).sort(([a], [b]) => a.localeCompare(b)));
   const hit = memo.get(store);
   if (hit?.key === key) return hit.steps;
-  const steps = computeSteps(store, cursor);
+  const steps = computeSteps(store, cursor, marks, head);
   memo.set(store, { key, steps });
   steps.catch(() => { if (memo.get(store)?.steps === steps) memo.delete(store); });
   return steps;
@@ -51,12 +56,26 @@ export function unreadSteps(store: Store, cursor: string | undefined): Promise<S
 
 const described = new WeakMap<Store, Map<string, { summary: string; pieces: Pieces }>>();
 
-async function computeSteps(store: Store, cursor: string | undefined): Promise<Step[]> {
-  if (cursor && !(await store.inHistory(cursor))) throw new Error(`Read cursor ${cursor} is not in board history`);
-  const commits = (await store.log(cursor ? { since: cursor } : {})).reverse();
+async function computeSteps(store: Store, cursor: string | undefined, readMarks: Record<string, string>, head: string): Promise<Step[]> {
+  OwnerState.pick({ readMarks: true }).parse({ readMarks });
+  if (cursor && !(await store.inHistory(cursor, head))) throw new Error(`Read cursor ${cursor} is not in board history`);
+  const commits = (await store.log({ since: cursor, at: head })).reverse();
+  // The daemon writes a linear history. One bounded range and its positions
+  // serve all marks, instead of rescanning the history for each document.
+  const positions = new Map(commits.map((commit, index) => [commit.commit, index]));
+  const markPositions = new Map<string, number>();
+  const obsolete = new Set<string>();
+  for (const [doc, mark] of Object.entries(readMarks)) {
+    const position = positions.get(mark);
+    if (position !== undefined) markPositions.set(doc, position);
+    else if (mark !== cursor && !obsolete.has(mark)) {
+      if (!cursor || !(await store.inHistory(mark, cursor))) throw new Error(`Read mark ${mark} is not in board history`);
+      obsolete.add(mark);
+    }
+  }
   const steps: Step[] = [];
   let previous: Step | undefined;
-  for (const commit of commits) {
+  for (const [position, commit] of commits.entries()) {
     // An owner action breaks consecutiveness even though it is not a step.
     if (commit.author === "owner") { previous = undefined; continue; }
     const docs: Step["docs"] = commit.files.flatMap(file => {
@@ -68,10 +87,12 @@ async function computeSteps(store: Store, cursor: string | undefined): Promise<S
     // A commit that changes no item, card or note (board settings, owner state) has nothing to read.
     if (!docs.length) { previous = undefined; continue; }
     const single = docs.length === 1 && commit.files.every(f => f === "state/owner.yaml" || /^(items|decisions|notes)\//.test(f));
+    const unreadDocs = docs.filter(doc => position > (markPositions.get(`${doc.kind}:${doc.id}`) ?? -1));
+    if (!unreadDocs.length) { previous = undefined; continue; }
     if (single && previous?.docs.length === 1 && previous.author === commit.author && previous.docs[0]!.kind === docs[0]!.kind && previous.docs[0]!.id === docs[0]!.id) {
       previous.commits.push(commit.commit); previous.id = commit.commit; previous.at = commit.at;
     } else {
-      previous = { id: commit.commit, commits: [commit.commit], parent: commit.parents[0] ?? null, author: commit.author, at: commit.at, docs };
+      previous = { id: commit.commit, commits: [commit.commit], parent: commit.parents[0] ?? null, author: commit.author, at: commit.at, docs: unreadDocs };
       steps.push(previous);
     }
     if (!single) previous = undefined;

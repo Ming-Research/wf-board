@@ -138,9 +138,14 @@ export const Board = z.object({
 }).strict();
 export type Board = z.infer<typeof Board>;
 
-/** The owner's reading cursor (a commit id; what follows it is unread) and archived items. */
+/** A board document whose changes can be read independently. */
+export const ReadDocument = z.string().regex(/^(item|decision|note):[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);
+export const CommitId = z.string().regex(/^[0-9a-f]{40}$/);
+
+/** The reading cursor, exceptions read ahead of it, and archived items. */
 export const OwnerState = z.object({
-  cursor: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+  cursor: CommitId.optional(),
+  readMarks: z.record(ReadDocument, CommitId).optional(),
   archived: z.record(Key, Time).default({}),
 }).strict();
 export type OwnerState = z.infer<typeof OwnerState>;

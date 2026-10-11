@@ -182,10 +182,18 @@ log:
 - A note keeps its original id, so ids that sessions recorded and anchors
   that point at notes stay valid.
 - **The read cursor.** The board's history is the git log, an ordered list of
-  changes. The owner's reading state is one cursor into it, a commit id: what
-  lies after the cursor is unread. The page walks the unread changes oldest
-  first, selecting one document at a time with `n` or its 新 chip; `r` moves
-  the cursor through the selected stop's step, and 全部已阅 moves it to the
+  changes. The owner's reading state keeps a cursor into it and optional
+  per-document `readMarks`, each a commit id through which that document is
+  read. Document keys are `item:<id>`, `decision:<key>` and `note:<id>`.
+  After the cursor, a step's document is unread only when its last commit is
+  after that document's mark; a step with no unread documents is neither a
+  stop nor counted. A mark also separates consecutive changes, so a later
+  change to the same document is new again without reviving its read changes.
+  Moving the cursor removes marks it passes; reading every document in a
+  prefix advances the cursor over that prefix and removes its marks.
+  The page walks unread changes oldest first with `n` or their 新 chips.
+  `r` reads all unread changes of the selected document, however selected,
+  leaving other documents' read state unchanged; 全部已阅 moves the cursor to the
   head after confirmation. Expanded items and cards mark changes in their own
   content, comparing the document before its first unread step with its current
   state. Blocks are separated by blank lines, except inside fenced code;
@@ -213,8 +221,12 @@ log:
   author on the same item, so five quick log appends read as one change, and
   the owner's own actions (notes, archiving) never count as unread. Scrubbing
   back through earlier changes with a slider uses the same history and is
-  deferred until needed. Owner state is committed with the next data commit,
-  never on its own, so moving the cursor makes no commit noise.
+  deferred until needed. Reads and archives update owner state immediately
+  and save it locally without a commit. A local save arriving during a data
+  commit waits for that commit to finish. Pending owner state normally joins
+  the next data commit, so ordinary reads make no commit noise. On orderly
+  shutdown, the daemon commits any remaining owner state on its own before
+  pushing.
 
 ## 6. MCP tools
 
@@ -269,6 +281,19 @@ The current template is kept. Its data layer, `window.claude.use("db")` and
 snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
+
+`r` acts on the current selection: an item for `it:`, a decision card for
+`q:`, the note for `note:`, and the enclosing item for `log:<item>@<time>`.
+The same selection works after the 等你处理 下一条 walk, a click, `n`, a 新
+chip or following a dependency. It reads all of that document's displayed
+unread changes, including those hidden by freshness filters, through its
+latest unread step, without reading another document or a change arriving
+after the action. A selection with nothing unread shows “这里没有新内容”.
+The selected document's blue bars, chips and counts clear immediately while
+the write is pending and return with a visible error if it fails, using the
+same eight-second deadline and no automatic retry as other owner controls.
+If a later change joins a pending read's step, that combined step waits for
+the server's read result to separate its later unread changes.
 
 Choice, approve/done and explain controls show their pending state immediately,
 before sending the write, and restore the authoritative state with a visible

@@ -415,3 +415,17 @@ test("project schema defaults, uniqueness and nonempty configuration", async () 
   assert.deepEqual(Board.parse({ title: "Board", projects: [{ name: "P", repo: "Org/P" }, { name: "Q" }] }).projects, [{ name: "P", repo: "Org/P" }, { name: "Q" }]);
   for (const projects of [[{ name: "P" }, { name: "P" }], [{ name: "" }], [{ name: "P", repo: "" }]]) assert.equal(Board.safeParse({ title: "Board", projects }).success, false);
 });
+
+test("history queries honor an explicit upper revision and reject an unknown bound", async t => {
+  const { store } = await setup(t), initial = store.snapshot().head;
+  const first = await store.commit({ author: "History Session", message: "First", puts: [put("a", item())] });
+  const second = await store.commit({ author: "History Session", message: "Second", puts: [put("a", item("Changed"), 1)] });
+  assert.deepEqual((await store.log({ since: initial, at: first.commit })).map(c => c.commit), [first.commit]);
+  assert.equal((await store.log({ at: first.commit }))[0]!.commit, first.commit);
+  assert.deepEqual((await store.log({ since: "2000-01-01T00:00:00Z", at: first.commit })).map(c => c.commit), [first.commit, initial]);
+  assert.equal(await store.inHistory(second.commit, first.commit), null);
+  assert.equal(await store.inHistory(initial, first.commit), initial);
+  await assert.rejects(store.log({ at: "not-a-revision" }));
+  assert.equal(await store.inHistory(initial, "not-a-revision"), null);
+  assert.equal((await store.log())[0]!.commit, second.commit, "the default still follows HEAD");
+});
