@@ -334,12 +334,12 @@ test("each document of a step is its own stop under its own item, archived items
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body), [{ through: id }]);
 });
 
-test("a dependency row names its area only when the area differs from the depending item's", async () => {
+test("a dependency row names its project only when the project differs from the depending item's", async () => {
   const s = snapshot();
   s.items.area!.short = "Area";
   s.items.sib = { title: "Sibling", parent: "area", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.area!.deps.push({ id: "sib", why: "needs sibling" });
-  s.items.far = { title: "Far area", group: "Project", agent: "Session B", short: "Far", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.items.far = { title: "Far area", group: "Other project", agent: "Session B", short: "Far", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.child!.deps = [{ id: "sib", why: "same area" }, { id: "far", why: "other area" }];
   const p = await page(s, []);
   await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
@@ -347,6 +347,6 @@ test("a dependency row names its area only when the area differs from the depend
   const rows = descendants(p.all().find(e => e.id === "it-child")!).filter(e => e.className.startsWith("deprow"));
   const same = rows.find(e => e.innerHTML.includes("Sibling"))!, far = rows.find(e => e.innerHTML.includes("Far area"))!;
   assert.ok(same && far);
-  assert.ok(!same.innerHTML.includes('class="where"'), "same-area dependency carries no area label");
-  assert.match(far.innerHTML, /<span class="where">Far<\/span>/);
+  assert.ok(!same.innerHTML.includes('class="where"'), "a same-project dependency carries no label");
+  assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
 });
