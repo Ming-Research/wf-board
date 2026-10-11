@@ -370,3 +370,22 @@ test("init starts a board in an existing git repository without one, and refuses
   await writeFile(join(plain, "stray.txt"), "x");
   await assert.rejects(Store.open(plain, { init: true, board: { title: "Board" } }), /neither empty nor a git repository/);
 });
+
+
+test("R1 case aliases are refused before disk writes, including aliases in a single transaction", async t => {
+  const { store, dir } = await setup(t);
+  const documents = {
+    item: item(),
+    decision: { item: "A", question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at },
+    note: { target: "it:A", kind: "comment", text: "N", at, state: "sent" },
+  } as const;
+  for (const kind of ["item", "decision", "note"] as const) {
+    await store.commit({ author: "test", message: "Upper", puts: [{ kind, id: "A", doc: documents[kind], expectRev: null }] });
+    const before = store.snapshot();
+    await assert.rejects(store.commit({ author: "test", message: "Alias", puts: [{ kind, id: "a", doc: documents[kind], expectRev: null }] }), /ID a conflicts with A/);
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    await assert.rejects(store.commit({ author: "test", message: "Batch aliases", puts: ["B", "b"].map(id => ({ kind, id, doc: documents[kind], expectRev: null })) }), /B.*b|b.*B/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+});

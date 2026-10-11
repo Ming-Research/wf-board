@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
+import { rules } from "../src/rules.ts";
 import type { Snapshot, Decision, Note } from "../src/model.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM. No browser or listener
@@ -284,4 +285,28 @@ test("deleted items preserve their head and logs, and absent endpoints remain re
   assert.ok(markup(view.children[1]!).includes("已删除正文")); assert.ok(markup(view.children[1]!).includes("已删除进展"));
   const absent = await changeView(s,"item","child",null,null);
   assert.equal(absent.view.innerHTML,"本步前后均无此文档");
+});
+
+
+test("R5 unscored confidence renders its text without an undefined score", async () => {
+  const s = snapshot(); s.decisions.q = { ...card(), confidence: { reason: "Unscored evidence" } };
+  const { view } = await changeView(s, "decision", "q", null);
+  assert.ok(markup(view).includes("Unscored evidence"));
+  assert.ok(!markup(view).includes("undefined/5"));
+  const changed = await changeView(s, "decision", "q", { ...card(), confidence: { score: 3, reason: "Earlier" } });
+  assert.ok(markup(changed.view).includes("3/5：Earlier → Unscored evidence"));
+});
+
+test("R9 owner controls follow shared ask/card predicates through draft and sent answers", async () => {
+  for (const state of ["draft", "sent", "done"] as const) {
+    const s = snapshot(); s.items.child!.ask = { text: "Approve work" }; s.decisions.q = card();
+    s.notes.a = { target: "it:child", kind: "approve", text: "同意：Approve work", at, state, rev: 1 };
+    s.notes.c = { target: "q:q", kind: "choice", choice: "B", text: "B", at, state, rev: 1 };
+    const p = await page(s, []), r = rules(s);
+    await p.all().find(e => e.className === "item-head")!.click();
+    await p.all().filter(e => e.className === "item-head").at(-1)!.click();
+    // The waiting badge and approval action are rendered from the predicates.
+    assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "等你决定"), r.cardWaiting("q"));
+    assert.equal(p.all().some(e => e.id === "ask-child"), r.askPending("child"));
+  }
 });
