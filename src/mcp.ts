@@ -29,7 +29,7 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
   if (!("ancestors" in result)) throw new Error("Invalid item context");
   const it = result.item as Snapshot["items"][string];
   const lines = [formatRow(result as q.Row), `rev ${it.rev} · updated ${it.updated}${it.created ? ` · created ${it.created}` : ""}`];
-  if (it.agent) lines.push(`agent: ${it.agent}`);
+  if (result.agent) lines.push(`agent: ${result.agent}${it.agent ? "" : " (inherited from an ancestor)"}`);
   if (it.short) lines.push(`short: ${it.short}`);
   if (it.order !== undefined) lines.push(`order: ${it.order}`);
   if (it.priority && it.priority !== result.priority) lines.push(`priority: ${it.priority} · effective ${result.priority}${result.raisedBy ? ` · raised by ${result.raisedBy}` : ""}`);
