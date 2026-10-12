@@ -135,6 +135,11 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .item.fresh > .body:last-child::before { bottom: 4px; }
 .item.fresh:not(:has(> .body))::before { left: 3px; top: 8px; bottom: 8px; }
 .item.fresh:has(> .body)::before { content: none; }
+/* In the split view the detail column marks an item's own new content with a short line beside its headline, which
+   stays in sight, instead of a line down the whole body. */
+body.wide #item-detail .item.fresh > .body::before, body.wide #item-detail .item.fresh > .body ~ .notes::before { content: none; }
+body.wide #item-detail .item.fresh > .item-row { position: relative; }
+body.wide #item-detail .item.fresh > .item-row::before { content: ""; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 .item.fresh, .card.fresh, .deprow.fresh, .refs .fresh, .note.newbar, .note .reply.newbar, .notes-toggle.newbar, .log-entry.fresh { position: relative; }
 .item.fresh::before, .card.fresh::before, .deprow.fresh::before, .refs .fresh::before, .note.newbar::before, .note .reply.newbar::before, .notes-toggle.newbar::before, .log-entry.fresh::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 .card.fresh::before { top: 10px; bottom: 10px; }

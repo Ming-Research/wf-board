@@ -822,6 +822,15 @@ test("every item title has the same slightly heavy weight, whatever the status o
   assert.ok(rules.some(r=>/font-weight:\s*500/.test(r[2]!)),"titles set one weight, 500");
   assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== "500")).map(r=>r[1]!.trim()),[],"no rule gives some titles another weight");
 });
+test("in the split view an item's new-content line is a short mark beside its headline, not a line down the body", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
+  assert.ok(has("body.wide #item-detail .item.fresh > .body::before",/content:\s*none/),"no long line down the detail body");
+  assert.ok(has("body.wide #item-detail .item.fresh > .body ~ .notes::before",/content:\s*none/),"nor down its comments");
+  assert.ok(has("body.wide #item-detail .item.fresh > .item-row::before",/background:\s*var\(--fresh\)/),"a short line beside the headline");
+  assert.ok(has(".item.fresh > .body::before",/background:\s*var\(--fresh\)/),"the single-column body line is unchanged");
+});
 test("obsolete freshbtn CSS is removed", async () => { const html=await readFile("web/index.html","utf8"); assert.ok(!/\.freshbtn(?:\b|:)/.test(html)); });
 
 async function allReadContract(transform?: PageOptions["transform"]) {
