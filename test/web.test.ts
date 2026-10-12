@@ -228,13 +228,14 @@ test("inline added paragraph renders rich text without any unread box", async ()
   assert.ok(!markup(item(p)).includes("次提交"));
 });
 
-test("inline removed paragraph stays at its original position and unchanged paragraphs carry no marks", async () => {
+test("inline removed paragraph is not shown and unchanged paragraphs carry no marks", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"First\n\n- **Removed** paragraph\n\nLast"};
   s.items.child!.head = "First\n\nLast";
   const p = await page(s,unread(),before); await expand(p);
   const body = markup(item(p));
-  assert.match(body, /<p>First<\/p>.*class="chg-del"[^>]*><ul><li><strong>Removed<\/strong> paragraph<\/li><\/ul>.*<p>Last<\/p>/s);
-  assert.ok(!/class="chg-(add|del)"[^>]*><p>(First|Last)<\/p>/.test(body));
+  assert.match(body, /<p>First<\/p>.*<p>Last<\/p>/s);
+  assert.ok(!body.includes("Removed") && !body.includes("chg-del"),"a removed head block is not rendered");
+  assert.ok(!/class="chg-add"[^>]*><p>(First|Last)<\/p>/.test(body));
 });
 
 test("inline existing fenced code keeps blank lines and contiguous lists and tables remain rich blocks", async () => {
@@ -242,42 +243,49 @@ test("inline existing fenced code keeps blank lines and contiguous lists and tab
   s.items.child!.head = "```\nnew\n\ncode\n```\n\n- Keep\n- New list\n\n| Header |\n| --- |\n| New row |";
   const p = await page(s,unread(),before); await expand(p);
   const body = markup(item(p));
-  assert.match(body, /class="chg-del"[^>]*><pre class="code"><code>old\n\ncode<\/code><\/pre>/);
+  assert.ok(!body.includes("old\n\ncode") && !body.includes("Old list") && !body.includes("Old row"),"replaced blocks show only their current form");
   assert.match(body, /class="chg-add"[^>]*><pre class="code"><code>new\n\ncode<\/code><\/pre>/);
   assert.match(body, /class="chg-add"[^>]*><ul><li>Keep<\/li><li>New list<\/li><\/ul>/);
-  assert.match(body, /class="chg-del"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>Old row<\/td>/s);
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
 });
 
-test("inline changed title marks the new title and strikes the old title immediately after it", async () => {
+test("inline changed title marks the new title and shows no former title", async () => {
   const s = snapshot(), before = {...s.items.child!,title:"Old title"}; s.items.child!.title = "New title";
   const p = await page(s,unread(),before); await expand(p);
   const head = descendants(item(p)).find(e => e.className === "item-head")!;
   const title = head.children.find(e => e.className.includes("item-title"))!;
   assert.ok(title.className.includes("chg-add")); assert.equal(title.innerHTML,"New title");
-  const old = head.children[head.children.indexOf(title) + 1]!;
-  assert.equal(old.tagName,"SMALL"); assert.ok(old.className.includes("chg-del")); assert.equal(old.innerHTML,"Old title");
+  assert.ok(!markup(head).includes("Old title") && !head.children.some(e => e.tagName === "SMALL" || e.className.includes("title-was")),"the former title is not rendered");
 });
 
-test("inline removed dependency and link stay struck while changed priority status and ask are marked", async () => {
+test("inline removed dependency and link are not shown while changed priority status and ask are marked", async () => {
   const s = snapshot(), before = {...s.items.child!,status:"todo",priority:"P2",ask:{text:"Old ask"},deps:[{id:"area",why:"Old reason"}],links:[{label:"Old link",url:"https://example.com/old"}]};
   s.items.child!.ask = {text:"New ask"};
   const p = await page(s,unread(),before); await expand(p);
   const all = descendants(item(p));
-  assert.ok(all.some(e => e.className.includes("deprow") && e.className.includes("chg-del") && markup(e).includes("Old reason")));
-  assert.ok(all.some(e => e.tagName === "A" && e.className.includes("chg-del") && e.innerHTML === "Old link"));
+  assert.ok(!markup(item(p)).includes("Old reason"),"a removed dependency row is not rendered");
+  assert.ok(!all.some(e => e.tagName === "A" && e.innerHTML === "Old link"),"a removed link is not rendered");
+  assert.ok(!markup(item(p)).includes("Old ask") && !markup(item(p)).includes("chg-del"),"the former ask is not rendered");
   assert.ok(all.some(e => e.className.includes("prio") && e.className.includes("chg-add") && e.innerHTML === "P1"));
   assert.ok(all.some(e => e.className.includes("st ") && e.className.includes("chg-add") && e.innerHTML === "WIP"));
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
 });
 
-test("inline removed non-HTTPS link remains struck without an active href", async () => {
+test("inline removed link is not shown and an added non-HTTPS link has no active href", async () => {
   const s = snapshot(), before = {...s.items.child!,links:[{label:"Removed HTTP link",url:"http://example.com/old"}]};
+  s.items.child!.links = [{label:"Added HTTP link",url:"http://example.com/new"}];
   const p = await page(s,unread(),before); await expand(p);
-  const row = descendants(item(p)).find(e => e.tagName === "A" && e.innerHTML === "Removed HTTP link");
-  assert.ok(row,"a removed valid non-HTTPS link must remain visible");
-  assert.ok(row.className.includes("chg-del"));
+  assert.ok(!descendants(item(p)).some(e => e.innerHTML === "Removed HTTP link"),"a removed link is not rendered");
+  const row = descendants(item(p)).find(e => e.tagName === "A" && e.innerHTML === "Added HTTP link");
+  assert.ok(row,"an added valid non-HTTPS link is visible");
+  assert.ok(row.className.includes("chg-add"));
   assert.ok(!Object.hasOwn(row,"href"),"non-HTTPS links must not receive an active href");
+});
+
+test("inline cleared ask is not shown as removed text", async () => {
+  const s = snapshot(), before = {...s.items.child!,ask:{text:"Cleared ask"}}; delete s.items.child!.ask;
+  const p = await page(s,unread(),before); await expand(p);
+  assert.ok(!markup(item(p)).includes("Cleared ask") && !markup(item(p)).includes("chg-del"));
 });
 
 test("expanded unread marks disappear when r reads the selected item without an n walk", async () => {
@@ -312,17 +320,17 @@ test("inline new item marks only its title and keeps rich head and duplicate new
   assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry") && e.className.includes("fresh")).length,2);
 });
 
-test("inline card marks current question background option and ruling and retains removed options", async () => {
+test("inline card marks current question background option and ruling and shows no removed option or former question", async () => {
   const s = snapshot(), before = card();
   s.decisions.q = {...before,question:"Current question",background:"Old background\n\nNew background",status:"ruled",choice:"B",ruling:"**Current** ruling",options:[{key:"B",text:"New option",recommended:true}]};
   const p = await page(s,unread("decision","q"),{...before,background:"Old background"},{...before,ruling:"Intermediate ruling"}); await expand(p);
   const c = p.all().find(e => e.id === "q-q")!, all = descendants(c);
   assert.ok(all.some(e => e.className.includes("chg-add") && e.innerHTML === "Current question"));
-  assert.ok(all.some(e => e.className.includes("chg-del") && e.innerHTML === before.question));
+  assert.ok(!markup(c).includes(before.question),"the former question is not rendered");
   assert.match(markup(c), /class="chg-add"[^>]*><p>New background<\/p>/);
   assert.match(markup(c), /class="chg-add"[^>]*><p><strong>Current<\/strong> ruling<\/p>/);
   assert.match(markup(c), /class="chg-add"[^>]*><p>New option<\/p>/);
-  assert.ok(all.some(e => e.className.includes("optbtn") && e.className.includes("chg-del") && e.disabled && markup(e).includes("保留 YAML")));
+  assert.ok(!all.some(e => e.className.includes("optbtn") && markup(e).includes("保留 YAML")),"a removed option is not rendered");
   assert.ok(!markup(c).includes("Intermediate ruling"));
 });
 
@@ -644,12 +652,12 @@ test("n waits for an already pending ancestor mark request before measuring and 
   const s=snapshot(), hold=deferred<unknown>(); s.items.area!.head="Current ancestor";
   s.notes.n={target:"it:child",kind:"comment",text:"Note below ancestor",at,state:"sent",rev:1};
   const changes=[...unread("note","n"),...unread("item","area","e".repeat(40))];
-  const p=await page(s,changes,(params:URLSearchParams)=>params.get("doc") === "area" ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},geometry:(e,all)=>({top:e.id === "note-n" ? (all().some(v=>v.innerHTML.includes('class="chg-del"')) ? 2100 : 1200) : 600,height:e.id === "note-n" ? 100 : 2400})});
+  const p=await page(s,changes,(params:URLSearchParams)=>params.get("doc") === "area" ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},geometry:(e,all)=>({top:e.id === "note-n" ? (all().some(v=>v.innerHTML.includes('class="chg-add"')) ? 2100 : 1200) : 600,height:e.id === "note-n" ? 100 : 2400})});
   await expand(p,"area"); assert.ok(p.calls.some(c=>c.path.includes("doc=area")));
   // The child is the last stop on the page, so N reaches it first.
   p.key("N"); await settle();
   assert.equal(p.scrolls.length,0,"scroll cannot precede the already pending ancestor request");
-  hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=area"),{...s.items.area!,head:"Removed ancestor\n\nCurrent ancestor"})); await settle();
+  hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=area"),{...s.items.area!,head:"Earlier ancestor"})); await settle();
   assert.equal(p.measurements[0]!.id,"note-n"); assert.equal(p.measurements[0]!.top,2100);
   assert.equal(p.scrolls.length,1);
 });
@@ -755,7 +763,8 @@ async function questionContract(tail:string, transform?:PageOptions["transform"]
   const s=snapshot(), before={...card(),question:"Common\n\nOld question"+tail}; s.decisions.q={...card(),question:"Common\n\nNew question"+tail};
   const p=await page(s,unread("decision","q"),before,undefined,{transform}); await expand(p);
   const c=p.all().find(e=>e.id === "q-q")!, html=markup(c);
-  assert.match(html,/<p>Common<\/p>.*class="chg-del"[^>]*><p>Old question<\/p>.*class="chg-add"[^>]*><p>New question<\/p>/s);
+  assert.match(html,/<p>Common<\/p>.*class="chg-add"[^>]*><p>New question<\/p>/s);
+  assert.ok(!html.includes("Old question"),"the removed paragraph is not rendered");
   assert.equal(html.split("<p>Common</p>").length-1,1);
   if (tail) { assert.match(html,/<p>New question<\/p>.*<p>Last<\/p>/s); assert.equal(html.split("<p>Last</p>").length-1,1); }
 }
@@ -765,7 +774,7 @@ test("multi-paragraph card question compares blocks without repeating unchanged 
 test("two-paragraph question guard detects old whole-question title rendering", async () => {
   let transformed=false;
   await assert.rejects(()=>questionContract("",code=> {
-    const old=code.replace(/if \(proseBlocks\(d.question\).length > 1 \|\| before && proseBlocks\(before.question\).length > 1\) \{[\s\S]*?\} else appendTitle\(h, d.question \|\| "", before === null \? null : before\?\.question\);/, 'appendTitle(h, d.question || "", before === null ? null : before?.question);');
+    const old=code.replace(/if \(proseBlocks\(d.question\).length > 1\) \{[\s\S]*?\} else appendTitle\(h, d.question \|\| "", before === null \? null : before\?\.question\);/, 'appendTitle(h, d.question || "", before === null ? null : before?.question);');
     transformed=old !== code; return old;
   }),{code:"ERR_ASSERTION"});
   assert.ok(transformed,"mutation restores the old whole-question appendTitle path");
@@ -775,18 +784,14 @@ function cssContract(html:string) {
   html=html.replace(/\/\*[\s\S]*?\*\//g, "");
   const themes=[html.match(/:root \{([^}]+)\}/)![1]!,...html.matchAll(/:root(?::not\(\[data-theme="light"\]\)|\[data-theme="dark"\]) \{([^}]+)\}/g)].map(v=>typeof v === "string" ? v : v[1]!);
   assert.equal(themes.length,3);
-  for (const theme of themes) for (const token of ["--chg-del","--chg-del-ink","--fresh"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
+  for (const theme of themes) for (const token of ["--fresh"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
   // The owner never asked for a green background on new or changed text and does not want it: .chg-add only marks
   // where n lands and carries no colour.
   assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
-  assert.ok(has(".chg-del",/background:\s*var\(--chg-del\)/));
-  assert.ok(has(".chg-del",/color:\s*var\(--chg-del-ink\)/));
-  for (const sel of [".chg-del",".chg-del *"]) {
-    assert.ok(has(sel,/text-decoration:\s*line-through/));
-    assert.ok(has(sel,/color:\s*var\(--chg-del-ink\)\s*!important/),sel+" keeps rich descendants red");
-  }
+  // The owner does not want removed content shown, struck through in red or otherwise.
+  assert.ok(!/chg-del|title-was/.test(html),"no red deleted-text styling");
   for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
@@ -796,7 +801,7 @@ function cssContract(html:string) {
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
 test("CSS contract detects removed theme tokens mark declarations and blue selectors", async t => {
   const html=await readFile("web/index.html","utf8");
-  for (const token of ["--chg-del","--chg-del-ink","--fresh"]) {
+  for (const token of ["--fresh"]) {
     const declarations=[...html.matchAll(new RegExp(token+":\\s*#[a-fA-F0-9]+;","g"))];
     assert.equal(declarations.length,3);
     for (const [i,match] of declarations.entries()) await t.test(token+" theme "+i,()=> {
@@ -804,12 +809,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
       assert.throws(()=>cssContract(broken));
     });
   }
-  for (const [name,pattern] of [
-    ["red background",/background:\s*var\(--chg-del\);/g],
-    ["red ink",/color:\s*var\(--chg-del-ink\)(?:\s*!important)?;/g],
-    ["descendant red ink override",/color:\s*var\(--chg-del-ink\)\s*!important;/g],
-    ["strike",/text-decoration:\s*line-through;/g],
-  ] as const) await t.test(name,()=> { assert.match(html,pattern); assert.throws(()=>cssContract(html.replaceAll(pattern,""))); });
+  await t.test("red deleted text comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-del { text-decoration: line-through; }\n</style>"))); });
   await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
   for (const selector of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
@@ -1773,7 +1773,7 @@ test("parent leaf counts leave out cancelled leaves", async () => {
   assert.deepEqual(counts.children.map(e=>e.className),["st wip"]);
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1"]);
 });
-test("dependency lists leave out cancelled items but keep marked and deleted rows", async () => {
+test("dependency lists leave out cancelled items and removed rows but keep added and deleted rows", async () => {
   const s=cancelledSnapshot();
   s.items.old={...s.items.child!,title:"Old",status:"cancelled"};
   s.items.area!.deps.push({id:"missing",why:"needs missing"});
@@ -1784,8 +1784,7 @@ test("dependency lists leave out cancelled items but keep marked and deleted row
   assert.ok(areaRows.includes("Child"),"an open dependency stays");
   assert.ok(!areaRows.includes("Gone") && !areaRows.includes("Dropped"),"cancelled dependencies leave the 依赖 list");
   assert.ok(areaRows.some(r=>r.includes("missing")),"a deleted dependency keeps its fallback row");
-  const old=descendants(item(p,"area")).find(e=>e.className.split(" ").includes("deprow") && e.innerHTML.includes('class="t">Old<'));
-  assert.ok(old?.className.includes("chg-del"),"a removed dependency on a cancelled item stays, struck");
+  assert.ok(!areaRows.includes("Old"),"a removed dependency on a cancelled item is not shown");
   await item(p,"child").children[0]!.children[0]!.click(); await p.flush();
   const childRows=rows("child");
   assert.ok(childRows.includes("Parent"),"the parent leads the 被依赖 list");
@@ -1904,7 +1903,7 @@ test("wide unrelated-item live update preserves the selected detail DOM identity
   const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,{...s.items[params.get("doc")!]!,head:"Earlier detail"}),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
   await selectWide(p,"picked");
   const old=detailItem(p,"picked"); assert.ok(old,"the already-unread selected detail is rendered before an unrelated update");
-  assert.match(markup(old),/Earlier detail/);
+  assert.match(markup(old),/class="chg-add"[^>]*><p>Selected detail<\/p>/,"the loaded baseline marks the changed block");
   const reads=p.calls.filter(c=>c.path === "/api/unread").length;
   fresh=[...fresh,...unread("item","area","e".repeat(40))];
   s.items.area={...s.items.area!,head:"Other detail"};
@@ -1918,16 +1917,16 @@ test("wide same-id unread parent changes reload the selected baseline and remove
   let fresh=[{...unread("item","area")[0]!,parent:"a".repeat(40)}], before={...s.items.area!,head:"Original baseline"};
   const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,before),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
   await selectWide(p); const old=detailItem(p)!;
-  assert.match(markup(old),/Original baseline/);
+  assert.match(markup(old),/class="chg-add"[^>]*><p>Selected detail<\/p>/,"the first baseline marks the changed block");
   const baselines=p.calls.filter(c=>c.path.includes("kind=item&doc=area")).length;
-  before={...before,head:"Changed baseline"}; fresh=[{...fresh[0]!,parent:"f".repeat(40)}];
+  before={...before,head:"Selected detail"}; fresh=[{...fresh[0]!,parent:"f".repeat(40)}];
   p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Unrelated update"}}]); await p.flush();
   assert.ok(p.calls.filter(c=>c.path.includes("kind=item&doc=area")).length>baselines,"a changed parent reloads the baseline despite the unchanged step id");
-  assert.notEqual(detailItem(p),old); assert.match(markup(detailItem(p)!),/Changed baseline/);
+  assert.notEqual(detailItem(p),old); assert.ok(!markup(detailItem(p)!).includes("chg-add"),"the reloaded baseline equals the current head, so nothing is marked");
   const changed=detailItem(p); fresh=[];
   p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Another unrelated update"}}]); await p.flush();
   assert.notEqual(detailItem(p),changed,"removing the selected item's unread data refreshes its detail");
-  assert.ok(!detailItem(p)!.className.includes("fresh")); assert.ok(!markup(detailItem(p)!).includes('class="chg-del"'));
+  assert.ok(!detailItem(p)!.className.includes("fresh")); assert.ok(!markup(detailItem(p)!).includes('class="chg-add"'));
 });
 
 test("split toggle restores inline bodies and single-column head toggling", async () => {
