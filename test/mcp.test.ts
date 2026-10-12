@@ -123,10 +123,10 @@ test("project MCP onboarding, requests, triage, close and coordinator reads use 
   await call("update_project",{author,name:"Whitefoot",repo:"Ming-Research/Whitefoot-next"});
   assert.equal(store.snapshot().board.projects[0]!.repo,"Ming-Research/Whitefoot-next");
   await call("create_project",{author:"Third agent",name:"Third",repo:"Org/Third"});
-  await call("create_request",{author,project:"Third",key:"request",title:"Need feature",head:"Witness",why:"Blocks",from:"a"});
+  await call("create_request",{author,project:"Third",key:"request",title:"Need feature",head:"Witness",priority:"P1",why:"Blocks",from:"a"});
   const brief=JSON.parse(await call("brief",{project:"Third"})); assert.deepEqual(brief.inbox.map((r:{id:string})=>r.id),["request"]);
   const pending=JSON.parse(await call("followups",{minutes:1}));assert.ok(pending.requests.some((r:{id:string})=>r.id==="request"));assert.ok(pending.notes.some((r:{id:string})=>r.id==="note-1"));
-  await call("triage_request",{author:"Third",id:"request",log:"Own area"});assert.equal(store.snapshot().items.request!.request,undefined);
+  await call("triage_request",{author:"Third",id:"request",priority:"P0",log:"Own area"});assert.equal(store.snapshot().items.request!.request,undefined);
   await call("close_note",{author,id:"note-1",log:"Handled"});assert.equal(store.snapshot().notes["note-1"]!.state,"done");
   const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:/);assert.match(summary,/Whitefoot · inbox 0/);
   for (const name of ["create_item","update_item"]) {

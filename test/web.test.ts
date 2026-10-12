@@ -191,7 +191,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
-  return { board: { title: "Synthetic title", projects: [{name:"Project"}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -2040,4 +2040,18 @@ test("wide blank clicks clear the current selection while actions fall back to t
     } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "other" : "area"),"owner-work navigation starts from the displayed item's ask");
     else assert.ok(detailItem(p,action === "n" ? "area" : "child"),"fresh navigation retains its global cursor and selects its stop");
   });
+});
+
+test("LEGACY PRIORITY: an unmigrated item raised by a waiter shows its written priority struck; a migrated raise shows only the higher one", async () => {
+  for (const migratedWaiter of [false, true]) {
+    const s = snapshot();
+    s.board.projects = [{ name: "Project" }, { name: "Elsewhere", ...(migratedWaiter ? { migrated: true } : {}) }];
+    s.items.waiter = { title: "Waiter", group: migratedWaiter ? "Elsewhere" : "Project", status: "todo", priority: "P0", updated: at, rev: 1, deps: [{ id: "child", why: "Needs child" }], links: [], log: [] };
+    const p = await page(s, []); await expand(p);
+    const head = descendants(item(p)).find(e => e.className === "item-head")!, badge = head.children.find(e => e.className.split(" ").includes("prio"))!;
+    assert.equal(badge.innerHTML, "P0", String(migratedWaiter));
+    const was = head.children.find(e => e.className === "prio-was");
+    if (migratedWaiter) { assert.equal(was, undefined); assert.ok(!markup(item(p)).includes("按 P0 排")); }
+    else { assert.equal(was!.innerHTML, "P1"); assert.equal(badge.title, "写的是 P1；因为「Waiter」(P0) 在等它"); assert.ok(markup(item(p)).includes("按 P0 排：写的是 P1，因为 ")); }
+  }
 });

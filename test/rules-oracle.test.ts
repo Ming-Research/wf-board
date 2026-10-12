@@ -83,9 +83,10 @@ function oldBoard(): LegacyState {
 // Intentionally no card deps: those did not exist on the page and have unit
 // coverage in rules.test.ts. Freshness/read snapshots are outside this module.
 // This mapping is written here, independently of the CLI's export mapper.
-function mapBoard(old: LegacyState): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
+// Projects are configured as board.yaml without `migrated`, so the legacy rules apply.
+function mapBoard(old: LegacyState, migrated = false): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
   return {
-    board: { title: "Legacy comparison", projects: [] },
+    board: { title: "Legacy comparison", projects: [...new Set(old.items.map(it => it.group).filter(g => g !== undefined))].map(name => migrated ? { name, migrated: true } : { name }) },
     items: Object.fromEntries(old.items.map(it => [it.id, Item.parse({
       title: it.title, parent: it.parent || it.area || undefined,
       group: it.group, order: it.order, status: it.status, priority: it.priority,
@@ -106,26 +107,35 @@ function exportBoard(old: LegacyState): LegacyExport {
   return { exportedAt: T1, meta: {}, items: rows(old.items), decisions: rows(old.decisions), notes: rows(old.notes), reads: [], archived: Object.entries(old.archived).map(([id, data]) => ({ id, data })) };
 }
 
-test("synthetic legacy oracle agrees on five item rules and area ordering (four levels, all statuses)", () => {
+test("synthetic legacy oracle agrees with an unmigrated project on eight item rules and area ordering (four levels, all statuses/priorities)", () => {
   const old = oldBoard(), mapped = mapBoard(old);
   assert.ok(old.items.length >= 40);
   assert.deepEqual(compare(old, mapped), []);
   // Ensure equality exercised meaningful non-default outcomes, not empty flags.
   const legacy = legacyRules(old);
   assert.deepEqual(new Set(old.items.map(it => legacy.statusOf(it))), new Set(["todo", "wip", "blocked", "done", "cancelled"]));
+  assert.deepEqual(new Set(old.items.map(it => legacy.priorityOf(it))), new Set(["P0", "P1", "P2", ""]));
   assert.equal(legacy.ancestors(old.items.find(it => it.id === "leaf")!).length, 3);
+  assert.equal(legacy.raisedBy(old.items.find(it => it.id === "leaf")!)?.id, "external");
   const texts = new Set(old.items.flatMap(it => legacy.checksOf(it).map(c => c.text)));
   for (const text of ["依赖的条目不存在：absent", "依赖的条目已取消", "依赖没写为什么：", "依赖成环", "顶层条目没有负责会话（agent）", "上级条目不存在：absent", "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", "可解除阻塞：等的都已完成", "卡住了，但没写在等什么", "标为进行中，但还在等别的"]) assert.ok(texts.has(text), text);
+  const current = rules(mapped);
+  for (const a of old.items) for (const b of old.items) assert.equal(Math.sign(current.compareSiblings(a.id, b.id)), Math.sign(legacy.byPriority(a, b)), `${a.id}/${b.id}`);
+});
+
+test("the oracle's priority agreement holds only while the project is unmigrated", () => {
+  const old = oldBoard(), differ = compare(old, mapBoard(old, true)).map(d => d.rule);
+  for (const rule of ["effectivePriorityOf", "raisedBy", "checks"]) assert.ok(differ.includes(rule), rule);
 });
 
 test("export comparison is independent of the oracle test mapper and reports changed results", () => {
   const data = exportBoard(oldBoard());
   const equal = compareExport(data);
   assert.deepEqual(equal.disagreements, []);
-  assert.equal(equal.comparisons, data.items.length * 5 + 1);
+  assert.equal(equal.comparisons, data.items.length * 8 + 1);
   const old = oldBoard(), mapped = mapBoard(old);
-  const wrong = { ...mapped, items: { ...mapped.items, leaf: { ...mapped.items.leaf!, status: "done" as const } } };
-  assert.ok(compare(old, wrong).some(d => d.id === "leaf" && d.rule === "statusOf" && d.old === "todo" && d.new === "done"));
+  const wrong = { ...mapped, items: { ...mapped.items, leaf: { ...mapped.items.leaf!, priority: "P0" as const } } };
+  assert.ok(compare(old, wrong).some(d => d.id === "leaf" && d.rule === "priorityOf" && d.old === "P2" && d.new === "P0"));
 });
 
 test("comparison CLI prints all disagreements and exits nonzero, using synthetic exports only", async () => {
@@ -136,7 +146,7 @@ test("comparison CLI prints all disagreements and exits nonzero, using synthetic
     await writeFile(filename, JSON.stringify(exportBoard(old)));
     const ok = spawnSync(process.execPath, ["scripts/compare-legacy.ts", filename], { encoding: "utf8" });
     assert.equal(ok.status, 0, ok.stderr);
-    assert.match(ok.stdout, /51 items, 256 comparisons, 0 disagreements/);
+    assert.match(ok.stdout, /51 items, 409 comparisons, 0 disagreements/);
     // This intentionally inconsistent qs is a real difference between models:
     // new needsOwner uses decision.item, while the page used each item's qs.
     old.items.find(it => it.id === "card-open")!.qs = [];

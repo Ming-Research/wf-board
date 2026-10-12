@@ -7,10 +7,11 @@ import { ops } from "../src/ops.ts";
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";
-export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean } = {}) {
+/** Projects are migrated unless `unmigrated` writes board.yaml without the field, as the legacy rules read it. */
+export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "跨项目" }] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "跨项目" }].map(p => options.unmigrated ? p : { ...p, migrated: true }) } });
   const item = (title: string, fields: object = {}) => ({ title, priority: "P1", status: "todo", updated: at, ...fields });
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
     { kind: "item", id: "area", expectRev: null, doc: item("解释器工作", { group: "Whitefoot", deps: [{ id: "a", why: "需要检查结果" }, { id: "b", why: "需要语言证据" }] }) },
