@@ -218,14 +218,14 @@ log:
   status, priority and request rows, and added or changed dependency and link
   rows, are not coloured either; removed dependencies and links remain struck.
   New items and cards carry no per-block marks. No green background is used
-  anywhere: the owner never asked for one. An item or card with unread changes of its
-  own carries a blue line beside its whole body, marking exactly what `r` on it
+  anywhere: the owner never asked for one. In single-column mode an item, and in
+  either layout a card, with unread changes of its own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `r` leaves sub-items alone. In single-column mode a
   folded item shows its head row alone: its body, cards and comment list fold
   together. In split mode the tree always shows only head rows, with a short
   blue line for an item's own unread content; the selected item's body and
-  comments appear in the detail column, with the full body line. In both
+  comments appear in the detail column, with a short blue line beside its headline. In both
   layouts the 新 chip still counts what is new inside. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar. A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
@@ -317,10 +317,8 @@ highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 Each split tree row stays on one line: caret, status, priority, title, chips
 and counts. Parent leaf counts show numbers in their status color in both
-layouts, with status names
-in tooltips and accessibility labels. In split mode they shrink and clip away
-first; only
-then does the title truncate with an ellipsis, retaining a minimum width and
+layouts, with status names in accessibility labels. In split mode they shrink and clip away
+completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
 The separate decisions section
 and send box remain available.
@@ -328,18 +326,16 @@ and send box remain available.
 In tree rows in both layouts, the blue new-content chip and the red descendant
 owner-action chip show only their numbers. Their tooltips and accessibility
 labels retain their full meaning; the item’s own 等你处理 tag retains its words.
-The detail headline and cards keep their existing chip text. The existing ☰
-menu help explains the caret, status, priority and raised priority, blue number
-and unread line, red number and own owner-action tag, right-side leaf counts,
-check tag, pending explanation tag, status bar, current-selection background
-and former-title strike-through alongside its keyboard actions.
+Every 新 chip shows only its number, including detail headlines and cards.
+The existing ☰ menu help keeps its shortcut sentence and explains only the
+blue new-content number, red descendant owner-action number and right-side
+status-colored leaf counts alongside its keyboard actions.
 
 There is no sticky path bar. Navigation and visibility checks use the viewport
 top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
 or scroll margins for a bar. The existing send-box top button remains.
 
-A vertical divider resizes the left column with pointer dragging or the left
-and right arrow keys while focused. Its width is saved per viewer in browser
+A vertical divider resizes the left column with pointer dragging. Its width is saved per viewer in browser
 localStorage. Both columns retain useful minimum widths: 300 CSS pixels for
 the tree and 380 for detail. Split mode may overflow narrower viewports;
 the owner can turn it off for the phone’s single-column layout.
