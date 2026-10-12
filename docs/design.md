@@ -164,10 +164,13 @@ log:
 - Areas are items without a parent, as today. The fields keep their current
   meanings; `area` is folded into `parent`, `text` into `head`, bare-string
   deps into `{id, why}` entries flagged for a why.
-- **Migration switch.** A project's entry in `board.yaml` may set
-  `migrated: true`; no tool or page control sets it. An item belongs to the
-  project of its area's group. A migrated project follows the next bullet. An unmigrated one, the
-  default, keeps the legacy priority (`src/legacy-priority.ts`): a leaf stores
+- **Migration switch.** A project's entry in `board.yaml` may carry
+  `migrated: true`, set only by `update_project` from the coordinator project
+  `跨项目` and never undone; that commit also drops the stored priority of
+  every item of the project that is not a root, logging
+  `迁移到依赖结构：优先级改由依赖它的条目决定，删除了存的 PX` on each. An item
+  belongs to the project of its area's group. A migrated project follows the
+  next bullet. An unmigrated one, the default, keeps the legacy priority (`src/legacy-priority.ts`): a leaf stores
   its priority, a parent shows its highest open leaf's, an open waiter raises
   what it waits on and the page strikes the written priority beside the
   raised one; its writes need a leaf priority and refuse none, it gets neither
@@ -182,14 +185,17 @@ log:
   dependency only, never topic grouping: a parent lists each sub-item among
   its deps. Every item's head states what it delivers and its completion
   condition, under a heading or bold label naming 完成条件 or 怎样算完成, and
-  each dependency's why names
-  the part of that condition it is needed for. An item that no open item
+  each dependency's why names the part of that condition it is needed for. An
+  item that no open item
   depends on (open: status neither done nor cancelled, a parent's derived) is
   a root (a project goal, a downstream project's need or a stand-alone piece
   of work), so an item whose dependents have all closed becomes a root to
-  prioritize or cancel. Only a root stores `priority`: a write that makes an
-  item a non-root, or writes a non-root, drops its stored priority in the same
-  commit, so a priority never returns when the item becomes a root again.
+  prioritize or cancel. Only a root stores `priority`. Migration leaves no
+  stored priority on a non-root, and afterwards every write that makes a
+  migrated item a non-root, or writes a migrated non-root, drops its stored
+  priority in the same commit and logs `<writer> 让它不再是根：优先级改由依赖它的条目决定，删除了存的 PX`
+  on it; the write's result lists the items. So no non-root holds a stored
+  priority, and none returns when an item becomes a root again.
   Every other item's priority is the highest among the open items that depend
   on it, across projects and transitively, so a P0 root raises everything it
   depends on to P0 and a child may rank above its parent, never below it. A
@@ -315,21 +321,23 @@ coordinate among themselves; sessions may be renamed freely.
 
 Priority checks below are those of a migrated project; an unmigrated one
 requires a leaf priority from `create_item`, `create_request` and `move_item`'s
-`source_priority`, as before, and refuses none (section 5).
+`source_priority`, as before, refuses none, and has none of the three
+restructuring forms below (`create_item` with `children`, `move_item` without
+`new_parent`, a leaf destination without `parent_own_work`) (section 5).
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work and status move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP silently became its new child's TODO); the sub-item takes no priority, and a root parent keeps its own | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it |
+| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links, children?, source_status?, source_priority?)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work and status move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP silently became its new child's TODO); the sub-item takes no priority, and a root parent keeps its own. `children: [{id, why}]` moves those existing items under the new item in the same commit and lists them in its deps with their whys, so it is a parent from birth with no own-work stub; each old parent follows `move_item`'s source rules, with `source_status` and `source_priority` | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it; children are distinct items of the author's project, not the new item's parent or its ancestors, and come without `status` |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent, parent_why, parent_own_work?, source_status?, source_priority?)` | Reparents, preserving a destination leaf's own work in a new child | No cycle; updates both parents' deps; the source's last child requires its new leaf status; `source_priority` only on a root source |
+| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents, preserving a destination leaf's own work in a new child; a destination leaf with no work of its own (todo, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; the source's last child requires its new leaf status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
-| `update_project(name, repo)` | Sets or changes a project’s repository | Author is that project or the coordinator project `跨项目` |
+| `update_project(name, repo?, migrated?)` | Sets or changes a project’s repository, or migrates it (section 5): `migrated: true` and, in the same commit, the drop of every non-root's stored priority with its log entry | Repository: author is that project or the coordinator project `跨项目`. Migration: author is `跨项目`, only `true`, and only once |
 | `create_request(project, key, title, head, priority?, why, from?)` | Files into any project's inbox; optionally links the filing item, which then gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency; priority required without `from` and refused with it |
 | `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves leaf parent work; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |

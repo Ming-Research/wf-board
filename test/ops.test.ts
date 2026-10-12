@@ -549,3 +549,128 @@ test("board.yaml without migrated reads as unmigrated, and migrated: true round-
   const reopened = rules((await Store.open(dir)).snapshot());
   assert.equal(reopened.migrated("a"), true); assert.equal(reopened.migrated("other"), false);
 });
+
+const MIGRATED = (p: string) => `迁移到依赖结构：优先级改由依赖它的条目决定，删除了存的 ${p}`;
+test("migrating a project is a 跨项目 operation that drops every non-root's stored priority with a log entry, in one commit", async t => {
+  const { store, op } = await board(t, { unmigrated: true });
+  async function refused(call: () => Promise<unknown>, message: RegExp) {
+    const before = store.snapshot();
+    await assert.rejects(call(), message);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  await refused(() => op.updateProject({ author, name: "Whitefoot", migrated: true }), /migrated: only the coordinator project 跨项目 may migrate project Whitefoot/);
+  await refused(() => op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: false }), /migrated: a migration cannot be undone/);
+  const result = await op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: true });
+  const s = store.snapshot(), r = rules(s);
+  assert.deepEqual(s.board.projects.map(p => [p.name, p.migrated]), [["Whitefoot", true], ["Firn", undefined], ["跨项目", undefined]]);
+  assert.equal(s.items.a!.priority, undefined); assert.equal(s.items.b!.priority, undefined);
+  assert.deepEqual(s.items.a!.log.at(-1), { at: later, by: "跨项目", text: MIGRATED("P1") }); assert.deepEqual(s.items.b!.log.at(-1), { at: later, by: "跨项目", text: MIGRATED("P0") });
+  assert.equal(s.items.area!.priority, "P1"); assert.equal(s.items.other!.priority, "P1"); // a root, and another project, keep theirs
+  assert.deepEqual(result.dropped, [{ id: "a", priority: "P1" }, { id: "b", priority: "P0" }]);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["board.yaml", "items/a.yaml", "items/b.yaml"]);
+  assert.equal(r.priorityOf("b"), "P1"); // now from area
+  await refused(() => op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: true }), /migrated: project Whitefoot is already migrated/);
+  await op.updateProject({ author, name: "Whitefoot", repo: "Ming-Research/Whitefoot-next" }); // the repository rule is unchanged
+  assert.equal(store.snapshot().board.projects[0]!.migrated, true);
+});
+
+const NOT_ROOT = (writer: string, p: string) => `${writer} 让它不再是根：优先级改由依赖它的条目决定，删除了存的 ${p}`;
+test("a write that drops a stored priority logs it on that item, across projects, and returns the dropped items", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
+  const result = await op.updateItem({ author: "Firn", id: "other", rev: 1, deps: [{ id: "lib", why: "Uses lib" }] });
+  assert.deepEqual(result.dropped, [{ id: "lib", priority: "P2" }]);
+  assert.deepEqual(store.snapshot().items.lib!.log.at(-1), { at: later, by: "Firn", text: NOT_ROOT("Firn", "P2") });
+  const plain = await op.appendLog({ author, id: "lib", text: "Progress" });
+  assert.equal(plain.dropped, undefined);
+});
+
+test("LEGACY PRIORITY: unmigrated writes log no drop and offer none of the restructuring forms", async t => {
+  const { store, op } = await board(t, { sharedProjects: true, unmigrated: true });
+  await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
+  const result = await op.updateItem({ author, id: "other", rev: 1, deps: [{ id: "lib", why: "Uses lib" }] });
+  assert.equal(result.dropped, undefined); assert.equal(store.snapshot().items.lib!.priority, "P2"); assert.deepEqual(store.snapshot().items.lib!.log, []);
+  const before = store.snapshot();
+  await assert.rejects(op.moveItem({ author, id: "b", priority: "P0" }), /new_parent: required; only a migrated project's item can become a root/);
+  await assert.rejects(op.createItem({ author, key: "box", title: "Box", group: "Whitefoot", priority: "P1", children: [{ id: "b", why: "Part" }] }), /children: only a migrated project/);
+  await op.createItem({ author, key: "empty", title: "Empty", group: "Whitefoot", priority: "P2" });
+  await assert.rejects(op.moveItem({ author, id: "b", parent: "empty", parentWhy: "Part" }), /parentOwnWork: empty is a leaf \(todo P2\)/);
+  assert.deepEqual(Object.keys(store.snapshot().items).sort(), [...Object.keys(before.items), "empty"].sort());
+});
+
+test("move_item without new_parent makes a migrated item a root of its project, with a priority, when nothing else open depends on it", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  async function refused(call: () => Promise<unknown>, message: RegExp) {
+    const before = store.snapshot();
+    await assert.rejects(call(), message);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  await refused(() => op.moveItem({ author, id: "b" }), /priority: 移成根条目要写 P0、P1 或 P2/);
+  await refused(() => op.moveItem({ author, id: "a", priority: "P0" }), /new_parent: a 还有未完成的条目依赖它（b），移出上级后也不是根条目/);
+  await refused(() => op.moveItem({ author, id: "other", priority: "P0" }), /new_parent: other is already top-level/);
+  await refused(() => op.moveItem({ author, id: "b", parent: "other", parentWhy: "Part", priority: "P0", parentOwnWork: { key: "o", title: "O" } }), /priority: only when moving to the top level/);
+  const result = await op.moveItem({ author, id: "b", priority: "P0" });
+  const s = store.snapshot(), b = s.items.b!, r = rules(s);
+  assert.equal(b.parent, undefined); assert.equal(b.group, "Whitefoot"); assert.equal(b.priority, "P0");
+  assert.deepEqual(b.deps, [{ id: "a", why: "需要检查" }, { card: "choice", why: "需要决策" }]); // its own dependencies stay assert.equal(b.log.at(-1)!.text, "从 area 移出，成为根条目，优先级 P0。");
+  assert.ok(!s.items.area!.deps.some(d => "id" in d && d.id === "b")); assert.equal(r.isRoot("b"), true); assert.equal(r.priorityOf("a"), "P0");
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/area.yaml", "items/b.yaml"]); assert.equal(result.id, "b");
+  // The old parent follows the last-child rules.
+  await refused(() => op.moveItem({ author, id: "a", priority: "P1" }), /new_parent: a 还有未完成的条目依赖它（b）/);
+  await op.setStatus({ author, id: "b", status: "todo", log: "Unblocked" });
+  await op.updateItem({ author, id: "b", rev: store.snapshot().items.b!.rev, deps: [] });
+  await refused(() => op.moveItem({ author, id: "a", priority: "P1" }), /sourceStatus: area loses its last sub-item/);
+  await op.moveItem({ author, id: "a", priority: "P1", sourceStatus: "todo" });
+  assert.equal(store.snapshot().items.area!.status, "todo"); assert.equal(store.snapshot().items.a!.priority, "P1");
+});
+
+test("create_item with children moves existing items under a new parent in one commit, with no own-work stub", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  async function refused(call: () => Promise<unknown>, message: RegExp) {
+    const before = store.snapshot();
+    await assert.rejects(call(), message);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  const make = { author, key: "group", title: "Group", parent: "area", parentWhy: "Part" };
+  await refused(() => op.createItem({ ...make, children: [{ id: "a", why: "x" }, { id: "a", why: "y" }] }), /children: name each item once/);
+  await refused(() => op.createItem({ ...make, status: "wip", children: [{ id: "a", why: "x" }] }), /status: an item created with children takes its status from them/);
+  await refused(() => op.createItem({ ...make, children: [{ id: "area", why: "x" }] }), /children: area contains the new item's parent area/);
+  await refused(() => op.createItem({ ...make, children: [{ id: "missing", why: "x" }] }), /children missing: choose an existing item/);
+  await refused(() => op.createItem({ author, key: "box", title: "Box", group: "Whitefoot", priority: "P1", children: [{ id: "a", why: "x" }, { id: "b", why: "y" }] }), /sourceStatus: area loses its last sub-item/);
+  const result = await op.createItem({ ...make, children: [{ id: "a", why: "Checks" }, { id: "b", why: "Evidence" }] });
+  const s = store.snapshot(), r = rules(s);
+  assert.deepEqual(s.items.group!.deps, [{ id: "a", why: "Checks" }, { id: "b", why: "Evidence" }]); assert.equal(s.items.group!.status, undefined);
+  assert.equal(s.items.a!.parent, "group"); assert.equal(s.items.b!.parent, "group"); assert.equal(s.items.a!.log.at(-1)!.text, "从 area 移到 group：Checks");
+  assert.deepEqual(s.items.area!.deps, [{ id: "group", why: "Part" }]); assert.equal(r.statusOf("group"), "blocked");
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/group.yaml"]); assert.equal(result.id, "group");
+  // A new root takes an old parent's last children; the emptied parent follows the source rules, and a child's stored priority is dropped with a log.
+  await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
+  const boxed = await op.createItem({ author, key: "box", title: "Box", group: "Whitefoot", priority: "P0", children: [{ id: "group", why: "All of it" }, { id: "lib", why: "Uses lib" }], sourceStatus: "done" });
+  const after = store.snapshot();
+  assert.equal(after.items.area!.status, "done"); assert.equal(after.items.area!.priority, "P1"); assert.equal(after.items.lib!.priority, undefined);
+  assert.deepEqual(after.items.lib!.log.at(-1), { at: later, by: author, text: NOT_ROOT(author, "P2") }); assert.deepEqual(boxed.dropped, [{ id: "lib", priority: "P2" }]);
+  await refused(() => op.createItem({ author: "Firn", key: "theirs", title: "Theirs", group: "Firn", priority: "P1", children: [{ id: "a", why: "x" }] }), /item a belongs to project Whitefoot/);
+});
+
+test("move_item into a migrated leaf without work of its own needs no own-work sub-item; a leaf with work still does", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.createItem({ author, key: "empty", title: "Empty", group: "Whitefoot", priority: "P2" });
+  await op.createItem({ author, key: "busy", title: "Busy", group: "Whitefoot", priority: "P2" });
+  await op.setStatus({ author, id: "busy", status: "wip", log: "Started" });
+  await op.createItem({ author, key: "noted", title: "Noted", group: "Whitefoot", priority: "P2" });
+  await op.appendLog({ author, id: "noted", text: "Some work" });
+  const before = store.snapshot();
+  for (const id of ["busy", "noted"]) await assert.rejects(op.moveItem({ author, id: "b", parent: id, parentWhy: "Part" }), new RegExp(`parentOwnWork: ${id} is a leaf`));
+  assert.deepEqual(store.snapshot(), before);
+  await op.moveItem({ author, id: "b", parent: "empty", parentWhy: "Part" });
+  const s = store.snapshot(), r = rules(s);
+  assert.equal(s.items.empty!.status, undefined); assert.equal(s.items.empty!.priority, "P2"); assert.equal(r.statusOf("empty"), "blocked");
+  assert.equal(s.items.empty!.log.at(-1)!.text, "加了子条目 b；它自己没有工作，不另建自己的工作条目。");
+  assert.deepEqual(Object.keys(s.items).sort(), Object.keys(before.items).sort()); // no own-work stub
+  await op.createRequest({ author: "Firn", project: "Whitefoot", key: "req", title: "Need", head: "Witness", why: "Blocks", priority: "P1" });
+  await op.createRequest({ author: "Firn", project: "Whitefoot", key: "req2", title: "Need", head: "Witness", why: "Blocks", priority: "P1" });
+  await op.triageRequest({ author, id: "req2", log: "Own area" }); // a second log entry is work of its own
+  await assert.rejects(op.moveItem({ author, id: "a", parent: "req2", parentWhy: "Part", sourceStatus: "todo" }), /parentOwnWork: req2 is a leaf/);
+  await op.moveItem({ author, id: "a", parent: "req", parentWhy: "Part", sourceStatus: "todo" }); // only its creation entry: no work of its own
+  assert.equal(store.snapshot().items.req!.status, undefined);
+});
