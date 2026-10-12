@@ -20,8 +20,8 @@ test("SDK client discovers exactly twenty-seven described tools, reads/writes fr
   assert.match(client.getInstructions()!, /append_log.*set_status.*why.*stamps times/);
   const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ type: string; text: string }>).filter(c => c.type === "text").map(c => c.text).join("\n");
   const read = await client.callTool({ name: "context", arguments: { id: "a" } });
-  assert.equal(read.isError, undefined); assert.match(text(read), /a · TODO P0 · 中文检查 · Whitefoot › area/);
-  assert.match(text(read), /priority: P1 · effective P0 · raised by b/);
+  assert.equal(read.isError, undefined); assert.match(text(read), /a · TODO P1 · 中文检查 · Whitefoot › area/);
+  assert.doesNotMatch(text(read), /effective|raised by/);
   assert.match(text(read), /5 shown; 2 earlier/);
   const write = await client.callTool({ name: "append_log", arguments: { author, id: "a", text: "MCP evidence" } });
   assert.equal(write.isError, undefined); assert.match(text(write), /append_log a · rev 2 · commit [a-f0-9]{40}/);
@@ -55,7 +55,8 @@ test("cached rules refresh when owner state changes without a new commit", async
   store.setOwner({ archived: { b: "2999-01-01T00:00:00Z" } });
   assert.equal(store.snapshot().head, head);
   const archived = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
-  assert.match(JSON.stringify(archived.content), /No items/);
+  // The other fixture items stay listed for their heads without a completion condition.
+  assert.doesNotMatch(JSON.stringify(archived.content), /b · /); assert.match(JSON.stringify(archived.content), /a · TODO/);
 });
 
 test("changes output stops at the limit and says how many documents it left out", () => {
@@ -82,7 +83,7 @@ test("writes answer with the state they produced; refusals and context name the 
   assert.match(unblocked, /^ancestor area now DONE \S* \(was BLOCK \S*\)$/m);
   const refused = text(await client.callTool({ name: "set_status", arguments: { author, id: "area", status: "todo", log: "Not a leaf" } }));
   assert.match(refused, /area's status is derived from its sub-items \(.*a done.*b done.*\)|area's status is derived from its sub-items \(.*b done.*a done.*\)/);
-  assert.match(text(await client.callTool({ name: "context", arguments: { id: "area" } })), /^status and priority derived from 2 sub-items: .*a DONE/m);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "area" } })), /^status derived from 2 sub-items: .*a DONE/m);
   const prs = text(await client.callTool({ name: "search", arguments: { query: "Whitefoot#341" } }));
   assert.equal(prs.split("\n").filter(l => l.includes("without repository")).length, 1);
   assert.match(prs, /also a bare #341 without repository \(may be another repository's PR\) in: .*item:b/);
@@ -122,10 +123,10 @@ test("project MCP onboarding, requests, triage, close and coordinator reads use 
   await call("update_project",{author,name:"Whitefoot",repo:"Ming-Research/Whitefoot-next"});
   assert.equal(store.snapshot().board.projects[0]!.repo,"Ming-Research/Whitefoot-next");
   await call("create_project",{author:"Third agent",name:"Third",repo:"Org/Third"});
-  await call("create_request",{author,project:"Third",key:"request",title:"Need feature",head:"Witness",priority:"P1",why:"Blocks",from:"a"});
+  await call("create_request",{author,project:"Third",key:"request",title:"Need feature",head:"Witness",why:"Blocks",from:"a"});
   const brief=JSON.parse(await call("brief",{project:"Third"})); assert.deepEqual(brief.inbox.map((r:{id:string})=>r.id),["request"]);
   const pending=JSON.parse(await call("followups",{minutes:1}));assert.ok(pending.requests.some((r:{id:string})=>r.id==="request"));assert.ok(pending.notes.some((r:{id:string})=>r.id==="note-1"));
-  await call("triage_request",{author:"Third",id:"request",priority:"P0",log:"Own area"});assert.equal(store.snapshot().items.request!.request,undefined);
+  await call("triage_request",{author:"Third",id:"request",log:"Own area"});assert.equal(store.snapshot().items.request!.request,undefined);
   await call("close_note",{author,id:"note-1",log:"Handled"});assert.equal(store.snapshot().notes["note-1"]!.state,"done");
   const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:/);assert.match(summary,/Whitefoot · inbox 0/);
   for (const name of ["create_item","update_item"]) {
@@ -149,4 +150,20 @@ test("MCP onboarding and write schemas use project identities", async t => {
     const filters = tools.find(tool => tool.name === "list")!.inputSchema.properties!.filters as {properties:Record<string,unknown>};
     assert.equal(Object.hasOwn(filters.properties, "agent"), false);
   });
+});
+
+test("MCP write schemas take a priority only for a root and relay the refusal", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Priority test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
+  const kid = await client.callTool({ name: "create_item", arguments: { author, key: "kid", parent: "area", parent_why: "Part", title: "Kid" } });
+  assert.equal(kid.isError, undefined, text(kid)); assert.match(text(kid), /^kid · TODO P1 · Kid/m);
+  const refused = await client.callTool({ name: "create_item", arguments: { author, key: "kid2", parent: "area", parent_why: "Part", title: "Kid", priority: "P0" } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /优先级来自这些条目（area）/);
+  const filed = await client.callTool({ name: "create_request", arguments: { author, project: "Firn", key: "need", title: "Need", head: "Witness", why: "Blocks", from: "a" } });
+  assert.equal(filed.isError, undefined, text(filed)); assert.match(text(filed), /^need · TODO P1 · Need/m);
+  const update = await client.callTool({ name: "update_item", arguments: { author, id: "b", rev: 1, priority: "P2" } });
+  assert.equal(update.isError, true); assert.match(text(update), /优先级来自这些条目（area）/);
 });

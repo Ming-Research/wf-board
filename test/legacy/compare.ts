@@ -7,18 +7,16 @@ import type { LegacyState } from "./board-rules.js";
 export interface Disagreement { id: string; rule: string; old: unknown; new: unknown }
 export function compare(old: LegacyState, snapshot: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner">): Disagreement[] {
   const legacy = legacyRules(old), current = rules(snapshot), disagreements: Disagreement[] = [];
-  // Per-item agent checks are superseded by project configuration checks;
-  // compare every other legacy flag, including order and targets elsewhere.
+  // Per-item agent checks are superseded by project configuration checks, and
+  // priority now comes from dependents with its own checks (rules.test.ts);
+  // compare every other legacy rule and flag, including order and targets elsewhere.
   for (const it of old.items) {
     const values: Array<[string, unknown, unknown]> = [
       ["statusOf", legacy.statusOf(it), current.statusOf(it.id)],
-      ["priorityOf", legacy.priorityOf(it), current.priorityOf(it.id)],
-      ["effectivePriorityOf", legacy.effPriorityOf(it), current.effectivePriorityOf(it.id)],
-      ["raisedBy", legacy.raisedBy(it)?.id || null, current.raisedBy(it.id)],
       ["needsOwner", legacy.needsOwner(it), current.needsOwner(it.id)],
       ["onCycle", legacy.onCycle().has(it.id), current.onCycle(it.id)],
       ["inArchive", legacy.inArchive(it), current.inArchive(it.id)],
-      ["checks", legacy.checksOf(it).map(c => c.text).filter(t => t !== "顶层条目没有负责会话（agent）"), current.checks(it.id).map(c => c.text).filter(t => !/^项目没有配置：/.test(t))],
+      ["checks", legacy.checksOf(it).map(c => c.text).filter(t => t !== "顶层条目没有负责会话（agent）"), current.checks(it.id).map(c => c.text).filter(t => !/^(项目没有配置：|正文没写完成条件$|没有未完成的条目依赖它，却没写优先级$)/.test(t))],
     ];
     for (const [rule, before, after] of values) if (JSON.stringify(before) !== JSON.stringify(after)) disagreements.push({ id: it.id, rule, old: before, new: after });
   }

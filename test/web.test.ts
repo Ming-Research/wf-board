@@ -192,7 +192,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
   return { board: { title: "Synthetic title", projects: [{name:"Project"}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
-    area: { title: "Parent", group: "Project", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
+    area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
 }
@@ -1035,14 +1035,18 @@ test("note-only updates and unread baseline followups preserve unrelated card id
 });
 
 test("single item prose update preserves sibling card and status priority update reorders and refreshes counts", async () => {
-  const s=snapshot(), frames=new Frames(); s.items.sibling={...s.items.child!,title:"Sibling",priority:"P0"}; s.items.area!.deps.push({id:"sibling",why:"Needs sibling"}); s.decisions.other={...card(),item:"sibling"};
+  const s=snapshot(), frames=new Frames(); s.items.sibling={...s.items.child!,title:"Sibling"}; s.items.area!.deps.push({id:"sibling",why:"Needs sibling"}); s.decisions.other={...card(),item:"sibling"};
+  // A root depending on child gives it P0; it sorts first until that dependency moves to sibling.
+  s.items.pusher={title:"Pusher",group:"Project",status:"todo",priority:"P0",updated:at,rev:1,deps:[{id:"child",why:"Needs child"}],links:[],log:[]};
   const p=await page(s,[],null,undefined,{frames}); await expand(p,"sibling"); await p.flush();
   const other=p.all().find(e=>e.id === "q-other")!;
   p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Updated head",log:[{at,text:"Updated log"}]}}]); await p.flush();
   assert.equal(p.all().find(e=>e.id === "q-other"),other);
-  p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,status:"done",priority:"P0"}},{kind:"item",id:"sibling",after:{...s.items.sibling!,priority:"P2"}}]); await p.flush();
-  const ids=p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id);
-  assert.deepEqual(ids,["it-child","it-sibling"]); const doneCount=item(p,"area").querySelector(".counts .done")!;
+  assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-child","it-sibling"]);
+  p.emit("c".repeat(40),[{kind:"item",id:"pusher",after:{...s.items.pusher!,deps:[{id:"sibling",why:"Needs sibling"}]}}]); await p.flush();
+  assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-sibling","it-child"]);
+  p.emit("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,status:"done"}}]); await p.flush();
+  const doneCount=item(p,"area").querySelector(".counts .done")!;
   assert.equal(doneCount.innerHTML,"1"); assert.equal(doneCount.attributes["aria-label"],"DONE 1");
 });
 
@@ -1191,8 +1195,8 @@ test("card and item rule changes refresh dependency consumers and transitive pri
   s.items.child!.status="blocked"; s.items.child!.deps=[{card:"q",why:"Needs ruling"}];
   s.items.blocker={...s.items.child!,title:"Blocker",status:"todo",priority:"P2",deps:[{id:"further",why:"Needs further"}]};
   s.items.further={...s.items.child!,title:"Further",status:"todo",priority:"P2",deps:[]};
-  s.items.waiter={...s.items.child!,title:"Urgent waiter",status:"wip",priority:"P0",deps:[{id:"blocker",why:"Needs blocker"}]};
-  s.items.area!.deps.push(...["blocker","further","waiter"].map(id=>({id,why:"Child"})));
+  s.items.waiter={...s.items.child!,parent:undefined,group:"Project",title:"Urgent waiter",status:"wip",priority:"P0",deps:[{id:"blocker",why:"Needs blocker"}]};
+  s.items.area!.deps.push(...["blocker","further"].map(id=>({id,why:"Child"})));
   const p=await page(s,[],null,undefined,{frames}); await expand(p,"blocker"); await item(p,"further").children[0]!.children[0]!.click(); await item(p,"child").children[0]!.children[0]!.click();
   assert.match(markup(item(p,"further")),/P0/);
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,status:"ruled",ruling:"A"}},{kind:"item",id:"waiter",after:{...s.items.waiter!,status:"done"}}]); await p.flush();

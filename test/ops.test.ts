@@ -10,7 +10,7 @@ import { board, at, later, author } from "./helpers.ts";
 test("every operation refuses empty author, missing target and whitespace text without changing memory, disk or history", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   const calls: Array<{ name: keyof Ops; args: Record<string, unknown>; text: string; missing?: string }> = [
-    { name: "createItem", args: { key: "new", parent: "area", parentWhy: "Child", title: "New", priority: "P2" }, text: "title" },
+    { name: "createItem", args: { key: "new", parent: "area", parentWhy: "Child", title: "New" }, text: "title" },
     { name: "appendLog", args: { id: "a", text: "Progress" }, text: "text", missing: "id" },
     { name: "updateItem", args: { id: "a", rev: 1, title: "Changed" }, text: "title", missing: "id" },
     { name: "setStatus", args: { id: "a", status: "done", log: "Complete" }, text: "log", missing: "id" },
@@ -33,14 +33,13 @@ test("every operation refuses empty author, missing target and whitespace text w
 
 test("creation, revision, dependency, status, movement and card checks name a fix and leave the board unchanged", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  const create = { author, key: "new", parent: "area", parentWhy: "Child", title: "New", priority: "P1" as const };
+  const create = { author, key: "new", parent: "area", parentWhy: "Child", title: "New" };
   const card = { author, key: "new-card", item: "a", question: "Choose?", background: "Why", options: [{ key: "A", text: "A" }] };
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
     [() => op.createItem({ ...create, key: "../escape" }), /key.*use/],
     [() => op.createItem({ ...create, key: "a" }), /key.*new/],
     [() => op.createItem({ ...create, key: "choice" }), /key.*new/],
-    [() => op.createItem({ ...create, priority: undefined }), /priority.*requires/],
-    [() => op.createItem({ ...create, parent: undefined }), /group.*requires/],
+    [() => op.createItem({ ...create, parent: undefined, priority: "P1" }), /group.*requires/],
     [() => op.createItem({ ...create, parent: "missing" }), /parent.*existing/],
     [() => op.createItem({ ...create, parentWhy: undefined }), /parentWhy.*explain/],
     [() => op.createItem({ ...create, deps: [{ id: "missing", why: "Needed" }] }), /依赖的.*不存在/],
@@ -84,14 +83,14 @@ test("each operation records its effects, author and single atomic commit", asyn
     assert.deepEqual(log[0]!.files.slice().sort(), files.sort());
     return result;
   }
-  await committed(() => op.createItem({ author, key: "new", parent: "area", parentWhy: "Delivers proof", title: "New", head: "Stable", priority: "P2", links: [], order: 4, data: "4 cases" }), "create_item new", ["items/new.yaml", "items/area.yaml"]);
+  await committed(() => op.createItem({ author, key: "new", parent: "area", parentWhy: "Delivers proof", title: "New", head: "Stable", links: [], order: 4, data: "4 cases" }), "create_item new", ["items/new.yaml", "items/area.yaml"]);
   assert.deepEqual(store.snapshot().items.area!.deps.at(-1), { id: "new", why: "Delivers proof" });
   assert.equal(store.snapshot().items.new!.created, later); assert.equal(store.snapshot().items.new!.status, "todo");
   await committed(() => op.appendLog({ author, id: "new", text: "Evidence" }), "append_log new", ["items/new.yaml"]);
   assert.deepEqual(store.snapshot().items.new!.log[0], { at: later, by: author, text: "Evidence" });
-  await committed(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", deps: [{ card: "choice", why: "Needs ruling" }], links: [{ label: "PR", url: "https://github.com/Ming-Research/Whitefoot/pull/1" }], priority: "P0", data: null, order: 2 }), "update_item new", ["items/new.yaml"]);
+  await committed(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", deps: [{ card: "choice", why: "Needs ruling" }], links: [{ label: "PR", url: "https://github.com/Ming-Research/Whitefoot/pull/1" }], data: null, order: 2 }), "update_item new", ["items/new.yaml"]);
   const revised = store.snapshot().items.new!;
-  assert.equal(revised.head, "Revised"); assert.equal(revised.title, "Revised title"); assert.equal(revised.order, 2); assert.equal(revised.priority, "P0");
+  assert.equal(revised.head, "Revised"); assert.equal(revised.title, "Revised title"); assert.equal(revised.order, 2);
   assert.equal(revised.data, undefined); assert.equal(Object.hasOwn(revised, "agent"), false);
   assert.deepEqual(revised.log.at(-1), { at: later, by: author, text: "改了 head：Scope settled" });
   await committed(() => op.setStatus({ author, id: "new", status: "blocked", log: "Waits on choice" }), "set_status new blocked", ["items/new.yaml"]);
@@ -186,9 +185,9 @@ test("asks and open cards allow blocked status; wip remains allowed; closed deps
   const legacyAskItem = store.snapshot().items.other!;
   await store.commit({ author: "Fixture", message: "Legacy ask", puts: [{ kind: "item", id: "other", expectRev: legacyAskItem.rev, doc: { ...legacyAskItem, ask: { text: "Owner approves" } } }] });
   await op.setStatus({ author, id: "other", status: "blocked", log: "Waits on owner" });
-  await assert.rejects(op.createItem({ author, key: "blocked-split", parent: "other", parentWhy: "Work", title: "Split", priority: "P2", parentOwnWork: { key: "blocked-own", title: "Own" } }), /blocked-own.*卡住了，但没写在等什么/);
+  await assert.rejects(op.createItem({ author, key: "blocked-split", parent: "other", parentWhy: "Work", title: "Split", parentOwnWork: { key: "blocked-own", title: "Own" } }), /blocked-own.*卡住了，但没写在等什么/);
   await op.setStatus({ author, id: "other", status: "todo", log: "Schedule own work before splitting" });
-  await op.createItem({ author, key: "card-waiter", parent: "other", parentWhy: "Ruling", title: "Waiter", priority: "P2", deps: [{ card: "choice", why: "Ruling" }], parentOwnWork: { key: "other-own", title: "other own work" } });
+  await op.createItem({ author, key: "card-waiter", parent: "other", parentWhy: "Ruling", title: "Waiter", deps: [{ card: "choice", why: "Ruling" }], parentOwnWork: { key: "other-own", title: "other own work" } });
   await op.setStatus({ author, id: "card-waiter", status: "blocked", log: "Waits on card" });
   await op.ruleCard({ author, key: "choice", ruling: "Settled without an option" });
   const before = store.snapshot();
@@ -196,24 +195,24 @@ test("asks and open cards allow blocked status; wip remains allowed; closed deps
   assert.deepEqual(store.snapshot(), before);
 });
 
-test("a leaf's first sub-item moves its own work, status and priority into a sub-item in the same commit", async t => {
+test("a leaf's first sub-item moves its own work and status into a sub-item in the same commit, and a root parent keeps its priority", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
-  const blockedSplit = { author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", priority: "P2" as const, parentOwnWork: { key: "b-own", title: "Own" } };
+  const blockedSplit = { author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", parentOwnWork: { key: "b-own", title: "Own" } };
   await assert.rejects(op.createItem(blockedSplit), /b-own.*卡住了，但没写在等什么/);
   await op.setStatus({ author, id: "b", status: "wip", log: "Working alongside dependencies" });
-  const before = store.snapshot().items.b!; // WIP P0 leaf
+  const before = store.snapshot().items.b!; // WIP leaf
   const head = store.snapshot().head;
-  await assert.rejects(op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", priority: "P2" }), /parentOwnWork: b is a leaf \(wip P0\)/);
+  await assert.rejects(op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid" }), /parentOwnWork: b is a leaf \(wip\)/);
   assert.equal(store.snapshot().head, head);
-  const result = await op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", priority: "P2", parentOwnWork: { key: "b-own", title: "b 自己的工作" } });
+  const result = await op.createItem({ author, key: "kid", parent: "b", parentWhy: "Evidence", title: "Kid", parentOwnWork: { key: "b-own", title: "b 自己的工作" } });
   const s = store.snapshot(), b = s.items.b!, own = s.items["b-own"]!;
-  assert.equal(b.status, undefined); assert.equal(b.priority, undefined);
-  assert.equal(own.status, before.status); assert.equal(own.priority, before.priority); assert.equal(own.parent, "b");
+  assert.equal(b.status, undefined); assert.equal(b.priority, undefined); // b is not a root: area lists it
+  assert.equal(own.status, before.status); assert.equal(own.priority, undefined); assert.equal(own.parent, "b");
   assert.deepEqual(b.deps.slice(-2), [{ id: "kid", why: "Evidence" }, { id: "b-own", why: "它自己的工作" }]);
   assert.equal(rules(s).statusOf("b"), "wip"); // derived from b-own, as before the split
   assert.equal((await store.log({ limit: 1 }))[0]!.commit, result.commit);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/b-own.yaml", "items/b.yaml", "items/kid.yaml"]);
-  await assert.rejects(op.createItem({ author, key: "kid2", parent: "b", parentWhy: "More", title: "Kid 2", priority: "P2", parentOwnWork: { key: "b-own2", title: "x" } }), /already has sub-items/);
+  await assert.rejects(op.createItem({ author, key: "kid2", parent: "b", parentWhy: "More", title: "Kid 2", parentOwnWork: { key: "b-own2", title: "x" } }), /already has sub-items/);
 });
 
 
@@ -226,14 +225,13 @@ test("R2 moves require and atomically preserve both leaf transitions", async t =
   assert.deepEqual(store.snapshot(), before);
   await op.moveItem({ ...move, parentOwnWork: { key: "own", title: "Original work" } });
   let s = store.snapshot();
-  assert.equal(s.items.own!.status, "wip"); assert.equal(s.items.own!.priority, "P1");
-  assert.equal(s.items.other!.status, undefined); assert.equal(s.items.other!.priority, undefined);
+  assert.equal(s.items.own!.status, "wip"); assert.equal(s.items.own!.priority, undefined);
+  assert.equal(s.items.other!.status, undefined); assert.equal(s.items.other!.priority, "P1"); // a root keeps its priority
   assert.equal(rules(s).statusOf("other"), "wip");
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/other.yaml", "items/own.yaml"]);
   const last = { author, id: "b", parent: "other", parentWhy: "Last child" };
-  await assert.rejects(op.moveItem(last), /sourceStatus.*sourcePriority/);
-  await assert.rejects(op.moveItem({ ...last, sourceStatus: "todo" }), /sourcePriority/);
-  await op.moveItem({ ...last, sourceStatus: "done", sourcePriority: "P2" });
+  await assert.rejects(op.moveItem(last), /sourceStatus/);
+  await op.moveItem({ ...last, sourceStatus: "done", sourcePriority: "P2" }); // area is a root, so its priority may be set
   s = store.snapshot();
   assert.equal(s.items.area!.status, "done"); assert.equal(s.items.area!.priority, "P2");
   assert.match(s.items.area!.log.at(-1)!.text, /done.*P2/);
@@ -257,7 +255,7 @@ test("R4 concurrent replies refuse replacement unless explicitly requested", asy
 test("R7 prospective validation rejects newly introduced checks on affected items", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   const before = store.snapshot();
-  await assert.rejects(op.createItem({ author, key: "stuck", title: "Stuck", parent: "area", parentWhy: "Work", priority: "P2", status: "blocked" }), /stuck.*卡住了，但没写在等什么/);
+  await assert.rejects(op.createItem({ author, key: "stuck", title: "Stuck", parent: "area", parentWhy: "Work", status: "blocked" }), /stuck.*卡住了，但没写在等什么/);
   await assert.rejects(op.updateItem({ author, id: "area", rev: 1, deps: [{ id: "b", why: "Keep b" }] }), /a.*上级没有把它列在依赖里/);
   assert.deepEqual(store.snapshot(), before);
   const legacyAskItem = store.snapshot().items.other!;
@@ -289,7 +287,7 @@ test("R7 missing targets and reasons quote checks and the affected item; cards a
 
 // Each refusal has otherwise valid arguments; compare a reopened store too.
 for (const [name, args] of [
-  ["createItem", { key: "new", title: "New", parent: "area", parentWhy: "Need", priority: "P1" }],
+  ["createItem", { key: "new", title: "New", parent: "area", parentWhy: "Need" }],
   ["createItem", { key: "new", title: "New", group: "Whitefoot", priority: "P1" }],
   ["appendLog", { id: "a", text: "Writer" }],
   ["updateItem", { id: "a", rev: 1, title: "Writer" }],
@@ -333,7 +331,7 @@ test("project enforcement checks destination and previous card owner", async t =
 
 test("project requests atomically link the filing project, triage both ways, move and decline", async t => {
   const {store,op} = await board(t);
-  const request = {author,project:"Firn",key:"req",title:"Need feature",head:"Witness",priority:"P0" as const,why:"Blocks compiler",from:"a"};
+  const request = {author,project:"Firn",key:"req",title:"Need feature",head:"Witness",why:"Blocks compiler",from:"a"};
   const before = (await store.log()).length;
   await op.createRequest(request);
   assert.equal((await store.log()).length,before+1);
@@ -346,9 +344,9 @@ test("project requests atomically link the filing project, triage both ways, mov
   await assert.rejects(op.triageRequest({author,id:"req",log:"Mine"}),/project Firn/);
   await assert.rejects(op.triageRequest({author:"Firn",id:"req",parent:"area",parentWhy:"Wrong project",log:"Place"}),/project/);
   assert.deepEqual(store.snapshot(),unchanged);
-  await op.triageRequest({author:"Firn",id:"req",parent:"other",parentWhy:"Need",parentOwnWork:{key:"own",title:"Own"},priority:"P1",log:"Scheduled"});
+  await op.triageRequest({author:"Firn",id:"req",parent:"other",parentWhy:"Need",parentOwnWork:{key:"own",title:"Own"},log:"Scheduled"});
   const s = store.snapshot();
-  assert.equal(s.items.req!.request,undefined); assert.equal(s.items.req!.parent,"other"); assert.equal(s.items.req!.priority,"P1");
+  assert.equal(s.items.req!.request,undefined); assert.equal(s.items.req!.parent,"other"); assert.equal(s.items.req!.priority,undefined);
   assert.equal(s.items.req!.log.at(-1)!.text,"Scheduled"); assert.equal(s.items.own!.status,"todo");
   assert.equal(s.items.req!.log.at(-2)!.text,"分拣：放到 other：Need");
   assert.ok(s.items.other!.deps.some(d => "id" in d && d.id === "req" && d.why === "Need"));
@@ -421,4 +419,84 @@ test("unconfigured request authors are refused before creating an inbox item", a
   await assert.rejects(op.createRequest({ author: "Outsider", project: "Firn", key: "unknown-request", title: "Request", head: "Evidence", priority: "P1", why: "Need" }), /author.*configured project.*Whitefoot.*Firn.*call projects.*repo.*repository/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
+});
+
+test("only a root, an item nothing depends on, takes a stored priority when created, updated, filed or triaged", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  async function refused(call: () => Promise<unknown>, message: RegExp) {
+    const before = store.snapshot();
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+  }
+  await refused(() => op.createItem({ author, key: "kid", parent: "area", parentWhy: "Part", title: "Kid", priority: "P0" }), /^priority: kid 有未完成的条目依赖它，它的优先级来自这些条目（area）/);
+  await op.createItem({ author, key: "kid", parent: "area", parentWhy: "Part", title: "Kid" });
+  assert.equal(store.snapshot().items.kid!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("kid"), "P1");
+  await refused(() => op.createItem({ author, key: "goal", title: "Goal", group: "Whitefoot" }), /^priority: 新的根条目/);
+  await op.createItem({ author, key: "goal", title: "Goal", group: "Whitefoot", priority: "P2" });
+  assert.equal(rules(store.snapshot()).priorityOf("goal"), "P2");
+  await refused(() => op.updateItem({ author, id: "a", rev: 1, priority: "P2" }), /^priority: a 有未完成的条目依赖它，它的优先级来自这些条目（area、b）/);
+  await op.updateItem({ author, id: "area", rev: 2, priority: "P0" });
+  assert.equal(rules(store.snapshot()).priorityOf("kid"), "P0");
+  const request = { author, project: "Firn", title: "Need", head: "Witness", why: "Blocks" };
+  await refused(() => op.createRequest({ ...request, key: "linked", from: "a", priority: "P2" }), /^priority: linked 有未完成的条目依赖它，它的优先级来自这些条目（a）/);
+  await op.createRequest({ ...request, key: "linked", from: "a" });
+  assert.equal(store.snapshot().items.linked!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("linked"), "P0");
+  await refused(() => op.createRequest({ ...request, key: "loose" }), /^priority: 没有 from 的请求是根条目/);
+  await op.createRequest({ ...request, key: "loose", priority: "P2" });
+  await op.createRequest({ ...request, key: "placed", priority: "P2" });
+  await refused(() => op.triageRequest({ author: "Firn", id: "linked", priority: "P1", log: "Own area" }), /^priority: linked 有未完成的条目依赖它，它的优先级来自这些条目（a）/);
+  await refused(() => op.triageRequest({ author: "Firn", id: "placed", parent: "other", parentWhy: "Part", parentOwnWork: { key: "other-own", title: "Own" }, priority: "P1", log: "Placed" }), /^priority: placed 有未完成的条目依赖它，它的优先级来自这些条目（other）/);
+  await op.triageRequest({ author: "Firn", id: "loose", priority: "P1", log: "Own area" });
+  assert.equal(store.snapshot().items.loose!.priority, "P1");
+  await op.triageRequest({ author: "Firn", id: "linked", log: "Own area" });
+  assert.equal(rules(store.snapshot()).priorityOf("linked"), "P0");
+});
+
+test("a source losing its last sub-item takes a priority only when it is a root", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.createItem({ author, key: "mid", parent: "area", parentWhy: "Part", title: "Mid" });
+  await op.createItem({ author, key: "kid", parent: "mid", parentWhy: "Part", title: "Kid", parentOwnWork: { key: "mid-own", title: "Mid own" } });
+  await op.moveItem({ author, id: "mid-own", parent: "other", parentWhy: "Elsewhere", parentOwnWork: { key: "other-own", title: "Other own" } });
+  assert.equal(store.snapshot().items["other-own"]!.priority, undefined); assert.equal(store.snapshot().items.other!.priority, "P1");
+  const before = store.snapshot();
+  await assert.rejects(op.moveItem({ author, id: "kid", parent: "area", parentWhy: "Up", sourceStatus: "todo", sourcePriority: "P2" }), /priority: mid 有未完成的条目依赖它，它的优先级来自这些条目（area）/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.moveItem({ author, id: "kid", parent: "area", parentWhy: "Up", sourceStatus: "todo" });
+  const s = store.snapshot();
+  assert.equal(s.items.mid!.status, "todo"); assert.equal(s.items.mid!.priority, undefined); assert.equal(rules(s).priorityOf("mid"), "P1");
+  assert.equal(s.items.mid!.log.at(-1)!.text, "最后一个子条目 kid 移走；恢复为叶条目，状态 todo。");
+});
+
+test("an item left without an open dependent is a root: it is flagged without a priority and update_item may set one", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.createItem({ author, key: "tool", title: "Tool", group: "Whitefoot", priority: "P2" });
+  const made = await op.createItem({ author, key: "goal", title: "Goal", group: "Whitefoot", priority: "P1", deps: [{ id: "tool", why: "Needs the tool" }] });
+  // Adding the dep made tool a non-root, so the same commit dropped its stored priority.
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/goal.yaml", "items/tool.yaml"]); assert.equal((await store.log({ limit: 1 }))[0]!.commit, made.commit);
+  assert.equal(store.snapshot().items.tool!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("tool"), "P1");
+  await assert.rejects(op.updateItem({ author, id: "tool", rev: 2, priority: "P0" }), /priority: tool 有未完成的条目依赖它，它的优先级来自这些条目（goal）/);
+  await op.setStatus({ author, id: "goal", status: "done", log: "Shipped" });
+  let r = rules(store.snapshot());
+  assert.equal(r.isRoot("tool"), true); assert.equal(r.priorityOf("tool"), ""); assert.ok(r.checks("tool").some(c => c.text === "没有未完成的条目依赖它，却没写优先级"));
+  await op.updateItem({ author, id: "tool", rev: 2, priority: "P0" });
+  r = rules(store.snapshot()); assert.equal(r.priorityOf("tool"), "P0"); assert.deepEqual(r.checks("tool").filter(c => c.text === "没有未完成的条目依赖它，却没写优先级"), []);
+  await op.setStatus({ author, id: "goal", status: "todo", log: "Reopened" });
+  assert.equal(store.snapshot().items.tool!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("tool"), "P1");
+});
+
+test("a write that makes an item a non-root drops its stored priority, so removing the dependency later leaves it flagged without one", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.createRequest({ author: "Firn", project: "Whitefoot", key: "req", title: "Need", head: "Witness", priority: "P0", why: "Blocks" });
+  await op.triageRequest({ author, id: "req", parent: "area", parentWhy: "Part", log: "Placed" });
+  assert.equal(store.snapshot().items.req!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("req"), "P1");
+  await op.createItem({ author, key: "spare", title: "Spare", group: "Whitefoot", priority: "P0" });
+  await op.moveItem({ author, id: "spare", parent: "area", parentWhy: "Part" });
+  assert.equal(store.snapshot().items.spare!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("spare"), "P1");
+  await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
+  const user = store.snapshot().items.other!;
+  await op.updateItem({ author, id: "other", rev: user.rev, deps: [{ id: "lib", why: "Uses lib" }] });
+  assert.equal(store.snapshot().items.lib!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("lib"), "P1");
+  await op.updateItem({ author, id: "other", rev: user.rev + 1, deps: [] });
+  const r = rules(store.snapshot());
+  assert.equal(r.isRoot("lib"), true); assert.equal(r.priorityOf("lib"), ""); assert.ok(r.checks("lib").some(c => c.text === "没有未完成的条目依赖它，却没写优先级"));
 });

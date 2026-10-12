@@ -77,7 +77,7 @@ changes to the page. A single process is the only writer, serializes all
 writes, and pushes every change to the page and to waiting sessions.
 
 **Why TypeScript.** The page's derived rules (a parent's status from its
-sub-items, effective priority, the 需核对 flags, freshness) are JavaScript
+sub-items, priority from dependents, the 需核对 flags, freshness) are JavaScript
 today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
@@ -123,7 +123,6 @@ keep their lines exactly as written. An item file:
 title: 示例：换账号时交接当前状态
 parent: example-parent
 status: wip
-priority: P1
 deps:
   - id: example-merge
     why: 交接时的合并队列状态取自这里。
@@ -164,6 +163,26 @@ log:
 - Areas are items without a parent, as today. The fields keep their current
   meanings; `area` is folded into `parent`, `text` into `head`, bare-string
   deps into `{id, why}` entries flagged for a why.
+- **Dependencies and priority.** The hierarchy means dependency only, never
+  topic grouping: a parent lists each sub-item among its deps. Every item's
+  head states what it delivers and its completion condition, under a heading
+  or bold label naming 完成条件 or 怎样算完成, and each dependency's why names
+  the part of that condition it is needed for. An item that no open item
+  depends on (open: status neither done nor cancelled, a parent's derived) is
+  a root (a project goal, a downstream project's need or a stand-alone piece
+  of work), so an item whose dependents have all closed becomes a root to
+  prioritize or cancel. Only a root stores `priority`: a write that makes an
+  item a non-root, or writes a non-root, drops its stored priority in the same
+  commit, so a priority never returns when the item becomes a root again.
+  Every other item's priority is the highest among the open items that depend
+  on it, across projects and transitively, so a P0 root raises everything it
+  depends on to P0 and a child may rank above its parent, never below it. A
+  closed item keeps the priority that reached it and passes none on;
+  dependencies on decision cards carry none; a cycle that no open outside
+  dependent reaches has none. A closed root shows its own stored priority.
+  Among the 需核对 flags, an open item whose head lacks the
+  completion-condition section shows 正文没写完成条件, and an open root without
+  a stored priority shows 没有未完成的条目依赖它，却没写优先级.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -280,19 +299,19 @@ coordinate among themselves; sessions may be renamed freely.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work, status and priority move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP P1 silently became its new child's TODO P2) | Key is new and well formed; deps exist and carry a why; leaf priority set |
+| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work and status move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP silently became its new child's TODO); the sub-item takes no priority, and a root parent keeps its own | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why |
+| `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent, parent_why, parent_own_work?, source_status?, source_priority?)` | Reparents, preserving a destination leaf's own work in a new child | No cycle; updates both parents' deps; the source's last child requires its new leaf status and priority |
+| `move_item(id, new_parent, parent_why, parent_own_work?, source_status?, source_priority?)` | Reparents, preserving a destination leaf's own work in a new child | No cycle; updates both parents' deps; the source's last child requires its new leaf status; `source_priority` only on a root source |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
 | `update_project(name, repo)` | Sets or changes a project’s repository | Author is that project or the coordinator project `跨项目` |
-| `create_request(project, key, title, head, priority, why, from?)` | Files into any project's inbox; optionally links the filing item | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency |
-| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves leaf parent work |
+| `create_request(project, key, title, head, priority?, why, from?)` | Files into any project's inbox; optionally links the filing item, which then gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency; priority required without `from` and refused with it |
+| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves leaf parent work; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 
 ## 7. The page
@@ -494,13 +513,16 @@ local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
 
 Any configured project can call `create_request(project, key, title, head,
-priority, why, from?)`. It creates a top-level TODO item in the receiving
+priority?, why, from?)`. It creates a top-level TODO item in the receiving
 project with `request: {by: author, at}` and first log
 `${author} 提出：${why}`. With `from`, the filing item must belong to author’s
-project; adding its dependency on the new request happens in the same commit.
+project; adding its dependency on the new request happens in the same commit,
+and the request takes its priority from that item, so `priority` is refused.
+Without `from` the request is a root and `priority` is required.
 Requests stay in a separate inbox, oldest first, until the receiving project
-triages them. `triage_request` removes the marker, sets an optional priority,
-logs the disposition, and either places the request under a parent in its
+triages them. `triage_request` removes the marker, sets an optional priority
+when the request stays a root (no parent and no open item depending on it), logs
+the disposition, and either places the request under a parent in its
 project or retains it as an area. Placement also appends
 `分拣：放到 <parent>：<why>` before the supplied log. A leaf parent requires
 `parent_own_work`, preserving its own work as in `create_item`. Moving a
@@ -512,8 +534,7 @@ cancelled items are not open requests.
 `projects` reports name, repo, area counts, open leaf status counts
 (excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
 sent item/card owner notes, checks including cleared blockers, open cards
-still awaiting the owner, WIP leaves, the next ten TODO leaves by effective
-priority, and outstanding work requested from other projects. That outgoing
+still awaiting the owner, WIP leaves, the next ten TODO leaves by priority, and outstanding work requested from other projects. That outgoing
 list includes open requests with `request.by === project` and open items
 targeted by its items’ cross-project dependencies, so triage does not hide
 linked work. Work queues omit archived items. Read rows, project summaries

@@ -31,7 +31,7 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
 
 test("multi-document writes are separate steps and deletion keeps its before document", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "child", parent: "a", parentWhy: "needs child", title: "new child", priority: "P1", parentOwnWork: { key: "a-own", title: "a own work" } });
+  await op.createItem({ author, key: "child", parent: "a", parentWhy: "needs child", title: "new child", parentOwnWork: { key: "a-own", title: "a own work" } });
   await op.appendLog({ author, id: "a", text: "following write" });
   const note = store.snapshot().notes["note-1"]!;
   const deleted = await store.commit({ author, message: "delete synthetic note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
@@ -82,7 +82,7 @@ test("a new commit reads only the documents of the step it creates or extends", 
 
 test("a status that became derived and changes the owner cannot see are not unread", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", priority: "P1", parentOwnWork: { key: "a-own", title: "a own" } });
+  await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", parentOwnWork: { key: "a-own", title: "a own" } });
   const { rev, ...doc } = store.snapshot().items.other!;
   await store.commit({ author, message: "touch time only", puts: [{ kind: "item", id: "other", doc: { ...doc, updated: "2026-10-11T09:09:09Z" }, expectRev: rev }] });
   const steps = await unreadSteps(store, cursor);
@@ -117,7 +117,7 @@ test("document read marks exclude only marked documents and disappear from stop 
   const marked = await unreadSteps(store, cursor, { "item:b": second.commit });
   assert.deepEqual(marked.map(s => s.id), [first.commit], "the later document is read without reading the earlier item");
   assert.equal(unmarked.length, 2, "read marks do not mutate the cached unmarked steps");
-  const multi = await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", priority: "P1", parentOwnWork: { key: "a-own", title: "a own" } });
+  const multi = await op.createItem({ author, key: "kid", parent: "a", parentWhy: "split", title: "kid", parentOwnWork: { key: "a-own", title: "a own" } });
   const partial = await unreadSteps(store, cursor, { "item:a": multi.commit });
   assert.deepEqual(partial.find(s => s.id === multi.commit)!.docs.map(d => d.id).sort(), ["a-own", "kid"], "other documents in a shared commit remain unread");
 });

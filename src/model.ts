@@ -46,8 +46,9 @@ export type Ask = z.infer<typeof Ask>;
 
 /**
  * An item. An item without `parent` is an area: a line of work with its
- * project heading (`group`); responsibility comes from Board.projects. `status` and `priority` belong to leaves; a parent's are derived
- * from its sub-items (src/rules.ts).
+ * project heading (`group`); responsibility comes from Board.projects. `status` belongs to leaves; a parent's is derived
+ * from its sub-items. `priority` belongs to roots, items no open item depends on; every other item's is derived from the
+ * open items depending on it (src/rules.ts).
  */
 export const Item = z.object({
   title: z.string().min(1),

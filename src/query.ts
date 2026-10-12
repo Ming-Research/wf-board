@@ -25,7 +25,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const card = kind === "card" ? s.decisions[id] : kind === "note" && s.notes[id]?.target.startsWith("q:") ? s.decisions[s.notes[id]!.target.slice(2)] : undefined;
   return { kind, id, title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { priority: r.effectivePriorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -102,7 +102,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     if (seen.has(id) || !s.items[id] || r.isRequest(id)) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
-    if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.effectivePriorityOf(id))) &&
+    if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
       (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
@@ -135,7 +135,7 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
   }
   const it = s.items[id]!, count = options.log === "all" ? it.log.length : options.log ?? 5;
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
-  return { ...row(s, r, "item", id), item: { ...it, log }, raisedBy: r.raisedBy(id), earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), item: { ...it, log }, earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)), children: r.children(id).sort(r.compareSiblings).map(c => row(s, r, "item", c)),
     deps: r.depsOf(id).map(d => ({ ...dependency(s, r, d.kind, d.id, d.why), open: d.open, missing: d.missing })),
     dependents: r.dependents(id).map(d => dependency(s, r, "item", d.id, d.why)),
@@ -255,7 +255,7 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   const a = before as Record<string, unknown>, b = after as Record<string, unknown>, changes: string[] = [];
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (["rev", "updated"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
-    // An item that gained sub-items loses its own status and priority, now derived from them; its log records the split.
+    // An item that gained sub-items loses its own status, now derived from them, and a non-root its ignored priority; its log records the split.
     if (kind === "item" && (key === "status" || key === "priority") && b[key] === undefined) continue;
     if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
