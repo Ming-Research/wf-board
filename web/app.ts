@@ -1382,6 +1382,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (waitingBelow) {
         const wait=el("span", "asktag", String(waitingBelow));
         wait.title="下面 " + waitingBelow + " 处等你处理"; wait.setAttribute("aria-label",wait.title); head.appendChild(wait);
+        // Like the blue number, the red one leads to the first place below that waits for the owner.
+        const first=stops().findIndex(st => !!st.item && (st.item === it.id || derived.ancestors(st.item).includes(it.id)));
+        if (first >= 0) {
+          wait.setAttribute("role","button"); wait.tabIndex=0;
+          const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goStop(first); };
+          wait.addEventListener("click",go); wait.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
+        }
       }
     }
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
@@ -1402,6 +1409,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
       row.appendChild(caret);
       row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
+      // A double-click on a tree row folds or unfolds its sub-items, as the caret does; a single click only selects.
+      if (!detail && sub.length) row.addEventListener("dblclick", ev => {
+        if ((ev.target as HTMLElement).closest?.("button.caret, a, [role=button]")) return;
+        getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
+      });
     }
     row.appendChild(head);
     // A parent counts its leaves by status at the right of its row; archived ones are left out.
