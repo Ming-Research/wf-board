@@ -914,20 +914,34 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     reveal(id);
     renderBack();
   }
-  // A glossary link leads to its term in the glossary section and Backspace comes back, as after following a dependency.
-  // It acts before the clicked element's own handlers, so a term inside an option button does not choose that option.
+  // A glossary link opens a popover with its term's definition, beside the link. It acts before the clicked element's own
+  // handlers, so a term inside an option button does not choose that option. A click elsewhere, Escape, a scroll or another
+  // term closes the popover.
+  let termPopover: HTMLElement | null = null;
+  function closeTermPopover() { termPopover?.remove(); termPopover = null; }
+  function openTermPopover(link: HTMLElement) {
+    closeTermPopover();
+    const [project, term] = parseTermAnchor(link.getAttribute("href")!.slice(1));
+    const entry = snapshot.glossaries[project]?.terms.find(t => t.term === term);
+    if (!entry) return;
+    const pop = el("div", "termpop", "<strong>" + esc(entry.term) + "</strong> " + esc(entry.definition));
+    document.body.appendChild(pop);
+    const at = link.getBoundingClientRect(), box = pop.getBoundingClientRect(), vw = window.innerWidth || 0;
+    const below = at.bottom + 6, fits = below + box.height <= innerHeight || at.top - 6 - box.height < 0;
+    pop.style.top = (fits ? below : at.top - 6 - box.height) + "px";
+    pop.style.left = Math.max(8, Math.min(at.left, vw - box.width - 8)) + "px";
+    termPopover = pop;
+  }
   document.addEventListener("click", ev => {
-    const link = (ev.target as HTMLElement).closest?.<HTMLElement>("a.term");
-    if (!link || ev.defaultPrevented) return;
+    const target = ev.target as HTMLElement;
+    if (termPopover?.contains(target)) return;
+    const link = target.closest?.<HTMLElement>("a.term");
+    if (!link || ev.defaultPrevented) { closeTermPopover(); return; }
     ev.preventDefault(); ev.stopPropagation();
-    const term = get(link.getAttribute("href")!.slice(1));
-    if (!term) return;
-    // The glossary stays folded until a link leads into it.
-    (get("terms-fold") as HTMLDetailsElement).open = true;
-    remember();
-    jump(term);
-    renderBack();
+    openTermPopover(link);
   }, true);
+  document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeTermPopover(); }, true);
+  document.addEventListener("scroll", ev => { if (!termPopover?.contains(ev.target as Node)) closeTermPopover(); }, true);
   function goBack() {
     const b = backStack.pop();
     renderBack();
@@ -1682,21 +1696,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     sec.hidden = !loose.length;
     loose.forEach(d => root.appendChild(decisionCard(d)));
   }
-  // The glossary section: each project's terms with their definitions, in board project order; glossary links land on a term.
-  function renderGlossaryDOM() {
-    const root = get("terms");
-    root.innerHTML = "";
-    for (const p of snapshot.board.projects) {
-      const terms = snapshot.glossaries[p.name]?.terms || [];
-      if (!terms.length) continue;
-      root.appendChild(el("h3", null, esc(p.name)));
-      const dl = el("dl");
-      for (const t of terms) { const dt = el("dt", null, esc(t.term)); dt.id = termAnchor(p.name, t.term); dl.appendChild(dt); dl.appendChild(el("dd", null, esc(t.definition))); }
-      root.appendChild(dl);
-    }
-    get("glossary").hidden = !root.children.length;
-  }
-
   // The reader scrolling the list releases a landing; the list scrolls in the left pane in wide mode and in the window otherwise.
   function listScrolled() {
     if (landing && !landing.pane && (expectedScroll === null || Math.abs(listScroller().position()-expectedScroll)>1)) releaseLanding();
@@ -1821,7 +1820,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (scope.has("all") || scope.has("areas")) renderAreasDOM();
     else { const groups=new Set([...scope].filter(k => k.startsWith("group:")).map(k => k.slice(6))); if (groups.size) renderAreasDOM(groups,scope); }
     if (scope.has("all") || scope.has("cards")) renderCardsDOM();
-    if (scope.has("all")) renderGlossaryDOM();
     if (!scope.has("all")) {
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
@@ -2145,7 +2143,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),linkTerms(inline(title),terms)));
   }
   // Glossary links. In one text (an item's head and shown log, in display order; a card; a note with its reply) the first
-  // occurrence of each glossary term links to the term in the glossary section. Matching is by plain substring, the
+  // occurrence of each glossary term links to the term's definition. Matching is by plain substring, the
   // longest term at each position winning; the text's own project's glossary wins over another project's for the same term.
   interface TermLinks { terms: Map<string,string>; byFirst: Map<string,string[]>; seen: Set<string> }
   function termLinks(project: string): TermLinks {
@@ -2158,6 +2156,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return { terms, byFirst, seen: new Set() };
   }
   function termAnchor(project: string, term: string) { return "term-" + encodeURIComponent(JSON.stringify([project, term])); }
+  function parseTermAnchor(anchor: string): [string, string] {
+    try { const [project, term] = JSON.parse(decodeURIComponent(anchor.slice("term-".length))); return [String(project), String(term)]; } catch { return ["", ""]; }
+  }
   // Links terms in rendered HTML. Tags and their attributes are copied, and so is everything inside a link or code;
   // rendered text escapes "<", so tags and text alternate in the split.
   function linkTerms(html: string, links: TermLinks | undefined) {
