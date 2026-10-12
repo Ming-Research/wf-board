@@ -86,15 +86,14 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
   if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
   let wide=options.wide ?? false;
   const widthListeners: Array<(event:{matches:boolean})=>unknown> = [];
-  const body = new Element("body"), wrap = new Element("div"), header = new Element("header");
-  if (options.pointId) header.geometry=()=>({top:-200,bottom:-100,height:100,left:0,width:900});
+  const body = new Element("body"), wrap = new Element("div");
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
   const calls: Array<{path: string; body?: unknown}> = [];
   const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [];
@@ -115,7 +114,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
       if (options.geometry || options.detailGeometry || options.wide) e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
       return e;
     },
-    querySelector: (selector: string) => selector === ".wrap" ? wrap : selector === "header.top" ? header : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
+    querySelector: (selector: string) => selector === ".wrap" ? wrap : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
     querySelectorAll: (selector:string) => all().filter(e=>e.matches(selector)), elementFromPoint: () => options.pointId ? all().find(e=>e.id === options.pointId) ?? null : null,
     addEventListener: (kind: string, fn: (event: unknown) => unknown,opts?:boolean | {capture?:boolean}) => listeners.set(kind,[...listeners.get(kind) ?? [],{fn,capture:typeof opts === "boolean" ? opts : !!opts?.capture}]),
   };
@@ -132,7 +131,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
-    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 800px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }}, getComputedStyle: () => ({ scrollMarginTop: "0" }),
+    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 800px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }},
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
@@ -431,7 +430,7 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").children[0]!.children[0]!).filter(e=>e.className === "newtag freshchip");
-  assert.deepEqual(areaChip.map(e=>e.innerHTML),["新 1"],"the parent's one chip now counts only the sub-item");
+  assert.deepEqual(areaChip.map(e=>e.innerHTML),["1"],"the parent's one chip now counts only the sub-item");
   assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 1 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
   p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 1 条在下面的子条目里/,"r says where the new content is");
@@ -472,7 +471,7 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 3 ›"),"three items have something new");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
-  assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "新 2"),"area counts itself and its child once each");
+  assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "2"),"area counts itself and its child once each");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"area's second change is not a second stop");
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after r, n continues below the read stop instead of starting over");
@@ -519,11 +518,11 @@ test("新 counts items: one per item however many changes, a parent adding the i
   assert.ok(buttons.includes("进展 2") && buttons.includes("其他 1"), "kind counts are items too");
   await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
   const chip = (itemId: string) => descendants(p.all().find(e => e.id === "it-" + itemId)!.children[0]!).filter(e => e.className.includes("newtag")).map(e => e.innerHTML);
-  assert.deepEqual(chip("child"), ["新 1"], "four changes in one item count once");
-  assert.deepEqual(chip("area"), ["新 2"], "the parent shows one chip: itself and the item below it");
+  assert.deepEqual(chip("child"), ["1"], "four changes in one item count once");
+  assert.deepEqual(chip("area"), ["2"], "the parent shows one chip: itself and the item below it");
   await p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "其他 1")!.click();
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 1 ›"));
-  assert.deepEqual(chip("area"), ["新 1"], "with only other changes kept, the parent counts its child alone");
+  assert.deepEqual(chip("area"), ["1"], "with only other changes kept, the parent counts its child alone");
   p.key("n"); await p.flush();
   assert.ok(item(p).className.includes("cur"));
 });
@@ -741,7 +740,7 @@ test("a folded item hides its comments, new ones included, and navigation does n
   assert.ok(p.all().some(e=>e.id === "it-child"),"filter opens the ancestor path");
   assert.ok(!markup(item(p,"area")).includes("Ancestor body stays folded"));
   assert.ok(!descendants(item(p,"area")).some(e=>e.className.includes("notes")),"a folded item shows no comment list");
-  assert.ok(item(p,"area").className.includes("fresh") && /新 2/.test(markup(item(p,"area").children[0]!)),"its 新 chip and line still say it holds something new");
+  assert.ok(item(p,"area").className.includes("fresh") && item(p,"area").children[0]!.querySelector(".freshchip")!.innerHTML === "2","its 新 chip and line still say it holds something new");
   // The child is the last stop on the page, so N reaches it first.
   p.key("N"); await settle();
   assert.equal(p.scrolls.length,1,"navigation does not wait for comments a folded item hides");
@@ -996,7 +995,8 @@ test("single item prose update preserves sibling card and status priority update
   assert.equal(p.all().find(e=>e.id === "q-other"),other);
   p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,status:"done",priority:"P0"}},{kind:"item",id:"sibling",after:{...s.items.sibling!,priority:"P2"}}]); await p.flush();
   const ids=p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id);
-  assert.deepEqual(ids,["it-child","it-sibling"]); assert.match(markup(item(p,"area")),/DONE 1/);
+  assert.deepEqual(ids,["it-child","it-sibling"]); const doneCount=item(p,"area").querySelector(".counts .done")!;
+  assert.equal(doneCount.innerHTML,"1"); assert.equal(doneCount.attributes["aria-label"],"DONE 1");
 });
 
 test("send waits for optimistic draft acknowledgement and refuses to send a failed draft", async t => {
@@ -1085,9 +1085,9 @@ test("frame fallback works without requestAnimationFrame and smooth jump follows
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>, above=0;
     p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
     p.key("ArrowRight"); frames.flush(50); await settle(); assert.equal(p.scrollY,0,"pending target baseline cannot start the glide");
-    hold.resolve({before:card(),after:card(),diff:""}); await settle(); frames.flush(0); await settle(); assert.ok(p.scrollY>0 && p.scrollY<1477,"glide is still moving");
+    hold.resolve({before:card(),after:card(),diff:""}); await settle(); frames.flush(0); await settle(); assert.ok(p.scrollY>0 && p.scrollY<1500,"glide is still moving toward the centered landing without the removed bar reservation");
     above=500; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted during glide"}}]); await p.flush();
-    assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,323,"glide retains its intended landing after insertion");
+    assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,300,"without the removed bar reservation, the card lands at the viewport center");
     for (const input of ["click","keydown","scroll"]) { p.key("ArrowRight"); await p.flush(); p.user(input); const position:number=p.scrollY; above+=200; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Above "+above}}]); await p.flush(); assert.equal(p.scrollY,position,input+" releases pin"); }
   });
 });
@@ -1282,9 +1282,9 @@ test("a stalled animation frame still renders and finishes a smooth document jum
   assert.ok(item(p,"area"),"watchdog must paint the initial snapshot while rAF is stalled");
   await expand(p); await p.flush(); const start=clock.now; p.key("ArrowRight");
   let landedAt:number | undefined;
-  for(let i=0;i<8;i++) { clock.advance(100); await settle(); if (landedAt === undefined && p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top === 323) landedAt=clock.now-start; }
+  for(let i=0;i<8;i++) { clock.advance(100); await settle(); if (landedAt === undefined && p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top === 300) landedAt=clock.now-start; }
   assert.ok(landedAt !== undefined && landedAt <= 600,"render plus smooth glide finishes within its bounded timer schedule");
-  assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,323); assert.ok(clock.now-start<1000);
+  assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,300); assert.ok(clock.now-start<1000);
   const count=p.renders.length, scrolls=p.scrolls.length; frames.flush(); await settle(); assert.equal(p.renders.length,count); assert.equal(p.scrolls.length,scrolls,"late rAF callbacks cannot run watchdog-completed work again");
 });
 
@@ -1298,13 +1298,6 @@ test("draft fetch and response-body stalls roll back at eight seconds and ignore
     const result={note:{id:"old",doc:{...s.notes.old!,choice:"A",rev:2}},deleted:[],commit:"b".repeat(40)};
     if(phase === "fetch") hold.resolve(reply(result)); else body.resolve(result); await click; await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
   });
-});
-
-test("breadcrumb jump unfolds comments and waits for its unread item baseline", async () => {
-  const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.notes.n={target:"it:child",kind:"comment",text:"Comment",at,state:"sent",rev:1};
-  const p=await page(s,unread(),()=>hold.promise,undefined,{frames,pointId:"it-child",notesOpen:{"it:child":false}}); await expand(p); await p.flush();
-  const crumb=p.all().find(e=>e.className.startsWith("crumbrow") && descendants(e).some(c=>c.className === "t" && c.innerHTML === "Child"))!; assert.ok(crumb); await crumb.click(); await p.flush();
-  assert.equal(p.scrolls.length,0); assert.ok(p.all().some(e=>e.id === "note-n")); hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=child"),null)); await p.flush(); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrolls.length>0);
 });
 
 test("a fast baseline rejection is attempted once per jump and retries on the next jump", async () => {
@@ -1383,7 +1376,7 @@ test("dependency Back reacquires selects and scrolls its row after an owner rere
   const returned=p.all().find(e=>e.dataset.sel === "dep:area@child")!;
   assert.ok(returned.className.includes("cur"),"Back selects the dependency row rather than its enclosing item");
   assert.ok(!item(p,"area").className.includes("cur")); assert.ok(p.scrolls.length>scrolls);
-  assert.ok(returned.getBoundingClientRect().top >= 54 && returned.getBoundingClientRect().bottom <= 992,"the row lands in the viewport");
+  assert.ok(returned.getBoundingClientRect().top >= 8 && returned.getBoundingClientRect().bottom <= 992,"the row lands in the viewport without space reserved for the removed bar");
   assert.ok(p.measurements.some(m=>m.id === returned.id && m.height === 80),"scroll geometry comes from the dependency row");
 });
 
@@ -1536,6 +1529,57 @@ function wideHead(p: Awaited<ReturnType<typeof page>>, id="area") { return item(
 function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return item(p,id).querySelector(".caret")!; }
 function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
 async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
+
+test("tree new and descendant-wait chips show only numbers with full labels", async t => {
+  for (const wide of [false,true]) await t.test(wide ? "split tree" : "inline tree",async()=> {
+    const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
+    const p=await page(s,[...unread("item","area"),...unread("item","child","e".repeat(40))],null,undefined,{wide});
+    const head=wideHead(p), fresh=head.querySelector(".freshchip")!;
+    assert.equal(fresh.innerHTML,"2","blue chip is the count alone");
+    assert.match(fresh.title,/2 处新内容/); assert.equal(fresh.attributes["aria-label"],fresh.title);
+    const wait=head.children.find(e=>e.className === "asktag" && e.innerHTML !== "等你处理")!;
+    assert.equal(wait.innerHTML,"1","descendant red chip is the count alone");
+    assert.equal(wait.title,"下面 1 处等你处理"); assert.equal(wait.attributes["aria-label"],wait.title);
+    assert.ok(head.children.some(e=>e.className === "asktag" && e.innerHTML === "等你处理"),"the item's own request retains its words");
+    if (wide) {
+      await selectWide(p);
+      assert.equal(detailItem(p)!.querySelector(".freshchip")!.innerHTML,"2","the detail headline's chip is the count alone too");
+    }
+  });
+});
+
+test("existing menu help explains every tree row mark without adding a control", async () => {
+  const p=await page(snapshot(),[],null,undefined,{wide:true}), menu=p.document.getElementById("keymenu")!;
+  assert.equal(menu.querySelectorAll(".keymenu-head").length,1,"help extends the existing description");
+  const help=menu.querySelector(".keymenu-head")!.innerHTML;
+  for (const mark of ["▸/▾","TODO","WIP","BLOCK","DONE","DROP","P0","P1","P2","蓝色数字","红色数字","右侧状态色数字","等你处理","需核对","待发：详细解释","状态条","选中底色","原标题","原写优先级"]) assert.ok(help.includes(mark),"help explains "+mark);
+  assert.match(help,/蓝色数字[^。]*新内容/); assert.match(help,/红色数字[^。]*下面[^。]*等你处理/);
+  assert.match(help,/右侧状态色数字[^。]*叶条目/);
+  assert.equal(menu.querySelector(".keymenu-btn")!.innerHTML,"☰");
+  const css=await readFile("web/index.html","utf8");
+  assert.match(css,/\.keymenu-list\s*\{[^}]*max-height:\s*calc\(100dvh - 50px - env\(safe-area-inset-top,\s*0px\)\)/,"existing help and actions fit inside the viewport");
+  assert.match(css,/\.keymenu-list\s*\{[^}]*overflow-y:\s*auto/,"expanded help keeps existing actions reachable by scrolling");
+});
+
+test("sticky path bar and its code CSS and scroll reservations are absent", async () => {
+  const [html,code]=await Promise.all([readFile("web/index.html","utf8"),readFile("web/app.ts","utf8")]);
+  assert.doesNotMatch(html,/id=["']crumbs["']/,"the sticky path bar has no DOM element");
+  assert.doesNotMatch(html,/crumbbar|crumbrow|scroll-margin-top/,"the removed bar leaves no styles or scroll margin");
+  assert.doesNotMatch(code,/crumb|scrollMarginTop|glideToEl/,"there is no path-bar builder or scroll-offset reader");
+  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  assert.equal(p.document.getElementById("crumbs"),null);
+  assert.ok(p.roots.get("to-top"),"the existing send-box top button remains");
+});
+
+test("single-column parent counts are numbers with status color and labels", async () => {
+  const s=snapshot(); s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
+  const p=await page(s,[]), counts=item(p,"area").querySelector(".counts")!;
+  assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1"]);
+  for (const [i,status] of ["todo","wip"].entries()) {
+    const count=counts.children[i]!; assert.ok(count.classList.contains(status));
+    assert.equal(count.title,status.toUpperCase()+" 1"); assert.equal(count.attributes["aria-label"],count.title);
+  }
+});
 
 test("fresh viewers default to split even below the former breakpoint", async () => {
   const p=await page(snapshot(),[],null,undefined,{freshViewer:true});
