@@ -356,13 +356,15 @@ width never changes the choice. Split mode has two columns and uses the full
 window with compact tree margins and equal, smaller detail side padding.
 The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
+The tree leaves out archived and cancelled items with their subtrees; a
+project's 已归档 or 取消 filter shows them where they sit.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, descendant owner-action count and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 Each split tree row stays on one line: caret, status, priority, title, chips
-and counts. Parent leaf counts show numbers in their status color in both
-layouts, with status names in accessibility labels. In split mode they shrink and clip away
+and counts. Parent leaf counts leave out archived and cancelled leaves and
+show numbers in their status color in both layouts, with status names in accessibility labels. In split mode they shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
 The separate decisions section
@@ -388,7 +390,8 @@ the owner can turn it off for the phone’s single-column layout.
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by 被依赖, head text, data, 依赖, log, ask, open cards, shown ruled cards,
-checks and refs, then the item's comment list. The same detail builder renders
+checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
+cancelled items, except a dependency row marked as added or removed. The same detail builder renders
 this content inline in single-column mode. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
