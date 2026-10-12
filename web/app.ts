@@ -438,9 +438,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (wide && it) {
       const row=get("it-"+it.id);
       if (row) {
-        const r=row.getBoundingClientRect();
-        if (r.top < 4) scrollTo(scrollY+r.top-8);
-        else if (r.bottom > innerHeight-4) scrollTo(scrollY+Math.min(r.top-8,r.bottom-innerHeight+8));
+        const y=scrollToShow(listScroller(),row.getBoundingClientRect());
+        if (y !== null) listScroller().to(y);
       }
     }
     glideToTarget(target.marks && freshMarks(e, target.marks)[0] || e);
@@ -618,11 +617,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function onScreen(e: HTMLElement | null) {
     if (!e) return false;
-    const pane=get("item-detail");
-    const inDetail=wide && pane.contains(e), view=inDetail ? pane.getBoundingClientRect() : null;
-    const topEdge=view ? view.top : 0;
+    const s=wide && get("item-detail").contains(e) ? detailScroller() : listScroller();
     const r = e.getBoundingClientRect();
-    return r.bottom > topEdge && r.top < (view ? view.bottom : innerHeight);
+    return r.bottom > s.origin() && r.top < s.origin() + s.height();
   }
   function clearSelectionClasses() {
     selEl(current)?.classList.remove("cur");
@@ -651,13 +648,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function targetOnScreen() {
     if (current && onScreen(boxOfKey(current))) return current;
     if (wide && selectedItem && snapshot.items[selectedItem]) return "it:"+selectedItem;
-    const y = 16;
+    const list = listScroller(), y = list.origin() + 16;
     const wrap = (wide ? get("areas") : document.querySelector<HTMLElement>(".wrap")!).getBoundingClientRect();
     const hit = document.elementFromPoint(wrap.left + wrap.width / 2, y);
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
     if (box && box.id.startsWith("q-")) return "q:" + box.id.slice(2);
     if (box && box.id.startsWith("it-")) return "it:" + box.id.slice(3);
-    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { const r = e.getBoundingClientRect(); return r.top >= y - 16 && r.top < innerHeight; });
+    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { const r = e.getBoundingClientRect(); return r.top >= list.origin() && r.top < list.origin() + list.height(); });
     if (!first) return null;
     return first.id.startsWith("q-") ? "q:" + first.id.slice(2) : "it:" + first.id.slice(3);
   }
@@ -669,7 +666,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
     const t = ev.target as HTMLElement & {type?: string};
     if (t && (t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable || (t.tagName === "INPUT" && !/^(checkbox|radio|button|submit|reset)$/.test(t.type || "")))) return;
-    if (ev.key === "G") { ev.preventDefault(); lastG = 0; glideTo(document.documentElement.scrollHeight); return; }
+    if (ev.key === "G") { ev.preventDefault(); lastG = 0; glideTo(listScroller().max()); return; }
     if (ev.key === "g") {
       ev.preventDefault();
       const now = Date.now();
@@ -719,9 +716,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const head=next.classList.contains("item") ? next.querySelector<HTMLElement>(".item-head") : null;
       if (head) head.focus({preventScroll:true}); else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     }
-    const r = next.getBoundingClientRect();
-    if (r.top < 4) glideTo(scrollY + r.top - 8);
-    else if (r.bottom > innerHeight - 4) glideTo(scrollY + Math.min(r.top - 8, r.bottom - innerHeight + 8));
+    const y = scrollToShow(listScroller(), next.getBoundingClientRect());
+    if (y !== null) glideTo(y);
   }
   function toggleFocused(focusedHead?:HTMLElement) {
     const sel = selEl(effectiveSelection());
@@ -808,18 +804,49 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let landing:{id:string;top:number;gliding?:number;pane?:boolean} | null = null;
   let expectedScroll:number | null = null;
   let expectedDetailScroll:number | null = null;
-  function scrollTo(top:number) { expectedScroll=top; window.scrollTo(0,top); expectedScroll=window.scrollY; }
-  function scrollBy(delta:number) { expectedScroll=window.scrollY+delta; window.scrollBy(0,delta); expectedScroll=window.scrollY; }
+  // A scroller is the thing that scrolls one column: the left list pane in wide mode and the window otherwise (the list
+  // scroller), or the detail pane. Positions are scroll offsets; origin is the scroller's top edge in viewport
+  // coordinates, so a rectangle's viewport top minus the origin is its place inside the scroller's view. Its own scrolls
+  // are recorded in `expected`, so the scroll event they raise is not mistaken for the reader scrolling.
+  interface Scroller { height():number; position():number; max():number; origin():number; to(y:number):void; by(delta:number):void; expect():void }
+  function elementScroller(pane:HTMLElement, expected:(position:number) => void): Scroller {
+    const s:Scroller={
+      height:() => pane.clientHeight,
+      position:() => pane.scrollTop,
+      max:() => Math.max(0,pane.scrollHeight-pane.clientHeight),
+      origin:() => pane.getBoundingClientRect().top,
+      to(y) { pane.scrollTo(0,y); s.expect(); },
+      by(delta) { pane.scrollTo(0,pane.scrollTop+delta); s.expect(); },
+      expect:() => expected(pane.scrollTop),
+    };
+    return s;
+  }
+  const windowScroller: Scroller={
+    height:() => innerHeight,
+    position:() => window.scrollY,
+    max:() => Math.max(0,document.documentElement.scrollHeight-innerHeight),
+    origin:() => 0,
+    to(y) { window.scrollTo(0,y); windowScroller.expect(); },
+    by(delta) { window.scrollBy(0,delta); windowScroller.expect(); },
+    expect:() => { expectedScroll=window.scrollY; },
+  };
+  function listScroller(): Scroller { return wide ? elementScroller(get("page-left"),position => { expectedScroll=position; }) : windowScroller; }
+  function detailScroller(): Scroller { return elementScroller(get("item-detail"),position => { expectedDetailScroll=position; }); }
+  // Where the scroller must go to bring a rectangle into view with an 8px margin, or null when it is already in view.
+  function scrollToShow(s:Scroller, r:{top:number;bottom:number}) {
+    const top=r.top-s.origin(), bottom=r.bottom-s.origin(), height=s.height();
+    if (top < 4) return s.position()+top-8;
+    if (bottom > height-4) return s.position()+Math.min(top-8,bottom-height+8);
+    return null;
+  }
   function releaseLanding() { landing=null; glideRun++; freshNavigation++; }
-  function glideTo(top: number, pin?:{id:string;top:number}, pane?:HTMLElement) {
-    const height=pane ? pane.clientHeight : innerHeight;
-    const position=() => pane ? pane.scrollTop : window.scrollY;
-    const place=(y:number) => { if (pane) { pane.scrollTo(0,y); expectedDetailScroll=pane.scrollTop; } else scrollTo(y); };
-    const max = Math.max(0, (pane ? pane.scrollHeight : document.documentElement.scrollHeight) - height);
-    top = Math.min(max, Math.max(0, Math.round(top)));
+  function glideTo(top: number, pin?:{id:string;top:number}, detail=false) {
+    const s=detail ? detailScroller() : listScroller();
+    const height=s.height(), position=() => s.position(), place=(y:number) => s.to(y);
+    top = Math.min(s.max(), Math.max(0, Math.round(top)));
     const run = ++glideRun;
     const target=pin && get(pin.id);
-    landing=pin && target ? {id:pin.id,top:position()+target.getBoundingClientRect().top-top,gliding:run,pane:!!pane} : null;
+    landing=pin && target ? {id:pin.id,top:position()+target.getBoundingClientRect().top-s.origin()-top,gliding:run,pane:detail} : null;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) { place(top); if (landing) delete landing.gliding; return; }
     const reach = height;
     let from = position();
@@ -829,7 +856,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (run !== glideRun) return;
       const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
       const target=landing && get(landing.id);
-      const destination=target && landing ? position()+target.getBoundingClientRect().top-landing.top : top;
+      const destination=target && landing ? position()+target.getBoundingClientRect().top-s.origin()-landing.top : top;
       place(from + (destination-from) * e);
       if (k < 1) frame(step); else if (landing) delete landing.gliding;
     };
@@ -842,10 +869,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // and centres what it shows: the whole card when it fits in the viewport, else the target, moved off
   // centre only as far as keeps the card filling three quarters of the view.
   function glideToTarget(t: HTMLElement) {
-    const detail=get("item-detail");
-    const pane=wide && detail.contains(t) ? detail : undefined;
-    const origin=pane ? pane.getBoundingClientRect().top : 0, height=pane ? pane.clientHeight : innerHeight;
-    const offset=pane ? pane.scrollTop : scrollY;
+    const inDetail=wide && get("item-detail").contains(t), s=inDetail ? detailScroller() : listScroller();
+    const origin=s.origin(), height=s.height(), offset=s.position();
     const top = 8, bottom = height - 8, room = bottom - top;
     const doc = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { top: r.top-origin+offset, bottom: r.bottom-origin+offset }; };
     const T = doc(t);
@@ -858,7 +883,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       view = T.bottom - T.top <= room ? Math.min(Math.max(view, T.bottom - room), T.top) : T.top;
     }
     const destination=view-top;
-    glideTo(destination,t.id ? {id:t.id,top:T.top-destination} : undefined,pane);
+    glideTo(destination,t.id ? {id:t.id,top:T.top-destination} : undefined,inDetail);
   }
   function jump(id: string | HTMLElement) {
     const name=typeof id === "string" ? id : id.id, e=typeof id === "string" ? get(id) : id;
@@ -881,7 +906,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
   const backStack: Array<{key:string|null;y:number}> = [];
   function remember() {
-    backStack.push({ key: targetOnScreen(), y: scrollY });
+    backStack.push({ key: targetOnScreen(), y: listScroller().position() });
     if (backStack.length > 50) backStack.shift();
   }
   function follow(id: string) {
@@ -1664,17 +1689,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     get("glossary").hidden = !root.children.length;
   }
 
-  window.addEventListener("scroll", () => {
-    if (landing && !landing.pane && (expectedScroll === null || Math.abs(window.scrollY-expectedScroll)>1)) releaseLanding();
-  }, { passive: true });
+  // The reader scrolling the list releases a landing; the list scrolls in the left pane in wide mode and in the window otherwise.
+  function listScrolled() {
+    if (landing && !landing.pane && (expectedScroll === null || Math.abs(listScroller().position()-expectedScroll)>1)) releaseLanding();
+  }
+  window.addEventListener("scroll", () => { if (!wide) listScrolled(); }, { passive: true });
+  get("page-left").addEventListener("scroll", () => { if (wide) listScrolled(); }, { passive: true });
 
   // A snapshot can re-render while the owner is typing; keep the editor's focus and caret.
   // The item or card the reader is looking at, and where it sits, so a data update does not move the page under them.
   function scrollAnchor() {
     const cur = boxOfKey(current);
-    if (cur && !(wide && get("item-detail").contains(cur)) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top };
-    const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > 0);
-    return e ? { id: e.id, top: e.getBoundingClientRect().top } : null;
+    const origin=listScroller().origin();
+    if (cur && !(wide && get("item-detail").contains(cur)) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top-origin };
+    const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > origin);
+    return e ? { id: e.id, top: e.getBoundingClientRect().top-origin } : null;
   }
   const dirty = new Set<string>();
   let renderQueued = false;
@@ -1776,7 +1805,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // Live updates rebuild the page; a text field being typed in keeps its focus and caret.
     const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
     const keep = a && a.id && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") ? { id: a.id, start: a.selectionStart, end: a.selectionEnd } : null;
-    const anchor = landing ? landing.gliding ? null : {...landing} : window.scrollY > 0 ? scrollAnchor() : null;
+    const anchor = landing ? landing.gliding ? null : {...landing} : listScroller().position() > 0 ? scrollAnchor() : null;
     const paneTop=get("item-detail").scrollTop;
     countBelow();
     const detailPainted=wide && (detailDirty || scope.has("all") || scope.has("detail") || !!selectedItem && scope.has("item:"+selectedItem));
@@ -1858,9 +1887,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     renderHeader(); renderSend(); renderMenu();
     if (wide) get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
-      const d=e.getBoundingClientRect().top-anchor.top;
-      if ("pane" in anchor && anchor.pane) { if (d) get("item-detail").scrollTop+=d; expectedDetailScroll=get("item-detail").scrollTop; }
-      else { if (d) scrollBy(d); if (landing) expectedScroll=window.scrollY; }
+      const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
+      const d=e.getBoundingClientRect().top-s.origin()-anchor.top;
+      if (d) s.by(d);
+      if ("pane" in anchor && anchor.pane || landing) s.expect();
     } }
     if (keep) { const t = get<HTMLTextAreaElement | HTMLInputElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
   }
