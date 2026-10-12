@@ -716,3 +716,46 @@ test("move_item into a migrated leaf without work of its own needs no own-work s
   await op.moveItem({ author, id: "a", parent: "req", parentWhy: "Part", sourceStatus: "todo" }); // only its creation entry: no work of its own
   assert.equal(store.snapshot().items.req!.status, undefined);
 });
+
+test("set_term adds and replaces a term in the author's own glossary and delete_term removes it, one commit each, surviving reopen", async t => {
+  const { store, op, dir } = await board(t);
+  async function committed(call: () => Promise<Result>, by: string, message: string, file: string) {
+    const result = await call(), log = await store.log({ limit: 1 });
+    assert.equal(result.commit, log[0]!.commit); assert.equal(log[0]!.author, by); assert.equal(log[0]!.message, message);
+    assert.deepEqual(log[0]!.files, [file]);
+  }
+  await committed(() => op.setTerm({ author, term: "孪生对照", definition: "同一构建的第二份副本，一起跑来显示噪声。" }), author, "set_term 孪生对照", "glossaries/Whitefoot.yaml");
+  await committed(() => op.setTerm({ author, term: "否决线", definition: "旧的说法" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
+  await committed(() => op.setTerm({ author: "跨项目", term: "否决线", definition: "总管的说法" }), "跨项目", "set_term 否决线", "glossaries/跨项目.yaml");
+  await committed(() => op.setTerm({ author, term: "否决线", definition: "性能比较里判定变慢的界线。" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
+  const entry = (term: string, definition: string, by = author) => ({ term, definition, updated: later, by });
+  assert.deepEqual(store.snapshot().glossaries, {
+    Whitefoot: { terms: [entry("孪生对照", "同一构建的第二份副本，一起跑来显示噪声。"), entry("否决线", "性能比较里判定变慢的界线。")], rev: 3 },
+    跨项目: { terms: [entry("否决线", "总管的说法", "跨项目")], rev: 1 },
+  }, "a replaced term keeps its place, and another project's same term stays in its own glossary");
+  assert.match(await readFile(join(dir, "glossaries/Whitefoot.yaml"), "utf8"), /term: 否决线\n {4}definition: 性能比较里判定变慢的界线。/);
+  await committed(() => op.deleteTerm({ author, term: "孪生对照" }), author, "delete_term 孪生对照", "glossaries/Whitefoot.yaml");
+  assert.deepEqual(store.snapshot().glossaries.Whitefoot!.terms.map(t => t.term), ["否决线"]);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
+test("glossary writes refuse an unconfigured author, an empty or badly spaced term, an empty definition and an unknown term, changing nothing", async t => {
+  const { store, op, dir } = await board(t);
+  await op.setTerm({ author, term: "否决线", definition: "性能比较里判定变慢的界线。" });
+  const cases: Array<[() => Promise<unknown>, RegExp]> = [
+    [() => op.setTerm({ author: "Snowghost", term: "否决线", definition: "别的项目" }), /author Snowghost: choose a configured project/],
+    [() => op.deleteTerm({ author: "Snowghost", term: "否决线" }), /author Snowghost: choose a configured project/],
+    [() => op.setTerm({ author, term: " ", definition: "定义" }), /term: provide nonempty text/],
+    [() => op.setTerm({ author, term: "术语", definition: " \n " }), /definition: provide nonempty text/],
+    [() => op.setTerm({ author, term: "两\n行", definition: "定义" }), /term: write the term on one line/],
+    [() => op.setTerm({ author, term: "否决线 ", definition: "定义" }), /term: write the term on one line/],
+    [() => op.deleteTerm({ author: "Firn", term: "否决线" }), /term 否决线: not in Firn's glossary/],
+  ];
+  for (const [call, message] of cases) {
+    const before = store.snapshot();
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  }
+  await assert.rejects(store.commit({ author, message: "Duplicate", puts: [{ kind: "glossary", id: author, expectRev: 1, doc: { terms: [...store.snapshot().glossaries.Whitefoot!.terms, ...store.snapshot().glossaries.Whitefoot!.terms] } }] }), /Terms must be unique/);
+});

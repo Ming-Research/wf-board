@@ -201,7 +201,14 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     wip: leaves.filter(id => r.statusOf(id) === "wip").sort(r.compareSiblings).map(id => row(s,r,"item",id)),
     todo: leaves.filter(id => r.statusOf(id) === "todo").sort(r.compareSiblings).slice(0,10).map(id => row(s,r,"item",id)),
     outgoing: [...outgoing].map(id => ({...row(s,r,"item",id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
+    glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
   };
+}
+/** Glossaries in board project order: one project's, or every project's that holds a term. */
+export function glossary(s: Snapshot, project?: string) {
+  if (project !== undefined && !s.board.projects.some(p => p.name === project)) throw new Error(`project ${project}: choose a configured project with projects`);
+  return s.board.projects.filter(p => project === undefined ? s.glossaries[p.name]?.terms.length : p.name === project)
+    .map(p => ({ project: p.name, terms: s.glossaries[p.name]?.terms ?? [] }));
 }
 export function followups(s: Snapshot, r: Rules, { minutes }: { minutes: number }, now = new Date().toISOString()) {
   if (!Number.isFinite(minutes) || minutes < 0) throw new Error("minutes: provide a nonnegative age");
@@ -275,7 +282,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   if (headIndex === -1) throw new Error("snapshot head: not found in store history");
   const selected = new Set((await store.log({ since })).map(c => c.commit));
   const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
-  const docs = new Map<string, { kind: DocKind; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;

@@ -13,7 +13,7 @@ function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", head: DONE_WHEN, updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
-    owner: { archived },
+    glossaries: {}, owner: { archived },
   };
 }
 // The same board with the named projects migrated and the rest as board.yaml without the field.
@@ -253,7 +253,7 @@ test("cached result arrays are isolated and rules never mutate the snapshot", ()
 });
 
 test("project rules resolve identity, flag configuration and separate ordered inboxes", () => {
-  const s: Snapshot = { board: { title: "Projects", projects: [{ name: "P" }, { name: "Empty" }] }, head: "", owner: { archived: {} }, notes: {}, decisions: {}, items: {} };
+  const s: Snapshot = { board: { title: "Projects", projects: [{ name: "P" }, { name: "Empty" }] }, head: "", owner: { archived: {} }, notes: {}, decisions: {}, glossaries: {}, items: {} };
   for (const [id, fields] of Object.entries({ area: { group: "P" }, child: { parent: "area" }, empty: { group: "Empty" }, missing: { group: "Missing" }, newer: { group: "P", request: { by: "x", at: T2 } }, older: { group: "P", request: { by: "x", at: T1 } }, closed: { group: "P", request: { by: "x", at: T0 }, status: "cancelled" } })) s.items[id] = Item.parse({ title: id, head: DONE_WHEN, priority: "P2", updated: T0, rev: 1, ...fields });
   const r = rules(s);
   assert.equal(r.projectOf("child"), "P");

@@ -241,8 +241,12 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .ref.q.open { color: var(--ask); font-weight: 600; }
 a { color: var(--accent); }
 code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-soft); padding: 0 4px; border-radius: 3px; }
-section.decisions[hidden] { display: none; }
-section.decisions { display: flex; flex-direction: column; gap: 12px; }
+section.decisions[hidden], section.glossary[hidden] { display: none; }
+section.decisions, section.glossary { display: flex; flex-direction: column; gap: 12px; }
+.glossary h3 { margin: 0; font-size: 14px; }
+.glossary dl { margin: 0; font-size: 14px; }
+.glossary dt { font-weight: 600; }
+.glossary dd { margin: 0 0 6px; max-width: 76ch; }
 .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
 .card .card-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
 .card h3 { margin: 0; font-size: 16px; font-family: var(--font-head); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -345,6 +349,11 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
   <section class="decisions" id="decisions" hidden>
     <h2>其他待决事项</h2>
     <div id="cards"><p class="empty">还没有决策记录。</p></div>
+  </section>
+
+  <section class="glossary" id="glossary" hidden>
+    <h2>术语</h2>
+    <div id="terms"></div>
   </section>
 
   <footer class="sendbox" id="sendbox" hidden>
