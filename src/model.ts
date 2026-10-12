@@ -47,8 +47,8 @@ export type Ask = z.infer<typeof Ask>;
 /**
  * An item. An item without `parent` is an area: a line of work with its
  * project heading (`group`); responsibility comes from Board.projects. `status` belongs to leaves; a parent's is derived
- * from its sub-items. `priority` belongs to roots, items no open item depends on; every other item's is derived from the
- * open items depending on it (src/rules.ts).
+ * from its sub-items. In a migrated project `priority` belongs to roots, items no open item depends on, and every other
+ * item's is derived from the open items depending on it; otherwise leaves store it (src/rules.ts).
  */
 export const Item = z.object({
   title: z.string().min(1),
@@ -128,6 +128,8 @@ export type Note = z.infer<typeof Note>;
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
+  /** Priority comes from dependents (src/rules.ts); absent means the legacy rules (src/legacy-priority.ts). Set only in board.yaml. */
+  migrated: z.boolean().optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
 

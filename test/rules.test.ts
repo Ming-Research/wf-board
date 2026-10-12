@@ -9,13 +9,18 @@ const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12
 const DONE_WHEN = "**完成条件**：测试通过";
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}, archived: Record<string, string> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name})) }, head: "0".repeat(40),
+    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name, migrated: true})) }, head: "0".repeat(40),
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", head: DONE_WHEN, updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
     owner: { archived },
   };
 }
+// The same board with the named projects migrated and the rest as board.yaml without the field.
+function projects(s: Snapshot, migrated: string[]): Snapshot {
+  return { ...s, board: { ...s.board, projects: s.board.projects.map(({ name }) => migrated.includes(name) ? { name, migrated: true } : { name }) } };
+}
+const legacy = (...a: Parameters<typeof snapshot>): Snapshot => projects(snapshot(...a), []);
 const dep = (id: string, why = "needs it") => ({ id, why });
 const card = (key: string, why = "needs ruling") => ({ card: key, why });
 
@@ -341,4 +346,94 @@ test("open roots without a stored priority are flagged, including items whose de
   assert.equal(closed.statusOf("p"), "done"); assert.equal(closed.isRoot("a"), true); // a parent counts by its derived status
   assert.deepEqual(closed.checks("a"), [{ text: NO_PRIORITY }]);
   for (const status of ["done", "cancelled"] as const) assert.deepEqual(rules(snapshot({ a: { status } })).checks("a"), [], status);
+});
+
+test("LEGACY PRIORITY: unmigrated written priority prefers open leaves, then done leaves, then cancelled leaves", () => {
+  const cases: Array<[Partial<Item>, Partial<Item>, string]> = [
+    [{ status: "todo", priority: "P2" }, { status: "done", priority: "P0" }, "P2"],
+    [{ status: "todo", priority: "P2" }, { status: "cancelled", priority: "P0" }, "P2"],
+    [{ status: "todo", priority: "P1" }, { status: "wip", priority: "P0" }, "P0"],
+    [{ status: "done", priority: "P1" }, { status: "cancelled", priority: "P0" }, "P1"],
+    [{ status: "cancelled", priority: "P2" }, { status: "cancelled", priority: "P1" }, "P1"],
+    [{ status: "todo" }, { status: "done", priority: "P1" }, "P1"],
+    [{}, {}, ""],
+  ];
+  for (const [a, b, expected] of cases) {
+    const r = rules(legacy({ area: { priority: "P0" }, mid: { parent: "area" }, a: { parent: "mid", ...a }, b: { parent: "mid", ...b } }));
+    assert.equal(r.writtenPriorityOf("area"), expected);
+    assert.equal(r.writtenPriorityOf("mid"), expected);
+  }
+  assert.equal(rules(legacy({ leaf: { priority: "P2", status: "done" } })).writtenPriorityOf("leaf"), "P2");
+});
+
+test("LEGACY PRIORITY: unmigrated effective priority propagates through wait chains and ancestors, with a raising witness", () => {
+  // Insert targets before waiters to require more than one relaxation pass.
+  const r = rules(legacy({
+    area: { deps: [dep("mid")], priority: "P0" }, mid: { parent: "area", deps: [dep("target")] },
+    target: { parent: "mid", priority: "P2" }, chain: { priority: "P2", deps: [dep("area")] },
+    urgent: { priority: "P0", deps: [dep("chain")] },
+  }));
+  assert.equal(r.writtenPriorityOf("target"), "P2");
+  for (const id of ["area", "mid", "target", "chain"]) assert.equal(r.priorityOf(id), "P0", id);
+  assert.equal(r.raisedBy("target"), "chain");
+  assert.equal(r.raisedBy("mid"), "chain");
+  assert.equal(r.raisedBy("area"), "chain");
+  assert.equal(r.raisedBy("chain"), "urgent");
+  assert.equal(r.raisedBy("urgent"), null);
+});
+
+test("LEGACY PRIORITY: in unmigrated projects ended and archived work do not raise priorities, and ancestors do not act as external waiters", () => {
+  const r = rules(legacy({
+    area: { deps: [dep("low"), dep("high")] }, low: { parent: "area", priority: "P2" }, high: { parent: "area", priority: "P0" },
+    done: { status: "done", priority: "P0", deps: [dep("low")] }, cancelled: { status: "cancelled", priority: "P0", deps: [dep("low")] },
+    archived: { priority: "P0", deps: [dep("low")] }, arChild: { parent: "archived", priority: "P0", deps: [dep("low")] },
+    endTarget: { status: "done", priority: "P2" }, arTarget: { priority: "P2" },
+    urgent: { priority: "P0", deps: [dep("endTarget"), dep("arTarget")] },
+  }, {}, {}, { archived: T1, arTarget: T1 }));
+  assert.equal(r.priorityOf("low"), "P2");
+  assert.equal(r.raisedBy("low"), null);
+  assert.equal(r.priorityOf("endTarget"), "P2");
+  assert.equal(r.priorityOf("arTarget"), "P2");
+  assert.equal(r.priorityOf("area"), "P0");
+  const unset = rules(legacy({ target: {}, waiter: { priority: "P1", deps: [dep("target")] } }));
+  assert.equal(unset.priorityOf("target"), "P1");
+  assert.equal(unset.raisedBy("target"), "waiter");
+});
+
+test("one board gives the new results when its project is migrated and the legacy ones when board.yaml omits the field", () => {
+  const items: Record<string, Partial<Item>> = { area: { priority: "P0", deps: [dep("leaf")], head: "" }, leaf: { parent: "area", priority: "P2", head: "" }, waiter: { priority: "P1", deps: [dep("leaf")] } };
+  const now = rules(snapshot(items)), before = rules(legacy(items));
+  assert.equal(now.migrated("leaf"), true); assert.equal(before.migrated("leaf"), false);
+  assert.equal(now.priorityOf("leaf"), "P0"); assert.equal(now.raisedBy("leaf"), null); assert.equal(now.writtenPriorityOf("leaf"), "P2");
+  assert.equal(before.priorityOf("leaf"), "P1"); assert.equal(before.raisedBy("leaf"), "waiter"); // the parent does not raise its own leaves
+  assert.deepEqual(now.checks("area").map(c => c.text), [NO_DONE_WHEN]); assert.deepEqual(before.checks("area"), []);
+  assert.deepEqual(before.checks("leaf"), []); assert.deepEqual(rules(legacy({ bare: { head: "" } })).checks("bare"), []); // no new flags, even on a root without priority or completion condition
+});
+
+test("a migrated dependent raises an unmigrated item without a struck original, and never lowers it", () => {
+  const r = rules(projects(snapshot({
+    goal: { group: "First", priority: "P0", deps: [dep("old")] },
+    area: { group: "Second", priority: "P2", deps: [dep("old"), dep("sib")] }, old: { parent: "area", priority: "P2" }, sib: { parent: "area", priority: "P2", deps: [dep("lib")] },
+    lib: { group: "Second", priority: "P2" }, low: { group: "First", priority: "P2", deps: [dep("high")] }, high: { group: "Second", priority: "P0" },
+  }), ["First"]));
+  assert.equal(r.migrated("goal"), true); assert.equal(r.migrated("old"), false);
+  assert.equal(r.priorityOf("old"), "P0"); assert.equal(r.raisedBy("old"), null); assert.equal(r.writtenPriorityOf("old"), "P2");
+  assert.equal(r.priorityOf("area"), "P0"); assert.equal(r.raisedBy("area"), null); // the parent shows its highest open leaf
+  assert.equal(r.priorityOf("sib"), "P2"); assert.equal(r.priorityOf("lib"), "P2"); // the raise reaches only what waits under the migrated dependent
+  assert.equal(r.priorityOf("high"), "P0"); // a lower migrated dependent leaves the legacy priority alone
+  const mixed = rules(projects(snapshot({ goal: { group: "First", priority: "P1", deps: [dep("old")] }, old: { group: "Second", priority: "P2" }, urgent: { group: "Second", priority: "P0", deps: [dep("old")] } }), ["First"]));
+  assert.equal(mixed.priorityOf("old"), "P0"); assert.equal(mixed.raisedBy("old"), "urgent"); // the legacy raise keeps its record
+});
+
+test("an unmigrated dependent gives a migrated item its effective priority, and counts for rootness", () => {
+  const s = snapshot({
+    waiter: { group: "Second", priority: "P2", deps: [dep("tool")] }, boss: { group: "Second", priority: "P0", deps: [dep("waiter")] },
+    tool: { group: "First", priority: "P2", deps: [dep("part")] }, part: { parent: "tool" },
+  });
+  const r = rules(projects(s, ["First"]));
+  assert.equal(r.priorityOf("waiter"), "P0"); assert.equal(r.raisedBy("waiter"), "boss");
+  assert.equal(r.isRoot("tool"), false); assert.equal(r.priorityOf("tool"), "P0"); assert.equal(r.priorityOf("part"), "P0");
+  assert.deepEqual(r.checks("tool"), []); // not a root: no flag for its ignored stored priority
+  const closed = rules(projects({ ...s, items: { ...s.items, waiter: { ...s.items.waiter!, status: "done" } } }, ["First"]));
+  assert.equal(closed.isRoot("tool"), true); assert.equal(closed.priorityOf("tool"), "P2");
 });

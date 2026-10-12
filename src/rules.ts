@@ -1,8 +1,9 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
-// Ported from the old board page's rule functions, except priority, which now
-// comes from dependents; the verbatim test oracle preserves the other old rules
-// independently of this implementation.
+// Ported from the old board page's rule functions, except priority in migrated
+// projects, which comes from dependents; the verbatim test oracle preserves the
+// old rules independently of this implementation.
 import type { Item, Note, Priority, Snapshot, Status } from "./model.ts";
+import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
 
 export interface Check {
   text: string;
@@ -23,10 +24,20 @@ export interface Rules {
   inbox(project: string): string[];
   isLeaf(id: string): boolean;
   statusOf(id: string): Status;
-  /** No open item depends on it through an item dependency; only a root's stored priority counts. */
+  /** Its project sets `migrated: true` in board.yaml, so priority comes from dependents. */
+  migrated(id: string): boolean;
+  /** No open item depends on it through an item dependency; in a migrated project only a root's stored priority counts. */
   isRoot(id: string): boolean;
-  /** A root's stored priority; otherwise the highest among the open items depending on it, transitively. */
+  /**
+   * The priority shown. Migrated: a root's stored priority, raised by the open items
+   * depending on it, transitively. Unmigrated: the legacy effective priority,
+   * raised by open migrated dependents too.
+   */
   priorityOf(id: string): Priority | "";
+  /** LEGACY PRIORITY: the priority written on an unmigrated item or its leaves. */
+  writtenPriorityOf(id: string): Priority | "";
+  /** LEGACY PRIORITY: the unmigrated waiter whose wait raised this unmigrated item, for the struck original priority. */
+  raisedBy(id: string): string | null;
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; why: string; open: boolean; missing: boolean }>;
   dependents(id: string): Array<{ id: string; why: string }>;
   cardDependents(key: string): Array<{ id: string; why: string }>;
@@ -42,11 +53,9 @@ export interface Rules {
 }
 
 type Dependency = ReturnType<Rules["depsOf"]>[number];
-const RANK: Record<Priority, number> = { P0: 0, P1: 1, P2: 2 };
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
-const rankOfPriority = (p: Priority | "" | undefined): number => p ? RANK[p] : 3;
 // A head states its completion condition under a heading or bold label naming it.
 const DONE_WHEN = /^#{1,6}[ \t].*(完成条件|怎样算完成)|\*\*[^*\n]*(完成条件|怎样算完成)[^*\n]*\*\*/m;
 
@@ -170,25 +179,37 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function inArchive(id: string): boolean { return cached("inArchive", id, () => [id, ...ancestors(id)].some(isArchived)); }
-  function isRoot(id: string): boolean { return !!item(id) && !(reverseDeps().items.get(id) || []).some(w => !ended(w.id)); }
-  // Each level in turn, highest first, walks the dependencies down from the roots
-  // holding it; the first level to reach an item is its highest. A closed item
-  // keeps what reached it but passes nothing on; visiting each item once ends cycles.
-  function priorities(): Map<string, Priority> {
-    return cached("priorities", "", () => {
-      const out = new Map<string, Priority>();
-      for (const p of PRIORITIES) {
-        const queue = [...index().items.keys()].filter(id => isRoot(id) && item(id)!.priority === p);
-        for (const id of queue) out.set(id, p);
-        for (let i = 0; i < queue.length; i++) {
-          if (ended(queue[i]!)) continue;
-          for (const e of depsOf(queue[i]!)) if (e.kind === "item" && !e.missing && !out.has(e.id)) { out.set(e.id, p); queue.push(e.id); }
+  function migrated(id: string): boolean {
+    return cached("migrated", id, () => !!s.board.projects.find(p => p.name === groupOf(id))?.migrated);
+  }
+  const waiters = (id: string): string[] => (reverseDeps().items.get(id) || []).map(w => w.id);
+  function isRoot(id: string): boolean { return !!item(id) && !waiters(id).some(w => !ended(w)); }
+  const legacy = legacyPriority({ item, kids, isLeaf, statusOf, ended, inArchive, ancestors, waiters, migrated, cached }); // LEGACY PRIORITY
+  // One least fixpoint over both kinds of project. A migrated item starts at its
+  // stored priority when it is a root and takes the highest of its open
+  // dependents; an unmigrated leaf starts at its stored priority and is raised
+  // by the legacy rule (legacy-priority.ts). Every rank only falls, from at most
+  // 3, so the loop ends, cycles included; a closed item passes nothing on.
+  function ranks() {
+    return cached("ranks", "", () => {
+      const ids = [...index().items.keys()], rank = new Map<string, number>(), why = new Map<string, string>();
+      for (const id of ids) if (migrated(id) ? isRoot(id) : isLeaf(id)) rank.set(id, rankOfPriority(item(id)!.priority));
+      const rankOf = (id: string): number => migrated(id) || isLeaf(id) ? rank.get(id) ?? 3 : legacy.parentRank(id, rank);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const id of ids) {
+          if (migrated(id)) {
+            const r = Math.min(rank.get(id) ?? 3, ...waiters(id).filter(w => !ended(w)).map(rankOf));
+            if (r < (rank.get(id) ?? 3)) { rank.set(id, r); changed = true; }
+          } else if (isLeaf(id) && legacy.relax(id, rank, why, rankOf)) changed = true;
         }
       }
-      return out;
+      return { rankOf, why };
     });
   }
-  function priorityOf(id: string): Priority | "" { return priorities().get(id) || ""; }
+  function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
+  // LEGACY PRIORITY
+  function raisedBy(id: string): string | null { return migrated(id) ? null : cached("raisedBy", id, () => legacy.raisedBy(id, priorityOf, ranks().why)); }
   function cycles(): Set<string> {
     return cached("cycles", "", () => {
       const idx = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>(), out = new Set<string>();
@@ -233,8 +254,8 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if (leaf && st === "blocked" && deps.length && !open.length) out.push({ text: "可解除阻塞：等的都已完成" });
       if (leaf && st === "blocked" && !deps.length && !needsOwner(id)) out.push({ text: "卡住了，但没写在等什么" });
       if (leaf && st === "wip" && open.length) out.push({ text: "标为进行中，但还在等别的", target: { kind: open[0]!.kind, id: open[0]!.id } });
-      if (!ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
-      if (!ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
+      if (migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
+      if (migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       return out;
     });
   }
@@ -242,7 +263,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, statusOf, isRoot, priorityOf,
+    isLeaf, statusOf, migrated, isRoot, priorityOf, writtenPriorityOf: legacy.writtenPriorityOf, raisedBy,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

@@ -5,6 +5,8 @@ import { rules } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { board, at, later, author } from "./helpers.ts";
 
 test("every operation refuses empty author, missing target and whitespace text without changing memory, disk or history", async t => {
@@ -499,4 +501,51 @@ test("a write that makes an item a non-root drops its stored priority, so removi
   await op.updateItem({ author, id: "other", rev: user.rev + 1, deps: [] });
   const r = rules(store.snapshot());
   assert.equal(r.isRoot("lib"), true); assert.equal(r.priorityOf("lib"), ""); assert.ok(r.checks("lib").some(c => c.text === "没有未完成的条目依赖它，却没写优先级"));
+});
+
+test("LEGACY PRIORITY: an unmigrated project keeps the old write rules and refuses no priority", async t => {
+  const { store, op } = await board(t, { sharedProjects: true, unmigrated: true });
+  await assert.rejects(op.createItem({ author, key: "kid", parent: "area", parentWhy: "Part", title: "Kid" }), /priority: new leaf requires P0, P1 or P2/);
+  await op.createItem({ author, key: "kid", parent: "area", parentWhy: "Part", title: "Kid", priority: "P0" });
+  assert.equal(store.snapshot().items.kid!.priority, "P0");
+  await op.updateItem({ author, id: "a", rev: 1, priority: "P2" });
+  assert.equal(store.snapshot().items.a!.priority, "P2");
+  await assert.rejects(op.createRequest({ author: "Firn", project: "Whitefoot", key: "loose", title: "Need", head: "Witness", why: "Blocks" }), /priority: new request requires P0, P1 or P2/);
+  await op.createRequest({ author, project: "Whitefoot", key: "linked", title: "Need", head: "Witness", why: "Blocks", priority: "P1", from: "b" });
+  assert.equal(store.snapshot().items.linked!.priority, "P1");
+  await op.triageRequest({ author, id: "linked", parent: "area", parentWhy: "Part", priority: "P0", log: "Placed" });
+  assert.equal(store.snapshot().items.linked!.priority, "P0"); // no drop under a parent
+  await op.createItem({ author, key: "split", parent: "kid", parentWhy: "Part", title: "Split", priority: "P2", parentOwnWork: { key: "kid-own", title: "Own" } });
+  assert.equal(store.snapshot().items["kid-own"]!.priority, "P0"); assert.equal(store.snapshot().items.kid!.priority, undefined);
+  await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
+  await op.updateItem({ author, id: "other", rev: store.snapshot().items.other!.rev, deps: [{ id: "lib", why: "Uses lib" }] });
+  assert.equal(store.snapshot().items.lib!.priority, "P2"); // no drop when a dep is added
+  await op.moveItem({ author, id: "kid-own", parent: "area", parentWhy: "Up" });
+  await assert.rejects(op.moveItem({ author, id: "split", parent: "area", parentWhy: "Up", sourceStatus: "todo" }), /sourceStatus and sourcePriority/);
+  await op.moveItem({ author, id: "split", parent: "area", parentWhy: "Up", sourceStatus: "todo", sourcePriority: "P1" });
+  assert.equal(store.snapshot().items.kid!.priority, "P1");
+  const r = rules(store.snapshot());
+  for (const id of Object.keys(store.snapshot().items)) assert.ok(!r.checks(id).some(c => /完成条件|优先级/.test(c.text)), id);
+});
+
+test("create_request follows the receiving project, and a migrated item's priority is dropped when an unmigrated item comes to depend on it", async t => {
+  const { store, op } = await board(t, { sharedProjects: false, unmigrated: true });
+  await store.commit({ author: "Fixture", message: "Migrate Firn", board: { ...store.snapshot().board, projects: store.snapshot().board.projects.map(p => p.name === "Firn" ? { ...p, migrated: true } : p) } });
+  await assert.rejects(op.createRequest({ author, project: "Firn", key: "to-firn", title: "Need", head: "Witness", why: "Blocks", priority: "P1", from: "a" }), /priority: to-firn 有未完成的条目依赖它/);
+  await op.createRequest({ author, project: "Firn", key: "to-firn", title: "Need", head: "Witness", why: "Blocks", from: "a" });
+  assert.equal(store.snapshot().items["to-firn"]!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("to-firn"), "P0"); // a's effective P0, raised by b
+  await assert.rejects(op.createRequest({ author: "Firn", project: "Whitefoot", key: "to-wf", title: "Need", head: "Witness", why: "Blocks", from: "other" }), /priority: new request requires/);
+  await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, deps: [{ id: "other", why: "Uses Firn's area" }] });
+  assert.equal(store.snapshot().items.other!.priority, undefined); assert.equal(rules(store.snapshot()).priorityOf("other"), "P0");
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/other.yaml"]);
+});
+
+test("board.yaml without migrated reads as unmigrated, and migrated: true round-trips", async t => {
+  const { dir, store } = await board(t, { unmigrated: true });
+  assert.doesNotMatch(await readFile(join(dir, "board.yaml"), "utf8"), /migrated/);
+  assert.equal(rules((await Store.open(dir)).snapshot()).migrated("a"), false);
+  await store.commit({ author: "Fixture", message: "Migrate", board: { ...store.snapshot().board, projects: store.snapshot().board.projects.map(p => p.name === "Whitefoot" ? { ...p, migrated: true } : p) } });
+  assert.match(await readFile(join(dir, "board.yaml"), "utf8"), /migrated: true/);
+  const reopened = rules((await Store.open(dir)).snapshot());
+  assert.equal(reopened.migrated("a"), true); assert.equal(reopened.migrated("other"), false);
 });

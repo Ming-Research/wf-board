@@ -29,7 +29,7 @@ test("context includes relationships, page order, open/ruled cards, replies, che
   const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
   // a's stored P1 and b's stored P0 are ignored: neither is a root, and area (P1) is the only open root above them.
   const waiter = q.context(store.snapshot(), rules(store.snapshot()), "b");
-  assert.ok("ancestors" in leaf && "ancestors" in waiter); assert.ok(!("raisedBy" in leaf));
+  assert.ok("ancestors" in leaf && "ancestors" in waiter); assert.equal(leaf.migrated, true); assert.equal(leaf.raisedBy, null);
   assert.equal(leaf.item.priority, "P1"); assert.equal(leaf.priority, "P1"); assert.equal(waiter.item.priority, "P0"); assert.equal(waiter.priority, "P1");
   await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
   await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", order: 5 });
@@ -303,5 +303,5 @@ test("project identity read shapes omit agents and outgoing requests use request
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openLeaves: { todo: 1, wip: 0, blocked: 1 }, inbox: 0 }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", migrated: true, areas: 1, openLeaves: { todo: 1, wip: 0, blocked: 1 }, inbox: 0 }));
 });

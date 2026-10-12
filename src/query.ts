@@ -135,7 +135,7 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
   }
   const it = s.items[id]!, count = options.log === "all" ? it.log.length : options.log ?? 5;
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
-  return { ...row(s, r, "item", id), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), item: { ...it, log }, migrated: r.migrated(id), raisedBy: r.raisedBy(id), earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)), children: r.children(id).sort(r.compareSiblings).map(c => row(s, r, "item", c)),
     deps: r.depsOf(id).map(d => ({ ...dependency(s, r, d.kind, d.id, d.why), open: d.open, missing: d.missing })),
     dependents: r.dependents(id).map(d => dependency(s, r, "item", d.id, d.why)),
@@ -255,7 +255,7 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   const a = before as Record<string, unknown>, b = after as Record<string, unknown>, changes: string[] = [];
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (["rev", "updated"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
-    // An item that gained sub-items loses its own status, now derived from them, and a non-root its ignored priority; its log records the split.
+    // An item that gained sub-items loses its own status, now derived from them, and its priority unless it is a migrated root; its log records the split.
     if (kind === "item" && (key === "status" || key === "priority") && b[key] === undefined) continue;
     if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];

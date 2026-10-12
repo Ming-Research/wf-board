@@ -59,7 +59,7 @@ export function compareExport(data: LegacyExport) {
     })),
     owner: { archived: Object.fromEntries(Object.entries(old.archived).map(([id, r]) => [id, r.at])) },
   };
-  return { items: old.items.length, comparisons: old.items.length * 5 + 1, disagreements: compare(old, snapshot) };
+  return { items: old.items.length, comparisons: old.items.length * 8 + 1, disagreements: compare(old, snapshot) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

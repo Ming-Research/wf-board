@@ -77,7 +77,7 @@ changes to the page. A single process is the only writer, serializes all
 writes, and pushes every change to the page and to waiting sessions.
 
 **Why TypeScript.** The page's derived rules (a parent's status from its
-sub-items, priority from dependents, the 需核对 flags, freshness) are JavaScript
+sub-items, priority, the 需核对 flags, freshness) are JavaScript
 today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
@@ -163,10 +163,25 @@ log:
 - Areas are items without a parent, as today. The fields keep their current
   meanings; `area` is folded into `parent`, `text` into `head`, bare-string
   deps into `{id, why}` entries flagged for a why.
-- **Dependencies and priority.** The hierarchy means dependency only, never
-  topic grouping: a parent lists each sub-item among its deps. Every item's
-  head states what it delivers and its completion condition, under a heading
-  or bold label naming 完成条件 or 怎样算完成, and each dependency's why names
+- **Migration switch.** A project's entry in `board.yaml` may set
+  `migrated: true`; no tool or page control sets it. An item belongs to the
+  project of its area's group. A migrated project follows the next bullet. An unmigrated one, the
+  default, keeps the legacy priority (`src/legacy-priority.ts`): a leaf stores
+  its priority, a parent shows its highest open leaf's, an open waiter raises
+  what it waits on and the page strikes the written priority beside the
+  raised one; its writes need a leaf priority and refuse none, it gets neither
+  new flag and no stored priority is dropped. Across projects a migrated item
+  counts an unmigrated dependent at its shown priority, and an open migrated
+  dependent raises an unmigrated item, never lowers it, without the strike;
+  rootness counts open dependents from both. Write operations follow the
+  project of the item written, `create_request` the receiving project, and
+  dropping a stored priority follows the project of the item that loses it.
+  The legacy path and the switch are removed once every project is migrated.
+- **Dependencies and priority** (migrated projects). The hierarchy means
+  dependency only, never topic grouping: a parent lists each sub-item among
+  its deps. Every item's head states what it delivers and its completion
+  condition, under a heading or bold label naming 完成条件 or 怎样算完成, and
+  each dependency's why names
   the part of that condition it is needed for. An item that no open item
   depends on (open: status neither done nor cancelled, a parent's derived) is
   a root (a project goal, a downstream project's need or a stand-alone piece
@@ -296,6 +311,10 @@ coordinate among themselves; sessions may be renamed freely.
 | `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project |
 
 ### Changing things
+
+Priority checks below are those of a migrated project; an unmigrated one
+requires a leaf priority from `create_item`, `create_request` and `move_item`'s
+`source_priority`, as before, and refuses none (section 5).
 
 | Tool | Does | Checks |
 |---|---|---|
@@ -513,7 +532,8 @@ local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
 
 Any configured project can call `create_request(project, key, title, head,
-priority?, why, from?)`. It creates a top-level TODO item in the receiving
+priority?, why, from?)`; its priority rules are the receiving project's, as
+section 5 describes, and those below are a migrated project's. It creates a top-level TODO item in the receiving
 project with `request: {by: author, at}` and first log
 `${author} 提出：${why}`. With `from`, the filing item must belong to author’s
 project; adding its dependency on the new request happens in the same commit,
