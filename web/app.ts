@@ -56,7 +56,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
   function saveManual() { try { localStorage.setItem("board-open", JSON.stringify(manual)); } catch (e) {} }
-  const wideQuery = matchMedia("(min-width: 1000px)");
+  const wideQuery = matchMedia("(min-width: 800px)");
   let wide = wideQuery.matches;
   let selectedItem: string | null = null;
   try { selectedItem = localStorage.getItem("board-selected"); } catch {}

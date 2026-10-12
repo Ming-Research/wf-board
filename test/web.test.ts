@@ -126,7 +126,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null), setItem(key:string,value:string) { storage.set(key,value); } },
-    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 1000px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }}, getComputedStyle: () => ({ scrollMarginTop: "0" }),
+    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 800px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }}, getComputedStyle: () => ({ scrollMarginTop: "0" }),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
