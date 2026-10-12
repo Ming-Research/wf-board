@@ -179,6 +179,8 @@ test("legacy checks apart from superseded per-item ownership have the exact text
   const cases: Array<[Partial<Item>, Record<string, Partial<Item>>, Array<{ text: string; target?: { kind: "item"; id: string } }>]> = [
     [{ deps: [dep("missing")] }, {}, [{ text: C.missing }]],
     [{ deps: [dep("cancelled", "")] }, { cancelled: { status: "cancelled" } }, [{ text: C.cancelled, target: { kind: "item", id: "cancelled" } }]],
+    [{ status: "cancelled", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
+    [{ status: "done", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
     [{ deps: [dep("other", "")] }, { other: {} }, [{ text: C.why, target: { kind: "item", id: "other" } }]],
     [{ status: "done", deps: [dep("other", "")] }, { other: {} }, []],
     [{ status: "cancelled", deps: [dep("other", "")] }, { other: {} }, []],
