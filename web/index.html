@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <style>
-/* Wide windows show the tree beside a sticky detail pane; narrow windows keep inline bodies. */
+/* The owner chooses a split tree/detail view or single-column inline bodies. */
 :root {
   --bg: #f3f5f4;
   --surface: #ffffff;
@@ -73,8 +73,18 @@ body { background: var(--bg); color: var(--ink); font-family: var(--font-body); 
 .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
 .page-left { min-width: 0; display: flex; flex-direction: column; gap: 26px; }
 #item-detail[hidden] { display: none; }
-body.wide .wrap { max-width: 1800px; display: grid; grid-template-columns: minmax(300px, 1fr) minmax(380px, 1.3fr); align-items: start; gap: 24px; }
-body.wide #item-detail { position: sticky; top: 0; height: 100dvh; overflow-y: auto; overflow-anchor: none; padding: 26px 14px 64px; border-left: 1px solid var(--rule); }
+body.wide { margin: 0; padding-inline: 8px; }
+body.wide .wrap { max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); align-items: start; gap: 0; }
+#split-divider[hidden] { display: none; }
+#split-divider { position: sticky; top: 0; height: 100dvh; cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
+#split-divider:hover, #split-divider:focus-visible { background-color: var(--accent); }
+#split-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+body.wide #item-detail { position: sticky; top: 0; height: 100dvh; min-width: 0; overflow-y: auto; overflow-anchor: none; padding: 26px 8px 64px; }
+body.wide .page-left { padding-right: 8px; }
+body.wide #areas .item { padding-inline: 4px; }
+body.wide #areas .item-title { font-size: 13px; }
+body.wide #areas .item.line > .item-row .item-title { font-size: 13.5px; }
+body.wide #areas .st, body.wide #areas .prio, body.wide #areas .prio-was, body.wide #areas .counts .st, body.wide #areas .newtag, body.wide #areas .asktag, body.wide #areas .checktag, body.wide #areas .pendtag { font-size: 11px; }
 body.wide #areas .item.selected { background: var(--cur); }
 body.wide button.caret { background: none; border: 0; padding: 0; cursor: pointer; align-self: center; }
 body.wide button.caret:disabled { cursor: default; }
@@ -283,7 +293,15 @@ body.wide .crumbbar { right: auto; padding: 4px 8px; }
 .freshchip[role="button"] { cursor: pointer; }
 .item.ctx > .item-row { opacity: .5; }
 .item-row .counts { flex: none; margin-left: auto; display: flex; gap: 6px; align-self: center; font-variant-numeric: tabular-nums; }
-.item-row .counts .st { min-width: 0; font-size: 12px; line-height: 1.7; }
+.tree-row .counts { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+.item-row .counts .st { flex: none; min-width: 0; font-size: 12px; line-height: 1.7; }
+/* The intrinsic head does not shrink for counts; once capped by the row its title can shrink. */
+.tree-row { flex-wrap: nowrap; gap: 0; }
+.tree-row > .caret { width: 12px; margin-right: 8px; }
+.tree-row > .item-head { flex: 1 0 auto; flex-wrap: nowrap; width: auto; max-width: calc(100% - 20px); white-space: nowrap; gap: 4px; }
+.tree-row .item-title { flex: 1 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row > .item-head > :not(.item-title) { flex-shrink: 0; }
+.tree-row > .item-head > .title-was { max-width: 8ch; overflow: hidden; text-overflow: ellipsis; }
 .grp-filters { margin-top: 8px; }
 .log-entry.cur, .note.cur, .deprow.cur { background: var(--cur); }
 .note .anchor { font-size: 12px; color: var(--muted); }
@@ -345,6 +363,7 @@ body.wide .crumbbar { right: auto; padding: 4px 8px; }
     <span id="send-note"></span>
   </footer>
   </div>
+  <div id="split-divider" hidden></div>
   <aside id="item-detail" aria-label="条目正文" hidden></aside>
 </div>
 

@@ -56,8 +56,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
   function saveManual() { try { localStorage.setItem("board-open", JSON.stringify(manual)); } catch (e) {} }
-  const wideQuery = matchMedia("(min-width: 800px)");
-  let wide = wideQuery.matches;
+  let wide = true;
+  try { wide = localStorage.getItem("board-split") !== "false"; } catch {}
+  let treeWidth: number | null = null;
+  try { const stored=Number(localStorage.getItem("board-tree-width")); if (Number.isFinite(stored) && stored > 0) treeWidth=stored; } catch {}
   let selectedItem: string | null = null;
   try { selectedItem = localStorage.getItem("board-selected"); } catch {}
   let selectionRestored = false, detailDirty = true;
@@ -740,7 +742,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
-    { key: "Enter", show: "Enter", label: "查看选中的条目（窄屏展开或收起）", run: () => toggleFocused() },
+    { key: "Enter", show: "Enter", label: "查看选中的条目（单栏展开或收起）", run: () => toggleFocused() },
     { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你处理", run: () => { stepStop(1); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
@@ -789,7 +791,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return b;
   }
   // An item opens by default when it is in progress, waits for the owner, or holds something that does.
-  // Sub-items start folded; owner toggles and navigation open their path. Narrow mode also uses manual for bodies.
+  // Sub-items start folded; owner toggles and navigation open their path. Single-column mode also uses manual for bodies.
   // Under a dependency filter, the items above a match open unless the owner folded them.
   function isOpen(it: ViewItem) { return filtering(groupOf(it)) && !(it.id in manual) ? filterMatches().anc.has(it.id) : !!manual[it.id]; }
 
@@ -1225,6 +1227,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       acts.appendChild(all);
     }
     view.appendChild(el("span", "sum-k", "视图"));
+    const split=sbtn("s-plain" + (wide ? " s-on" : ""), wide ? "单栏" : "分屏", wide ? "切换到单栏正文" : "切换到分屏正文", () => {
+      wide=!wide;
+      try { localStorage.setItem("board-split",String(wide)); } catch {}
+      layoutChanged(); get("split-toggle").focus({preventScroll:true});
+    });
+    split.addEventListener("keydown",ev => { if (ev.key === "Enter") ev.stopPropagation(); });
+    split.id="split-toggle"; split.setAttribute("aria-label","分屏"); split.setAttribute("aria-pressed",String(wide));
+    view.appendChild(split);
     const fold = sbtn("s-plain", "全部折叠", "折叠所有条目和评论", () => {
       // Folding everything also folds every comment list, including ones that new replies had opened.
       manual = {}; logOpen = {}; saveManual();
@@ -1368,6 +1378,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
+    const previousTitle=head.querySelector<HTMLElement>(".title-was");
+    if (previousTitle && before) previousTitle.title=plain(before.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
@@ -1382,14 +1395,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
     if (ownFresh) box.classList.add("fresh");
-    // Narrow head clicks open the subtree; wide clicks select the displayed detail.
+    // Single-column head clicks open the subtree; split clicks select the displayed detail.
     head.addEventListener("click", ev => {
       if (wide) { ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id)); }
       else { rememberSelected(it.id); manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); }
       get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
     });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
-    const row = el("div", "item-row");
+    const row = el("div", "item-row" + (wide && !detail ? " tree-row" : ""));
     if (wide) {
       const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
       caret.type="button"; caret.disabled=!sub.length;
@@ -1404,7 +1417,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const n: Record<string,number> = {};
       leavesOf(it).filter(l => l !== it && !archivedPath(l)).forEach(l => { const k = statusOf(l); n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
-      ["todo", "wip", "blocked", "done", "cancelled"].forEach(k => { if (n[k]) cs.appendChild(el("span", "st " + k, esc(STATUS[k]) + " " + n[k])); });
+      ["todo", "wip", "blocked", "done", "cancelled"].forEach(k => { if (n[k]) {
+        const count=el("span", "st " + k, wide ? String(n[k]) : esc(STATUS[k]) + " " + n[k]);
+        count.title=(STATUS[k] || k)+" "+n[k]; count.setAttribute("aria-label",count.title);
+        cs.appendChild(count);
+      } });
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
@@ -1876,11 +1893,47 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     crumbKey = null; updateCrumbs();
     if (keep) { const t = get<HTMLTextAreaElement | HTMLInputElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
   }
+  const divider=get("split-divider"), wrap=document.querySelector<HTMLElement>(".wrap")!;
+  divider.setAttribute("role","separator"); divider.setAttribute("aria-orientation","vertical");
+  divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail"); divider.tabIndex=0;
+  let drag: {pointer:number;x:number;width:number} | null = null;
+  function applyTreeWidth() {
+    if (!wide) return;
+    // In split mode the grid may overflow a phone; both columns retain their useful minimums.
+    const maximum=Math.max(300,Math.floor(wrap.getBoundingClientRect().width-8-380));
+    const width=Math.round(Math.max(300,Math.min(maximum,treeWidth ?? (wrap.getBoundingClientRect().width-8)/2.3)));
+    wrap.style.setProperty("--tree-width",width+"px");
+    divider.setAttribute("aria-valuemin","300"); divider.setAttribute("aria-valuemax",String(maximum)); divider.setAttribute("aria-valuenow",String(width));
+    updateCrumbs();
+    return width;
+  }
+  function resizeTree(width:number) {
+    treeWidth=width;
+    treeWidth=applyTreeWidth()!;
+    try { localStorage.setItem("board-tree-width",String(treeWidth)); } catch {}
+  }
+  function endDrag() {
+    if (!drag) return;
+    divider.releasePointerCapture(drag.pointer); drag=null;
+  }
+  divider.addEventListener("pointerdown",ev => {
+    if (!wide || drag || ev.button !== 0) return;
+    ev.preventDefault(); divider.focus({preventScroll:true});
+    drag={pointer:ev.pointerId,x:ev.clientX,width:applyTreeWidth()!}; divider.setPointerCapture(ev.pointerId);
+  });
+  divider.addEventListener("pointermove",ev => { if (drag && ev.pointerId === drag.pointer) resizeTree(drag.width+ev.clientX-drag.x); });
+  for (const kind of ["pointerup","pointercancel"] as const) divider.addEventListener(kind,ev => { if (drag && ev.pointerId === drag.pointer) endDrag(); });
+  divider.addEventListener("lostpointercapture",() => { drag=null; });
+  divider.addEventListener("keydown",ev => {
+    if (!wide || ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing || (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight")) return;
+    ev.preventDefault(); ev.stopPropagation(); resizeTree(applyTreeWidth()!+(ev.key === "ArrowRight" ? 16 : -16));
+  });
+  window.addEventListener("resize",() => applyTreeWidth(),{passive:true});
   function layoutChanged() {
     if (wide) document.body.classList.add("wide"); else document.body.classList.remove("wide");
+    divider.hidden=!wide; endDrag(); applyTreeWidth();
     detailDirty=true; releaseLanding(); renderAll();
   }
-  wideQuery.addEventListener("change", ev => { if (wide === ev.matches) return; wide=ev.matches; layoutChanged(); });
   get("item-detail").addEventListener("scroll", () => {
     if (landing?.pane && (expectedDetailScroll === null || Math.abs(get("item-detail").scrollTop-expectedDetailScroll)>1)) releaseLanding();
   }, {passive:true});
