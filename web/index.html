@@ -42,7 +42,6 @@
   --fresh-ink: #ffffff;
   --fresh-soft: #e3eefc;
   --fresh-soft-ink: #1d4e8f;
-  --chg-add: #e3f2e6;
   --chg-del: #fdeceb;
   --chg-del-ink: #b3261e;
   --font-body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -56,7 +55,7 @@
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
     --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
-    --chg-add: #203c29; --chg-del: #3d1a18; --chg-del-ink: #ff8a80;
+    --chg-del: #3d1a18; --chg-del-ink: #ff8a80;
     color-scheme: dark;
   }
 }
@@ -66,7 +65,7 @@
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
   --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
-    --chg-add: #203c29; --chg-del: #3d1a18; --chg-del-ink: #ff8a80;
+    --chg-del: #3d1a18; --chg-del-ink: #ff8a80;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -310,10 +309,9 @@ body.wide .crumbbar { right: auto; padding: 4px 8px; }
 #hint { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 40; font-size: 13px; padding: 4px 14px; border-radius: 999px; background: var(--ink, #222); color: var(--surface, #fff); opacity: .9; pointer-events: none; }
 #hint[hidden] { display: none; }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
-.chg-add { background: var(--chg-add) !important; color: var(--ink); border-radius: 3px; }
 .chg-del { background: var(--chg-del); color: var(--chg-del-ink); border-radius: 3px; }
 .chg-del, .chg-del * { text-decoration: line-through; color: var(--chg-del-ink) !important; }
-.rich > .chg-add, .rich > .chg-del { padding: 3px 6px; display: flex; flex-direction: column; gap: 6px; }
+.rich > .chg-del { padding: 3px 6px; display: flex; flex-direction: column; gap: 6px; }
 .title-was { font-size: 12px; font-weight: 400; }
 .inbox { margin-top: 12px; padding: 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
 .inbox h3 { margin: 0; font-size: 14px; }

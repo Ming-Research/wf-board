@@ -770,10 +770,12 @@ function cssContract(html:string) {
   html=html.replace(/\/\*[\s\S]*?\*\//g, "");
   const themes=[html.match(/:root \{([^}]+)\}/)![1]!,...html.matchAll(/:root(?::not\(\[data-theme="light"\]\)|\[data-theme="dark"\]) \{([^}]+)\}/g)].map(v=>typeof v === "string" ? v : v[1]!);
   assert.equal(themes.length,3);
-  for (const theme of themes) for (const token of ["--chg-add","--chg-del","--chg-del-ink","--fresh"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
+  for (const theme of themes) for (const token of ["--chg-del","--chg-del-ink","--fresh"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
-  assert.ok(has(".chg-add",/background:\s*var\(--chg-add\)/));
+  // The owner never asked for a green background on new or changed text and does not want it: .chg-add only marks
+  // where n lands and carries no colour.
+  assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
   assert.ok(has(".chg-del",/background:\s*var\(--chg-del\)/));
   assert.ok(has(".chg-del",/color:\s*var\(--chg-del-ink\)/));
   for (const sel of [".chg-del",".chg-del *"]) {
@@ -789,7 +791,7 @@ function cssContract(html:string) {
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
 test("CSS contract detects removed theme tokens mark declarations and blue selectors", async t => {
   const html=await readFile("web/index.html","utf8");
-  for (const token of ["--chg-add","--chg-del","--chg-del-ink","--fresh"]) {
+  for (const token of ["--chg-del","--chg-del-ink","--fresh"]) {
     const declarations=[...html.matchAll(new RegExp(token+":\\s*#[a-fA-F0-9]+;","g"))];
     assert.equal(declarations.length,3);
     for (const [i,match] of declarations.entries()) await t.test(token+" theme "+i,()=> {
@@ -798,12 +800,12 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
     });
   }
   for (const [name,pattern] of [
-    ["green background",/background:\s*var\(--chg-add\)(?:\s*!important)?;/g],
     ["red background",/background:\s*var\(--chg-del\);/g],
     ["red ink",/color:\s*var\(--chg-del-ink\)(?:\s*!important)?;/g],
     ["descendant red ink override",/color:\s*var\(--chg-del-ink\)\s*!important;/g],
     ["strike",/text-decoration:\s*line-through;/g],
   ] as const) await t.test(name,()=> { assert.match(html,pattern); assert.throws(()=>cssContract(html.replaceAll(pattern,""))); });
+  await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
   for (const selector of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));

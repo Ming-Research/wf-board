@@ -209,14 +209,15 @@ log:
   content, comparing the document before its first unread step with its current
   state. Blocks are separated by blank lines, except inside fenced code;
   contiguous lists and tables remain whole blocks so rich rendering stays
-  intact. Added or changed blocks are green; removed blocks stay in place,
-  struck through in red. A changed title shows its former title immediately
+  intact. Added or changed blocks carry no colour of their own (the item's blue
+  line says it holds something new, and `n` lands on the first of them);
+  removed blocks stay in place, struck through in red. A changed title shows its former title immediately
   after it in small struck text. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
-  status, priority and request rows are green, as are added or changed
-  dependency and link rows; removed
-  dependencies and links remain struck. New items and cards mark their title
-  green, without per-block marks. An item or card with unread changes of its
+  status, priority and request rows, and added or changed dependency and link
+  rows, are not coloured either; removed dependencies and links remain struck.
+  New items and cards carry no per-block marks. No green background is used
+  anywhere: the owner never asked for one. An item or card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `r` leaves sub-items alone. On narrow windows a
