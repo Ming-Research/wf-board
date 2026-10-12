@@ -512,6 +512,22 @@ test("a dependency row names its project only when the project differs from the 
   assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
 });
 
+test("a project lists its own roots first, then a rule and the roots other projects depend on", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
+  s.items.own={title:"Own root",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.needed={title:"Needed root",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.user={title:"Other root",group:"Other",priority:"P0",updated:at,rev:1,deps:[{id:"needed",why:"uses it"}],links:[],log:[]};
+  s.items.alone={title:"Other own",group:"Other",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  const p=await page(s,[]);
+  const section=(g:string) => p.all().find(e=>e.className==="group" && e.dataset.group===g)!;
+  const tops=(g:string) => descendants(section(g)).filter(e=>e.id.startsWith("it-") || e.className==="shared-sep").map(e=>e.className==="shared-sep" ? "|" : e.id.slice(3));
+  const projectTops=tops("Project").filter(k=>["area","own","needed","|"].includes(k));
+  assert.deepEqual(projectTops,["area","own","|","needed"],"own roots, then the rule, then the root another project depends on");
+  const rule=descendants(section("Project")).filter(e=>e.className==="shared-sep");
+  assert.equal(rule.length,1); assert.equal(rule[0]!.innerHTML,"被其他项目依赖");
+  assert.equal(descendants(section("Other")).filter(e=>e.className==="shared-sep").length,0,"a project with none shows no rule");
+});
+
 test("project page omits session assignments and shows inbox requests, including empty projects", async () => {
   const s=snapshot(); s.board.projects.push({name:"Empty"});
   s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
