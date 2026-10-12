@@ -358,6 +358,11 @@ The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
 The tree leaves out archived and cancelled items with their subtrees; a
 project's 已归档 or 取消 filter shows them where they sit.
+Only an item whose derived status is done can be archived: the archive
+operation refuses any other, and the `a` key shows 只有完成的条目能归档 without
+calling it. Un-archiving is allowed for any item, so items archived while open
+can be restored, and `a` on an item inside an archived subtree un-archives its
+nearest archived ancestor rather than archiving the item.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, descendant owner-action count and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
