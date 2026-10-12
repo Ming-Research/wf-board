@@ -133,6 +133,27 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
+/** A glossary's id and file name: the name of the project that keeps it, usable as one file name. */
+export const GlossaryId = z.string().regex(/^[^./\\\0\r\n][^/\\\0\r\n]{0,199}$/);
+
+/** A word a project coined, explained in plain words for a reader outside the project. */
+export const Term = z.object({
+  /** One line without surrounding spaces; the page links its occurrences as written. */
+  term: z.string().regex(/^\S(.*\S)?$/),
+  definition: z.string().min(1),
+  updated: Time,
+  /** The writing project. */
+  by: z.string().min(1),
+}).strict();
+export type Term = z.infer<typeof Term>;
+
+/** One project's glossary. Only that project writes it. */
+export const Glossary = z.object({
+  terms: z.array(Term).refine(t => new Set(t.map(t => t.term)).size === t.length, "Terms must be unique"),
+  rev: z.number().int().positive(),
+}).strict();
+export type Glossary = z.infer<typeof Glossary>;
+
 export const Board = z.object({
   projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
   title: z.string().min(1),
@@ -159,6 +180,8 @@ export interface Snapshot {
   items: Record<string, Item>;
   decisions: Record<string, Decision>;
   notes: Record<string, Note>;
+  /** Keyed by project name. */
+  glossaries: Record<string, Glossary>;
   owner: OwnerState;
   /** The commit this snapshot reflects. */
   head: string;

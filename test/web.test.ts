@@ -33,6 +33,7 @@ class Element {
   insertBefore(e: Element, before:Element|null=null) { e.parentElement?.removeChild(e); const i=before ? this.children.indexOf(before) : this.children.length; assert.ok(i>=0); this.children.splice(i,0,e); e.parentElement=this; return e; }
   replaceWith(e: Element) { const p = this.parentElement; if (!p) return; p.children[p.children.indexOf(this)] = e; e.parentElement = p; this.parentElement = null; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
+  getAttribute(name: string) { return this.attributes[name] ?? null; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   captureClick?:(at:{clientX:number;clientY:number})=>boolean;
   // A click at a point; a document capture listener that stops propagation keeps it from the element, as in a browser.
@@ -86,7 +87,7 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
   if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
@@ -191,7 +192,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -774,7 +775,7 @@ test("multi-paragraph card question compares blocks without repeating unchanged 
 test("two-paragraph question guard detects old whole-question title rendering", async () => {
   let transformed=false;
   await assert.rejects(()=>questionContract("",code=> {
-    const old=code.replace(/if \(proseBlocks\(d.question\).length > 1\) \{[\s\S]*?\} else appendTitle\(h, d.question \|\| "", before === null \? null : before\?\.question\);/, 'appendTitle(h, d.question || "", before === null ? null : before?.question);');
+    const old=code.replace(/if \(proseBlocks\(d.question\).length > 1\) \{[\s\S]*?\} else appendTitle\(h, d.question \|\| "", before === null \? null : before\?\.question, "", terms\);/, 'appendTitle(h, d.question || "", before === null ? null : before?.question, "", terms);');
     transformed=old !== code; return old;
   }),{code:"ERR_ASSERTION"});
   assert.ok(transformed,"mutation restores the old whole-question appendTitle path");
@@ -2130,4 +2131,76 @@ test("LEGACY PRIORITY: an unmigrated item raised by a waiter shows its written p
     if (migratedWaiter) { assert.equal(was, undefined); assert.ok(!markup(item(p)).includes("按 P0 排")); }
     else { assert.equal(was!.innerHTML, "P1"); assert.equal(badge.title, "写的是 P1；因为「Waiter」(P0) 在等它"); assert.ok(markup(item(p)).includes("按 P0 排：写的是 P1，因为 ")); }
   }
+});
+
+// Glossary links: each project's glossary; the anchor a term link leads to, as the page names it.
+function glossaries(s: Snapshot) {
+  const term = (term: string, definition: string, by: string) => ({ term, definition, updated: at, by });
+  s.board.projects.push({ name: "Other", migrated: true });
+  s.glossaries = {
+    Project: { terms: [term("否决线", "本项目的否决线", "Project"), term("否决", "本项目的否决", "Project")], rev: 1 },
+    Other: { terms: [term("孪生对照", "同一构建的第二份副本", "Other"), term("否决线", "另一项目的否决线", "Other")], rev: 1 },
+  };
+  return s;
+}
+const anchor = (project: string, term: string) => "#term-" + encodeURIComponent(JSON.stringify([project, term]));
+const termLinks = (html: string) => [...html.matchAll(/<a class="term" href="([^"]+)">([^<]*)<\/a>/g)].map(m => [m[2], m[1]]);
+test("glossary links: only the first occurrence of a term in an item's head and log links, and the longest term wins", async () => {
+  const s = glossaries(snapshot());
+  s.items.child!.head = "否决线定了。否决线再提一次。否决单独出现。";
+  s.items.child!.log = [{ at, by: "Project", text: "否决线在进展里不再链接；孪生对照第一次出现，孪生对照第二次不链接" }];
+  const p = await page(s, []); await expand(p);
+  const body = descendants(item(p)), head = body.find(e => e.className === "rich")!, log = body.find(e => e.className === "log-entry")!;
+  assert.equal(head.innerHTML, '<p><a class="term" href="' + anchor("Project", "否决线") + '">否决线</a>定了。否决线再提一次。<a class="term" href="' + anchor("Project", "否决") + '">否决</a>单独出现。</p>',
+    "the second 否决线 is not linked, and neither is the 否决 inside it");
+  assert.deepEqual(termLinks(markup(log)), [["孪生对照", anchor("Other", "孪生对照")]], "a term the head already linked is not linked again in the log");
+});
+
+test("glossary links: none inside code spans, code blocks or links, and the text's own project's term wins", async () => {
+  const s = glossaries(snapshot());
+  s.items.child!.head = "`否决线` 在代码里，[否决线](https://example.com/x) 在链接里。\n\n```\n否决线\n```\n\n最后 否决线。";
+  s.items.x = { title: "Other area", group: "Other", priority: "P1", status: "todo", head: "否决线 & 孪生对照", updated: at, rev: 1, deps: [], links: [], log: [] };
+  const p = await page(s, []); await expand(p);
+  const head = descendants(item(p)).find(e => e.className === "rich")!.innerHTML;
+  assert.deepEqual(termLinks(head), [["否决线", anchor("Project", "否决线")]]);
+  assert.match(head, /<p>最后 <a class="term"[^>]*>否决线<\/a>。<\/p>$/);
+  await item(p, "x").children[0]!.children[0]!.click(); await setImmediate();
+  const other = descendants(item(p, "x")).find(e => e.className === "rich")!.innerHTML;
+  assert.deepEqual(termLinks(other), [["否决线", anchor("Other", "否决线")], ["孪生对照", anchor("Other", "孪生对照")]], "an item of Other links Other's 否决线");
+  assert.match(other, /<\/a> &amp; <a /, "escaped text between terms stays intact");
+});
+
+test("glossary links: each card and each note with its reply is its own text, and a term click jumps to the glossary without choosing the option", async () => {
+  const s = glossaries(snapshot());
+  s.items.child!.head = "否决线";
+  s.decisions.q = { ...card(), question: "否决线怎么定？", background: "否决线背景", options: [{ key: "A", text: "提高否决线" }, { key: "B", text: "否决" }] };
+  s.notes.n = { target: "it:child", kind: "comment", text: "否决线是什么？", at, state: "done", reply: "否决线和否决都解释了", repliedAt: at, rev: 1 };
+  const p = await page(s, [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  const cardBox = p.all().find(e => e.id === "q-q")!, note = descendants(item(p)).find(e => e.className.split(" ").includes("note"))!;
+  assert.deepEqual(termLinks(markup(cardBox)), [["否决线", anchor("Project", "否决线")], ["否决", anchor("Project", "否决")]], "a card links its question's term once, and its options only a new term");
+  assert.deepEqual(termLinks(markup(note)), [["否决线", anchor("Project", "否决线")], ["否决", anchor("Project", "否决")]], "a note and its reply are one text");
+  const glossary = p.roots.get("glossary")!, entries = descendants(p.roots.get("terms")!);
+  assert.equal(glossary.hidden, false);
+  assert.deepEqual(entries.filter(e => e.tagName === "H3").map(e => e.innerHTML), ["Project", "Other"]);
+  const entry = entries.find(e => e.tagName === "DT" && "#" + e.id === anchor("Other", "孪生对照"))!;
+  assert.equal(entry.innerHTML, "孪生对照"); assert.equal(entries[entries.indexOf(entry) + 1]!.innerHTML, "同一构建的第二份副本");
+  // A link rendered inside an option button, clicked as a browser would, bubbling to the button: the page follows it,
+  // and the button's own handler does not run.
+  const button = option(p, "B"), link = p.document.createElement("a");
+  link.className = "term"; link.setAttribute("href", anchor("Project", "否决")); link.bubbleClick = true; button.appendChild(link);
+  await link.click(); await p.flush();
+  assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 0, "clicking the term chooses no option");
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "Backspace or 返回 comes back from the glossary");
+  await button.click(); await p.flush();
+  assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 1, "the option itself still chooses");
+});
+
+test("glossary section stays hidden without terms and follows a live glossary change", async () => {
+  const s = snapshot(); s.items.child!.head = "孪生对照";
+  const p = await page(s, []); await expand(p);
+  assert.equal(p.roots.get("glossary")!.hidden, true);
+  assert.deepEqual(termLinks(markup(item(p))), []);
+  await p.change("b".repeat(40), [{ kind: "glossary", id: "Project", after: { terms: [{ term: "孪生对照", definition: "定义", updated: at, by: "Project" }], rev: 1 } }]); await p.flush();
+  assert.equal(p.roots.get("glossary")!.hidden, false);
+  assert.deepEqual(termLinks(markup(item(p))), [["孪生对照", anchor("Project", "孪生对照")]]);
 });

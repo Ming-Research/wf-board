@@ -5,14 +5,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { board, author } from "./helpers.ts";
 
-test("SDK client discovers exactly twenty-seven described tools, reads/writes fresh state and receives tool errors", async t => {
+test("SDK client discovers exactly thirty described tools, reads/writes fresh state and receives tool errors", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Test agent", version: "1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
-  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups"].sort());
+  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups", "glossary", "set_term", "delete_term"].sort());
   for (const tool of tools) {
     assert.ok(tool.description && tool.description.length > 30);
     for (const [key, value] of Object.entries(tool.inputSchema.properties ?? {})) assert.ok((value as { description?: string }).description, `${tool.name}.${key} describes its parameter`);
@@ -183,4 +183,28 @@ test("MCP migrates a project for 跨项目, restructures with children and witho
   await client.callTool({ name: "create_item", arguments: { author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" } });
   const box = await client.callTool({ name: "create_item", arguments: { author, key: "box", title: "Box", group: "Whitefoot", priority: "P1", children: [{ id: "lib", why: "Uses lib" }] } });
   assert.equal(box.isError, undefined, text(box)); assert.match(text(box), /^dropped stored priority, no longer a root: lib P2$/m);
+});
+
+test("set_term, glossary, brief and delete_term work end to end, and an unconfigured author is refused", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Glossary agent", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const result = await client.callTool({ name, arguments: args });
+    return { error: result.isError === true, text: (result.content as Array<{ text: string }>).map(c => c.text).join("\n") };
+  };
+  assert.match(client.getInstructions()!, /set_term.*glossary/);
+  assert.equal((await call("glossary", {})).text, "No terms.");
+  assert.match((await call("set_term", { author, term: "否决线", definition: "性能比较里\n判定变慢的界线。" })).text, /^set_term 否决线 · commit [a-f0-9]{40}$/);
+  await call("set_term", { author: "Firn", term: "回收压力", definition: "频繁触发回收的运行方式。" });
+  assert.equal((await call("glossary", {})).text, "Whitefoot:\n  否决线: 性能比较里 判定变慢的界线。\nFirn:\n  回收压力: 频繁触发回收的运行方式。");
+  assert.equal((await call("glossary", { project: "跨项目" })).text, "跨项目: no terms");
+  assert.deepEqual(JSON.parse((await call("brief", { project: author })).text).glossary, ["否决线"]);
+  const refused = await call("set_term", { author: "Snowghost", term: "术语", definition: "定义" });
+  assert.equal(refused.error, true); assert.match(refused.text, /author Snowghost: choose a configured project/);
+  const unknown = await call("glossary", { project: "Snowghost" });
+  assert.equal(unknown.error, true); assert.match(unknown.text, /project Snowghost: choose a configured project/);
+  assert.match((await call("delete_term", { author, term: "否决线" })).text, /^delete_term 否决线 · commit /);
+  assert.equal((await call("glossary", { project: author })).text, "Whitefoot: no terms");
 });

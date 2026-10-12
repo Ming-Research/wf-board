@@ -112,6 +112,7 @@ wf-board-data/
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
+  glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and archived items
   import/                 the original artifact export, kept as provenance
 ```
@@ -220,6 +221,13 @@ log:
   161).
 - A note keeps its original id, so ids that sessions recorded and anchors
   that point at notes stay valid.
+- **Glossaries.** Each project keeps a glossary of the words it coined:
+  `terms: [{term, definition, updated, by}]` with the file's `rev`. A term is
+  one line without surrounding spaces and unique in its glossary; the
+  definition is plain Chinese for a reader outside the project; the server
+  stamps `updated` and `by`. A replaced term keeps its place. A glossary is
+  not an unread document: its changes neither count as 新 nor appear in
+  `changes`.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -313,7 +321,8 @@ coordinate among themselves; sessions may be renamed freely.
 | `overview(group?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status, owner actions waiting, blocked items, flags |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `projects()` | Which project matches this repository? | Project configuration, areas, open leaves and inbox counts |
-| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs and outgoing work |
+| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, outgoing work and its glossary terms |
+| `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project |
 
 ### Changing things
@@ -340,6 +349,8 @@ restructuring forms below (`create_item` with `children`, `move_item` without
 | `create_request(project, key, title, head, priority?, why, from?)` | Files into any project's inbox; optionally links the filing item, which then gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency; priority required without `from` and refused with it |
 | `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves leaf parent work; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
+| `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
+| `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
 
 ## 7. The page
 
@@ -476,6 +487,20 @@ writes with that message. Reconnection retries every five seconds; writes
 resume and the banner clears only after a live connection and a successful
 snapshot reload restore the page's current state.
 
+Glossary links. In item heads and log entries, card questions, backgrounds,
+options and rulings, and note texts and replies, a glossary term links to its
+entry in the 术语 section after the decisions section, which lists each
+project's terms with their definitions and is hidden while no project has
+any. Titles are not linked. Terms match as plain substrings, the longest at
+each position; the text's own project's glossary wins over another project's
+for the same term. Text inside code, code blocks and links is never matched.
+Only the first occurrence of each term in one text links: an item's head and
+its shown log, in display order, are one text, and each card and each note
+with its reply is its own. A link click acts before the clicked element's own
+handlers, so a term in an option chooses nothing; it glides to the entry like
+following a dependency, and Backspace, `[` or 返回 comes back. A glossary change
+re-renders the page.
+
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
@@ -537,7 +562,9 @@ as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)`;
 this applies to items, their cards and owner-note replies or closures.
-Creating an area requires its group to match author. Moving work requires
+Creating an area requires its group to match author. `set_term` and
+`delete_term` change only the author's own glossary, the coordinator
+`跨项目`'s included. Moving work requires
 the source and destination to belong to author’s project, and revising a
 card’s owning item checks both owners. A refusal names the item’s project
 and directs the caller to file into it with `create_request`. Cross-project
@@ -570,7 +597,7 @@ cancelled items are not open requests.
 `projects` reports name, repo, area counts, open leaf status counts
 (excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
 sent item/card owner notes, checks including cleared blockers, open cards
-still awaiting the owner, WIP leaves, the next ten TODO leaves by priority, and outstanding work requested from other projects. That outgoing
+still awaiting the owner, WIP leaves, the next ten TODO leaves by priority, outstanding work requested from other projects, and the project's glossary terms. That outgoing
 list includes open requests with `request.by === project` and open items
 targeted by its items’ cross-project dependencies, so triage does not hide
 linked work. Work queues omit archived items. Read rows, project summaries

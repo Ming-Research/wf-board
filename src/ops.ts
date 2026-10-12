@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Key, Item, Decision, Note, Board } from "./model.ts";
+import { Key, Item, Decision, Note, Board, Glossary, GlossaryId, Term } from "./model.ts";
 import type { Dep, Link, Option, Priority, Snapshot, Status } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -25,6 +25,8 @@ export interface Ops {
   writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string } }): Promise<Result>;
   ruleCard(a: { author: string; key: string; choice?: string; ruling: string }): Promise<Result>;
   replyNote(a: { author: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
+  setTerm(a: { author: string; term: string; definition: string }): Promise<Result>;
+  deleteTerm(a: { author: string; term: string }): Promise<Result>;
 }
 
 // Shared across Ops instances: validation and multi-document writes are one
@@ -91,6 +93,12 @@ function requireOwnership(s: Snapshot, project: string, author: string, id: stri
   requireAuthor(s, author, author === project ? "" : `${refusal}. `);
   if (author !== project) throw new OpError(refusal);
 }
+/** The author's own glossary, the only one it may change; an empty one when it has none yet. */
+function ownGlossary(s: Snapshot, author: string): Glossary {
+  requireAuthor(s, author);
+  if (!GlossaryId.safeParse(author).success) throw new OpError(`author ${author}: a project whose name contains a slash or starts with a dot cannot keep a glossary file`);
+  return s.glossaries[author] ?? { terms: [], rev: 1 };
+}
 function ownedItem(s: Snapshot, id: string, author: string, field = "id"): Item {
   const it = requireItem(s, id, field);
   requireOwnership(s, rules(s).projectOf(id), author, id);
@@ -133,6 +141,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         for (const put of work.puts) {
           if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
           else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
+          else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
           else next.notes[put.id] = parse(Note, put.doc);
         }
         const beforeRules = rules(s);
@@ -162,7 +171,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         } catch (error) {
           if (error instanceof ConflictError) {
             if (!overwrite) continue;
-            if (error.currentDoc && error.kind !== "note") await stale(error.kind, error.id, error.expectedRev!, error.currentDoc as Item | Decision);
+            if (error.currentDoc && (error.kind === "item" || error.kind === "decision")) await stale(error.kind, error.id, error.expectedRev!, error.currentDoc as Item | Decision);
             throw new OpError(`rev: ${error.message}; read context and redo`);
           }
           if (error instanceof ValidationError) throw new OpError(`${error.message}; fix the named fields`);
@@ -433,6 +442,19 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
+    }),
+    setTerm: a => run(a, (s, at) => {
+      const glossary = ownGlossary(s, a.author);
+      if (!Term.shape.term.safeParse(a.term).success) throw new OpError("term: write the term on one line without leading or trailing spaces");
+      // A replaced term keeps its place, so the glossary's diff shows only the changed definition.
+      const entry = { term: a.term, definition: a.definition, updated: at, by: a.author };
+      const terms = glossary.terms.some(t => t.term === a.term) ? glossary.terms.map(t => t.term === a.term ? entry : t) : [...glossary.terms, entry];
+      return { id: a.author, kind: "glossary", message: `set_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: parse(Glossary, { ...glossary, terms }), expectRev: s.glossaries[a.author]?.rev ?? null }] };
+    }),
+    deleteTerm: a => run(a, s => {
+      const glossary = ownGlossary(s, a.author);
+      if (!glossary.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${a.author}'s glossary; call glossary to see its terms`);
+      return { id: a.author, kind: "glossary", message: `delete_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };
     }),
   };
 }

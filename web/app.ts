@@ -1,5 +1,5 @@
 import { rules } from "../src/rules.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -10,7 +10,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: { archived: {} }, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
@@ -81,6 +81,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
 
   function esc(s: unknown) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)); }
+  // What each escape esc writes shows as.
+  const ENTITIES: Record<string,string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" };
   // Inline text: **bold**, `code`, [label](https://...). Escaped first, so stored text cannot inject markup.
   function inline(s: unknown) {
     let t = esc(s);
@@ -878,13 +880,27 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function reveal(id: string) { jump("it-" + id); }
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
   const backStack: Array<{key:string|null;y:number}> = [];
-  function follow(id: string) {
-    const from = targetOnScreen();
-    backStack.push({ key: from, y: scrollY });
+  function remember() {
+    backStack.push({ key: targetOnScreen(), y: scrollY });
     if (backStack.length > 50) backStack.shift();
+  }
+  function follow(id: string) {
+    remember();
     reveal(id);
     renderBack();
   }
+  // A glossary link leads to its term in the glossary section and Backspace comes back, as after following a dependency.
+  // It acts before the clicked element's own handlers, so a term inside an option button does not choose that option.
+  document.addEventListener("click", ev => {
+    const link = (ev.target as HTMLElement).closest?.<HTMLElement>("a.term");
+    if (!link || ev.defaultPrevented) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const term = get(link.getAttribute("href")!.slice(1));
+    if (!term) return;
+    remember();
+    jump(term);
+    renderBack();
+  }, true);
   function goBack() {
     const b = backStack.pop();
     renderBack();
@@ -1095,10 +1111,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const NOTE_STATE: Record<Note["state"], string> = { draft: "未发送", sent: "已发送，等处理", done: "已处理" };
   function noteThread(n: Note, fresh = false, replyFresh = false) {
     const box = el("div", "note" + (n.state === "draft" ? " draft" : "") + (fresh ? " newbar" : ""));
+    const terms = itemTerms(n.target.startsWith("it:") ? n.target.slice(3) : snapshot.decisions[n.target.slice(2)]?.item || "");
     box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
     if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
-    box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : blocks(n.text)));
-    if (n.reply) box.appendChild(el("div", "reply rich" + (replyFresh ? " newbar" : ""), '<div class="sub">Claude</div>' + blocks(n.reply)));
+    box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : linkTerms(blocks(n.text),terms)));
+    if (n.reply) box.appendChild(el("div", "reply rich" + (replyFresh ? " newbar" : ""), '<div class="sub">Claude</div>' + linkTerms(blocks(n.reply),terms)));
     return box;
   }
   function noteBlock(key: string, title: string) {
@@ -1269,13 +1286,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let logOpen: Record<string, boolean> = {};
   // Per open item, the first log entry shown, and whether a read the owner just made holds it there; both clear when the item folds.
   const logShown: Record<string, number> = {}, logHold: Record<string,boolean> = {};
-  function logEntry(e: LogEntry, fresh = false) {
+  function logEntry(e: LogEntry, fresh: boolean, terms: TermLinks) {
     const row = el("div", "log-entry" + (fresh ? " fresh" : ""));
     row.appendChild(el("div", "log-meta", esc(day(e.at)) + (e.by ? " · " + esc(e.by) : "")));
-    row.appendChild(el("div", "rich", blocks(e.text)));
+    row.appendChild(el("div", "rich", linkTerms(blocks(e.text),terms)));
     return row;
   }
-  function logSection(it: ViewItem) {
+  function logSection(it: ViewItem, terms: TermLinks) {
     const all = logOf(it);
     if (!all.length) return null;
     const unread = unreadLogs(it);
@@ -1295,7 +1312,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     all.slice(start).forEach((e, j) => {
       const i = start + j;
       const isNew = fon("log") && unread.includes(e);
-      const row = logEntry(e, isNew);
+      const row = logEntry(e, isNew, terms);
       row.id = "log-" + it.id + "-" + i;
       row.dataset.sel = "log:" + it.id + "@" + e.at;
       if (current === row.dataset.sel) row.classList.add("cur");
@@ -1450,7 +1467,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         ws.forEach(w => wl.appendChild(whyRow(w, it, whyOf(w, it.id))));
         body.appendChild(wl);
       }
-      if (headOf(it)) body.appendChild(el("div", "rich", markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it))));
+      // The head and the shown log are one text for glossary links.
+      const terms = itemTerms(it.id);
+      if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it)),terms)));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark})).filter(e => e.mark || !(e.kind === "item" && index().byId.has(e.id) && isCancelled(index().byId.get(e.id)!)));
       if (des.length) {
@@ -1468,7 +1487,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         });
         body.appendChild(dl);
       }
-      const lg = logSection(it);
+      const lg = logSection(it, terms);
       if (lg) body.appendChild(lg);
       // The owner's request and the decision cards come after the log, whose last entry usually leads to them.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);
@@ -1563,14 +1582,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const before = unreadBefore<Decision>("decision",d.id);
     const c = el("article", "card" + (current === "q:" + d.id ? " cur" : "") + (before === null ? " fresh" : ""));
     c.id = "q-" + d.id;
+    const terms = itemTerms(d.item);
     const top = el("div", "card-top");
     const h = el("h3");
     const closed = d.status !== "open";
     if (waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
     if (closed) h.appendChild(el("span", "closedtag" + (before && before.status !== d.status ? " chg-add" : ""), d.ruling ? "已裁定" : "已结束"));
     if (proseBlocks(d.question).length > 1) {
-      h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),markedBlocks(before?.question,d.question)));
-    } else appendTitle(h,d.question || "",before === null ? null : before?.question);
+      h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),linkTerms(markedBlocks(before?.question,d.question),terms)));
+    } else appendTitle(h,d.question || "",before === null ? null : before?.question,"",terms);
     // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
     if (cardFresh(d)) { if (!homeOf(d)) h.appendChild(freshChip("q:" + d.id, 1, true)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
@@ -1582,8 +1602,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       top.appendChild(x);
     }
     c.appendChild(top);
-    if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || "") + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
-    if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + markedBlocks(before?.background,d.background || "")));
+    if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + linkTerms(markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || ""),terms) + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
+    if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + linkTerms(markedBlocks(before?.background,d.background || ""),terms)));
     const chosen = choiceOf(d);
     if (d.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));
@@ -1593,7 +1613,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const li = el("li");
         const sel = (chosen?.choice || d.choice) === o.key;
         const rec = !!o.recommended || /[（(]推荐[)）]/.test(o.text || "");
-        const btn = el("button", "optbtn" + (before && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + markedBlocks(!before ? undefined : oldOptions.get(o.key)?.text || "",o.text) + '</div>');
+        const btn = el("button", "optbtn" + (before && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + linkTerms(markedBlocks(!before ? undefined : oldOptions.get(o.key)?.text || "",o.text),terms) + '</div>');
         btn.type = "button";
         btn.dataset.option = o.key;
         btn.setAttribute("aria-pressed", String(sel));
@@ -1626,6 +1646,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const loose = state.decisions.filter(d => !homeOf(d) && (d.status === "open" || ruledShown(d))).sort(byOrder);
     sec.hidden = !loose.length;
     loose.forEach(d => root.appendChild(decisionCard(d)));
+  }
+  // The glossary section: each project's terms with their definitions, in board project order; glossary links land on a term.
+  function renderGlossaryDOM() {
+    const root = get("terms");
+    root.innerHTML = "";
+    for (const p of snapshot.board.projects) {
+      const terms = snapshot.glossaries[p.name]?.terms || [];
+      if (!terms.length) continue;
+      root.appendChild(el("h3", null, esc(p.name)));
+      const dl = el("dl");
+      for (const t of terms) { const dt = el("dt", null, esc(t.term)); dt.id = termAnchor(p.name, t.term); dl.appendChild(dt); dl.appendChild(el("dd", null, esc(t.definition))); }
+      root.appendChild(dl);
+    }
+    get("glossary").hidden = !root.children.length;
   }
 
   window.addEventListener("scroll", () => {
@@ -1748,6 +1782,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (scope.has("all") || scope.has("areas")) renderAreasDOM();
     else { const groups=new Set([...scope].filter(k => k.startsWith("group:")).map(k => k.slice(6))); if (groups.size) renderAreasDOM(groups,scope); }
     if (scope.has("all") || scope.has("cards")) renderCardsDOM();
+    if (scope.has("all")) renderGlossaryDOM();
     if (!scope.has("all")) {
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
@@ -2064,9 +2099,51 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (before === undefined || before === after) return blocks(after);
     return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value) + '</div>' : blocks(value)).join("");
   }
-  function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "") {
-    parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),inline(title)));
+  function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "", terms?: TermLinks) {
+    parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),linkTerms(inline(title),terms)));
   }
+  // Glossary links. In one text (an item's head and shown log, in display order; a card; a note with its reply) the first
+  // occurrence of each glossary term links to the term in the glossary section. Matching is by plain substring, the
+  // longest term at each position winning; the text's own project's glossary wins over another project's for the same term.
+  interface TermLinks { terms: Map<string,string>; byFirst: Map<string,string[]>; seen: Set<string> }
+  function termLinks(project: string): TermLinks {
+    const { terms, byFirst } = cached("terms:" + project, () => {
+      const terms = new Map<string,string>(), byFirst = new Map<string,string[]>();
+      for (const name of [project, ...snapshot.board.projects.map(p => p.name)]) for (const t of snapshot.glossaries[name]?.terms ?? []) if (!terms.has(t.term)) terms.set(t.term, name);
+      for (const term of [...terms.keys()].sort((a, b) => b.length - a.length)) byFirst.set(term[0]!, [...byFirst.get(term[0]!) || [], term]);
+      return { terms, byFirst };
+    });
+    return { terms, byFirst, seen: new Set() };
+  }
+  function termAnchor(project: string, term: string) { return "term-" + encodeURIComponent(JSON.stringify([project, term])); }
+  // Links terms in rendered HTML. Tags and their attributes are copied, and so is everything inside a link or code;
+  // rendered text escapes "<", so tags and text alternate in the split.
+  function linkTerms(html: string, links: TermLinks | undefined) {
+    if (!links?.terms.size) return html;
+    let out = "", skip = 0;
+    for (const part of html.split(/(<[^>]*>)/)) {
+      const tag = /^<(\/?)(a|code|pre)\b/.exec(part);
+      if (tag) skip += tag[1] ? -1 : 1;
+      out += part.startsWith("<") || skip ? part : linkText(part, links);
+    }
+    return out;
+  }
+  function linkText(text: string, links: TermLinks) {
+    // One unit per shown character, an escaped one included, so a term matches what the reader sees.
+    const units = text.match(/&#?\w+;|[\s\S]/g) || [], chars = units.map(u => ENTITIES[u] ?? u);
+    let out = "";
+    for (let i = 0; i < units.length;) {
+      const term = (links.byFirst.get(chars[i]!) || []).find(t => chars.slice(i, i + t.length).join("") === t);
+      if (!term) { out += units[i++]; continue; }
+      const source = units.slice(i, i + term.length).join("");
+      i += term.length;
+      if (links.seen.has(term)) { out += source; continue; }
+      links.seen.add(term);
+      out += '<a class="term" href="#' + termAnchor(links.terms.get(term)!, term) + '">' + source + "</a>";
+    }
+    return out;
+  }
+  function itemTerms(id: string) { return termLinks(derived.projectOf(id)); }
   let retry: ReturnType<typeof setTimeout> | undefined;
   let source: EventSource | undefined;
   let connectionAbort: AbortController | undefined;
@@ -2117,7 +2194,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const change = JSON.parse((event as MessageEvent).data) as {commit: string; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
       const relocated:string[]=[];
-      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes}};
+      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
       rulePresentationDirty=true;
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
@@ -2145,9 +2222,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           scope.add("card:"+doc.id);
 
-        } else scope.add("all");
+        } else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
+        else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });

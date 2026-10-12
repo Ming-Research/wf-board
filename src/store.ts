@@ -8,10 +8,10 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Item, Key, Note, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 
-export type DocKind = "item" | "decision" | "note";
+export type DocKind = "item" | "decision" | "note" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board> }
@@ -19,9 +19,11 @@ export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; bef
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
 export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
 
-type Doc = Item | Decision | Note;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note };
-const collections = { item: "items", decision: "decisions", note: "notes" } as const;
+type Doc = Item | Decision | Note | Glossary;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary };
+const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries" } as const;
+/** A glossary is named by its project, which may be Chinese (跨项目); other documents by their key. */
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
 
 export class ConflictError extends Error {
@@ -68,7 +70,7 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
 }
 
 function docPath(kind: DocKind, id: string): string {
-  validated(Key, id, `${kind} id ${id}`);
+  validated(ids[kind], id, `${kind} id ${id}`);
   return `${collections[kind]}/${id}.yaml`;
 }
 
@@ -202,7 +204,7 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, owner: { archived: {} }, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: { archived: {} }, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
       for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
@@ -220,8 +222,8 @@ export class Store {
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes"> = { items: {}, decisions: {}, notes: {} };
-    for (const kind of ["item", "decision", "note"] as const) {
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> = { items: {}, decisions: {}, notes: {}, glossaries: {} };
+    for (const kind of ["item", "decision", "note", "glossary"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -231,7 +233,7 @@ export class Store {
           invalid.push({ path, issues: "Expected a .yaml document" });
           continue;
         }
-        const key = Key.safeParse(file.slice(0, -5));
+        const key = ids[kind].safeParse(file.slice(0, -5));
         if (!key.success) invalid.push({ path, issues: key.error.issues });
         const doc = await load(path, schemas[kind]);
         if (doc && key.success) (docs[collections[kind]] as Record<string, Doc>)[key.data] = doc;
@@ -247,7 +249,7 @@ export class Store {
     if (invalid.length || !board) throw new ValidationError(invalid);
     const store = new Store(dir, { board, ...docs, owner, head: "" });
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", "items", "decisions", "notes"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", "items", "decisions", "notes", "glossaries"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
     store.state.head = (await store.git(["rev-parse", "HEAD"])).trim();
     // Owner state can legitimately be newer than HEAD after a daemon restart.
