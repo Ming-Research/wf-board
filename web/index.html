@@ -86,6 +86,12 @@ body.wide #areas .item-title { font-size: 13px; }
 body.wide #areas .item.line > .item-row .item-title { font-size: 13.5px; }
 body.wide #areas .st, body.wide #areas .prio, body.wide #areas .prio-was, body.wide #areas .counts .st, body.wide #areas .newtag, body.wide #areas .asktag, body.wide #areas .checktag, body.wide #areas .pendtag { font-size: 11px; }
 body.wide #areas .item.selected { background: var(--cur); }
+/* Split tree rows: the arrow and the new-content line are centered on the row, the arrow sits close to the status chip,
+   and the status and priority chips are smaller; every status chip keeps the width BLOCK needs. */
+body.wide #areas .tree-row > .caret { width: 10px; margin-right: 3px; align-self: stretch; display: flex; align-items: center; justify-content: center; line-height: 1; }
+body.wide #areas .item.fresh:not(:has(> .body))::before { left: 1px; top: 50%; bottom: auto; height: 13px; transform: translateY(-50%); }
+body.wide #areas .item-head .st { font-size: 10px; padding: 0 4px; min-width: calc(5ch + 8px); line-height: 1.6; }
+body.wide #areas .item-head .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; }
 body.wide button.caret { background: none; border: 0; padding: 0; cursor: pointer; align-self: center; }
 body.wide button.caret:disabled { cursor: default; }
 header.top { padding-block: 26px 14px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--rule); }
