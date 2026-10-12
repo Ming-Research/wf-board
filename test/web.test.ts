@@ -817,6 +817,12 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
+test("item titles are never bold, whatever the status or depth", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].filter(r=>/\.item-title\b/.test(r[1]!));
+  assert.ok(rules.some(r=>/font-weight:\s*400/.test(r[2]!)),"titles set a normal weight");
+  assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== "400")).map(r=>r[1]!.trim()),[],"no rule makes a title bold");
+});
 test("obsolete freshbtn CSS is removed", async () => { const html=await readFile("web/index.html","utf8"); assert.ok(!/\.freshbtn(?:\b|:)/.test(html)); });
 
 async function allReadContract(transform?: PageOptions["transform"]) {
