@@ -303,7 +303,7 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-At viewport widths of at least 1000 CSS pixels, selected through `matchMedia`,
+At viewport widths of at least 800 CSS pixels, selected through `matchMedia`,
 the page has two columns. The left column contains the header, summary and
 navigation, crumbs, project groups and filters, and the nested item tree.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
@@ -322,7 +322,7 @@ the existing item, log, dependency, card and note selection keys and actions.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
-Below 1000 CSS pixels the page keeps inline bodies: a head click opens or
+Below 800 CSS pixels the page keeps inline bodies: a head click opens or
 folds both its body and sub-items. Width changes switch layouts immediately.
 No keyboard bindings change: Enter on a focused head selects its item in the
 wide layout, and opens or folds it in the narrow layout; j/k move focus as
