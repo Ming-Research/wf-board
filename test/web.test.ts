@@ -817,11 +817,11 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
-test("item titles are never bold, whatever the status or depth", async () => {
+test("every item title has the same slightly heavy weight, whatever the status or depth", async () => {
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].filter(r=>/\.item-title\b/.test(r[1]!));
-  assert.ok(rules.some(r=>/font-weight:\s*400/.test(r[2]!)),"titles set a normal weight");
-  assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== "400")).map(r=>r[1]!.trim()),[],"no rule makes a title bold");
+  assert.ok(rules.some(r=>/font-weight:\s*500/.test(r[2]!)),"titles set one weight, 500");
+  assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== "500")).map(r=>r[1]!.trim()),[],"no rule gives some titles another weight");
 });
 test("obsolete freshbtn CSS is removed", async () => { const html=await readFile("web/index.html","utf8"); assert.ok(!/\.freshbtn(?:\b|:)/.test(html)); });
 
