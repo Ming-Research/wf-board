@@ -246,15 +246,8 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .ref.q.open { color: var(--ask); font-weight: 600; }
 a { color: var(--accent); }
 code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-soft); padding: 0 4px; border-radius: 3px; }
-section.decisions[hidden], section.glossary[hidden] { display: none; }
-section.decisions, section.glossary { display: flex; flex-direction: column; gap: 12px; }
-.glossary summary { cursor: pointer; }
-.glossary summary h2 { display: inline; }
-#terms { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
-.glossary h3 { margin: 0; font-size: 14px; }
-.glossary dl { margin: 0; font-size: 14px; }
-.glossary dt { font-weight: 600; }
-.glossary dd { margin: 0 0 6px; max-width: 76ch; }
+section.decisions[hidden] { display: none; }
+section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
 .card .card-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
 .card h3 { margin: 0; font-size: 16px; font-family: var(--font-head); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -333,6 +326,8 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 /* A passing hint sits at the bottom, out of the reader's line, and leaves by itself. */
 #hint { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 40; font-size: 13px; padding: 4px 14px; border-radius: 999px; background: var(--ink, #222); color: var(--surface, #fff); opacity: .9; pointer-events: none; }
 #hint[hidden] { display: none; }
+/* A glossary link opens its term's definition in a popover beside the link. */
+.termpop { position: fixed; z-index: 45; box-sizing: border-box; width: max-content; max-width: min(360px, calc(100vw - 16px)); max-height: 50vh; overflow: auto; overflow-wrap: anywhere; padding: 8px 12px; font-size: 13.5px; line-height: 1.5; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
 .inbox { margin-top: 12px; padding: 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
 .inbox h3 { margin: 0; font-size: 14px; }
@@ -357,10 +352,6 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
   <section class="decisions" id="decisions" hidden>
     <h2>其他待决事项</h2>
     <div id="cards"><p class="empty">还没有决策记录。</p></div>
-  </section>
-
-  <section class="glossary" id="glossary" hidden>
-    <details id="terms-fold"><summary><h2>术语</h2></summary><div id="terms"></div></details>
   </section>
 
   <footer class="sendbox" id="sendbox" hidden>

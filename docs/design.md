@@ -489,16 +489,17 @@ snapshot reload restore the page's current state.
 
 Glossary links. In item heads and log entries, card questions, backgrounds,
 options and rulings, and note texts and replies, a glossary term links to its
-entry in the 术语 section after the decisions section, which lists each
-project's terms with their definitions and is hidden while no project has
-any. Titles are not linked. Terms match as plain substrings, the longest at
-each position; the text's own project's glossary wins over another project's
-for the same term. Text inside code, code blocks and links is never matched.
-Only the first occurrence of each term in one text links: an item's head and
-its shown log, in display order, are one text, and each card and each note
-with its reply is its own. A link click acts before the clicked element's own
-handlers, so a term in an option chooses nothing; it glides to the entry like
-following a dependency, and Backspace, `[` or 返回 comes back. A glossary change
+definition. The page has no glossary section. Titles are not linked. Terms
+match as plain substrings, the longest at each position; the text's own
+project's glossary wins over another project's for the same term. Text inside
+code, code blocks and links is never matched. Only the first occurrence of each
+term in one text links: an item's head and its shown log, in display order, are
+one text, and each card and each note with its reply is its own. A link click
+acts before the clicked element's own handlers, so a term in an option chooses
+nothing; it opens a popover beside the link with the term in bold and its
+definition from the glossary of the project named in the link. The page does
+not scroll or navigate. A click anywhere else, Escape, a scroll or a click on
+another term closes the popover; only one is open at a time. A glossary change
 re-renders the page.
 
 ## 8. Waking sessions

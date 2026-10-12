@@ -87,7 +87,7 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms-fold", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
   if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
@@ -144,7 +144,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
-    window: { get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
+    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
       const input = init?.body ? JSON.parse(init.body) : undefined; calls.push({path,body:input});
       const intercepted = options.response?.(path,input,init ?? {});
@@ -2129,16 +2129,20 @@ test("wide list navigation scrolls the left pane, never the window", async () =>
   assert.equal(pane.scrollTop,0); assert.equal(p.windowScrollY,0,"the 回顶部 button scrolls the pane");
 });
 
-test("wide Back with no row to return to scrolls the list pane back to its saved offset", async () => {
-  const s=glossaries(snapshot()); let p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:e.tagName === "DT" ? 2500-p.scrollY : -500,height:20})});
-  const pane=p.roots.get("page-left")!, link=p.document.createElement("a");
-  link.className="term"; link.setAttribute("href",anchor("Project","否决")); link.bubbleClick=true; p.roots.get("sendbox")!.appendChild(link);
+test("wide Back after following a dependency scrolls the list pane back to the item the reader left", async () => {
+  const s=snapshot(); let p!:Awaited<ReturnType<typeof page>>;
+  s.items.far={title:"Far",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.area!.deps.push({id:"far",why:"needs far"});
+  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:(e.id === "it-far" ? 2500 : e.id === "it-area" ? 700 : -500)-p.scrollY,height:20})});
+  const pane=p.roots.get("page-left")!;
+  await selectWide(p);
+  const dep=p.all().find(e=>e.dataset.sel === "dep:area@far")!;
   pane.scrollTo(0,700); await p.flush(); assert.equal(pane.scrollTop,700);
-  await link.click(); await p.flush();
-  assert.ok(pane.scrollTop>1000,"the term link scrolls the pane to the glossary entry");
+  await dep.click(); await p.flush();
+  assert.ok(pane.scrollTop>1000,"following the dependency scrolls the pane to its row");
   p.key("Backspace"); await p.flush();
-  assert.equal(pane.scrollTop,700,"Back returns the pane to where the reader was"); assert.equal(p.windowScrollY,0);
+  const top=item(p,"area").getBoundingClientRect().top;
+  assert.ok(top>=0 && top<1000,"Back brings the item the reader left into the pane's view"); assert.equal(p.windowScrollY,0);
 });
 
 test("wide landing in the list pins through updates until the reader scrolls the pane", async () => {
@@ -2278,7 +2282,7 @@ test("glossary links: none inside code spans, code blocks or links, and the text
   assert.match(other, /<\/a> &amp; <a /, "escaped text between terms stays intact");
 });
 
-test("glossary links: each card and each note with its reply is its own text, and a term click jumps to the glossary without choosing the option", async () => {
+test("glossary links: each card and each note with its reply is its own text, and a term click opens its definition without choosing the option", async () => {
   const s = glossaries(snapshot());
   s.items.child!.head = "否决线";
   s.decisions.q = { ...card(), question: "否决线怎么定？", background: "否决线背景", options: [{ key: "A", text: "提高否决线" }, { key: "B", text: "否决" }] };
@@ -2287,31 +2291,89 @@ test("glossary links: each card and each note with its reply is its own text, an
   const cardBox = p.all().find(e => e.id === "q-q")!, note = descendants(item(p)).find(e => e.className.split(" ").includes("note"))!;
   assert.deepEqual(termLinks(markup(cardBox)), [["否决线", anchor("Project", "否决线")], ["否决", anchor("Project", "否决")]], "a card links its question's term once, and its options only a new term");
   assert.deepEqual(termLinks(markup(note)), [["否决线", anchor("Project", "否决线")], ["否决", anchor("Project", "否决")]], "a note and its reply are one text");
-  const glossary = p.roots.get("glossary")!, entries = descendants(p.roots.get("terms")!);
-  assert.equal(glossary.hidden, false);
-  assert.deepEqual(entries.filter(e => e.tagName === "H3").map(e => e.innerHTML), ["Project", "Other"]);
-  const entry = entries.find(e => e.tagName === "DT" && "#" + e.id === anchor("Other", "孪生对照"))!;
-  assert.equal(entry.innerHTML, "孪生对照"); assert.equal(entries[entries.indexOf(entry) + 1]!.innerHTML, "同一构建的第二份副本");
-  // A link rendered inside an option button, clicked as a browser would, bubbling to the button: the page follows it,
-  // and the button's own handler does not run.
-  const button = option(p, "B"), link = p.document.createElement("a");
-  link.className = "term"; link.setAttribute("href", anchor("Project", "否决")); link.bubbleClick = true; button.appendChild(link);
-  const fold = p.roots.get("terms-fold")! as unknown as { open?: boolean };
-  assert.ok(!fold.open, "the glossary starts folded");
+  // A link rendered inside an option button, clicked as a browser would, bubbling to the button: the page shows the
+  // definition, and the button's own handler does not run.
+  const button = option(p, "B"), link = termLink(p, "Project", "否决"); button.appendChild(link);
   await link.click(); await p.flush();
-  assert.equal(fold.open, true, "following a term link unfolds the glossary");
+  assert.match(markup(popovers(p)[0]!), /否决[\s\S]*本项目的否决/, "the popover shows the term and its definition");
   assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 0, "clicking the term chooses no option");
-  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "Backspace or 返回 comes back from the glossary");
+  assert.ok(!p.all().some(e => e.id === "backbtn" && !e.hidden), "a term link navigates nowhere, so there is nothing to come back from");
   await button.click(); await p.flush();
   assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 1, "the option itself still chooses");
 });
 
-test("glossary section stays hidden without terms and follows a live glossary change", async () => {
+function termLink(p: Awaited<ReturnType<typeof page>>, project: string, term: string) {
+  const link = p.document.createElement("a");
+  link.className = "term"; link.setAttribute("href", anchor(project, term)); link.bubbleClick = true;
+  return link;
+}
+const popovers = (p: Awaited<ReturnType<typeof page>>) => p.all().filter(e => e.className.split(" ").includes("termpop"));
+const boldTerm = (e: Element) => /^<strong>([^<]*)<\/strong> /.exec(e.innerHTML)?.[1];
+
+test("glossary links: a term click opens one popover with that project's definition; another term, Escape, an outside click and a scroll close or replace it", async () => {
+  const s = glossaries(snapshot());
+  const p = await page(s, []);
+  const host = p.roots.get("sendbox")!, outside = p.document.createElement("div"), plain = p.document.createElement("button");
+  const first = termLink(p, "Project", "否决线"), second = termLink(p, "Other", "否决线"), third = termLink(p, "Other", "孪生对照");
+  for (const e of [first, second, third, outside, plain]) host.appendChild(e);
+  assert.equal(popovers(p).length, 0, "no popover before a click");
+  await first.click(); await p.flush();
+  assert.equal(popovers(p).length, 1);
+  assert.equal(boldTerm(popovers(p)[0]!), "否决线", "the term is bold");
+  assert.ok(markup(popovers(p)[0]!).includes("本项目的否决线") && !markup(popovers(p)[0]!).includes("另一项目"), "the definition is the project named in the link");
+  assert.equal(p.windowScrollY, 0, "the page does not scroll"); assert.equal(p.scrolls.length, 0);
+  await second.click(); await p.flush();
+  assert.equal(popovers(p).length, 1, "only one popover at a time");
+  assert.ok(markup(popovers(p)[0]!).includes("另一项目的否决线") && !markup(popovers(p)[0]!).includes("本项目"), "the other project's definition replaces it");
+  await popovers(p)[0]!.click(); await p.flush();
+  assert.equal(popovers(p).length, 1, "a click inside the popover keeps it");
+  p.key("Escape"); await p.flush();
+  assert.equal(popovers(p).length, 0, "Escape closes it");
+  await third.click(); await p.flush(); assert.equal(popovers(p).length, 1);
+  assert.ok(markup(popovers(p)[0]!).includes("同一构建的第二份副本"));
+  await outside.click(); await p.flush();
+  assert.equal(popovers(p).length, 0, "a click elsewhere closes it");
+  await third.click(); await p.flush(); assert.equal(popovers(p).length, 1);
+  p.key("j"); await p.flush(); assert.equal(popovers(p).length, 1, "other keys leave it");
+  p.user("scroll"); await p.flush();
+  assert.equal(popovers(p).length, 0, "scrolling closes it");
+  await plain.click(); await p.flush(); assert.equal(popovers(p).length, 0, "an outside click with nothing open does nothing");
+});
+
+test("glossary links: the popover escapes the definition and its term, and a term gone from the glossary opens nothing", async () => {
+  const s = glossaries(snapshot());
+  s.glossaries.Project!.terms.push({ term: "<b>x</b>", definition: '<img src=x onerror=alert(1)> & "quoted"', updated: at, by: "Project" });
+  const p = await page(s, []);
+  const link = termLink(p, "Project", "<b>x</b>"), gone = termLink(p, "Project", "已删除"), unknown = termLink(p, "Nowhere", "否决线");
+  for (const e of [link, gone, unknown]) p.roots.get("sendbox")!.appendChild(e);
+  await link.click(); await p.flush();
+  const html = descendants(popovers(p)[0]!).map(e => e.innerHTML).join("\n");
+  assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;quoted&quot;") && html.includes("&lt;b&gt;x&lt;/b&gt;"), "markup in the definition and the term is escaped");
+  assert.ok(!html.includes("<img") && !html.includes("<b>"));
+  await gone.click(); await p.flush(); assert.equal(popovers(p).length, 0, "a term no longer in the glossary shows nothing");
+  await link.click(); await unknown.click(); await p.flush(); assert.equal(popovers(p).length, 0, "an unknown project shows nothing, and closes the one before");
+});
+
+test("the page has no glossary section", async () => {
+  const html = await readFile("web/index.html", "utf8");
+  assert.ok(!/id="glossary"|id="terms|class="glossary"|术语/.test(html), "index.html has no glossary markup");
+  assert.ok(!/\.glossary|#terms/.test(html), "index.html has no glossary styles");
+  const s = glossaries(snapshot()); s.items.child!.head = "否决线";
+  const p = await page(s, []); await expand(p);
+  assert.equal(p.document.getElementById("glossary"), null);
+  assert.equal(p.document.getElementById("terms"), null);
+  assert.equal(p.all().filter(e => ["DL", "DT", "DD"].includes(e.tagName)).length, 0, "no term list is rendered, though a glossary exists");
+  await p.change("b".repeat(40), [{ kind: "glossary", id: "Project", after: { terms: [{ term: "孪生对照", definition: "定义", updated: at, by: "Project" }], rev: 2 } }]); await p.flush();
+  assert.equal(p.all().filter(e => ["DL", "DT", "DD"].includes(e.tagName)).length, 0, "nor after a glossary change");
+});
+
+test("glossary links follow a live glossary change", async () => {
   const s = snapshot(); s.items.child!.head = "孪生对照";
   const p = await page(s, []); await expand(p);
-  assert.equal(p.roots.get("glossary")!.hidden, true);
   assert.deepEqual(termLinks(markup(item(p))), []);
   await p.change("b".repeat(40), [{ kind: "glossary", id: "Project", after: { terms: [{ term: "孪生对照", definition: "定义", updated: at, by: "Project" }], rev: 1 } }]); await p.flush();
-  assert.equal(p.roots.get("glossary")!.hidden, false);
   assert.deepEqual(termLinks(markup(item(p))), [["孪生对照", anchor("Project", "孪生对照")]]);
+  const link = termLink(p, "Project", "孪生对照"); p.roots.get("sendbox")!.appendChild(link);
+  await link.click(); await p.flush();
+  assert.ok(markup(popovers(p)[0]!).includes("定义"), "the popover reads the changed glossary");
 });
