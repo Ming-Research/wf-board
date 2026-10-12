@@ -167,3 +167,20 @@ test("MCP write schemas take a priority only for a root and relay the refusal", 
   const update = await client.callTool({ name: "update_item", arguments: { author, id: "b", rev: 1, priority: "P2" } });
   assert.equal(update.isError, true); assert.match(text(update), /优先级来自这些条目（area）/);
 });
+
+test("MCP migrates a project for 跨项目, restructures with children and without new_parent, and reports dropped priorities", async t => {
+  const { store, op } = await board(t, { sharedProjects: true, unmigrated: true }), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Migration test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
+  const refused = await client.callTool({ name: "update_project", arguments: { author, name: "Whitefoot", migrated: true } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /only the coordinator project 跨项目/);
+  const migrated = await client.callTool({ name: "update_project", arguments: { author: "跨项目", name: "Whitefoot", migrated: true } });
+  assert.equal(migrated.isError, undefined, text(migrated)); assert.match(text(migrated), /^dropped stored priority, no longer a root: a P1, b P0$/m);
+  const root = await client.callTool({ name: "move_item", arguments: { author, id: "b", priority: "P0" } });
+  assert.equal(root.isError, undefined, text(root)); assert.match(text(root), /^b · BLOCK P0 /m);
+  await client.callTool({ name: "create_item", arguments: { author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" } });
+  const box = await client.callTool({ name: "create_item", arguments: { author, key: "box", title: "Box", group: "Whitefoot", priority: "P1", children: [{ id: "lib", why: "Uses lib" }] } });
+  assert.equal(box.isError, undefined, text(box)); assert.match(text(box), /^dropped stored priority, no longer a root: lib P2$/m);
+});

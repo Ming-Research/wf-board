@@ -21,9 +21,10 @@ matches what the artifact board offered.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
   runs git.
-- `src/rules.ts`: derived board rules (parent status, priority: from dependents in migrated projects, legacy elsewhere,
-  checks, freshness). Imported by the server and bundled into the page, so
-  agents and the owner see the same results.
+- `src/rules.ts`: derived board rules (parent status, priority: from
+  dependents in migrated projects, legacy elsewhere, checks, freshness).
+  Imported by the server and bundled into the page, so agents and the owner
+  see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
 - `src/mcp.ts`: MCP tools; `src/http.ts`: page, page API, events and wake

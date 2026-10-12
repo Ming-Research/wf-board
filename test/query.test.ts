@@ -27,10 +27,10 @@ test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks 
 test("context includes relationships, page order, open/ruled cards, replies, checks, links, PRs and bounded logs", async t => {
   const { store, op } = await board(t);
   const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
-  // a's stored P1 and b's stored P0 are ignored: neither is a root, and area (P1) is the only open root above them.
+  // Neither a nor b is a root, so neither stores a priority; area (P1) is the only open root above them.
   const waiter = q.context(store.snapshot(), rules(store.snapshot()), "b");
   assert.ok("ancestors" in leaf && "ancestors" in waiter); assert.equal(leaf.migrated, true); assert.equal(leaf.raisedBy, null);
-  assert.equal(leaf.item.priority, "P1"); assert.equal(leaf.priority, "P1"); assert.equal(waiter.item.priority, "P0"); assert.equal(waiter.priority, "P1");
+  assert.equal(leaf.item.priority, undefined); assert.equal(leaf.priority, "P1"); assert.equal(waiter.item.priority, undefined); assert.equal(waiter.priority, "P1");
   await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
   await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", order: 5 });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
