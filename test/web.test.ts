@@ -1741,6 +1741,55 @@ test("parent leaf counts are number-only with a status label", async () => {
   }
 });
 
+// A cancelled leaf, a parent cancelled through its only sub-item, and a cancelled top-level item beside the open child.
+function cancelledSnapshot() {
+  const s=snapshot();
+  s.items.gone={...s.items.child!,title:"Gone",status:"cancelled",deps:[{id:"child",why:"Gone needs child"}]};
+  s.items.dropped={...s.items.child!,title:"Dropped",status:undefined};
+  s.items.droppedKid={...s.items.child!,title:"Dropped kid",parent:"dropped",status:"cancelled"};
+  s.items.topGone={...s.items.area!,title:"Top gone",deps:[],status:"cancelled"};
+  s.items.area!.deps.push({id:"gone",why:"needs gone"},{id:"dropped",why:"needs dropped"});
+  s.items.dropped.deps=[{id:"droppedKid",why:"needs kid"}];
+  return s;
+}
+test("the tree leaves out cancelled items with their subtrees", async () => {
+  const p=await page(cancelledSnapshot(),[]); await expand(p,"area");
+  assert.ok(item(p,"child"),"the open sub-item stays");
+  for (const id of ["gone","dropped","droppedKid","topGone"]) assert.ok(!item(p,id),id+" is hidden");
+});
+test("the 取消 filter shows cancelled items where they sit", async () => {
+  const p=await page(cancelledSnapshot(),[]); await expand(p,"area");
+  assert.ok(item(p,"child") && !item(p,"gone"),"hidden while the filter is off");
+  const button=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("取消 "))!;
+  assert.equal(button.innerHTML,"取消 4","the status bar keeps counting cancelled items");
+  await button.click(); await p.flush();
+  for (const id of ["gone","dropped","droppedKid"]) assert.ok(descendants(item(p,"area").parentElement!).includes(item(p,id)),id+" shows under its parent");
+  assert.ok(item(p,"topGone"),"a cancelled top-level item shows too");
+});
+test("parent leaf counts leave out cancelled leaves", async () => {
+  const p=await page(cancelledSnapshot(),[]);
+  const counts=item(p,"area").querySelector(".counts")!;
+  assert.deepEqual(counts.children.map(e=>e.className),["st wip"]);
+  assert.deepEqual(counts.children.map(e=>e.innerHTML),["1"]);
+});
+test("dependency lists leave out cancelled items but keep marked and deleted rows", async () => {
+  const s=cancelledSnapshot();
+  s.items.old={...s.items.child!,title:"Old",status:"cancelled"};
+  s.items.area!.deps.push({id:"missing",why:"needs missing"});
+  const before={...s.items.area!,deps:[...s.items.area!.deps,{id:"old",why:"needed old"}]};
+  const p=await page(s,unread("item","area"),before); await expand(p,"area"); await p.flush();
+  const rows=(id:string) => descendants(item(p,id)).filter(e=>e.className.split(" ").includes("deprow")).map(e=>e.innerHTML.match(/class="t">([^<]*)</)?.[1] ?? e.innerHTML);
+  const areaRows=rows("area");
+  assert.ok(areaRows.includes("Child"),"an open dependency stays");
+  assert.ok(!areaRows.includes("Gone") && !areaRows.includes("Dropped"),"cancelled dependencies leave the 依赖 list");
+  assert.ok(areaRows.some(r=>r.includes("missing")),"a deleted dependency keeps its fallback row");
+  const old=descendants(item(p,"area")).find(e=>e.className.split(" ").includes("deprow") && e.innerHTML.includes('class="t">Old<'));
+  assert.ok(old?.className.includes("chg-del"),"a removed dependency on a cancelled item stays, struck");
+  await item(p,"child").children[0]!.children[0]!.click(); await p.flush();
+  const childRows=rows("child");
+  assert.ok(childRows.includes("Parent"),"the parent leads the 被依赖 list");
+  assert.ok(!childRows.includes("Gone"),"a cancelled dependent leaves the 被依赖 list");
+});
 test("tree head structure and CSS keep badges chips title and counts on one line", async () => {
   const s=snapshot(); s.items.area!.title="A very long parent title"; s.items.child!.ask={text:"Needs owner"};
   const p=await page(s,unread("item","area"),null,undefined,{wide:true});

@@ -173,12 +173,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function inArchive(it: ViewItem) { return derived.inArchive(it.id); }
   function archivedPath(it: ViewItem) { return inArchive(it); }
   function statusOf(it: ViewItem) { return derived.statusOf(it.id); }
+  // A cancelled item's sub-items are all cancelled too, so its subtree hides with it, as an archived one's does.
+  function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
   // LEGACY PRIORITY: the written priority and the waiter that raised it, shown struck on unmigrated items.
   function writtenPriorityOf(it: ViewItem) { return derived.writtenPriorityOf(it.id); }
   function raisedBy(it: ViewItem) { return index().byId.get(derived.raisedBy(it.id) || "") || null; }
-  function visible(it: ViewItem) { return !isArchived(it); }
+  function visible(it: ViewItem) { return !isArchived(it) && !isCancelled(it); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)).sort(byPriority); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
@@ -240,6 +242,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
   // Archived items take part only under 已归档, which shows each archived item with its subtree where it sits.
+  // Cancelled items likewise take part only under 取消.
   let filters: Record<string, {status:string[];dep:string}> = {};
   try { filters = JSON.parse(localStorage.getItem("board-filters2") || "{}") || {}; } catch (e) {}
   function groupFilter(g: string) { return filters[g || ""] || { status: [], dep: "" }; }
@@ -261,10 +264,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep; }
   function anyFiltering() { return Object.keys(filters).some(filtering); }
   function showsArchived(g: string) { return groupFilter(g).status.includes("archived"); }
+  function showsCancelled(g: string) { return groupFilter(g).status.includes("cancelled"); }
   function matches(it: ViewItem) {
     const f = groupFilter(groupOf(it)), arch = inArchive(it);
     if (arch && !f.status.includes("archived")) return false;
-    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !arch;
+    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !arch && !isCancelled(it);
     const d = DEP_FILTERS.find(x => x[0] === f.dep);
     return st && (!d || d[3](it));
   }
@@ -278,7 +282,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return { hit, anc, keep: new Set([...hit, ...anc]) };
     });
   }
-  function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && (key === "archived" ? isArchived(it) : !inArchive(it)) && f![3](it)).length; }
+  function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && (key === "archived" ? isArchived(it) : !inArchive(it) && (key === "cancelled" || !isCancelled(it))) && f![3](it)).length; }
   function passes(it: ViewItem) { return !filtering(groupOf(it)) || filterMatches().keep.has(it.id); }
   function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : [])); }
   function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
@@ -312,7 +316,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     tally(freshItems.map(item => ({item})), below.fresh, () => 1);
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
-  function tops() { return derived.areas(id => !derived.isArchived(id) || showsArchived(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
+  function tops() { return derived.areas(id => visible(index().byId.get(id)!) || showsArchived(snapshot.items[id]?.group || "") || showsCancelled(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
   function boardOrder() { return cached("boardOrder", boardOrderNow); }
   function boardOrderNow() {
     const out: ViewItem[] = [];
@@ -403,6 +407,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const it=target.item && index().byId.get(target.item);
     if (it) {
       if (inArchive(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["archived"]}; invalidate(); }
+      else if (isCancelled(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["cancelled"]}; invalidate(); }
       else if (!passes(it)) clearFilters(groupOf(it));
       openPath(it.id);
       selectItem(it.id);
@@ -1353,8 +1358,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (detail) box.dataset.sel = "it:"+it.id;
     if (wide && !detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");
-    // Archived sub-items stay where they are: hidden, unless the 已归档 filter shows them.
-    const sub = kids(it.id, inArchive || showsArchived(groupOf(it))).filter(k => inArchive || passes(k));
+    // Archived and cancelled sub-items stay where they are: hidden, unless the 已归档 or 取消 filter shows them.
+    const sub = kids(it.id, inArchive || showsArchived(groupOf(it)) || showsCancelled(groupOf(it))).filter(k => inArchive || passes(k));
     const ck = checksOf(it), raised = raisedBy(it);
     const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
     const head = el("button", "item-head");
@@ -1417,12 +1422,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       });
     }
     row.appendChild(head);
-    // A parent counts its leaves by status at the right of its row; archived ones are left out.
+    // A parent counts its leaves by status at the right of its row; archived and cancelled ones are left out.
     if ((index().children.get(it.id) || []).length) {
       const n: Record<string,number> = {};
-      leavesOf(it).filter(l => l !== it && !archivedPath(l)).forEach(l => { const k = statusOf(l); n[k] = (n[k] || 0) + 1; });
+      leavesOf(it).filter(l => l !== it && !archivedPath(l) && !isCancelled(l)).forEach(l => { const k = statusOf(l); n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
-      ["todo", "wip", "blocked", "done", "cancelled"].forEach(k => { if (n[k]) {
+      ["todo", "wip", "blocked", "done"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
         count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);
@@ -1434,8 +1439,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (bodyOpen) {
       const body = el("div", "body");
       // The body reads from what depends on the item, through the item itself, to what it depends on, then its log.
-      // The parent, which the tree requires to be one of them, leads the 被依赖 list.
-      const ws = (waitedBy().get(it.id) || []).slice().sort((a, b) => Number(b === upItem(it)) - Number(a === upItem(it)));
+      // The parent, which the tree requires to be one of them, leads the 被依赖 list. Both lists leave out cancelled items.
+      const ws = (waitedBy().get(it.id) || []).filter(w => !isCancelled(w)).sort((a, b) => Number(b === upItem(it)) - Number(a === upItem(it)));
       if (ws.length) {
         const wl = el("div", "deplists");
         wl.appendChild(el("div", "k", "被依赖"));
@@ -1444,7 +1449,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       if (headOf(it) || before?.head) body.appendChild(el("div", "rich", markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it))));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
-      const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark}));
+      const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark})).filter(e => e.mark || !(e.kind === "item" && index().byId.has(e.id) && isCancelled(index().byId.get(e.id)!)));
       if (des.length) {
         const dl = el("div", "deplists after");
         dl.appendChild(el("div", "k", "依赖"));
@@ -1640,7 +1645,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let waitingOrder:string[]=[];
   const renderWaiters:Array<() => void>=[];
   let rulePresentationDirty=true;
-  let presentations=new Map<string,{signature:string;archived:boolean;shown:boolean;request:boolean;group:string}>();
+  let presentations=new Map<string,{signature:string;archived:boolean;cancelled:boolean;shown:boolean;request:boolean;group:string}>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
     let finished=false, raf:number | undefined;
@@ -1662,18 +1667,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function presentationScopes(scope:Set<string>) {
     if (!rulePresentationDirty) return;
     rulePresentationDirty=false;
-    const next=new Map<string,{signature:string;archived:boolean;shown:boolean;request:boolean;group:string}>();
+    const next=new Map<string,{signature:string;archived:boolean;cancelled:boolean;shown:boolean;request:boolean;group:string}>();
     for (const it of state.items) {
       const id=it.id;
       const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
       const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),deps,waiters]);
-      const current={signature,archived:inArchive(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
+      const current={signature,archived:inArchive(it),cancelled:isCancelled(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;
       if (previous.signature !== signature) scope.add("item:"+id);
-      if (previous.archived !== current.archived || previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
+      if (previous.archived !== current.archived || previous.cancelled !== current.cancelled || previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
     }
     presentations=next;
   }
@@ -1921,6 +1926,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (wide) {
           const it=index().byId.get(selectedItem)!;
           if (inArchive(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["archived"]};
+          else if (isCancelled(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["cancelled"]};
           else if (!passes(it)) clearFilters(groupOf(it));
           ancestors(it).forEach(p => { manual[p.id]=true; }); saveManual();
         }
