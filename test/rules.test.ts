@@ -180,6 +180,7 @@ test("legacy checks apart from superseded per-item ownership have the exact text
     [{ deps: [dep("missing")] }, {}, [{ text: C.missing }]],
     [{ deps: [dep("cancelled", "")] }, { cancelled: { status: "cancelled" } }, [{ text: C.cancelled, target: { kind: "item", id: "cancelled" } }]],
     [{ status: "cancelled", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
+    [{ deps: [dep("own"), dep("live")] }, { own: { parent: "a", status: "cancelled" }, live: { parent: "a" } }, []], // a parent keeps listing its cancelled sub-item
     [{ status: "done", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
     [{ deps: [dep("other", "")] }, { other: {} }, [{ text: C.why, target: { kind: "item", id: "other" } }]],
     [{ status: "done", deps: [dep("other", "")] }, { other: {} }, []],
