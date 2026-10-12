@@ -109,7 +109,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   assert.equal(store.snapshot().items.new!.parent, "other");
   assert.ok(!store.snapshot().items.area!.deps.some(d => "id" in d && d.id === "new"));
   assert.deepEqual(store.snapshot().items.other!.deps, [{ id: "new", why: "New home" }, { id: "other-own", why: "它自己的工作" }]);
-  assert.match(store.snapshot().items.new!.log.at(-1)!.text, /area.*other.*New home/);
+  assert.match(store.snapshot().items.new!.log.at(-1)!.text, /解释器工作.*其他项目.*New home/);
   await committed(() => op.writeCard({ author, key: "new-card", item: "new", question: "Choose?", background: "Evidence", options: [{ key: "A", text: "A", recommended: true }], confidence: { score: 3, reason: "Exploratory" } }), "write_card new-card", ["decisions/new-card.yaml"]);
   const originalAt = store.snapshot().decisions["new-card"]!.at;
   await committed(() => op.writeCard({ author, key: "new-card", rev: 1, item: "new", question: "Choose revised?", background: "More evidence", options: [{ key: "B", text: "B" }] }), "write_card new-card", ["decisions/new-card.yaml"]);
@@ -236,7 +236,7 @@ test("R2 moves require and atomically preserve both leaf transitions", async t =
   await op.moveItem({ ...last, sourceStatus: "done", sourcePriority: "P2" }); // area is a root, so its priority may be set
   s = store.snapshot();
   assert.equal(s.items.area!.status, "done"); assert.equal(s.items.area!.priority, "P2");
-  assert.match(s.items.area!.log.at(-1)!.text, /done.*P2/);
+  assert.match(s.items.area!.log.at(-1)!.text, /阻塞证据.*完成.*P2/);
   assert.deepEqual((await Store.open(dir)).snapshot(), s);
 });
 
@@ -350,7 +350,7 @@ test("project requests atomically link the filing project, triage both ways, mov
   const s = store.snapshot();
   assert.equal(s.items.req!.request,undefined); assert.equal(s.items.req!.parent,"other"); assert.equal(s.items.req!.priority,undefined);
   assert.equal(s.items.req!.log.at(-1)!.text,"Scheduled"); assert.equal(s.items.own!.status,"todo");
-  assert.equal(s.items.req!.log.at(-2)!.text,"分拣：放到 other：Need");
+  assert.equal(s.items.req!.log.at(-2)!.text,"分拣：放到「其他项目」下：Need");
   assert.ok(s.items.other!.deps.some(d => "id" in d && d.id === "req" && d.why === "Need"));
   await assert.rejects(op.triageRequest({author:"Firn",id:"req",log:"Again"}),/request/);
   await op.createRequest({...request,key:"area-req"});
@@ -359,7 +359,7 @@ test("project requests atomically link the filing project, triage both ways, mov
   await op.createRequest({...request,key:"move-req"});
   await op.moveItem({author:"Firn",id:"move-req",parent:"other",parentWhy:"Placement"});
   assert.equal(store.snapshot().items["move-req"]!.request,undefined);
-  assert.equal(store.snapshot().items["move-req"]!.log.at(-1)!.text,"分拣：放到 other：Placement");
+  assert.equal(store.snapshot().items["move-req"]!.log.at(-1)!.text,"分拣：放到「其他项目」下：Placement");
   await op.createRequest({...request,key:"declined"});
   await op.setStatus({author:"Firn",id:"declined",status:"cancelled",log:"Not needed"});
   assert.equal(store.snapshot().items.declined!.request,undefined); assert.equal(store.snapshot().items.declined!.status,"cancelled");
@@ -466,7 +466,7 @@ test("a source losing its last sub-item takes a priority only when it is a root"
   await op.moveItem({ author, id: "kid", parent: "area", parentWhy: "Up", sourceStatus: "todo" });
   const s = store.snapshot();
   assert.equal(s.items.mid!.status, "todo"); assert.equal(s.items.mid!.priority, undefined); assert.equal(rules(s).priorityOf("mid"), "P1");
-  assert.equal(s.items.mid!.log.at(-1)!.text, "最后一个子条目 kid 移走；恢复为叶条目，状态 todo。");
+  assert.equal(s.items.mid!.log.at(-1)!.text, "最后一个子条目「Kid」移走；恢复为叶条目，状态 未开始。");
 });
 
 test("an item left without an open dependent is a root: it is flagged without a priority and update_item may set one", async t => {
@@ -550,7 +550,7 @@ test("board.yaml without migrated reads as unmigrated, and migrated: true round-
   assert.equal(reopened.migrated("a"), true); assert.equal(reopened.migrated("other"), false);
 });
 
-const MIGRATED = (p: string) => `迁移到依赖结构：优先级改由依赖它的条目决定，删除了存的 ${p}`;
+const MIGRATED = (p: string) => `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${p} 不再使用`;
 test("migrating a project is a 跨项目 operation that drops every non-root's stored priority with a log entry, in one commit", async t => {
   const { store, op } = await board(t, { unmigrated: true });
   async function refused(call: () => Promise<unknown>, message: RegExp) {
@@ -574,13 +574,13 @@ test("migrating a project is a 跨项目 operation that drops every non-root's s
   assert.equal(store.snapshot().board.projects[0]!.migrated, true);
 });
 
-const NOT_ROOT = (writer: string, p: string) => `${writer} 让它不再是根：优先级改由依赖它的条目决定，删除了存的 ${p}`;
+const NOT_ROOT = (p: string) => `不再是根：优先级改由依赖它的条目决定，原来写的 ${p} 不再使用`;
 test("a write that drops a stored priority logs it on that item, across projects, and returns the dropped items", async t => {
   const { store, op } = await board(t);
   await op.createItem({ author, key: "lib", title: "Lib", group: "Whitefoot", priority: "P2" });
   const result = await op.updateItem({ author: "Firn", id: "other", rev: 1, deps: [{ id: "lib", why: "Uses lib" }] });
   assert.deepEqual(result.dropped, [{ id: "lib", priority: "P2" }]);
-  assert.deepEqual(store.snapshot().items.lib!.log.at(-1), { at: later, by: "Firn", text: NOT_ROOT("Firn", "P2") });
+  assert.deepEqual(store.snapshot().items.lib!.log.at(-1), { at: later, by: "Firn", text: NOT_ROOT("P2") });
   const plain = await op.appendLog({ author, id: "lib", text: "Progress" });
   assert.equal(plain.dropped, undefined);
 });
@@ -612,7 +612,8 @@ test("move_item without new_parent makes a migrated item a root of its project, 
   const result = await op.moveItem({ author, id: "b", priority: "P0" });
   const s = store.snapshot(), b = s.items.b!, r = rules(s);
   assert.equal(b.parent, undefined); assert.equal(b.group, "Whitefoot"); assert.equal(b.priority, "P0");
-  assert.deepEqual(b.deps, [{ id: "a", why: "需要检查" }, { card: "choice", why: "需要决策" }]); // its own dependencies stay assert.equal(b.log.at(-1)!.text, "从 area 移出，成为根条目，优先级 P0。");
+  assert.deepEqual(b.deps, [{ id: "a", why: "需要检查" }, { card: "choice", why: "需要决策" }]); // its own dependencies stay
+  assert.equal(b.log.at(-1)!.text, "从「解释器工作」下移出，成为根条目，优先级 P0。");
   assert.ok(!s.items.area!.deps.some(d => "id" in d && d.id === "b")); assert.equal(r.isRoot("b"), true); assert.equal(r.priorityOf("a"), "P0");
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/area.yaml", "items/b.yaml"]); assert.equal(result.id, "b");
   // The old parent follows the last-child rules.
@@ -622,6 +623,35 @@ test("move_item without new_parent makes a migrated item a root of its project, 
   await refused(() => op.moveItem({ author, id: "a", priority: "P1" }), /sourceStatus: area loses its last sub-item/);
   await op.moveItem({ author, id: "a", priority: "P1", sourceStatus: "todo" });
   assert.equal(store.snapshot().items.area!.status, "todo"); assert.equal(store.snapshot().items.a!.priority, "P1");
+});
+
+test("move_item logs name the old and new parents and the sub-items by title, never by key", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.createItem({ author, key: "loose", title: "独立条目", group: "Whitefoot", priority: "P1" });
+  await op.moveItem({ author, id: "loose", parent: "area", parentWhy: "Part" });
+  assert.equal(store.snapshot().items.loose!.log.at(-2)!.text, "从顶层移到「解释器工作」下：Part");
+  await op.moveItem({ author, id: "a", parent: "other", parentWhy: "Transfer", parentOwnWork: { key: "other-own", title: "其他项目自己的工作" } });
+  const s = store.snapshot();
+  assert.equal(s.items.a!.log.at(-1)!.text, "从「解释器工作」下移到「其他项目」下：Transfer");
+  assert.equal(s.items.other!.log.at(-1)!.text, "加了子条目「中文检查」；它自己的工作移到新的子条目「其他项目自己的工作」。");
+  assert.equal(s.items["other-own"]!.log.at(-1)!.text, "接过「其他项目」自己的工作（原状态 未开始）");
+});
+
+test("a legacy parent's own-work sub-item logs the parent's title, status and priority in plain words", async t => {
+  const { store, op } = await board(t, { sharedProjects: true, unmigrated: true });
+  await op.setStatus({ author, id: "other", status: "wip", log: "Started" });
+  await op.createItem({ author, key: "kid", parent: "other", parentWhy: "Part", title: "Kid", priority: "P2", parentOwnWork: { key: "other-own", title: "Own" } });
+  assert.equal(store.snapshot().items["other-own"]!.log.at(-1)!.text, "接过「其他项目」自己的工作（原状态 进行中，优先级 P1）");
+});
+
+test("a source losing its last sub-items logs their titles and its restored status in plain words", async t => {
+  const migrated = await board(t, { sharedProjects: true });
+  await migrated.op.createItem({ author, key: "group", title: "Group", group: "Whitefoot", priority: "P1", children: [{ id: "a", why: "x" }, { id: "b", why: "y" }], sourceStatus: "wip" });
+  assert.equal(migrated.store.snapshot().items.area!.log.at(-1)!.text, "最后一个子条目「中文检查」、「阻塞证据」移走；恢复为叶条目，状态 进行中。");
+  const legacy = await board(t, { sharedProjects: true, unmigrated: true });
+  await legacy.op.moveItem({ author, id: "a", parent: "other", parentWhy: "x", parentOwnWork: { key: "other-own", title: "Own" } });
+  await legacy.op.moveItem({ author, id: "b", parent: "other", parentWhy: "y", sourceStatus: "wip", sourcePriority: "P2" });
+  assert.equal(legacy.store.snapshot().items.area!.log.at(-1)!.text, "最后一个子条目「阻塞证据」移走；恢复为叶条目，状态 进行中，优先级 P2。");
 });
 
 test("create_item with children moves existing items under a new parent in one commit, with no own-work stub", async t => {
@@ -640,7 +670,7 @@ test("create_item with children moves existing items under a new parent in one c
   const result = await op.createItem({ ...make, children: [{ id: "a", why: "Checks" }, { id: "b", why: "Evidence" }] });
   const s = store.snapshot(), r = rules(s);
   assert.deepEqual(s.items.group!.deps, [{ id: "a", why: "Checks" }, { id: "b", why: "Evidence" }]); assert.equal(s.items.group!.status, undefined);
-  assert.equal(s.items.a!.parent, "group"); assert.equal(s.items.b!.parent, "group"); assert.equal(s.items.a!.log.at(-1)!.text, "从 area 移到 group：Checks");
+  assert.equal(s.items.a!.parent, "group"); assert.equal(s.items.b!.parent, "group"); assert.equal(s.items.a!.log.at(-1)!.text, "从「解释器工作」下移到「Group」下：Checks");
   assert.deepEqual(s.items.area!.deps, [{ id: "group", why: "Part" }]); assert.equal(r.statusOf("group"), "blocked");
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/group.yaml"]); assert.equal(result.id, "group");
   // A new root takes an old parent's last children; the emptied parent follows the source rules, and a child's stored priority is dropped with a log.
@@ -648,7 +678,7 @@ test("create_item with children moves existing items under a new parent in one c
   const boxed = await op.createItem({ author, key: "box", title: "Box", group: "Whitefoot", priority: "P0", children: [{ id: "group", why: "All of it" }, { id: "lib", why: "Uses lib" }], sourceStatus: "done" });
   const after = store.snapshot();
   assert.equal(after.items.area!.status, "done"); assert.equal(after.items.area!.priority, "P1"); assert.equal(after.items.lib!.priority, undefined);
-  assert.deepEqual(after.items.lib!.log.at(-1), { at: later, by: author, text: NOT_ROOT(author, "P2") }); assert.deepEqual(boxed.dropped, [{ id: "lib", priority: "P2" }]);
+  assert.deepEqual(after.items.lib!.log.at(-1), { at: later, by: author, text: NOT_ROOT("P2") }); assert.deepEqual(boxed.dropped, [{ id: "lib", priority: "P2" }]);
   await refused(() => op.createItem({ author: "Firn", key: "theirs", title: "Theirs", group: "Firn", priority: "P1", children: [{ id: "a", why: "x" }] }), /item a belongs to project Whitefoot/);
 });
 
@@ -677,7 +707,7 @@ test("move_item into a migrated leaf without work of its own needs no own-work s
   await op.moveItem({ author, id: "b", parent: "empty", parentWhy: "Part" });
   const s = store.snapshot(), r = rules(s);
   assert.equal(s.items.empty!.status, undefined); assert.equal(s.items.empty!.priority, "P2"); assert.equal(r.statusOf("empty"), "blocked");
-  assert.equal(s.items.empty!.log.at(-1)!.text, "加了子条目 b；它自己没有工作，不另建自己的工作条目。");
+  assert.equal(s.items.empty!.log.at(-1)!.text, "加了子条目「阻塞证据」；它自己没有工作，不另建自己的工作条目。");
   assert.deepEqual(Object.keys(s.items).sort(), Object.keys(before.items).sort()); // no own-work stub
   await op.createRequest({ author: "Firn", project: "Whitefoot", key: "req", title: "Need", head: "Witness", why: "Blocks", priority: "P1" });
   await op.createRequest({ author: "Firn", project: "Whitefoot", key: "req2", title: "Need", head: "Witness", why: "Blocks", priority: "P1" });
