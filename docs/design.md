@@ -168,7 +168,7 @@ log:
   `migrated: true`, set only by `update_project` from the coordinator project
   `跨项目` and never undone; that commit also drops the stored priority of
   every item of the project that is not a root, logging
-  `迁移到依赖结构：优先级改由依赖它的条目决定，删除了存的 PX` on each. An item
+  `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on each. An item
   belongs to the project of its area's group. A migrated project follows the
   next bullet. An unmigrated one, the default, keeps the legacy priority (`src/legacy-priority.ts`): a leaf stores
   its priority, a parent shows its highest open leaf's, an open waiter raises
@@ -193,7 +193,7 @@ log:
   prioritize or cancel. Only a root stores `priority`. Migration leaves no
   stored priority on a non-root, and afterwards every write that makes a
   migrated item a non-root, or writes a migrated non-root, drops its stored
-  priority in the same commit and logs `<writer> 让它不再是根：优先级改由依赖它的条目决定，删除了存的 PX`
+  priority in the same commit and logs `不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用`
   on it; the write's result lists the items. So no non-root holds a stored
   priority, and none returns when an item becomes a root again.
   Every other item's priority is the highest among the open items that depend
@@ -561,7 +561,7 @@ triages them. `triage_request` removes the marker, sets an optional priority
 when the request stays a root (no parent and no open item depending on it), logs
 the disposition, and either places the request under a parent in its
 project or retains it as an area. Placement also appends
-`分拣：放到 <parent>：<why>` before the supplied log. A leaf parent requires
+`分拣：放到「<parent title>」下：<why>` before the supplied log. A leaf parent requires
 `parent_own_work`, preserving its own work as in `create_item`. Moving a
 request under a parent in its project also triages it and logs the placement.
 Declining with `set_status cancelled` clears the marker and records the
