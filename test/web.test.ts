@@ -824,6 +824,12 @@ test("every item title has the same slightly heavy weight, whatever the status o
   assert.ok(rules.some(r=>r[1]!.trim() === ".item-title strong" && /font-weight:\s*inherit/.test(r[2]!)),"markdown strong inherits the title's weight");
   assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== (r[1]!.trim() === ".item-title strong" ? "inherit" : "500"))).map(r=>r[1]!.trim()),[],"title rules require 500; only strong descendants inherit it");
 });
+test("scrolling over the detail pane never scrolls the list behind it", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === "body.wide #item-detail");
+  assert.ok(rule,"the wide detail pane has its own rule");
+  assert.match(rule![2]!,/overscroll-behavior:\s*contain/,"wheel and trackpad scrolls stop at the pane, even when it is too short to scroll");
+});
 function shortDetailLineContract(source:string) {
   const html=source.replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];

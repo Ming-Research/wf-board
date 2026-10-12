@@ -74,7 +74,7 @@ body.wide .wrap { max-width: none; min-width: 688px; margin: 0; display: grid; g
 #split-divider[hidden] { display: none; }
 #split-divider { position: sticky; top: 0; height: 100dvh; cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
 #split-divider:hover { background-color: var(--accent); }
-body.wide #item-detail { position: sticky; top: 0; height: 100dvh; min-width: 0; overflow-y: auto; overflow-anchor: none; padding: 26px 8px 64px; }
+body.wide #item-detail { position: sticky; top: 0; height: 100dvh; min-width: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 26px 8px 64px; }
 body.wide .page-left { padding-right: 8px; }
 body.wide #areas .item { padding-inline: 4px; }
 body.wide #areas .item-title { font-size: 13px; }
