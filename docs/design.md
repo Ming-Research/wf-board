@@ -221,9 +221,9 @@ log:
   anywhere: the owner never asked for one. An item or card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. On narrow windows a
+  and carries no line, since `r` leaves sub-items alone. In single-column mode a
   folded item shows its head row alone: its body, cards and comment list fold
-  together. On wide windows the tree always shows only head rows, with a short
+  together. In split mode the tree always shows only head rows, with a short
   blue line for an item's own unread content; the selected item's body and
   comments appear in the detail column, with the full body line. In both
   layouts the 新 chip still counts what is new inside. New log entries, new notes and replies, and added dependency and link
@@ -232,7 +232,7 @@ log:
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,
   unread chips and item breadcrumbs, reveals the target and its comment list
-  (in the selected item's detail column on wide windows),
+  (in the selected item's detail column in split mode),
   waits for the baselines affecting that target and its expanded containers,
   then scrolls after rendering. Baselines for unrelated collapsed items or
   explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
@@ -304,33 +304,49 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-At viewport widths of at least 800 CSS pixels, selected through `matchMedia`,
-the page has two columns. The left column contains the header, summary and
+The header’s 视图 row has a 分屏 / 单栏 toggle that switches layouts immediately.
+Split mode is on by default; the owner’s choice is saved per viewer in
+browser localStorage, and unavailable storage does not prevent use. Viewport
+width never changes the choice. Split mode has two columns and uses the full
+window with compact tree margins and equal, smaller detail side padding.
+The left column contains the header, summary and
 navigation, crumbs, project groups and filters, and the nested item tree.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 新 chip, 等 count and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
-sub-items. The separate decisions section and send box remain available.
+sub-items. Split tree titles, badges and counts use one smaller text size.
+Each split tree row stays on one line: caret, status, priority, title, 新 chip, 等
+tag and counts. Counts show numbers in their status color, with status names
+in tooltips and accessibility labels. They shrink and clip away first; only
+then does the title truncate with an ellipsis, retaining a minimum width and
+a full-title tooltip. 新 and 等 remain visible. The separate decisions section
+and send box remain available.
+
+A vertical divider resizes the left column with pointer dragging or the left
+and right arrow keys while focused. Its width is saved per viewer in browser
+localStorage. Both columns retain useful minimum widths: 300 CSS pixels for
+the tree and 380 for detail. Split mode may overflow narrower viewports;
+the owner can turn it off for the phone’s single-column layout.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by 被依赖, head text, data, 依赖, log, ask, open cards, shown ruled cards,
 checks and refs, then the item's comment list. The same detail builder renders
-this content inline on narrow windows. With no selection the column says
+this content inline in single-column mode. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
 the existing item, log, dependency, card and note selection keys and actions.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
-Below 800 CSS pixels the page keeps inline bodies: a head click opens or
-folds both its body and sub-items. Width changes switch layouts immediately.
-No keyboard bindings change: Enter on a focused head selects its item in the
-wide layout, and opens or folds it in the narrow layout; j/k move focus as
-before. Actions use the current selection on wide windows, falling
+With split mode off, the page keeps inline bodies: a head click opens or
+folds both its body and sub-items.
+No global keyboard bindings change: Enter on a focused head selects its item in the
+split layout, and opens or folds it in the single-column layout; j/k move focus as
+before. Actions use the current selection in split mode, falling
 back to the selected item or the top visible tree row.
 
-On wide windows, `n`, `N` and 新 chips select the stop's item, unfold its
+In split mode, `n`, `N` and 新 chips select the stop's item, unfold its
 ancestors and bring its tree row into view, then scroll the right column to
 the exact fresh mark, card or note. A card held by no item keeps its existing
 navigation behavior in the separate decisions section. Dependency links,
@@ -370,7 +386,7 @@ stream cannot leave navigation waiting indefinitely. Changes arriving before
 that callback share one render. Note
 changes update their item or card, and an item or card change updates its
 affected subtree and summaries; unrelated cards keep their DOM elements.
-On wide windows these same scoped render paths update the selected item's
+In split mode these same scoped render paths update the selected item's
 detail in place and preserve its scroll position. Unrelated changes do not
 rebuild the detail column.
 Scoped card updates also reconcile membership and order: an unread reply can

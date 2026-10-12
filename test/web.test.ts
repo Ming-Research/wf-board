@@ -17,7 +17,7 @@ class Element {
   value = "";
   disabled = false; type = ""; title = ""; tabIndex = 0;
   attributes: Record<string,string> = {};
-  style: Record<string, string> = {}; dataset: Record<string, string> = {};
+  style: Record<string, string> & {setProperty(name:string,value:string):void} = {setProperty(name:string,value:string) { this[name]=value; }} as Element["style"]; dataset: Record<string, string> = {};
   children: Element[] = []; parentElement: Element | null = null;
   handlers = new Map<string, Array<(event: unknown) => unknown>>();
   constructor(tag: string) { this.tagName = tag.toUpperCase(); }
@@ -37,6 +37,10 @@ class Element {
   captureClick?:(at:{clientX:number;clientY:number})=>boolean;
   // A click at a point; a document capture listener that stops propagation keeps it from the element, as in a browser.
   async click(at={clientX:0,clientY:0}) { if (this.captureClick?.(at) === false) return; let stopped=false; const event={ ...at, target:this, stopPropagation() { stopped=true; }, preventDefault() {} }; for (let e:Element|null=this;e;e=this.bubbleClick && !stopped ? e.parentElement : null) for (const fn of e.handlers.get("click") ?? []) await fn(event); }
+  capturedPointer: number | null = null;
+  setPointerCapture(id:number) { this.capturedPointer=id; }
+  releasePointerCapture(id:number) { if (this.capturedPointer === id) this.capturedPointer=null; }
+  async pointer(kind:string, at:{clientX:number;pointerId?:number;button?:number}) { for (const fn of this.handlers.get(kind) ?? []) await fn({target:this,pointerId:1,button:0,...at,preventDefault(){},stopPropagation(){}}); }
   scrollTop = 0; clientHeight = 1000; scrollHeight = 10000;
   scrollTo(_x: number | {top?:number}, y?: number) { this.scrollTop = Math.max(0, Math.min(this.scrollHeight-this.clientHeight, typeof _x === "object" ? _x.top ?? 0 : y ?? 0)); }
   scrollBy(_x: number, y: number) { this.scrollTo(0,this.scrollTop+y); }
@@ -72,7 +76,7 @@ class Element {
 let bundle: Promise<string> | undefined;
 interface FakeResponse { ok:boolean; status:number; json: () => Promise<unknown> }
 interface PageOptions {
-  wide?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
+  freshViewer?: boolean; storageUnavailable?: boolean; wide?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   notesOpen?: Record<string,boolean>; geometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   transform?: (code:string) => string;
   frames?: Frames;
@@ -82,8 +86,10 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "crumbs", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
+  // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
+  if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
   let wide=options.wide ?? false;
   const widthListeners: Array<(event:{matches:boolean})=>unknown> = [];
@@ -125,7 +131,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
-    innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null), setItem(key:string,value:string) { storage.set(key,value); } },
+    innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 800px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }}, getComputedStyle: () => ({ scrollMarginTop: "0" }),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
@@ -176,11 +182,11 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   // A live update from the server, as the page's event stream delivers it.
   const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
-  return { roots, all, calls, document, change, emit, measurements, scrolls, sources, renders,flush, storage,
+  return { roots, all, calls, document, wrap, change, emit, measurements, scrolls, sources, renders,flush, storage,
     setWide:async(value:boolean)=> { wide=value; widthListeners.forEach(fn=>fn({matches:wide})); await flush(); },
     get scrollY() { return scrollPosition; },
     user:(kind:string)=> { if (kind === "scroll") scrollPosition+=100; dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
-    key: (key: string,target:Element=new Element("div")) => { let prevented=false; dispatch("keydown",{key,isTrusted:true,target,preventDefault(){prevented=true;}}); return prevented; },
+    key: (key: string,target:Element=new Element("div")) => { let prevented=false, stopped=false; const ev={key,isTrusted:true,target,preventDefault(){prevented=true;},stopPropagation(){stopped=true;}}; for (const fn of target?.handlers.get("keydown") ?? []) fn(ev); if (!stopped) dispatch("keydown",ev); return prevented; },
     // The reader presses the mouse at a point, leaving text selected or not when the button is released.
     press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
 }
@@ -1525,6 +1531,119 @@ function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return item
 function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
 async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
 
+test("fresh viewers default to split even below the former breakpoint", async () => {
+  const p=await page(snapshot(),[],null,undefined,{freshViewer:true});
+  assert.ok(p.document.body.classList.contains("wide"),"split is on without a stored preference");
+  assert.equal(p.roots.get("item-detail")!.hidden,false);
+  assert.equal(p.document.getElementById("split-toggle")!.attributes["aria-pressed"],"true");
+  await p.setWide(true); await p.setWide(false);
+  assert.ok(p.document.body.classList.contains("wide"),"viewport changes never switch the owner's layout");
+});
+
+test("split toggle switches layouts and restores each viewer's choice", async () => {
+  const storage=new Map<string,string>(), s=snapshot(); s.items.area!.head="Shared body";
+  const p=await page(s,[],null,undefined,{freshViewer:true,storage});
+  await selectWide(p); // A selected item gives the old global Enter handler a head to open.
+  await p.document.getElementById("split-toggle")!.click(); await p.flush();
+  assert.ok(!p.document.body.classList.contains("wide"));
+  assert.equal(p.roots.get("item-detail")!.hidden,true);
+  assert.equal(storage.get("board-split"),"false");
+  const toggle=p.document.getElementById("split-toggle")!;
+  assert.equal(p.document.activeElement,toggle,"layout change retains focus on the replacement toggle");
+  const nativeEnter=async(target:Element) => { target.focus(); const prevented=p.key("Enter",target); if (!prevented) await target.click(); await p.flush(); return prevented; };
+  assert.equal(await nativeEnter(toggle),false,"toggle Enter keeps its native button activation instead of tree navigation");
+  assert.ok(p.document.body.classList.contains("wide"),"native Enter switches back to split");
+  assert.equal(await nativeEnter(p.document.getElementById("split-toggle")!),false);
+  assert.ok(!p.document.body.classList.contains("wide"),"native Enter switches back to single-column");
+  await wideHead(p).click(); await p.flush();
+  assert.match(markup(item(p,"area")),/Shared body/);
+  const reloaded=await page(s,[],null,undefined,{freshViewer:true,storage});
+  assert.ok(!reloaded.document.body.classList.contains("wide"),"off choice survives reload");
+  await reloaded.document.getElementById("split-toggle")!.click(); await reloaded.flush();
+  assert.ok(reloaded.document.body.classList.contains("wide"));
+  assert.equal(storage.get("board-split"),"true");
+  const restored=await page(s,[],null,undefined,{freshViewer:true,storage});
+  assert.ok(restored.document.body.classList.contains("wide"),"on choice survives reload");
+});
+
+test("split divider pointer drag clamps both columns and persists the width", async () => {
+  const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{wide:true,storage});
+  const divider=p.roots.get("split-divider")!;
+  assert.equal(divider.hidden,false,"split exposes a divider");
+  assert.equal(divider.attributes.role,"separator");
+  const before=parseFloat(p.wrap.style["--tree-width"]!);
+  assert.ok(Number.isFinite(before),"the CSS property supplies a real starting width");
+  await divider.pointer("pointerdown",{clientX:400});
+  assert.equal(divider.capturedPointer,1,"drag captures the pointer outside the divider");
+  await divider.pointer("pointermove",{clientX:480,pointerId:2});
+  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before,"other pointers cannot resize this drag");
+  await divider.pointer("pointermove",{clientX:480});
+  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before+80);
+  await divider.pointer("pointerup",{clientX:480});
+  assert.equal(divider.capturedPointer,null);
+  const reloaded=await page(snapshot(),[],null,undefined,{wide:true,storage});
+  assert.equal(reloaded.wrap.style["--tree-width"],p.wrap.style["--tree-width"],"width survives reload");
+  await divider.pointer("pointerdown",{clientX:480});
+  await divider.pointer("pointermove",{clientX:-1000});
+  assert.equal(p.wrap.style["--tree-width"],"300px","left column retains its minimum");
+  await divider.pointer("pointermove",{clientX:2000});
+  assert.equal(p.wrap.style["--tree-width"],"512px","900px container reserves 8px divider and 380px detail");
+  await divider.pointer("pointercancel",{clientX:2000});
+  assert.equal(divider.capturedPointer,null);
+});
+
+test("focused divider arrows resize without triggering owner-work navigation", async () => {
+  const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
+  const p=await page(s,[],null,undefined,{wide:true}); await selectWide(p);
+  const divider=p.roots.get("split-divider")!, before=parseFloat(p.wrap.style["--tree-width"]!);
+  divider.focus(); assert.equal(p.key("ArrowRight",divider),true); await p.flush();
+  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before+16);
+  assert.ok(detailItem(p,"area")); assert.equal(detailItem(p,"child"),null,"divider arrows do not select another ask");
+  assert.equal(p.key("ArrowLeft",divider),true); await p.flush();
+  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before);
+  assert.equal(divider.attributes["aria-valuenow"],String(before));
+});
+
+test("split preferences tolerate unavailable localStorage", async () => {
+  const p=await page(snapshot(),[],null,undefined,{freshViewer:true,storageUnavailable:true});
+  assert.ok(p.document.body.classList.contains("wide"));
+  await p.document.getElementById("split-toggle")!.click(); await p.flush();
+  assert.ok(!p.document.body.classList.contains("wide"));
+  await p.document.getElementById("split-toggle")!.click(); await p.flush();
+  await p.roots.get("split-divider")!.pointer("pointerdown",{clientX:400});
+  await p.roots.get("split-divider")!.pointer("pointermove",{clientX:420});
+  assert.ok(Number.isFinite(parseFloat(p.wrap.style["--tree-width"]!)));
+});
+
+test("parent leaf counts are number-only with a status label", async () => {
+  const s=snapshot();
+  s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
+  s.items.block={...s.items.child!,title:"Blocked",status:"blocked"};
+  const p=await page(s,[],null,undefined,{wide:true});
+  const counts=item(p,"area").querySelector(".counts")!;
+  assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1","1"]);
+  for (const [i,label] of ["TODO","WIP","BLOCK"].entries()) {
+    assert.equal(counts.children[i]!.title,label+" 1");
+    assert.equal(counts.children[i]!.attributes["aria-label"],label+" 1");
+  }
+});
+
+test("tree head structure and CSS keep badges chips title and counts on one line", async () => {
+  const s=snapshot(); s.items.area!.title="A very long parent title"; s.items.child!.ask={text:"Needs owner"};
+  const p=await page(s,unread("item","area"),null,undefined,{wide:true});
+  const row=item(p,"area").children[0]!, head=wideHead(p);
+  assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
+  assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
+  for (const cls of ["st","prio","item-title","newtag","asktag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
+  assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
+  const css=await readFile("web/index.html","utf8");
+  assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex-wrap:\s*nowrap/);
+  assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex:\s*1 0 auto/);
+  assert.match(css,/\.tree-row \.item-title\s*\{[^}]*min-width:\s*6ch[^}]*text-overflow:\s*ellipsis/);
+  assert.match(css,/\.tree-row > \.item-head > :not\(\.item-title\)\s*\{[^}]*flex-shrink:\s*0/);
+  assert.match(css,/\.tree-row \.counts\s*\{[^}]*flex:\s*0 1000 auto[^}]*min-width:\s*0[^}]*overflow:\s*hidden/);
+});
+
 test("wide head click selects detail without changing the sub-item fold", async () => {
   const s=snapshot(); s.items.area!.head="Parent detail";
   const p=await page(s,[],null,undefined,{wide:true});
@@ -1631,12 +1750,13 @@ test("wide same-id unread parent changes reload the selected baseline and remove
   assert.ok(!detailItem(p)!.className.includes("fresh")); assert.ok(!markup(detailItem(p)!).includes('class="chg-del"'));
 });
 
-test("wide-to-narrow width change restores inline bodies and narrow head toggling", async () => {
+test("split toggle restores inline bodies and single-column head toggling", async () => {
   const s=snapshot(); s.items.area!.head="Parent detail";
   const p=await page(s,[],null,undefined,{wide:true});
   await wideCaret(p).click(); await p.flush(); await selectWide(p);
   assert.ok(detailItem(p),"wide selection renders a detail");
-  await p.setWide(false);
+  // Width no longer controls the layout: exercise the explicit owner control instead.
+  await p.document.getElementById("split-toggle")!.click(); await p.flush();
   assert.match(markup(item(p,"area")),/Parent detail/); assert.ok(item(p,"area").querySelector(".body"));
   assert.ok(!detailItem(p),"narrow mode removes the separate detail item");
   await wideHead(p).click(); await p.flush();
