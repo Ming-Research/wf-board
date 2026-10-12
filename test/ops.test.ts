@@ -652,6 +652,18 @@ test("create_item with children moves existing items under a new parent in one c
   await refused(() => op.createItem({ author: "Firn", key: "theirs", title: "Theirs", group: "Firn", priority: "P1", children: [{ id: "a", why: "x" }] }), /item a belongs to project Whitefoot/);
 });
 
+test("create_item adopts an item together with its own sub-item, and refuses a child already named in deps", async t => {
+  for (const order of [["area", "a"], ["a", "area"]]) await t.test(order.join(" then "), async t => {
+    const { store, op } = await board(t, { sharedProjects: true });
+    await assert.rejects(op.createItem({ author, key: "flat", title: "Flat", group: "Whitefoot", priority: "P1", deps: [{ id: "a", why: "d" }], children: [{ id: "a", why: "c" }] }), /children: a is already in deps/);
+    await op.createItem({ author, key: "flat", title: "Flat", group: "Whitefoot", priority: "P1", children: order.map(id => ({ id, why: "Flatten " + id })) });
+    const s = store.snapshot();
+    assert.equal(s.items.area!.parent, "flat"); assert.equal(s.items.a!.parent, "flat");
+    assert.ok(!s.items.area!.deps.some(d => "id" in d && d.id === "a"), "the adopted parent no longer lists the adopted child");
+    assert.deepEqual(s.items.flat!.deps.map(d => "id" in d ? d.id : ""), order);
+  });
+});
+
 test("move_item into a migrated leaf without work of its own needs no own-work sub-item; a leaf with work still does", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   await op.createItem({ author, key: "empty", title: "Empty", group: "Whitefoot", priority: "P2" });

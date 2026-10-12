@@ -338,15 +338,17 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (!(a.parent ? r.migrated(a.parent) : migratedProject(s, a.group))) throw new OpError("children: only a migrated project's new item takes existing items as sub-items");
         if (a.status) throw new OpError("status: an item created with children takes its status from them; omit status");
         if (new Set(children.map(c => c.id)).size !== children.length) throw new OpError("children: name each item once");
+        for (const c of children) if (doc.deps.some(d => "id" in d && d.id === c.id)) throw new OpError(`children: ${c.id} is already in deps; name it once, as a child`);
         for (const c of children) {
           ownedItem(s, c.id, a.author, "children");
           if (a.parent && (c.id === a.parent || r.ancestors(a.parent).includes(c.id))) throw new OpError(`children: ${c.id} contains the new item's parent ${a.parent} (no cycle)`);
         }
         detach(s, at, a.author, children.map(c => c.id), a, puts, a.parent);
         for (const c of children) {
-          const it = s.items[c.id]!, moved = { ...it, parent: a.key, updated: at, log: [...it.log, entry(a.author, at, it.request ? `分拣：放到 ${a.key}：${c.why}` : `从 ${it.parent ?? "（顶层）"} 移到 ${a.key}：${c.why}`)] };
+          // A child may also be the old parent of another adopted child, already rewritten by detach.
+          const it = docOf(s, puts, c.id), moved = { ...it, parent: a.key, updated: at, log: [...it.log, entry(a.author, at, it.request ? `分拣：放到 ${a.key}：${c.why}` : `从 ${it.parent ?? "（顶层）"} 移到 ${a.key}：${c.why}`)] };
           delete moved.request;
-          puts.push(itemPut(c.id, moved));
+          putDoc(puts, itemPut(c.id, moved));
         }
         delete doc.status;
         doc.deps = [...doc.deps, ...children.map(c => ({ id: c.id, why: c.why }))];
