@@ -227,7 +227,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
   assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",by:"Firn"});
   assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot"});
-  await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",priority:"P2",why:"Need",from:"a"});
+  await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",why:"Need",from:"a"});
   assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
 });
 

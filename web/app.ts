@@ -175,8 +175,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function statusOf(it: ViewItem) { return derived.statusOf(it.id); }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
-  function effPriorityOf(it: ViewItem) { return derived.effectivePriorityOf(it.id); }
-  function raisedBy(it: ViewItem) { return index().byId.get(derived.raisedBy(it.id) || "") || null; }
   function visible(it: ViewItem) { return !isArchived(it); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)).sort(byPriority); }
@@ -905,10 +903,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     btn.hidden = !backStack.length;
   }
-  // One row per item in a dependency list: status, effective priority, where it lives (the project when it is
+  // One row per item in a dependency list: status, priority, where it lives (the project when it is
   // another one), and its title; a click follows it.
   function depRow(d: ViewItem, from: ViewItem, extra?: string) {
-    const st = statusOf(d), pr = effPriorityOf(d);
+    const st = statusOf(d), pr = priorityOf(d);
     // A dependency in another project names that project; within the project no label is needed.
     const where = groupOf(d) !== groupOf(from) ? groupOf(d) || "其他" : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
@@ -1354,20 +1352,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (current === "it:" + it.id) box.classList.add("cur");
     // Archived sub-items stay where they are: hidden, unless the 已归档 filter shows them.
     const sub = kids(it.id, inArchive || showsArchived(groupOf(it))).filter(k => inArchive || passes(k));
-    const ck = checksOf(it), raised = raisedBy(it);
-    const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
+    const ck = checksOf(it);
+    const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || (it.links || []).length || sub.length);
     const head = el("button", "item-head");
     head.type = "button";
     if (!wide) head.setAttribute("aria-expanded", String(open));
     if (!wide) head.appendChild(el("span", "caret", hasBody ? (open ? "▾" : "▸") : ""));
 
     head.appendChild(el("span", "st " + st + (before && it.status !== undefined && before.status !== it.status ? " chg-add" : ""), esc(STATUS[st] || st)));
-    // The badge shows the effective priority; a raised one also shows the written one, struck through.
-    const pr = effPriorityOf(it), wrote = priorityOf(it);
-    const pb = el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?");
-    if (raised) pb.title = "写的是 " + (wrote || "未设") + "；因为「" + plain(raised.title) + "」(" + effPriorityOf(raised) + ") 在等它";
-    head.appendChild(pb);
-    if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
+    const pr = priorityOf(it);
+    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (wide && !detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
@@ -1466,9 +1460,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (before?.ask && !it.ask) body.appendChild(el("div", "ask chg-del",inline(before.ask.text)));
       cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
       ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
-      if (ck.length || raised) {
+      if (ck.length) {
         const cb = el("div", "checks");
-        if (raised) { const r = el("div", null, "按 " + pr + " 排：写的是 " + esc(wrote || "未设") + "，因为 "); r.appendChild(depLink(raised)); r.appendChild(document.createTextNode("（" + effPriorityOf(raised) + "）在等它")); cb.appendChild(r); }
         ck.forEach(c => { const r = el("div", null, "需核对：" + esc(c.text) + " "); if (c.target) r.appendChild(depLink(c.target)); cb.appendChild(r); });
         body.appendChild(cb);
       }
@@ -1662,10 +1655,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const next=new Map<string,{signature:string;archived:boolean;shown:boolean;request:boolean;group:string}>();
     for (const it of state.items) {
       const id=it.id;
-      const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.effectivePriorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
+      const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.effectivePriorityOf(id),derived.raisedBy(id),derived.checks(id),deps,waiters]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),deps,waiters]);
       const current={signature,archived:inArchive(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;

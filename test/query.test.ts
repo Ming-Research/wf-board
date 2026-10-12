@@ -27,17 +27,20 @@ test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks 
 test("context includes relationships, page order, open/ruled cards, replies, checks, links, PRs and bounded logs", async t => {
   const { store, op } = await board(t);
   const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
-  assert.ok("raisedBy" in leaf); assert.equal(leaf.item.priority, "P1"); assert.equal(leaf.priority, "P0"); assert.equal(leaf.raisedBy, "b");
-  await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", priority: "P2", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
-  await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", priority: "P0", order: 5 });
+  // a's stored P1 and b's stored P0 are ignored: neither is a root, and area (P1) is the only open root above them.
+  const waiter = q.context(store.snapshot(), rules(store.snapshot()), "b");
+  assert.ok("ancestors" in leaf && "ancestors" in waiter); assert.ok(!("raisedBy" in leaf));
+  assert.equal(leaf.item.priority, "P1"); assert.equal(leaf.priority, "P1"); assert.equal(waiter.item.priority, "P0"); assert.equal(waiter.priority, "P1");
+  await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
+  await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", order: 5 });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
   assert.ok("children" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
-  // a's own priority moved to its own-work sub-item with its first child; its P0 is now intrinsic to its children.
-  assert.equal(c.item.priority, undefined); assert.equal(s.items["a-own"]!.priority, "P1"); assert.equal(c.priority, "P0"); assert.equal(c.raisedBy, null);
+  // a is not a root, so the split drops its ignored stored priority and the own-work sub-item takes none.
+  assert.equal(c.item.priority, undefined); assert.equal(s.items["a-own"]!.priority, undefined); assert.equal(c.priority, "P1");
   assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, 3); // 7 seeded + the first-child entry
   assert.deepEqual(c.ancestors.map(it => it.id), ["area"]);
-  assert.deepEqual(c.children.map(it => [it.id, it.priority]), [["child-low", "P0"], ["a-own", "P0"], ["child-high", "P0"]]); // raised priority ties, so page order breaks the tie
+  assert.deepEqual(c.children.map(it => [it.id, it.priority]), [["child-low", "P1"], ["a-own", "P1"], ["child-high", "P1"]]); // inherited priority ties, so page order breaks the tie
   assert.ok(c.deps.some(d => d.id === "child-high" && d.why === "High priority evidence"));
   assert.deepEqual(c.dependents.map(d => [d.id, d.why]), [["area", "需要检查结果"], ["b", "需要检查"]]);
   const open = c.cards.find(card => card.key === "choice")!;
@@ -80,15 +83,17 @@ test("graph follows up/down item and card deps, marks cycles and open blocked ch
   assert.equal(limited.up!.truncated, true); assert.deepEqual(limited.up!.next, []);
 });
 
-test("overview/list/notes honor derived statuses, effective priority, inheritance and each filter", async t => {
+test("overview/list/notes honor derived statuses, priority from dependents, inheritance and each filter", async t => {
   const { store, op } = await board(t);
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
-  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P0"], group: "Whitefoot" }).map(it => it.id), ["b"]);
+  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
+  assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []); // b's stored P0 is ignored: area depends on it
   assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["a"]);
-  assert.deepEqual(q.list(s, r, { hasChecks: true }), []);
+  // The fixture's heads state no completion condition.
+  assert.deepEqual(q.list(s, r, { hasChecks: true }).map(it => [it.id, it.checks.map(c => c.text)]), ["area", "a", "b", "other"].map(id => [id, ["正文没写完成条件"]]));
   assert.equal(q.list(s, r, { group: "Firn", limit: 1 })[0]!.id, "other");
   assert.deepEqual(q.list(s, r, { updatedSince: "2999-01-01T00:00:00Z" }), []);
   assert.equal(q.notes(s, { state: ["sent"], kind: ["comment"], under: "area", since: at, limit: 1 })[0]!.id, "note-1");
@@ -112,7 +117,7 @@ test("changes summarizes net fields over commits, groups areas, and history/diff
   await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author: "Firn", key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", priority: "P2", parentOwnWork: { key: "other-own", title: "other own work" } });
+  await op.createItem({ author: "Firn", key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", parentOwnWork: { key: "other-own", title: "other own work" } });
   await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;
@@ -147,7 +152,7 @@ test("changes stays anchored to its snapshot even if a later commit lands, and i
 
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
-  await op.createItem({ author, key: "temporary", parent: "area", parentWhy: "Temporary witness", title: "Temporary item", priority: "P2" });
+  await op.createItem({ author, key: "temporary", parent: "area", parentWhy: "Temporary witness", title: "Temporary item" });
   await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", background: "Evidence", options: [{ key: "A", text: "A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
@@ -232,7 +237,7 @@ test("context names the responsible project without agents", async t => {
 test("project brief and projects include inbox, sent notes, checks, work and outgoing requests", async t => {
   const {store,op} = await board(t);
   await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",priority:"P0",why:"Need help"});
-  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",priority:"P2",why:"Need feature",from:"a"});
+  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",why:"Need feature",from:"a"});
   await op.setStatus({author,id:"a",status:"done",log:"Ready"});
   await op.ruleCard({author,key:"choice",choice:"A",ruling:"Chosen"});
   await store.commit({author:"Fixture",message:"Card note and work",puts:[
