@@ -243,6 +243,9 @@ a { color: var(--accent); }
 code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-soft); padding: 0 4px; border-radius: 3px; }
 section.decisions[hidden], section.glossary[hidden] { display: none; }
 section.decisions, section.glossary { display: flex; flex-direction: column; gap: 12px; }
+.glossary summary { cursor: pointer; }
+.glossary summary h2 { display: inline; }
+#terms { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
 .glossary h3 { margin: 0; font-size: 14px; }
 .glossary dl { margin: 0; font-size: 14px; }
 .glossary dt { font-weight: 600; }
@@ -352,8 +355,7 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
   </section>
 
   <section class="glossary" id="glossary" hidden>
-    <h2>术语</h2>
-    <div id="terms"></div>
+    <details id="terms-fold"><summary><h2>术语</h2></summary><div id="terms"></div></details>
   </section>
 
   <footer class="sendbox" id="sendbox" hidden>

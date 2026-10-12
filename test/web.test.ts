@@ -87,7 +87,7 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms-fold", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
   if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
@@ -684,7 +684,7 @@ test("failed rendered baseline prevents scrolling and retries once on the next n
   hold.reject(new Error("Synthetic baseline unavailable")); await settle();
   assert.equal(p.scrolls.length,0,"failed baseline cannot provide a final layout for scrolling");
   assert.equal(attempts,1,"a failed navigation must not retry repeatedly during rendering");
-  assert.match(p.roots.get("server-banner")!.textContent,/Synthetic baseline unavailable/);
+  shownInHint(p,/Synthetic baseline unavailable/);
   p.key("n"); await settle();
   assert.equal(attempts,2,"next n retries the failed rendered baseline once");
   assert.equal(p.scrolls.length,1); assert.equal(p.measurements[0]!.id,"note-n");
@@ -907,9 +907,9 @@ test("all mutating requests time out at eight seconds and recover their controls
       else if (action === "notes") { p.key("c"); await settle(); const text=p.all().find(e=>e.id === "ed-it_area")!; text.value="New draft"; control=button(p,"保存"); pending=control.click(); }
       else { if (!button(p,"删除")) { const toggle=p.all().find(e=>e.className.startsWith("notes-toggle") && e.innerHTML.includes("评论 1 条"))!; await toggle.click(); } control=button(p,"删除"); pending=control.click(); }
     }
-    await settle(); clock.advance(7999); await settle(); assert.ok(p.roots.get("server-banner")!.hidden || !p.roots.get("server-banner")!.textContent.includes("刷新"));
+    await settle(); clock.advance(7999); await settle(); assert.ok(p.roots.get("hint")!.hidden || !p.roots.get("hint")!.textContent.includes("刷新"));
     clock.advance(1); await settle();
-    assert.match(p.roots.get("server-banner")!.textContent,/看板服务器.*(?:未|没).*响应.*刷新/);
+    shownInHint(p,/看板服务器.*(?:未|没).*响应.*刷新/);
     assert.equal(control.disabled,false,action+" control recovers"); if (action === "notes") assert.equal(control.textContent || control.innerHTML,"保存");
     assert.equal(signal?.aborted,true,action+" aborts transport");
     hold.resolve(reply({sent:[{project:"Late"}]})); body.resolve({sent:[{project:"Late"}]}); await settle();
@@ -965,7 +965,7 @@ test("writes remain unavailable before initial SSE open and reload", async () =>
   const s=snapshot(), clock=new FakeClock(); s.notes.d={target:"it:area",kind:"comment",text:"Draft",at,state:"draft",rev:1};
   const p=await page(s,[],null,undefined,{clock,autoOpen:false}); const n=p.calls.length;
   await p.roots.get("send-all")!.click(); await settle(); assert.equal(p.calls.length,n);
-  assert.equal(p.roots.get("server-banner")!.textContent,"已和看板服务器断开，正在重连…");
+  assert.equal(p.roots.get("server-banner")!.textContent,"已和看板服务器断开，正在重连…"); assert.equal(p.roots.get("server-banner")!.hidden,false);
   await p.sources[0]!.onopen!(); await settle(); assert.equal(p.roots.get("server-banner")!.hidden,true);
 });
 
@@ -983,10 +983,13 @@ test("owner refresh from an obsolete connection cannot replace snapshot or repor
     else hold.reject(new Error("Obsolete owner refresh failed"));
     await settle();
     assert.equal(p.roots.get("goal-title")!.textContent,s.board.title,"old owner reload cannot replace the current snapshot");
-    assert.equal(p.roots.get("server-banner")!.hidden,true,"old owner reload cannot report an error after reconnect");
+    assert.equal(p.roots.get("server-banner")!.hidden,true,"old owner reload cannot report a disconnect after reconnect");
+    assert.ok(p.roots.get("hint")!.hidden || !p.roots.get("hint")!.textContent.includes("Obsolete owner refresh"),"old owner reload cannot report an error after reconnect");
   });
 });
 
+// An operation error reports in the bottom hint, which hides itself after three seconds; call this right after the error, before the clock passes that.
+function shownInHint(p:Awaited<ReturnType<typeof page>>, message:RegExp) { const hint=p.roots.get("hint")!; assert.match(hint.textContent,message); assert.equal(hint.hidden,false,"the error is still showing in the hint"); }
 function option(p:Awaited<ReturnType<typeof page>>, key:string, id="q") { return descendants(p.all().find(e=>e.id === "q-"+id)!).find(e=>e.className.split(" ").includes("optbtn") && e.innerHTML.includes('class="lbl">'+key+'：'))!; }
 test("choice feedback is synchronous before fetch and rolls back on failure", async () => {
   const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card();
@@ -997,7 +1000,7 @@ test("choice feedback is synchronous before fetch and rolls back on failure", as
   try { assert.equal(observed,true,"selection and deselection happen before fetch is dispatched"); }
   finally { hold.reject(new Error("Draft refused")); await click; await p.flush(); }
   assert.ok(option(p,"B").className.includes("sel")); assert.ok(!option(p,"A").className.includes("sel"));
-  assert.match(p.roots.get("server-banner")!.textContent,/Draft refused/); assert.equal(option(p,"A").disabled,false);
+  shownInHint(p,/Draft refused/); assert.equal(option(p,"A").disabled,false);
   assert.equal(p.calls.filter(c=>c.path === "/api/draft").length,1);
 });
 
@@ -1010,7 +1013,7 @@ test("approve done and explain feedback is synchronous and failure restores it",
     if (kind === "explain") p.key("e"); else click=button(p,kind === "approve" ? "同意" : "完成").click();
     try { assert.equal(observed,true,kind+" displays queued feedback before fetch"); }
     finally { hold.reject(new Error("Draft refused")); await click; await p.flush(); }
-    assert.match(p.roots.get("server-banner")!.textContent,/Draft refused/);
+    shownInHint(p,/Draft refused/);
     assert.ok(!p.all().some(e=>e.className === "pendtag"));
     if (kind !== "explain") assert.equal(button(p,kind === "approve" ? "同意" : "完成").disabled,false);
   });
@@ -1084,7 +1087,7 @@ test("explain withdrawal removes its pending badge before fetch and restores it 
   p.key("n"); await p.flush(); p.key("e");
   try { assert.equal(observed,true,"withdrawal removes the actual header badge synchronously"); }
   finally { hold.reject(new Error("Withdrawal refused")); await p.flush(); }
-  assert.ok(p.all().some(e=>e.className === "pendtag")); assert.match(p.roots.get("server-banner")!.textContent,/Withdrawal refused/);
+  assert.ok(p.all().some(e=>e.className === "pendtag")); shownInHint(p,/Withdrawal refused/);
 });
 
 test("draft acknowledgement survives an older owner snapshot fetch and newer SSE note revision wins", async () => {
@@ -1347,7 +1350,7 @@ test("draft fetch and response-body stalls roll back at eight seconds and ignore
     s.notes.old={target:"q:q",kind:"choice",choice:"B",text:"Old",at,state:"draft",rev:1};
     const p=await page(s,[],null,undefined,{clock,frames,response:path=>path === "/api/draft" ? phase === "fetch" ? hold.promise : {ok:true,status:200,json:()=>body.promise} : undefined}); await expand(p); const click=option(p,"A").click();
     assert.ok(option(p,"A").className.includes("sel")); assert.equal(option(p,"B").disabled,true); clock.advance(7999); await settle(); assert.equal(option(p,"B").disabled,true);
-    clock.advance(1); await settle(); await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(option(p,"A").disabled,false); assert.match(p.roots.get("server-banner")!.textContent,/没有响应.*刷新/); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
+    clock.advance(1); await settle(); await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(option(p,"A").disabled,false); shownInHint(p,/没有响应.*刷新/); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
     const result={note:{id:"old",doc:{...s.notes.old!,choice:"A",rev:2}},deleted:[],commit:"b".repeat(40)};
     if(phase === "fetch") hold.resolve(reply(result)); else body.resolve(result); await click; await p.flush(); assert.ok(option(p,"B").className.includes("sel")); assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude");
   });
@@ -1499,7 +1502,7 @@ test("r on a card reads its whole item at once and restores both on error or eig
     assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
     assert.ok(item(p).className.includes("fresh"));
     assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"),"one item holds both changes");
-    assert.match(p.roots.get("server-banner")!.textContent,failure === "refused" ? /Read refused/ : /没有响应.*刷新/);
+    shownInHint(p,failure === "refused" ? /Read refused/ : /没有响应.*刷新/);
     if(failure === "deadline") { assert.equal(signal?.aborted,true); hold.resolve(reply({ok:true})); await settle(); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"late acknowledgement cannot reapply timed-out read"); }
     assert.equal(p.calls.filter(c=>c.path === "/api/read").length,2);
   });
@@ -1536,7 +1539,7 @@ test("pending document read hides a coalesced step until acknowledgement splits 
     assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"later unread change or refused mark remains visible");
     assert.ok(p.all().some(e=>e.innerHTML === "新 2 ›"));
     assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:first}]);
-    if(!accepted) assert.match(p.roots.get("server-banner")!.textContent,/Read refused/);
+    if(!accepted) shownInHint(p,/Read refused/);
   });
 });
 
@@ -2092,12 +2095,26 @@ test("wide blank clicks clear the current selection while actions fall back to t
   });
 });
 
+test("an operation error shows in the bottom hint for three seconds and leaves the connection banner alone", async () => {
+  const clock=new FakeClock(), s=snapshot(), failing=(path:string)=> path === "/api/archive" ? {ok:false,status:400,json:async()=>({error:"Archive refused"})} as FakeResponse : undefined;
+  s.items.child!.status="done";
+  const p=await page(s,unread("item","area"),null,undefined,{clock,response:failing});
+  const hint=p.roots.get("hint")!, banner=p.roots.get("server-banner")!;
+  p.key("n"); await p.flush(); p.key("a"); await p.flush();
+  assert.equal(p.calls.filter(c=>c.path === "/api/archive").length,1,"the failing write was attempted");
+  assert.equal(hint.hidden,false); assert.equal(hint.textContent,"Archive refused");
+  assert.equal(banner.hidden,true,"an operation error is an event, not the connection state"); assert.equal(banner.textContent,"");
+  clock.advance(2999); assert.equal(hint.hidden,false,"the hint is still showing just before three seconds");
+  clock.advance(1); assert.equal(hint.hidden,true,"the hint leaves by itself after three seconds");
+  assert.equal(banner.hidden,true);
+});
+
 test("a archives only done items: an open item makes no archive call and shows the reason", async () => {
   const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
   const p=await page(s,unread("item","area"),null,undefined,{response:archive});
   p.key("n"); await p.flush(); p.key("a"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive"),[],"a wip parent is not archived");
-  assert.equal(p.roots.get("server-banner")!.hidden,false); assert.equal(p.roots.get("server-banner")!.textContent,"只有完成的条目能归档");
+  assert.equal(p.roots.get("hint")!.hidden,false); assert.equal(p.roots.get("hint")!.textContent,"只有完成的条目能归档");
   const d=snapshot(); d.items.child!.status="done";
   const q=await page(d,unread("item","area"),null,undefined,{response:archive});
   q.key("n"); await q.flush(); q.key("a"); await q.flush();
@@ -2188,7 +2205,10 @@ test("glossary links: each card and each note with its reply is its own text, an
   // and the button's own handler does not run.
   const button = option(p, "B"), link = p.document.createElement("a");
   link.className = "term"; link.setAttribute("href", anchor("Project", "否决")); link.bubbleClick = true; button.appendChild(link);
+  const fold = p.roots.get("terms-fold")! as unknown as { open?: boolean };
+  assert.ok(!fold.open, "the glossary starts folded");
   await link.click(); await p.flush();
+  assert.equal(fold.open, true, "following a term link unfolds the glossary");
   assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 0, "clicking the term chooses no option");
   assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "Backspace or 返回 comes back from the glossary");
   await button.click(); await p.flush();
