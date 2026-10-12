@@ -686,7 +686,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") { ev.preventDefault(); stepStop(ev.key === "ArrowRight" ? 1 : -1); return; }
     const act = ACTIONS.find(a => a.key === ev.key && a.db);
-    if (act && !connected) { showError(new Error(DISCONNECTED)); return; }
+    if (act && !connected) { showDisconnected(); return; }
     if (act && act.run()) ev.preventDefault();
   });
   // The actions behind the shortcut keys; the menu (☰) lists them and runs them on a click as well.
@@ -772,7 +772,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       ACTIONS.forEach(a => {
         const r = el("button", "keymenu-row", '<kbd>' + esc(a.show || a.key) + "</kbd><span>" + esc(a.label) + "</span>");
         r.type = "button";
-        r.addEventListener("click", ev => { ev.stopPropagation(); if (a.db && !connected) { showError(new Error(DISCONNECTED)); return; } a.run(); m.classList.remove("open"); });
+        r.addEventListener("click", ev => { ev.stopPropagation(); if (a.db && !connected) { showDisconnected(); return; } a.run(); m.classList.remove("open"); });
         list.appendChild(r);
       });
       m.appendChild(list);
@@ -897,6 +897,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ev.preventDefault(); ev.stopPropagation();
     const term = get(link.getAttribute("href")!.slice(1));
     if (!term) return;
+    // The glossary stays folded until a link leads into it.
+    (get("terms-fold") as HTMLDetailsElement).open = true;
     remember();
     jump(term);
     renderBack();
@@ -1046,7 +1048,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function setDraft(target:string,kind:DraftKind,on:boolean,text:string,choice?:string):Promise<boolean> {
     const key=draftKey(target,kind), existing=optimistic.get(key);
     if (existing) return existing.promise!;
-    if (!connected) { showError(new Error(DISCONNECTED)); return Promise.resolve(false); }
+    if (!connected) { showDisconnected(); return Promise.resolve(false); }
     const overlay:DraftOverlay={on,choice,state:"draft"};
     const started=eventGeneration;
     optimistic.set(key,overlay); patchDraft(target,kind);
@@ -1942,7 +1944,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let hintTimer: ReturnType<typeof setTimeout> | undefined;
   function showHint(text: string) { const h = get("hint"); h.textContent = text; h.hidden = false; clearTimeout(hintTimer); hintTimer = setTimeout(hideHint, 3000); }
   function hideHint() { clearTimeout(hintTimer); hintTimer = undefined; const h = get("hint"); if (h) h.hidden = true; }
-  function showError(e: unknown) { get("server-banner").hidden = false; get("server-banner").textContent = e instanceof Error ? e.message : String(e); }
+  // An error reports like a hint, at the bottom for a few seconds; only a lost connection, a state rather than an event, stays at the top until it heals.
+  function showError(e: unknown) { const m = e instanceof Error ? e.message : String(e); if (m === DISCONNECTED) showDisconnected(); else showHint(m); }
+  function showDisconnected() { get("server-banner").hidden = false; get("server-banner").textContent = DISCONNECTED; }
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
   function applySnapshot(s: Snapshot) {
@@ -2160,7 +2164,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function serverDown(expected: EventSource | undefined = source) {
     if (expected !== source) return;
-    connected = false; scheduleRender("all"); showError(new Error(DISCONNECTED));
+    connected = false; scheduleRender("all"); showDisconnected();
     source?.close(); source = undefined; connectionAbort?.abort();
     if (retry !== undefined) clearTimeout(retry);
     retry = setTimeout(() => { retry = undefined; connect(); },5000);
@@ -2173,7 +2177,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     source = next; connectionAbort = controller;
     const active = () => source === next && !controller.signal.aborted;
     // A hung handshake or reload must not prevent the next five-second attempt.
-    retry = setTimeout(() => { retry = undefined; if (active()) { showError(new Error(DISCONNECTED)); connect(); } },5000);
+    retry = setTimeout(() => { retry = undefined; if (active()) { showDisconnected(); connect(); } },5000);
     next.onopen = async () => {
       if (!active()) return;
       try {
