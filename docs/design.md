@@ -251,11 +251,11 @@ log:
   contiguous lists and tables remain whole blocks so rich rendering stays
   intact. Added or changed blocks carry no colour of their own (the item's blue
   line says it holds something new, and `n` lands on the first of them);
-  removed blocks stay in place, struck through in red. A changed title shows its former title immediately
-  after it in small struck text. Multi-paragraph card questions use the same
+  removed content is not shown anywhere: no removed block, former title,
+  dependency, link, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
   status, priority and request rows, and added or changed dependency and link
-  rows, are not coloured either; removed dependencies and links remain struck.
+  rows, are not coloured either.
   New items and cards carry no per-block marks. No green background is used
   anywhere: the owner never asked for one. In single-column mode an item, and in
   either layout a card, with unread changes of its own carries a blue line beside its whole body, marking exactly what `r` on it
@@ -396,7 +396,7 @@ The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by 被依赖, head text, data, 依赖, log, ask, open cards, shown ruled cards,
 checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
-cancelled items, except a dependency row marked as added or removed. The same detail builder renders
+cancelled items, except a dependency row marked as added. The same detail builder renders
 this content inline in single-column mode. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains

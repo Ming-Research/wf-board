@@ -397,7 +397,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
   function freshMarks(box: HTMLElement, id: string) {
     if (unreadBefore<Item>("item", id) === null) return [];
-    return [...box.querySelectorAll<HTMLElement>(".chg-add, .chg-del, .log-entry.fresh, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
+    return [...box.querySelectorAll<HTMLElement>(".chg-add, .log-entry.fresh, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
   }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
@@ -1008,7 +1008,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const selected=choice === e.dataset.option;
         e.classList.remove("sel"); if (selected) e.classList.add("sel");
         e.setAttribute("aria-pressed",String(selected));
-        (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || e.dataset.removed === "true" || !!(chosen && chosen.state !== "draft");
+        (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || !!(chosen && chosen.state !== "draft");
       });
     } else if (kind === "explain") {
       const boxes=[box,...(wide && target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
@@ -1450,7 +1450,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         ws.forEach(w => wl.appendChild(whyRow(w, it, whyOf(w, it.id))));
         body.appendChild(wl);
       }
-      if (headOf(it) || before?.head) body.appendChild(el("div", "rich", markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it))));
+      if (headOf(it)) body.appendChild(el("div", "rich", markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it))));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark})).filter(e => e.mark || !(e.kind === "item" && index().byId.has(e.id) && isCancelled(index().byId.get(e.id)!)));
       if (des.length) {
@@ -1460,7 +1460,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const d = e.kind === "item" ? index().byId.get(e.id) : undefined;
           const r = d ? whyRow(d, it, e.why) : depFallbackRow(e.kind, e.id, e.why);
           r.dataset.sel = "dep:" + it.id + "@" + e.id;
-          r.id = "sel-" + encodeURIComponent(JSON.stringify([r.dataset.sel,e.mark === "chg-del"]));
+          r.id = "sel-" + encodeURIComponent(JSON.stringify([r.dataset.sel]));
           if (e.mark) r.classList.add(e.mark);
           if (e.mark === "chg-add" || before === null) r.classList.add("fresh");
           if (current === r.dataset.sel) r.classList.add("cur");
@@ -1472,7 +1472,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (lg) body.appendChild(lg);
       // The owner's request and the decision cards come after the log, whose last entry usually leads to them.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);
-      if (before?.ask && !it.ask) body.appendChild(el("div", "ask chg-del",inline(before.ask.text)));
       cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
       ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
       if (ck.length || raised) {
@@ -1569,7 +1568,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const closed = d.status !== "open";
     if (waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
     if (closed) h.appendChild(el("span", "closedtag" + (before && before.status !== d.status ? " chg-add" : ""), d.ruling ? "已裁定" : "已结束"));
-    if (proseBlocks(d.question).length > 1 || before && proseBlocks(before.question).length > 1) {
+    if (proseBlocks(d.question).length > 1) {
       h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),markedBlocks(before?.question,d.question)));
     } else appendTitle(h,d.question || "",before === null ? null : before?.question);
     // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
@@ -1583,24 +1582,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       top.appendChild(x);
     }
     c.appendChild(top);
-    if (closed && (d.ruling || before?.ruling)) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || "") + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
-    if (d.background || before?.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + markedBlocks(before?.background,d.background || "")));
+    if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || "") + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
+    if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + markedBlocks(before?.background,d.background || "")));
     const chosen = choiceOf(d);
-    if (d.options.length || before?.options.length) {
+    if (d.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));
       const ol = el("ul", "opts");
       const oldOptions = new Map(before?.options.map(o => [o.key,o]));
-      const opts = orderedChanges(before?.options || d.options,d.options,(a,b) => a.key === b.key);
-      opts.forEach(({value:o,mark}) => {
+      d.options.forEach(o => {
         const li = el("li");
         const sel = (chosen?.choice || d.choice) === o.key;
         const rec = !!o.recommended || /[（(]推荐[)）]/.test(o.text || "");
-        const btn = el("button", "optbtn" + (mark === "chg-del" ? " chg-del" : "") + (before && mark !== "chg-del" && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + markedBlocks(mark === "chg-del" || !before ? undefined : oldOptions.get(o.key)?.text || "",o.text) + '</div>');
+        const btn = el("button", "optbtn" + (before && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + markedBlocks(!before ? undefined : oldOptions.get(o.key)?.text || "",o.text) + '</div>');
         btn.type = "button";
         btn.dataset.option = o.key;
-        if (mark === "chg-del") btn.dataset.removed = "true";
         btn.setAttribute("aria-pressed", String(sel));
-        btn.disabled = mark === "chg-del" || !connected || closed || !!(chosen && chosen.state !== "draft") || optimistic.has(draftKey("q:"+d.id,"choice"));
+        btn.disabled = !connected || closed || !!(chosen && chosen.state !== "draft") || optimistic.has(draftKey("q:"+d.id,"choice"));
         btn.addEventListener("click", async () => {
           const currentChoice = choiceOf(d)?.choice || d.choice;
           await setDraft("q:"+d.id,"choice",currentChoice !== o.key,"选 "+o.key,o.key);
@@ -2048,17 +2045,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     flush(); return out;
   }
-  // An ordered LCS leaves deletions at their original place; replacements remove before adding.
-  function orderedChanges<T>(before: T[], after: T[], equal: (a:T,b:T) => boolean = sameValue): Array<{value:T; mark:"" | "chg-add" | "chg-del"}> {
+  // An ordered LCS marks the entries of `after` that `before` lacks; removed entries are not shown.
+  function orderedChanges<T>(before: T[], after: T[], equal: (a:T,b:T) => boolean = sameValue): Array<{value:T; mark:"" | "chg-add"}> {
     const lcs = Array.from({length:before.length + 1}, () => new Uint32Array(after.length + 1));
     for (let i = before.length - 1; i >= 0; i--) for (let j = after.length - 1; j >= 0; j--) {
       lcs[i]![j] = equal(before[i]!,after[j]!) ? 1 + lcs[i + 1]![j + 1]! : Math.max(lcs[i + 1]![j]!,lcs[i]![j + 1]!);
     }
-    const out: Array<{value:T; mark:"" | "chg-add" | "chg-del"}> = [];
+    const out: Array<{value:T; mark:"" | "chg-add"}> = [];
     let i = 0, j = 0;
     while (i < before.length || j < after.length) {
       if (i < before.length && j < after.length && equal(before[i]!,after[j]!)) { out.push({value:after[j++]!,mark:""}); i++; }
-      else if (i < before.length && (j === after.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) out.push({value:before[i++]!,mark:"chg-del"});
+      else if (i < before.length && (j === after.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) i++;
       else out.push({value:after[j++]!,mark:"chg-add"});
     }
     return out;
@@ -2069,7 +2066,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "") {
     parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),inline(title)));
-    if (before != null && before !== title) parent.appendChild(el("small", "title-was chg-del",inline(before)));
   }
   let retry: ReturnType<typeof setTimeout> | undefined;
   let source: EventSource | undefined;
