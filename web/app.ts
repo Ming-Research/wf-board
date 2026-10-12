@@ -757,12 +757,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       b.addEventListener("click", ev => { ev.stopPropagation(); m.classList.toggle("open"); });
       m.appendChild(b);
       const list = el("div", "keymenu-list");
-      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条。<br>" +
-        "条目标记：▸/▾ 折叠子条目，单栏还折叠正文。TODO 未开始，WIP 进行中，BLOCK 卡住，DONE 完成，DROP 取消；父条目的状态由子条目汇总。" +
-        "P0/P1/P2 是有效优先级，P? 是未设；划掉的是原写优先级，等待关系会提高有效优先级。标题旁的小号删除线是原标题。左侧状态条与状态徽章同义，选中底色标当前选择。" +
-        "蓝色数字是本条及子树有新内容的条目数；蓝线只标本条的新内容；点数字到第一处，n 到下一处，r 只读当前条目。" +
-        "红色数字是下面等你处理的处数；等你处理表示本条自身在等你。" +
-        "右侧状态色数字是子树未归档叶条目按状态分类的数量。需核对表示规则检查待核对，待发：详细解释表示解释请求还未发送。"));
+      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>" +
+        "蓝色数字是本条及子树有新内容的条目数。" +
+        "红色数字是下面等你处理的处数。" +
+        "右侧状态色数字是子树未归档叶条目按状态分类的数量。"));
       ACTIONS.forEach(a => {
         const r = el("button", "keymenu-row", '<kbd>' + esc(a.show || a.key) + "</kbd><span>" + esc(a.label) + "</span>");
         r.type = "button";
@@ -1371,9 +1369,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
-    head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
-    const previousTitle=head.querySelector<HTMLElement>(".title-was");
-    if (previousTitle && before) previousTitle.title=plain(before.title);
+    if (wide && !detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
@@ -1415,7 +1411,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const cs = el("span", "counts");
       ["todo", "wip", "blocked", "done", "cancelled"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
-        count.title=(STATUS[k] || k)+" "+n[k]; count.setAttribute("aria-label",count.title);
+        count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);
       } });
       if (cs.children.length) row.appendChild(cs);
@@ -1813,7 +1809,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   const divider=get("split-divider"), wrap=document.querySelector<HTMLElement>(".wrap")!;
   divider.setAttribute("role","separator"); divider.setAttribute("aria-orientation","vertical");
-  divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail"); divider.tabIndex=0;
+  divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail");
   let drag: {pointer:number;x:number;width:number} | null = null;
   function applyTreeWidth() {
     if (!wide) return;
@@ -1835,16 +1831,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   divider.addEventListener("pointerdown",ev => {
     if (!wide || drag || ev.button !== 0) return;
-    ev.preventDefault(); divider.focus({preventScroll:true});
+    ev.preventDefault();
     drag={pointer:ev.pointerId,x:ev.clientX,width:applyTreeWidth()!}; divider.setPointerCapture(ev.pointerId);
   });
   divider.addEventListener("pointermove",ev => { if (drag && ev.pointerId === drag.pointer) resizeTree(drag.width+ev.clientX-drag.x); });
   for (const kind of ["pointerup","pointercancel"] as const) divider.addEventListener(kind,ev => { if (drag && ev.pointerId === drag.pointer) endDrag(); });
   divider.addEventListener("lostpointercapture",() => { drag=null; });
-  divider.addEventListener("keydown",ev => {
-    if (!wide || ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing || (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight")) return;
-    ev.preventDefault(); ev.stopPropagation(); resizeTree(applyTreeWidth()!+(ev.key === "ArrowRight" ? 16 : -16));
-  });
   window.addEventListener("resize",() => applyTreeWidth(),{passive:true});
   function layoutChanged() {
     if (wide) document.body.classList.add("wide"); else document.body.classList.remove("wide");

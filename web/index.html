@@ -77,8 +77,7 @@ body.wide { margin: 0; padding-inline: 8px; }
 body.wide .wrap { max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); align-items: start; gap: 0; }
 #split-divider[hidden] { display: none; }
 #split-divider { position: sticky; top: 0; height: 100dvh; cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
-#split-divider:hover, #split-divider:focus-visible { background-color: var(--accent); }
-#split-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#split-divider:hover { background-color: var(--accent); }
 body.wide #item-detail { position: sticky; top: 0; height: 100dvh; min-width: 0; overflow-y: auto; overflow-anchor: none; padding: 26px 8px 64px; }
 body.wide .page-left { padding-right: 8px; }
 body.wide #areas .item { padding-inline: 4px; }
@@ -154,6 +153,7 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .log-entry.fresh::before { left: -2px; top: 0; bottom: 0; }
 .log-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
 .rich { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; font-size: 14px; min-width: 0; }
+.rich > .chg-add { display: flex; flex-direction: column; gap: 6px; }
 .rich p { margin: 0; }
 .rich ul, .rich ol { margin: 0; padding-left: 1.5em; display: flex; flex-direction: column; gap: 2px; }
 .rich .sub { font-family: var(--font-head); font-weight: 700; font-size: 14px; margin-top: 4px; }
@@ -220,6 +220,7 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .rich th { font-weight: 600; border-bottom: 2px solid var(--rule); white-space: nowrap; }
 .readconfirm { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink); }
 .item-title { font-weight: 500; font-family: var(--font-head); font-size: 14px; }
+.item-title strong { font-weight: inherit; }
 .goal:empty { display: none; }
 .newtag { font-size: 12px; font-family: var(--font-mono); background: var(--fresh); color: var(--fresh-ink); padding: 0 6px; border-radius: 4px; }
 .closedtag { font-size: 12px; font-weight: 600; border: 1px solid var(--rule); color: var(--muted); padding: 0 7px; border-radius: 4px; margin-right: 6px; }
@@ -290,12 +291,13 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .freshchip[role="button"] { cursor: pointer; }
 .item.ctx > .item-row { opacity: .5; }
 .item-row .counts { flex: none; margin-left: auto; display: flex; gap: 6px; align-self: center; font-variant-numeric: tabular-nums; }
-.tree-row .counts { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+.tree-row .counts { flex: 1 0 0; max-width: max-content; min-width: 0; overflow: hidden; }
 .item-row .counts .st { flex: none; min-width: 0; font-size: 12px; line-height: 1.7; }
-/* The intrinsic head does not shrink for counts; once capped by the row its title can shrink. */
+/* Counts have zero basis and alone grow into space left by the intrinsic head. As the row narrows they reach zero
+   before negative free space shrinks the head and truncates its title; auto margin keeps counts at the right. */
 .tree-row { flex-wrap: nowrap; gap: 0; }
 .tree-row > .caret { width: 12px; margin-right: 8px; }
-.tree-row > .item-head { flex: 1 0 auto; flex-wrap: nowrap; width: auto; max-width: calc(100% - 20px); white-space: nowrap; gap: 4px; }
+.tree-row > .item-head { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; width: auto; white-space: nowrap; gap: 4px; }
 .tree-row .item-title { flex: 1 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-row > .item-head > :not(.item-title) { flex-shrink: 0; }
 .tree-row > .item-head > .title-was { max-width: 8ch; overflow: hidden; text-overflow: ellipsis; }
@@ -309,7 +311,7 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .keymenu { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 12px; z-index: 40; }
 .keymenu-btn { font: inherit; font-size: 18px; line-height: 1; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }
 .keymenu-btn:hover { border-color: var(--accent); color: var(--accent); }
-.keymenu-list { display: none; position: absolute; right: 0; top: 36px; width: min(380px, calc(100vw - 24px)); max-height: calc(100dvh - 50px - env(safe-area-inset-top, 0px)); overflow-y: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); padding: 6px; flex-direction: column; gap: 1px; }
+.keymenu-list { display: none; position: absolute; right: 0; top: 36px; width: min(380px, calc(100vw - 24px)); background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); padding: 6px; flex-direction: column; gap: 1px; }
 .keymenu:hover .keymenu-list, .keymenu.open .keymenu-list, .keymenu:focus-within .keymenu-list { display: flex; }
 .keymenu-head { font-size: 12px; color: var(--muted); padding: 4px 8px 6px; }
 .keymenu-row { font: inherit; font-size: 13.5px; display: flex; gap: 10px; align-items: baseline; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 8px; color: var(--ink); cursor: pointer; }

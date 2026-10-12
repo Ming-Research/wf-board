@@ -820,16 +820,54 @@ test("every item title has the same slightly heavy weight, whatever the status o
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].filter(r=>/\.item-title\b/.test(r[1]!));
   assert.ok(rules.some(r=>/font-weight:\s*500/.test(r[2]!)),"titles set one weight, 500");
-  assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== "500")).map(r=>r[1]!.trim()),[],"no rule gives some titles another weight");
+  assert.ok(rules.some(r=>r[1]!.trim() === ".item-title strong" && /font-weight:\s*inherit/.test(r[2]!)),"markdown strong inherits the title's weight");
+  assert.deepEqual(rules.filter(r=>[...r[2]!.matchAll(/font-weight:\s*([^;]+)/g)].some(m=>m[1]!.trim() !== (r[1]!.trim() === ".item-title strong" ? "inherit" : "500"))).map(r=>r[1]!.trim()),[],"title rules require 500; only strong descendants inherit it");
 });
-test("in the split view an item's new-content line is a short mark beside its headline, not a line down the body", async () => {
-  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+function shortDetailLineContract(source:string) {
+  const html=source.replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
   assert.ok(has("body.wide #item-detail .item.fresh > .body::before",/content:\s*none/),"no long line down the detail body");
   assert.ok(has("body.wide #item-detail .item.fresh > .body ~ .notes::before",/content:\s*none/),"nor down its comments");
   assert.ok(has("body.wide #item-detail .item.fresh > .item-row::before",/background:\s*var\(--fresh\)/),"a short line beside the headline");
+  const marker=rules.filter(r=>r[1]!.split(",").map(v=>v.trim()).includes("body.wide #item-detail .item.fresh > .item-row::before")).map(r=>r[2]!).join(";");
+  assert.match(marker,/top:\s*3px/,"line begins inside the headline");
+  assert.match(marker,/bottom:\s*3px/,"line ends inside the headline");
+  assert.doesNotMatch(marker,/(?:^|;)\s*(?:min-|max-)?height\s*:/,"top and bottom alone bound the line to the headline");
   assert.ok(has(".item.fresh > .body::before",/background:\s*var\(--fresh\)/),"the single-column body line is unchanged");
+}
+test("in the split view an item's new-content line is a short mark beside its headline, not a line down the body", async () => {
+  shortDetailLineContract(await readFile("web/index.html","utf8"));
+});
+test("short detail line contract rejects a viewport-tall marker that the old background check accepted", async () => {
+  const html=await readFile("web/index.html","utf8");
+  const broken=html.replace(/(body\.wide #item-detail \.item\.fresh > \.item-row::before\s*\{)/,"$1 height: 100dvh;");
+  assert.notEqual(broken,html,"mutation reaches the detail marker");
+  assert.match(broken,/body\.wide #item-detail \.item\.fresh > \.item-row::before\s*\{[^}]*background:\s*var\(--fresh\)/,"the previous assertion alone still passes");
+  assert.throws(()=>shortDetailLineContract(broken),/top and bottom alone/);
+});
+test("added rich blocks retain vertical spacing without extra visual styling", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === ".rich > .chg-add");
+  assert.ok(rule,"changed rich blocks have their own layout rule");
+  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
+});
+test("page and read-cursor documentation agree on short detail lines and number-only chips", async t => {
+  const doc=await readFile("docs/design.md","utf8");
+  const readCursor=doc.slice(doc.indexOf("- **The read cursor.**"),doc.indexOf("## 6."));
+  const page=doc.slice(doc.indexOf("## 7."),doc.indexOf("## 8."));
+  await t.test("short detail line",()=> {
+    assert.match(readCursor,/detail column, with a short blue line beside its headline/);
+    assert.doesNotMatch(readCursor,/with the full body line/);
+  });
+  await t.test("all new-content chips are numbers",()=> {
+    assert.match(page,/Every 新 chip shows only its number, including detail headlines and cards/);
+    assert.doesNotMatch(page,/detail headline and cards keep their existing chip text/i);
+  });
+  await t.test("removed page additions stay out of guidance",()=> {
+    assert.doesNotMatch(page,/in tooltips and accessibility labels|and right arrow keys while focused|menu help explains the caret|check tag, pending explanation tag/);
+    assert.match(page,/accessibility labels/);
+  });
 });
 test("obsolete freshbtn CSS is removed", async () => { const html=await readFile("web/index.html","utf8"); assert.ok(!/\.freshbtn(?:\b|:)/.test(html)); });
 
@@ -1544,6 +1582,7 @@ test("tree new and descendant-wait chips show only numbers with full labels", as
     const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
     const p=await page(s,[...unread("item","area"),...unread("item","child","e".repeat(40))],null,undefined,{wide});
     const head=wideHead(p), fresh=head.querySelector(".freshchip")!;
+    if (!wide) assert.equal(head.querySelector(".item-title")!.title,"","single-column headings have no added hover tooltip");
     assert.equal(fresh.innerHTML,"2","blue chip is the count alone");
     assert.match(fresh.title,/2 处新内容/); assert.equal(fresh.attributes["aria-label"],fresh.title);
     const wait=head.children.find(e=>e.className === "asktag" && e.innerHTML !== "等你处理")!;
@@ -1553,21 +1592,23 @@ test("tree new and descendant-wait chips show only numbers with full labels", as
     if (wide) {
       await selectWide(p);
       assert.equal(detailItem(p)!.querySelector(".freshchip")!.innerHTML,"2","the detail headline's chip is the count alone too");
+      assert.equal(detailItem(p)!.querySelector(".item-title")!.title,"","detail headings have no added hover tooltip");
     }
   });
 });
 
-test("existing menu help explains every tree row mark without adding a control", async () => {
+// The owner limited the added help to the three numeric row marks.
+test("existing menu help keeps its shortcut sentence and explains only the three numeric row marks", async () => {
   const p=await page(snapshot(),[],null,undefined,{wide:true}), menu=p.document.getElementById("keymenu")!;
   assert.equal(menu.querySelectorAll(".keymenu-head").length,1,"help extends the existing description");
   const help=menu.querySelector(".keymenu-head")!.innerHTML;
-  for (const mark of ["▸/▾","TODO","WIP","BLOCK","DONE","DROP","P0","P1","P2","蓝色数字","红色数字","右侧状态色数字","等你处理","需核对","待发：详细解释","状态条","选中底色","原标题","原写优先级"]) assert.ok(help.includes(mark),"help explains "+mark);
+  assert.match(help,/^快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>/,"the original shortcut sentence is retained");
+  for (const mark of ["▸/▾","TODO","WIP","BLOCK","DONE","DROP","P0","P1","P2","蓝线","需核对","待发","状态条","选中底色","原标题","原写优先级","父条目"]) assert.ok(!help.includes(mark),"help omits unrequested explanation "+mark);
   assert.match(help,/蓝色数字[^。]*新内容/); assert.match(help,/红色数字[^。]*下面[^。]*等你处理/);
   assert.match(help,/右侧状态色数字[^。]*叶条目/);
   assert.equal(menu.querySelector(".keymenu-btn")!.innerHTML,"☰");
   const css=await readFile("web/index.html","utf8");
-  assert.match(css,/\.keymenu-list\s*\{[^}]*max-height:\s*calc\(100dvh - 50px - env\(safe-area-inset-top,\s*0px\)\)/,"existing help and actions fit inside the viewport");
-  assert.match(css,/\.keymenu-list\s*\{[^}]*overflow-y:\s*auto/,"expanded help keeps existing actions reachable by scrolling");
+  assert.doesNotMatch(css,/\.keymenu-list\s*\{[^}]*(?:max-height|overflow-y):/,"the shorter help needs no added scrolling rules");
 });
 
 test("sticky path bar and its code CSS and scroll reservations are absent", async () => {
@@ -1586,7 +1627,8 @@ test("single-column parent counts are numbers with status color and labels", asy
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1"]);
   for (const [i,status] of ["todo","wip"].entries()) {
     const count=counts.children[i]!; assert.ok(count.classList.contains(status));
-    assert.equal(count.title,status.toUpperCase()+" 1"); assert.equal(count.attributes["aria-label"],count.title);
+    // Status labels remain accessible; the owner removed the added hover tooltip.
+    assert.equal(count.title,""); assert.equal(count.attributes["aria-label"],status.toUpperCase()+" 1");
   }
 });
 
@@ -1651,16 +1693,14 @@ test("split divider pointer drag clamps both columns and persists the width", as
   assert.equal(divider.capturedPointer,null);
 });
 
-test("focused divider arrows resize without triggering owner-work navigation", async () => {
-  const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
-  const p=await page(s,[],null,undefined,{wide:true}); await selectWide(p);
-  const divider=p.roots.get("split-divider")!, before=parseFloat(p.wrap.style["--tree-width"]!);
-  divider.focus(); assert.equal(p.key("ArrowRight",divider),true); await p.flush();
-  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before+16);
-  assert.ok(detailItem(p,"area")); assert.equal(detailItem(p,"child"),null,"divider arrows do not select another ask");
-  assert.equal(p.key("ArrowLeft",divider),true); await p.flush();
-  assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before);
-  assert.equal(divider.attributes["aria-valuenow"],String(before));
+// Keyboard resizing was outside the requested pointer-drag behavior.
+test("split divider has no added keyboard resizing or focus styles", async () => {
+  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  assert.equal(p.roots.get("split-divider")!.handlers.has("keydown"),false);
+  const [code,html]=await Promise.all([readFile("web/app.ts","utf8"),readFile("web/index.html","utf8")]);
+  assert.doesNotMatch(code,/divider\.tabIndex\s*=/);
+  assert.doesNotMatch(code,/divider\.focus\(/);
+  assert.doesNotMatch(html,/#split-divider[^}]*:focus-visible|id="split-divider"[^>]*tabindex/);
 });
 
 test("split preferences tolerate unavailable localStorage", async () => {
@@ -1682,7 +1722,7 @@ test("parent leaf counts are number-only with a status label", async () => {
   const counts=item(p,"area").querySelector(".counts")!;
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1","1"]);
   for (const [i,label] of ["TODO","WIP","BLOCK"].entries()) {
-    assert.equal(counts.children[i]!.title,label+" 1");
+    assert.equal(counts.children[i]!.title,"","status-count hover tooltips were removed at the owner's request");
     assert.equal(counts.children[i]!.attributes["aria-label"],label+" 1");
   }
 });
@@ -1697,10 +1737,13 @@ test("tree head structure and CSS keep badges chips title and counts on one line
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
   assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex-wrap:\s*nowrap/);
-  assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex:\s*1 0 auto/);
+  // Counts start at zero basis and alone receive spare space. Only after that space is gone can the head shrink.
+  assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex:\s*0 1 auto[^}]*min-width:\s*0/);
+  assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*width:\s*auto/);
+  assert.doesNotMatch(css,/\.tree-row > \.item-head\s*\{[^}]*max-width:/,"no cap reserves residual space for counts");
   assert.match(css,/\.tree-row \.item-title\s*\{[^}]*min-width:\s*6ch[^}]*text-overflow:\s*ellipsis/);
   assert.match(css,/\.tree-row > \.item-head > :not\(\.item-title\)\s*\{[^}]*flex-shrink:\s*0/);
-  assert.match(css,/\.tree-row \.counts\s*\{[^}]*flex:\s*0 1000 auto[^}]*min-width:\s*0[^}]*overflow:\s*hidden/);
+  assert.match(css,/\.tree-row \.counts\s*\{[^}]*flex:\s*1 0 0[^}]*max-width:\s*max-content[^}]*min-width:\s*0[^}]*overflow:\s*hidden/);
 });
 
 test("wide head click selects detail without changing the sub-item fold", async () => {
