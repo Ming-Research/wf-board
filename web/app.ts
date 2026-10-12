@@ -1546,9 +1546,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     return li;
   }
+  // A top-level item that an open item of another project depends on directly: its priority comes from those dependents.
+  function neededElsewhere(t: ViewItem) { return waitedBy().get(t.id)!.some(w => !ended(w) && groupOf(w) !== groupOf(t)); }
   function projectGroups() {
     const groups: Array<{name:string;items:ViewItem[]}> = snapshot.board.projects.map(p => ({name:p.name,items:[]}));
     tops().forEach(t => { const name = t.group || ""; let group = groups.find(g => g.name === name); if (!group) { group = {name,items:[]}; groups.push(group); } group.items.push(t); });
+    groups.forEach(g => { g.items = [...g.items.filter(t => !neededElsewhere(t)), ...g.items.filter(neededElsewhere)]; });
     return groups;
   }
   let groupReuse:{items:Map<string,HTMLElement>;cards:Map<string,HTMLElement>;dirtyItems:Set<string>;dirtyCards:Set<string>} | undefined;
@@ -1592,7 +1595,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       box.appendChild(filterRow(g.name));
       const shown = g.items.filter(passes);
-      if (shown.length) { const ul = el("ul", "tree lines"); shown.forEach(t => ul.appendChild(itemNode(t))); box.appendChild(ul); }
+      if (shown.length) {
+        const list = (xs: ViewItem[]) => { const ul = el("ul", "tree lines"); xs.forEach(t => ul.appendChild(itemNode(t))); box.appendChild(ul); };
+        const own = shown.filter(t => !neededElsewhere(t)), shared = shown.filter(neededElsewhere);
+        if (own.length) list(own);
+        if (shared.length) { box.appendChild(el("div", "shared-sep", "被其他项目依赖")); list(shared); }
+      }
       else box.appendChild(el("p", "empty", "没有符合这个筛选的条目。"));
       if (partial) get("group-"+gi).replaceWith(box); else wrap.appendChild(box);
     });
