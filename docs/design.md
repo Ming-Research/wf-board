@@ -231,7 +231,7 @@ log:
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,
-  unread chips and item breadcrumbs, reveals the target and its comment list
+  unread chips, reveals the target and its comment list
   (in the selected item's detail column in split mode),
   waits for the baselines affecting that target and its expanded containers,
   then scrolls after rendering. Baselines for unrelated collapsed items or
@@ -310,17 +310,33 @@ browser localStorage, and unavailable storage does not prevent use. Viewport
 width never changes the choice. Split mode has two columns and uses the full
 window with compact tree margins and equal, smaller detail side padding.
 The left column contains the header, summary and
-navigation, crumbs, project groups and filters, and the nested item tree.
+navigation, project groups and filters, and the nested item tree.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
-新 chip, 等 count and leaf counts. Clicking the row selects the item and
+new-content count, descendant owner-action count and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-Each split tree row stays on one line: caret, status, priority, title, 新 chip, 等
-tag and counts. Counts show numbers in their status color, with status names
-in tooltips and accessibility labels. They shrink and clip away first; only
+Each split tree row stays on one line: caret, status, priority, title, chips
+and counts. Parent leaf counts show numbers in their status color in both
+layouts, with status names
+in tooltips and accessibility labels. In split mode they shrink and clip away
+first; only
 then does the title truncate with an ellipsis, retaining a minimum width and
-a full-title tooltip. 新 and 等 remain visible. The separate decisions section
+a full-title tooltip. New-content and owner-action chips remain visible.
+The separate decisions section
 and send box remain available.
+
+In tree rows in both layouts, the blue new-content chip and the red descendant
+owner-action chip show only their numbers. Their tooltips and accessibility
+labels retain their full meaning; the item’s own 等你处理 tag retains its words.
+The detail headline and cards keep their existing chip text. The existing ☰
+menu help explains the caret, status, priority and raised priority, blue number
+and unread line, red number and own owner-action tag, right-side leaf counts,
+check tag, pending explanation tag, status bar, current-selection background
+and former-title strike-through alongside its keyboard actions.
+
+There is no sticky path bar. Navigation and visibility checks use the viewport
+top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
+or scroll margins for a bar. The existing send-box top button remains.
 
 A vertical divider resizes the left column with pointer dragging or the left
 and right arrow keys while focused. Its width is saved per viewer in browser

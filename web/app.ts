@@ -428,11 +428,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const e=target.selection ? selEl(target.selection) || primary : primary;
     if (!e) return;
     if (wide && it) {
-      const row=get("it-"+it.id), bar=get("crumbs"), edge=bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
+      const row=get("it-"+it.id);
       if (row) {
         const r=row.getBoundingClientRect();
-        if (r.top < edge + 4) scrollTo(scrollY+r.top-edge-8);
-        else if (r.bottom > innerHeight-4) scrollTo(scrollY+Math.min(r.top-edge-8,r.bottom-innerHeight+8));
+        if (r.top < 4) scrollTo(scrollY+r.top-8);
+        else if (r.bottom > innerHeight-4) scrollTo(scrollY+Math.min(r.top-8,r.bottom-innerHeight+8));
       }
     }
     glideToTarget(target.marks && freshMarks(e, target.marks)[0] || e);
@@ -469,9 +469,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const all = freshStops();
     const id = key.startsWith("it:") ? key.slice(3) : null;
     const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => id ? !!st.item && (st.item === id || derived.ancestors(st.item).includes(id)) : stopTouches(st, key));
-    const c = el("span", "newtag freshchip", "新 " + Math.max(1, n));
+    const c = el("span", "newtag freshchip", String(Math.max(1, n)));
     c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，r 把这一条标为已阅（子条目不动）"
       : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 r";
+    c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
     if (mine.length) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
       const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(mine[0]![1]); };
@@ -609,9 +610,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function onScreen(e: HTMLElement | null) {
     if (!e) return false;
-    const bar = get("crumbs"), pane=get("item-detail");
+    const pane=get("item-detail");
     const inDetail=wide && pane.contains(e), view=inDetail ? pane.getBoundingClientRect() : null;
-    const topEdge=view ? view.top : bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
+    const topEdge=view ? view.top : 0;
     const r = e.getBoundingClientRect();
     return r.bottom > topEdge && r.top < (view ? view.bottom : innerHeight);
   }
@@ -638,12 +639,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (box) setCurrent(box);
     else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearCurrent();
   }, true);
-  // Otherwise the item or card the reader is looking at: the one just below the location bar, or near the top of the screen.
+  // Otherwise the item or card the reader is looking at near the top of the screen.
   function targetOnScreen() {
     if (current && onScreen(boxOfKey(current))) return current;
     if (wide && selectedItem && snapshot.items[selectedItem]) return "it:"+selectedItem;
-    const bar = get("crumbs");
-    const y = (bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0) + 16;
+    const y = 16;
     const wrap = (wide ? get("areas") : document.querySelector<HTMLElement>(".wrap")!).getBoundingClientRect();
     const hit = document.elementFromPoint(wrap.left + wrap.width / 2, y);
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
@@ -697,8 +697,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function moveFocus(dir: number) {
     const list = navBoxes();
     if (!list.length) return;
-    const bar = get("crumbs");
-    const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
     const selection=effectiveSelection();
     const sel = wide && selection?.startsWith("it:") ? get("it-"+selection.slice(3)) : selEl(selection);
     const selectedBox = sel && (sel.matches(".item, .card") ? sel : sel.closest<HTMLElement>(".card, .item"));
@@ -706,7 +704,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     let k = box ? list.indexOf(box) : -1;
     let next;
     if (k >= 0 && onScreen(box)) next = list[Math.min(list.length - 1, Math.max(0, k + dir))];
-    else next = list.find(e => e.getBoundingClientRect().top >= topEdge) || list[0];
+    else next = list.find(e => e.getBoundingClientRect().top >= 0) || list[0];
     if (!next) return;
     setCurrent(next);
     if (wide) {
@@ -714,8 +712,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (head) head.focus({preventScroll:true}); else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     }
     const r = next.getBoundingClientRect();
-    if (r.top < topEdge + 4) glideTo(scrollY + r.top - topEdge - 8);
-    else if (r.bottom > innerHeight - 4) glideTo(scrollY + Math.min(r.top - topEdge - 8, r.bottom - innerHeight + 8));
+    if (r.top < 4) glideTo(scrollY + r.top - 8);
+    else if (r.bottom > innerHeight - 4) glideTo(scrollY + Math.min(r.top - 8, r.bottom - innerHeight + 8));
   }
   function toggleFocused(focusedHead?:HTMLElement) {
     const sel = selEl(effectiveSelection());
@@ -734,11 +732,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const key = containerOf(effectiveSelection());
     let k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
     if (k >= 0) { goStop(k + dir); return; }
-    const bar = get("crumbs");
-    const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
     const pos = (st: {id:string;item:string|null}) => { const e = get(st.id) || (st.item ? get("it-" + st.item) : null); return e ? e.getBoundingClientRect().top : Infinity; };
-    if (dir > 0) { const n = all.findIndex(st => pos(st) > topEdge); goStop(n >= 0 ? n : 0); }
-    else { let n = -1; all.forEach((st, i) => { if (pos(st) < topEdge) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
+    if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
+    else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
@@ -761,7 +757,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       b.addEventListener("click", ev => { ev.stopPropagation(); m.classList.toggle("open"); });
       m.appendChild(b);
       const list = el("div", "keymenu-list");
-      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条"));
+      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条。<br>" +
+        "条目标记：▸/▾ 折叠子条目，单栏还折叠正文。TODO 未开始，WIP 进行中，BLOCK 卡住，DONE 完成，DROP 取消；父条目的状态由子条目汇总。" +
+        "P0/P1/P2 是有效优先级，P? 是未设；划掉的是原写优先级，等待关系会提高有效优先级。标题旁的小号删除线是原标题。左侧状态条与状态徽章同义，选中底色标当前选择。" +
+        "蓝色数字是本条及子树有新内容的条目数；蓝线只标本条的新内容；点数字到第一处，n 到下一处，r 只读当前条目。" +
+        "红色数字是下面等你处理的处数；等你处理表示本条自身在等你。" +
+        "右侧状态色数字是子树未归档叶条目按状态分类的数量。需核对表示规则检查待核对，待发：详细解释表示解释请求还未发送。"));
       ACTIONS.forEach(a => {
         const r = el("button", "keymenu-row", '<kbd>' + esc(a.show || a.key) + "</kbd><span>" + esc(a.label) + "</span>");
         r.type = "button";
@@ -831,21 +832,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The reader's own wheel or touch stops a glide.
   ["wheel", "touchstart"].forEach(t => addEventListener(t, releaseLanding, { passive: true }));
   ["keydown","click"].forEach(t => document.addEventListener(t, ev => { if (ev.isTrusted !== false) { releaseLanding(); hideHint(); } }, {capture:true}));
-  function glideToEl(t: HTMLElement, block: string) {
-    const r = t.getBoundingClientRect();
-    const margin = parseFloat(getComputedStyle(t).scrollMarginTop) || 0;
-    const top = block === "start" || r.height + margin > innerHeight ? r.top - margin : r.top - (innerHeight - r.height) / 2;
-    glideTo(scrollY + top,t.id ? {id:t.id,top:r.top-top} : undefined);
-  }
   // A jump keeps the target in view first; within that, it shows as much of the enclosing card or item as fits,
-  // and centres what it shows: the whole card when it fits under the location bar, else the target, moved off
+  // and centres what it shows: the whole card when it fits in the viewport, else the target, moved off
   // centre only as far as keeps the card filling three quarters of the view.
   function glideToTarget(t: HTMLElement) {
-    const bar = get("crumbs"), detail=get("item-detail");
+    const detail=get("item-detail");
     const pane=wide && detail.contains(t) ? detail : undefined;
     const origin=pane ? pane.getBoundingClientRect().top : 0, height=pane ? pane.clientHeight : innerHeight;
     const offset=pane ? pane.scrollTop : scrollY;
-    const top = pane ? 8 : (bar && !bar.hidden && bar.offsetHeight ? bar.offsetHeight : 46) + 8, bottom = height - 8, room = bottom - top;
+    const top = 8, bottom = height - 8, room = bottom - top;
     const doc = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { top: r.top-origin+offset, bottom: r.bottom-origin+offset }; };
     const T = doc(t);
     const box = (t.parentElement && t.parentElement.closest<HTMLElement>(".card, .item")) && !t.matches(".card, .item") ? t.parentElement.closest<HTMLElement>(".card, .item") : t;
@@ -1335,7 +1330,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (askPending(it)) {
         const a = el("div", "ask" + (before && !sameValue(before.ask,it.ask) ? " chg-add" : ""));
         a.id = "ask-" + it.id;
-        a.style.scrollMarginTop = "24px";
         a.appendChild(el("span", null, '<span class="asktag">等你处理</span> ' + inline(it.ask?.text)));
         if (/^https:\/\//.test(it.ask?.url || "")) { const go = el("a", "okbtn golink", "去处理 ↗"); go.href = it.ask!.url!; go.target = "_blank"; go.rel = "noopener"; a.appendChild(go); if (connected) a.appendChild(answerButton("done", "it:" + it.id, it.title, it.ask!.text)); }
         else if (it.ask?.chat) a.appendChild(el("span", "chatnote", "请在对话窗口里确认"));
@@ -1360,7 +1354,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (detail) box.dataset.sel = "it:"+it.id;
     if (wide && !detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");
-    box.dataset.title = plain(it.title);
     // Archived sub-items stay where they are: hidden, unless the 已归档 filter shows them.
     const sub = kids(it.id, inArchive || showsArchived(groupOf(it))).filter(k => inArchive || passes(k));
     const ck = checksOf(it), raised = raisedBy(it);
@@ -1390,7 +1383,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A parent also counts what waits or is new below it, so a folded section shows where to look.
     if (sub.length) {
       const waitingBelow = below.wait[it.id] || 0;
-      if (waitingBelow) head.appendChild(el("span", "asktag", "等 " + waitingBelow)).title = "下面有 " + waitingBelow + " 处等你处理";
+      if (waitingBelow) {
+        const wait=el("span", "asktag", String(waitingBelow));
+        wait.title="下面 " + waitingBelow + " 处等你处理"; wait.setAttribute("aria-label",wait.title); head.appendChild(wait);
+      }
     }
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
@@ -1418,7 +1414,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       leavesOf(it).filter(l => l !== it && !archivedPath(l)).forEach(l => { const k = statusOf(l); n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       ["todo", "wip", "blocked", "done", "cancelled"].forEach(k => { if (n[k]) {
-        const count=el("span", "st " + k, wide ? String(n[k]) : esc(STATUS[k]) + " " + n[k]);
+        const count=el("span", "st " + k, String(n[k]));
         count.title=(STATUS[k] || k)+" "+n[k]; count.setAttribute("aria-label",count.title);
         cs.appendChild(count);
       } });
@@ -1517,7 +1513,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (partial && !only!.has(g.name)) return;
       const box = el("section", "group");
       box.id = "group-" + gi;
-      box.dataset.title = plain(g.name || "其他");
       box.dataset.group=g.name;
       const gh = el("h2", "group-head", inline(g.name || "其他"));
       const xs = crossSummary(g.name);
@@ -1617,92 +1612,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     loose.forEach(d => root.appendChild(decisionCard(d)));
   }
 
-  // The sticky bar names where the reader is: project group, then each item down to the one under the bar.
-  function crumbPath(y: number) {
-    const wrap = document.querySelector<HTMLElement>(".wrap");
-    const r = (wide ? get("areas") : wrap!).getBoundingClientRect();
-    const x = r.left + r.width / 2;
-    const hit = document.elementFromPoint(x, y);
-    if (!hit || !hit.closest<HTMLElement>("#areas")) return hit && hit.closest<HTMLElement>("#decisions") ? [{ label: "其他待决事项", target: get("decisions") }] : [];
-    const path: Array<{label:string;target:HTMLElement;item?:string}> = [];
-    const group = hit.closest<HTMLElement>("section.group");
-    if (group) path.push({ label: group.dataset.title || "", target: group });
-    const chain: Array<{label:string;target:HTMLElement;item?:string}> = [];
-    let li = hit.closest<HTMLElement>("li");
-    while (li && li.closest<HTMLElement>("#areas")) {
-      const box = li.querySelector<HTMLElement>(":scope > .item");
-      if (box) chain.unshift({ label: box.dataset.title || "", target: box, item: box.id.slice(3) });
-      li = li.parentElement ? li.parentElement.closest<HTMLElement>("li") : null;
-    }
-    return path.concat(chain);
-  }
-  // The bar stacks the path one row per level, like sticky headers: the project, then each item's head line, indented
-  // by depth, down to the item under the bar. The bar's height follows the path, so the path is read again below a bar
-  // whose height changed.
-  let crumbKey: string | null = null;
-  function updateCrumbs() {
-    const bar = get("crumbs");
-    if (wide) { const r=get("areas").getBoundingClientRect(); bar.style.left=r.left+"px"; bar.style.width=r.width+"px"; }
-    else { bar.style.left=""; bar.style.width=""; }
-    const header = document.querySelector<HTMLElement>("header.top");
-    const atTop = header!.getBoundingClientRect().bottom > 0;
-    bar.hidden = atTop;
-    if (atTop) { crumbKey = "\u0001"; return; }
-    for (let round = 0; round < 3; round++) {
-      const h = bar.offsetHeight || 34;
-      const path = crumbPath(h + 10);
-      const tag = (p: {item?:string}) => { const it = p.item && index().byId.get(p.item); return it ? statusOf(it) + "/" + effPriorityOf(it) : ""; };
-      const key = path.map(p => p.label + tag(p)).join("\u0000");
-      if (key === crumbKey) return;
-      crumbKey = key;
-      renderCrumbs(bar, path);
-      if (bar.offsetHeight === h) return;
-    }
-  }
-  function renderCrumbs(bar: HTMLElement, path: Array<{label: string; target: HTMLElement; item?: string}>) {
-    bar.innerHTML = "";
-    if (!path.length) {
-      const home = el("div", "crumbrow proj", '<span class="t">' + esc(get("goal-title").textContent) + "</span>");
-      home.setAttribute("role", "button"); home.tabIndex = 0; home.addEventListener("click", () => glideTo(0)); bar.appendChild(home); return;
-    }
-    path.forEach((p, i) => {
-      const it = p.item && index().byId.get(p.item);
-      const row = el("div", "crumbrow" + (it ? "" : " proj") + (i === path.length - 1 ? " cur" : ""));
-      row.setAttribute("role", "button"); row.tabIndex = 0;
-      row.addEventListener("keydown", ev => { if (ev.key === "Enter") row.click(); });
-      row.style.paddingLeft = (it ? 8 + (i - 1) * 18 : 0) + "px";
-      if (it) {
-        const st = statusOf(it), pr = effPriorityOf(it);
-        row.appendChild(el("span", "st " + st, esc(STATUS[st] || st)));
-        if (pr) row.appendChild(el("span", "prio " + pr.toLowerCase(), pr));
-      }
-      row.appendChild(el("span", "t", esc(p.label)));
-      if (i === 0) { const top = el("span", "totop", "↑ 顶部"); top.addEventListener("click", ev => { ev.stopPropagation(); glideTo(0); }); row.appendChild(top); }
-      // The rows outlive re-renders of the tree, so a click looks its target up again; an item row selects the item.
-      const go = () => {
-        const t = it ? get("it-" + it.id) : (p.target && p.target.id ? get(p.target.id) : p.target);
-        if (!t) return;
-        if (it) jump(t); else glideToEl(t, "start");
-      };
-      row.addEventListener("click", go);
-      bar.appendChild(row);
-    });
-  }
-  let crumbQueued = false;
   window.addEventListener("scroll", () => {
     if (landing && !landing.pane && (expectedScroll === null || Math.abs(window.scrollY-expectedScroll)>1)) releaseLanding();
-    if (crumbQueued) return; crumbQueued = true; frame(() => { crumbQueued = false; updateCrumbs(); });
   }, { passive: true });
-  window.addEventListener("resize", () => updateCrumbs(), { passive: true });
 
   // A snapshot can re-render while the owner is typing; keep the editor's focus and caret.
   // The item or card the reader is looking at, and where it sits, so a data update does not move the page under them.
   function scrollAnchor() {
     const cur = boxOfKey(current);
     if (cur && !(wide && get("item-detail").contains(cur)) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top };
-    const bar = get("crumbs");
-    const topEdge = bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
-    const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > topEdge);
+    const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > 0);
     return e ? { id: e.id, top: e.getBoundingClientRect().top } : null;
   }
   const dirty = new Set<string>();
@@ -1851,13 +1770,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const it=index().byId.get(id), old=get("it-"+id); if (!it) continue;
         if (old && !scope.has("areas") && !scope.has("group:"+groupOf(it))) {
           const next=itemNode(it,inArchive(it),true).children[0] as HTMLElement;
-          old.children[0]!.replaceWith(next.children[0]!); old.className=next.className; old.dataset.title=next.dataset.title;
+          old.children[0]!.replaceWith(next.children[0]!); old.className=next.className;
         }
         if (wide && id === selectedItem && !detailPainted) {
           const detail=itemBox(id);
           if (detail) {
             const head=itemNode(it,inArchive(it),true,true,true).children[0] as HTMLElement;
-            detail.children[0]!.replaceWith(head.children[0]!); detail.className=head.className; detail.dataset.title=head.dataset.title;
+            detail.children[0]!.replaceWith(head.children[0]!); detail.className=head.className;
           }
         }
       }
@@ -1890,7 +1809,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if ("pane" in anchor && anchor.pane) { if (d) get("item-detail").scrollTop+=d; expectedDetailScroll=get("item-detail").scrollTop; }
       else { if (d) scrollBy(d); if (landing) expectedScroll=window.scrollY; }
     } }
-    crumbKey = null; updateCrumbs();
     if (keep) { const t = get<HTMLTextAreaElement | HTMLInputElement>(keep.id); if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(keep.start, keep.end); } catch (e) {} } }
   }
   const divider=get("split-divider"), wrap=document.querySelector<HTMLElement>(".wrap")!;
@@ -1904,7 +1822,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const width=Math.round(Math.max(300,Math.min(maximum,treeWidth ?? (wrap.getBoundingClientRect().width-8)/2.3)));
     wrap.style.setProperty("--tree-width",width+"px");
     divider.setAttribute("aria-valuemin","300"); divider.setAttribute("aria-valuemax",String(maximum)); divider.setAttribute("aria-valuenow",String(width));
-    updateCrumbs();
     return width;
   }
   function resizeTree(width:number) {

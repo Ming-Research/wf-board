@@ -125,7 +125,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .note .reply { border-top: 1px solid var(--rule); padding-top: 4px; margin-top: 2px; }
 .log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; max-width: 78ch; }
 .log-head { font-family: var(--font-head); font-weight: 700; font-size: 14px; }
-.log-entry { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); scroll-margin-top: 56px; }
+.log-entry { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); }
 /* The blue bar of anything new is one straight line, drawn on its own and kept clear of rounded corners so it never
    bends with them. An item's line runs down the empty space left of its body text, from the first line of the body to
    the bottom, away from the status bar; a folded item, which has no body, gets a short line beside its head. */
@@ -158,14 +158,14 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .nav a { color: var(--accent); text-decoration: none; }
 h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700; text-wrap: balance; }
-.group { display: flex; flex-direction: column; gap: 2px; scroll-margin-top: 56px; }
+.group { display: flex; flex-direction: column; gap: 2px; }
 .group-head { font-family: var(--font-head); font-size: 20px; margin: 0; font-weight: 700; padding-bottom: 4px; border-bottom: 2px solid var(--accent); text-wrap: balance; }
 .nav .grp { font-weight: 600; }
 .tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .tree .tree { padding-left: 18px; border-left: 2px solid var(--rule); margin: 4px 0 0 8px; }
-/* One meaning per channel: the left bar is the status; red and yellow chips say "waits for you" and "new";
+/* One meaning per channel: the left bar is the status; blue and red chips say "new" and "waits for you";
    a pale orange background marks the current item; a pale red fill marks the option the owner chose. */
-.item { border-radius: 8px; padding: 4px 10px; display: flex; flex-direction: column; gap: 4px; scroll-margin-top: 56px; min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--bar, var(--todo)); }
+.item { border-radius: 8px; padding: 4px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--bar, var(--todo)); }
 .item.wip { --bar: var(--bar-wip); }
 .item.done { --bar: var(--bar-done); }
 .item.todo { --bar: var(--bar-todo); }
@@ -233,8 +233,8 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 a { color: var(--accent); }
 code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-soft); padding: 0 4px; border-radius: 3px; }
 section.decisions[hidden] { display: none; }
-section.decisions { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 56px; }
-.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; scroll-margin-top: 56px; }
+section.decisions { display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
 .card .card-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
 .card h3 { margin: 0; font-size: 16px; font-family: var(--font-head); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 .qid { font-family: var(--font-mono); color: var(--accent); }
@@ -253,21 +253,7 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; scroll-mar
 .body .card { margin-top: 4px; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
-details.ruled li { scroll-margin-top: 24px; }
 .empty { color: var(--muted); font-size: 14px; margin: 0; }
-.crumbbar { position: fixed; top: env(safe-area-inset-top, 0px); left: 0; right: 0; z-index: 10; padding: 4px max(16px, calc((100% - 980px) / 2)); background: var(--bg); border-bottom: 1px solid var(--rule); display: flex; flex-direction: column; font-size: 13px; }
-.crumbbar { padding-right: max(56px, calc((100% - 980px) / 2)); }
-.crumbbar[hidden] { display: none; }
-body.wide .crumbbar { right: auto; padding: 4px 8px; }
-.crumbrow { font: inherit; font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 24px; background: none; border: 0; border-radius: 4px; color: var(--ink); cursor: pointer; text-align: left; white-space: nowrap; padding-top: 1px; padding-bottom: 1px; }
-.crumbrow:hover { background: var(--accent-soft); }
-.crumbrow .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.crumbrow.proj .t { font-family: var(--font-head); font-weight: 700; font-size: 14px; }
-.crumbrow.cur .t { font-weight: 600; }
-.crumbrow .st, .crumbrow .prio { flex: none; font-size: 11px; line-height: 1.6; }
-.crumbrow .st { min-width: 0; }
-.crumbrow .totop { margin-left: auto; flex: none; font-size: 12px; color: var(--muted); padding: 0 6px; }
-.crumbrow .totop:hover { color: var(--accent); }
 .prio-was { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); text-decoration: line-through; }
 .checktag { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 4px; border: 1px dashed var(--wip); color: var(--wip); white-space: nowrap; }
 .checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px; max-width: 78ch; }
@@ -311,7 +297,7 @@ body.wide .crumbbar { right: auto; padding: 4px 8px; }
 .keymenu { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 12px; z-index: 40; }
 .keymenu-btn { font: inherit; font-size: 18px; line-height: 1; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }
 .keymenu-btn:hover { border-color: var(--accent); color: var(--accent); }
-.keymenu-list { display: none; position: absolute; right: 0; top: 36px; width: min(380px, calc(100vw - 24px)); background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); padding: 6px; flex-direction: column; gap: 1px; }
+.keymenu-list { display: none; position: absolute; right: 0; top: 36px; width: min(380px, calc(100vw - 24px)); max-height: calc(100dvh - 50px - env(safe-area-inset-top, 0px)); overflow-y: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); padding: 6px; flex-direction: column; gap: 1px; }
 .keymenu:hover .keymenu-list, .keymenu.open .keymenu-list, .keymenu:focus-within .keymenu-list { display: flex; }
 .keymenu-head { font-size: 12px; color: var(--muted); padding: 4px 8px 6px; }
 .keymenu-row { font: inherit; font-size: 13.5px; display: flex; gap: 10px; align-items: baseline; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 8px; color: var(--ink); cursor: pointer; }
@@ -339,7 +325,6 @@ body.wide .crumbbar { right: auto; padding: 4px 8px; }
 <div id="hint" role="status" hidden></div>
 <div class="wrap">
   <div class="page-left">
-  <nav class="crumbbar" id="crumbs" aria-label="当前位置" hidden></nav>
   <header class="top">
     <div class="eyebrow" id="eyebrow">状态看板</div>
     <h1 id="goal-title">进度板</h1>
