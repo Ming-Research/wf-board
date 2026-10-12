@@ -87,11 +87,17 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms-fold", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "glossary", "terms-fold", "terms", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
   if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
+  // The left list pane scrolls the list in wide mode, as the window does in narrow mode; its scroll events arrive
+  // after the scroll, as a browser's do.
+  const listPane=roots.get("page-left")!;
+  listPane.geometry=()=>({top:0,bottom:1000,height:1000,left:0,width:900});
+  Object.defineProperty(listPane,"scrollHeight",{get:()=>options.scrollHeight?.() ?? 10000});
+  const listMax=()=>(options.scrollHeight?.() ?? 10000)-1000;
   let wide=options.wide ?? false;
   const widthListeners: Array<(event:{matches:boolean})=>unknown> = [];
   const body = new Element("body"), wrap = new Element("div");
@@ -104,6 +110,8 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const listeners = new Map<string,Array<{fn:(event:unknown)=>unknown;capture:boolean}>>();
   const dispatch=(kind:string,event:unknown,captureOnly=false)=> { for(const {fn,capture} of [...listeners.get(kind) ?? []].sort((a,b)=>Number(b.capture)-Number(a.capture))) if (!captureOnly || capture) fn(event); };
   const programmaticScroll=()=> { void Promise.resolve().then(()=> { for(const fn of windowListeners.get("scroll") ?? []) fn({isTrusted:true}); }); };
+  const paneScrolled=()=> { void Promise.resolve().then(()=> { for(const fn of listPane.handlers.get("scroll") ?? []) fn({isTrusted:true}); }); };
+  listPane.scrollTo=(_x:number | {top?:number},y?:number)=> { const to=typeof _x === "object" ? _x.top ?? 0 : y ?? 0; scrolls.push(to); listPane.scrollTop=Math.max(0,Math.min(listMax(),to)); paneScrolled(); };
   const document = {
     body, get activeElement() { return focused.current; }, documentElement: { get scrollHeight() { return options.scrollHeight?.() ?? 10000; } },
     getElementById: (id: string) => all().find(e => e.id === id) ?? null,
@@ -184,8 +192,10 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   return { roots, all, calls, document, wrap, change, emit, measurements, scrolls, sources, renders,flush, storage,
     setWide:async(value:boolean)=> { wide=value; widthListeners.forEach(fn=>fn({matches:wide})); await flush(); },
-    get scrollY() { return scrollPosition; },
-    user:(kind:string)=> { if (kind === "scroll") scrollPosition+=100; dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
+    // Where the list is scrolled: the left pane in wide mode, the window otherwise. `windowScrollY` is the window alone.
+    get scrollY() { return wide ? listPane.scrollTop : scrollPosition; },
+    get windowScrollY() { return scrollPosition; },
+    user:(kind:string)=> { if (kind === "scroll") { if (wide) listPane.scrollTop+=100; else scrollPosition+=100; } dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
     key: (key: string,target:Element=new Element("div")) => { let prevented=false, stopped=false; const ev={key,isTrusted:true,target,preventDefault(){prevented=true;},stopPropagation(){stopped=true;}}; for (const fn of target?.handlers.get("keydown") ?? []) fn(ev); if (!stopped) dispatch("keydown",ev); return prevented; },
     // The reader presses the mouse at a point, leaving text selected or not when the button is released.
     press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
@@ -829,6 +839,21 @@ test("scrolling over the detail pane never scrolls the list behind it", async ()
   const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === "body.wide #item-detail");
   assert.ok(rule,"the wide detail pane has its own rule");
   assert.match(rule![2]!,/overscroll-behavior:\s*contain/,"wheel and trackpad scrolls stop at the pane, even when it is too short to scroll");
+});
+test("wide mode makes the left list its own scroll container, so the document has no scrollbar", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  const rule=(selector:string) => rules.filter(r=>r[1]!.trim() === selector).map(r=>r[2]!).join(";");
+  const list=rule("body.wide .page-left");
+  assert.match(list,/overflow-y:\s*auto/,"the wide list scrolls on its own, with its scrollbar at the pane's right edge");
+  assert.match(list,/overscroll-behavior:\s*contain/,"scrolling the list never chains to the document");
+  assert.doesNotMatch(rule(".page-left"),/overflow/,"the narrow single column is not a scroll container: the window scrolls");
+  const body=rule("body.wide");
+  assert.match(body,/overflow-y:\s*hidden/,"nothing makes the wide document scroll");
+  assert.match(body,/height:\s*100dvh/,"the wide document is exactly one viewport tall");
+  assert.match(body,/padding-block:\s*0\b/,"the body's bottom padding does not add to the viewport height");
+  assert.match(rule("body.wide .wrap"),/min-height:\s*0/,"the panes share the height left under the connection banner");
+  assert.ok(/id="page-left"/.test(html) && /class="page-left"/.test(html),"the list pane is the element the page scrolls");
 });
 function shortDetailLineContract(source:string) {
   const html=source.replace(/\/\*[\s\S]*?\*\//g,"");
@@ -2066,8 +2091,52 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
     p.key("n"); await p.flush();
     const loose=p.document.getElementById("q-loose")!;
     assert.ok(loose.className.includes("cur")); assert.ok(!p.roots.get("item-detail")!.contains(loose),"a loose card stays in the decisions section");
-    assert.ok(p.scrollY>1000,"a loose card retains window navigation");
+    assert.ok(p.scrollY>1000,"a loose card scrolls the list");
+    assert.ok(p.roots.get("page-left")!.scrollTop>1000,"the list is the left pane");
+    assert.equal(p.windowScrollY,0,"the window never scrolls in wide mode");
   });
+});
+
+test("wide list navigation scrolls the left pane, never the window", async () => {
+  const s=snapshot(); let p!:Awaited<ReturnType<typeof page>>;
+  s.items.far={title:"Far",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:(e.id === "it-far" ? 1800 : 50)-p.scrollY,height:100})});
+  const pane=p.roots.get("page-left")!;
+  p.key("j"); await p.flush(); assert.equal(pane.scrollTop,0,"the first row is in view");
+  p.key("j"); await p.flush();
+  assert.ok(item(p,"far").className.includes("cur"));
+  assert.equal(pane.scrollTop,908,"j brings the row below the view to 8px above the bottom edge, in the pane");
+  assert.equal(p.windowScrollY,0,"the window stays at the top");
+  p.key("G"); await p.flush(); assert.equal(pane.scrollTop,9000); assert.equal(p.windowScrollY,0,"G goes to the bottom of the pane");
+  p.key("g"); p.key("g"); await p.flush(); assert.equal(pane.scrollTop,0); assert.equal(p.windowScrollY,0,"gg goes to its top");
+  p.key("G"); await p.flush(); await p.roots.get("to-top")!.click(); await p.flush();
+  assert.equal(pane.scrollTop,0); assert.equal(p.windowScrollY,0,"the 回顶部 button scrolls the pane");
+});
+
+test("wide Back with no row to return to scrolls the list pane back to its saved offset", async () => {
+  const s=glossaries(snapshot()); let p!:Awaited<ReturnType<typeof page>>;
+  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:e.tagName === "DT" ? 2500-p.scrollY : -500,height:20})});
+  const pane=p.roots.get("page-left")!, link=p.document.createElement("a");
+  link.className="term"; link.setAttribute("href",anchor("Project","否决")); link.bubbleClick=true; p.roots.get("sendbox")!.appendChild(link);
+  pane.scrollTo(0,700); await p.flush(); assert.equal(pane.scrollTop,700);
+  await link.click(); await p.flush();
+  assert.ok(pane.scrollTop>1000,"the term link scrolls the pane to the glossary entry");
+  p.key("Backspace"); await p.flush();
+  assert.equal(pane.scrollTop,700,"Back returns the pane to where the reader was"); assert.equal(p.windowScrollY,0);
+});
+
+test("wide landing in the list pins through updates until the reader scrolls the pane", async () => {
+  const s=snapshot(), frames=new Frames(); s.decisions.loose={...card(),item:"missing",question:"Loose card"};
+  let above=0, p!:Awaited<ReturnType<typeof page>>;
+  p=await page(s,unread("decision","loose"),null,undefined,{wide:true,frames,geometry:e=>({top:e.id === "q-loose" ? 1800+above-p.scrollY : 600,height:e.id === "q-loose" ? 400 : 2400})});
+  const pane=p.roots.get("page-left")!, top=() => p.all().find(e=>e.id === "q-loose")!.getBoundingClientRect().top;
+  p.key("n"); await p.flush(); const landed=top();
+  assert.ok(pane.scrollTop>1000,"the landing scrolls the pane"); assert.equal(p.windowScrollY,0);
+  above=800; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted above"}}]); await p.flush();
+  assert.equal(top(),landed,"an update above cannot move the landed card");
+  p.user("wheel"); p.user("scroll"); const released=pane.scrollTop;
+  above=1000; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"More above"}}]); await p.flush();
+  assert.equal(pane.scrollTop,released,"scrolling the pane releases the pin"); assert.equal(p.windowScrollY,0);
 });
 
 test("wide blank clicks clear the current selection while actions fall back to the displayed item", async t => {
