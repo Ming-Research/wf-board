@@ -894,6 +894,7 @@ test("all mutating requests time out at eight seconds and recover their controls
   for (const action of ["send","notes","read","archive","delete","json"] as const) await t.test(action, async () => {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(), body=deferred<unknown>(); let signal:AbortSignal|undefined;
     s.notes.d={target:"it:area",kind:"comment",text:"Draft",at,state:"draft",rev:1};
+    if (action === "archive") s.items.child!.status="done";
     const path=action === "json" ? "/api/send" : action === "delete" ? "/api/notes/d" : "/api/"+action;
     const p=await page(s,unread("item","area"),null,undefined,{clock,response:(url,_value,init)=>{ if (url !== path) return; signal=init.signal; return action === "json" ? {ok:true,status:200,json:()=>body.promise} : hold.promise; }});
     let control:Element, pending:Promise<unknown>|undefined;
@@ -2063,7 +2064,7 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
 test("wide blank clicks clear the current selection while actions fall back to the displayed item", async t => {
   for (const action of ["r","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
     const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
-    s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
+    s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"}; if (action === "a") s.items.child!.status="done";
     s.items.other={title:"Following root",group:"Project",status:"todo",priority:"P2",ask:{text:"Other ask"},updated:at,rev:1,deps:[],links:[],log:[]};
     const p=await page(s,fresh,null,undefined,{wide:true,geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100}),response:(path,input)=> {
       if (path !== "/api/archive") return undefined;
@@ -2089,6 +2090,33 @@ test("wide blank clicks clear the current selection while actions fall back to t
     } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "other" : "area"),"owner-work navigation starts from the displayed item's ask");
     else assert.ok(detailItem(p,action === "n" ? "area" : "child"),"fresh navigation retains its global cursor and selects its stop");
   });
+});
+
+test("a archives only done items: an open item makes no archive call and shows the reason", async () => {
+  const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
+  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
+  p.key("n"); await p.flush(); p.key("a"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive"),[],"a wip parent is not archived");
+  assert.equal(p.roots.get("server-banner")!.hidden,false); assert.equal(p.roots.get("server-banner")!.textContent,"只有完成的条目能归档");
+  const d=snapshot(); d.items.child!.status="done";
+  const q=await page(d,unread("item","area"),null,undefined,{response:archive});
+  q.key("n"); await q.flush(); q.key("a"); await q.flush();
+  assert.deepEqual(q.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}],"a parent whose sub-items are all done archives");
+});
+
+test("a on an item inside an archived subtree un-archives the nearest archived ancestor", async () => {
+  const s=snapshot(); s.owner.archived.area="2999-01-01T00:00:00Z";
+  const p=await page(s,[],null,undefined,{response:(path,input)=> {
+    if (path !== "/api/archive") return undefined;
+    const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]="2999-01-01T00:00:00Z"; else delete s.owner.archived[id];
+    return reply({ok:true});
+  }});
+  await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("已归档"))!.click(); await p.flush();
+  await expand(p,"area"); assert.ok(item(p,"child"),"the archived subtree shows under 已归档");
+  await item(p,"child").children[0]!.children[0]!.click(); await p.flush();
+  p.key("a"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:false}],"the child is not archived; its archived ancestor is restored");
+  assert.equal(p.roots.get("server-banner")!.hidden,true);
 });
 
 test("LEGACY PRIORITY: an unmigrated item raised by a waiter shows its written priority struck; a migrated raise shows only the higher one", async () => {

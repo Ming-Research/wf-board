@@ -751,7 +751,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
     { key: "c", label: "评论选中的内容（条目、卡片、某条进展或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
-    { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
+    { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目；在已归档条目之内则取消上级的归档）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
     { key: "Backspace", show: "Backspace 或 [", label: "跟着依赖跳转后返回", run: () => { goBack(); return true; } },
     { key: "gg", show: "gg / G", label: "回到顶部 / 到底部", run: () => { glideTo(0); return true; } }
   ];
@@ -1077,9 +1077,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     });
     return b;
   }
-  // Archiving an item hides it and its sub-items until new progress brings it back; doing it again restores it.
+  // Archiving a done item hides it and its sub-items until new progress brings it back; doing it again restores it.
+  // On an item inside an archived subtree it restores the nearest archived ancestor, where the archive was made.
   async function toggleArchive(it: ViewItem) {
-    try { await api("/api/archive", { id: it.id, on: !isArchived(it) }); void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
+    const target = [it.id, ...derived.ancestors(it.id)].find(id => derived.isArchived(id));
+    if (!target && statusOf(it) !== "done") { showError(new Error("只有完成的条目能归档")); return false; }
+    try { await api("/api/archive", { id: target || it.id, on: !target }); void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
 
   // Approvals and choices show on their buttons; the comment list holds comments, explain requests, and any approval or choice a session replied to.

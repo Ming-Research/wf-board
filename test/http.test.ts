@@ -53,8 +53,10 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.equal((await api("/api/notes/missing", {}, "DELETE")).status, 404);
   assert.equal((await api("/api/notes", { target: "it:missing", kind: "comment", text: "bad" })).status, 404);
   assert.equal((await api("/api/archive", { id: "a", on: "true" })).status, 400);
+  assert.equal((await api("/api/archive", { id: "a", on: true })).status, 400);
+  const completed = await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
   assert.equal((await api("/api/archive", { id: "a", on: true })).status, 200); assert.ok(store.snapshot().owner.archived.a);
-  assert.equal((await api("/api/read", { through: written.commit })).status, 200);
+  assert.equal((await api("/api/read", { through: completed.commit })).status, 200);
   assert.equal((await api("/api/unread")).data.steps.length, 0);
   const log = await op.appendLog({ author, id: "b", text: "unread after read" });
   const steps = (await api("/api/unread")).data.steps; assert.equal(steps[0].id, log.commit);

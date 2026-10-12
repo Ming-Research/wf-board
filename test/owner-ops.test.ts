@@ -205,7 +205,9 @@ test("read advances monotonically; unknown, off-history and merged sibling commi
 });
 
 test("archive and cursor create no commits and ride with the next data write", async t => {
-  const { store, op } = await board(t), own = ownerOps(store, () => later), head = store.snapshot().head;
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
+  const head = store.snapshot().head;
   own.archive({ id: "a", on: true }); await own.read({ through: head });
   assert.equal(store.snapshot().head, head); assert.equal(store.snapshot().owner.archived.a, later);
   let ownerChange: unknown;
@@ -218,7 +220,8 @@ test("archive and cursor create no commits and ride with the next data write", a
 
 // Migration permits clocks ahead of the daemon; archiving still covers what was shown.
 test("archive includes future item, log and reply timestamps", async t => {
-  const {store} = await board(t), own = ownerOps(store, () => later);
+  const {store,op} = await board(t), own = ownerOps(store, () => later);
+  await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
   const item = store.snapshot().items.a!;
   await store.commit({author, message:"future clock witness", puts:[{kind:"item",id:"a",expectRev:item.rev,doc:{...item,updated:"2030-01-01T00:00:00Z",log:[...item.log,{at:"2030-02-01T00:00:00Z",text:"future log"}]}}]});
   const note = store.snapshot().notes["note-1"]!;
@@ -228,6 +231,27 @@ test("archive includes future item, log and reply timestamps", async t => {
   assert.equal(rules(store.snapshot()).isArchived("a"),true);
 });
 
+
+test("only done items archive, a parent counts when all its sub-items are done, and any item un-archives", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  // a is todo, b is blocked and area is derived from them, so none is done.
+  for (const id of ["a", "b", "area"]) assert.throws(() => own.archive({ id, on: true }), /Only done items can be archived/, id);
+  await op.setStatus({ author, id: "a", status: "wip", log: "Start" });
+  assert.throws(() => own.archive({ id: "a", on: true }), /Only done items/, "wip");
+  await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
+  assert.throws(() => own.archive({ id: "area", on: true }), /Only done items/, "a parent with an open sub-item");
+  await op.setStatus({ author, id: "b", status: "done", log: "Complete" });
+  assert.deepEqual(Object.keys(store.snapshot().owner.archived), [], "refusals archive nothing");
+  own.archive({ id: "area", on: true }); own.archive({ id: "a", on: true });
+  assert.deepEqual(Object.keys(store.snapshot().owner.archived).sort(), ["a", "area"]);
+  // Progress brings the item back as open work; the archive entry stays, and turning it off is still allowed.
+  store.setOwner({ ...store.snapshot().owner, archived: { ...store.snapshot().owner.archived, b: "2999-01-01T00:00:00Z" } });
+  await op.setStatus({ author, id: "b", status: "todo", log: "Reopen" });
+  assert.equal(rules(store.snapshot()).isArchived("b"), true);
+  assert.notEqual(rules(store.snapshot()).statusOf("b"), "done");
+  own.archive({ id: "b", on: false });
+  assert.equal(store.snapshot().owner.archived.b, undefined);
+});
 
 test("document reads persist with the next data write and compact the completed prefix", async t => {
   const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
