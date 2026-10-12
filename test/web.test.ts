@@ -1577,6 +1577,16 @@ function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return item
 function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
 async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
 
+test("the red waiting number leads to the first place below that waits for the owner", async () => {
+  const s=snapshot(); s.items.child!.ask={text:"Child ask"};
+  const p=await page(s,[],null,undefined,{wide:true});
+  const wait=wideHead(p).children.find(e=>e.className === "asktag")!;
+  assert.equal(wait.innerHTML,"1"); assert.equal(wait.attributes["role"],"button");
+  assert.ok(!detailItem(p,"child"),"nothing is selected before the click");
+  await wait.click(); await p.flush();
+  assert.ok(detailItem(p,"child"),"the click selects the waiting child and shows it in the detail");
+});
+
 test("tree new and descendant-wait chips show only numbers with full labels", async t => {
   for (const wide of [false,true]) await t.test(wide ? "split tree" : "inline tree",async()=> {
     const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
@@ -1756,6 +1766,20 @@ test("wide head click selects detail without changing the sub-item fold", async 
   assert.match(markup(detailItem(p)!),/Parent detail/);
   await selectWide(p);
   assert.ok(detailItem(p),"clicking the selected head keeps its detail visible");
+});
+
+test("double-clicking a wide tree row folds its sub-items like the caret; a single click only selects", async () => {
+  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  const dbl=async (id:string)=> { const row=item(p,id).children.find(e=>e.className.includes("tree-row"))!; for (const fn of row.handlers.get("dblclick") ?? []) await fn({target:row.children[1]}); await p.flush(); };
+  assert.ok(!item(p,"child"),"sub-items start folded");
+  await selectWide(p,"area");
+  assert.ok(!item(p,"child"),"a single click does not unfold");
+  await dbl("area");
+  assert.ok(item(p,"child"),"a double-click unfolds sub-items");
+  await dbl("area");
+  assert.ok(!item(p,"child"),"a second double-click folds them again");
+  await dbl("area");
+  assert.equal((item(p,"child").children.find(e=>e.className.includes("tree-row"))!.handlers.get("dblclick") ?? []).length,0,"a row without sub-items has no double-click action");
 });
 
 test("wide caret folds sub-items only and preserves the selected detail", async () => {
