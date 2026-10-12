@@ -1,7 +1,8 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
-// Ported from ~/dev/agents_config/status-board.html, except priority in migrated
-// projects, which comes from dependents; the verbatim test oracle preserves the
-// old rules independently of this implementation.
+// Ported from ~/dev/agents_config/status-board.html, except in migrated projects:
+// priority comes from dependents, and a parent listing its own cancelled sub-item
+// is not flagged. The verbatim test oracle preserves the old rules independently
+// of this implementation.
 import type { Item, Note, Priority, Snapshot, Status } from "./model.ts";
 import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
 
@@ -240,7 +241,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
-        else if (e.kind === "item" && statusOf(e.id) === "cancelled" && !ended(id)) out.push({ text: "依赖的条目已取消", target });
+        else if (e.kind === "item" && statusOf(e.id) === "cancelled" && !(migrated(id) && parentOf(e.id) === id) && !ended(id)) out.push({ text: "依赖的条目已取消", target });
         else if (!e.why.trim() && !ended(id)) out.push({ text: "依赖没写为什么：", target });
       }
       if (cycles().has(id)) out.push({ text: "依赖成环" });
