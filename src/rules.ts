@@ -462,8 +462,8 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
-      if (st === "paused") for (const waiter of waiters(id)) {
-        if (isOpenWork(waiter) && !isPaused(waiter)) out.push({ text: `暂停了，但 ${item(waiter)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter } });
+      if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
+        if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push({ text: `暂停了，但 ${item(waiter.id)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter.id } });
       }
       if (!it.record) {
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));

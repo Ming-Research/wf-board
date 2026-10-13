@@ -374,6 +374,7 @@ test("inherited pause uses a grey glyph, honest counts and filters and points re
   const html=await readFile("web/index.html","utf8");
   assert.match(html,/\.plan-row\.paused > \.g\s*\{\s*color:\s*var\(--muted\)/);
   assert.match(html,/\.st\.cancelled, \.st\.paused\s*\{\s*color:\s*var\(--muted\)/);
+  assert.match(html,/\.st\.paused\s*\{\s*flex:\s*none;\s*min-width:\s*max-content;/,"the seven-character pause label keeps its intrinsic width in a narrow flex row");
 });
 
 test("record, completed and cancelled heads have no owner pause control", async t => {

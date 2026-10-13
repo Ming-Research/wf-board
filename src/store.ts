@@ -36,6 +36,32 @@ const run = promisify(execFile);
 // boundaries, not for every old commit.
 const historicalDocumentLimit = 4096;
 const comparedSnapshotLimit = 4;
+type PauseHistoryMarker = { version: 1; head: string; first: string | null };
+
+function pauseMetadata(value: unknown): Item["paused"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const pause = value as Record<string, unknown>;
+  return typeof pause.at === "string" && Number.isFinite(Date.parse(pause.at))
+    ? { at: pause.at, reason: typeof pause.reason === "string" ? pause.reason : "" } : undefined;
+}
+
+/** Pause indexing also sees legacy transaction inputs and historical schemas.
+ * Only these metadata fields participate; current write validation stays strict. */
+function pauseProjection(raw: unknown, id: string, fallbackAt: string): Item | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const fields = raw as Record<string, unknown>;
+  const plan: Item["plan"] = [];
+  for (const value of Array.isArray(fields.plan) ? fields.plan : []) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const row = value as Record<string, unknown>;
+    if (row.own === true && typeof row.item === "string") plan.push({ id: typeof row.id === "string" ? row.id : row.item, item: row.item, own: true });
+  }
+  const it: Item = { title: id, group: typeof fields.group === "string" ? fields.group : `\0${id}`, record: fields.record === true,
+    plan, log: [], links: [], rev: 1, updated: typeof fields.updated === "string" && Number.isFinite(Date.parse(fields.updated)) ? fields.updated : fallbackAt };
+  const paused = pauseMetadata(fields.paused);
+  if (paused) it.paused = paused;
+  return it;
+}
 
 function cachedPromise<T>(cache: Map<string, Promise<T>>, key: string, limit: number, load: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
@@ -206,6 +232,8 @@ export class Store {
   private readonly blobs: BlobReader;
   /** Last known placement also resolves later changes to notes on a deleted card. */
   private readonly cardItems = new Map<string, string>();
+  private pauseHistory?: PauseHistoryMarker;
+  private pauseHistoryPath?: string;
   // Keep a defensive frozen copy, never expose mutable transaction state. Owner
   // reads can change without a commit, and startup replaces the activity index.
   private published?: { state: Snapshot; owner: OwnerState; activity: Snapshot["activity"]; head: string; value: Snapshot };
@@ -412,15 +440,18 @@ export class Store {
    * oldest legacy snapshot. Read each later changed item once; never convert
    * whole historical boards or inspect old item bodies when no pause existed. */
   private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[]): Promise<void> {
-    const markers = new Set((await this.git(["log", "--format=%H", "--no-renames", "-G", "^paused:", "--", "items"])).trim().split(/\s+/));
-    const first = commits.findIndex(commit => markers.has(commit.commit));
+    const firstCommit = await this.firstPauseCommit(commits);
+    const first = commits.findIndex(commit => commit.commit === firstCommit);
     if (first < 0) return;
     const initial = commits[first]!;
     const items: Snapshot["items"] = {};
     const paths = (await this.git(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
     for (const path of paths) {
       const match = /^items\/(.+)\.yaml$/.exec(path);
-      if (match) items[match[1]!] = Item.parse(await this.readAt(path, initial.commit));
+      if (match) {
+        const it = await this.pauseItem(path, initial.commit, match[1]!, initial.at);
+        if (it) items[match[1]!] = it;
+      }
     }
     const source = rules({ ...this.state, items });
     for (const id of Object.keys(items)) {
@@ -435,7 +466,8 @@ export class Store {
       for (const path of commit.files) {
         const match = /^items\/(.+)\.yaml$/.exec(path);
         if (!match) continue;
-        const id = match[1]!, raw = await this.readAt(path, commit.commit), after = raw === null ? null : Item.parse(raw);
+        const id = match[1]!, after = await this.pauseItem(path, commit.commit, id, commit.at);
+        if (after === undefined) continue; // An unreadable revision supplies no new evidence.
         changes.push({ kind: "item", id, before: Object.hasOwn(items, id) ? items[id]! : null, after });
         if (after) next[id] = after; else delete next[id];
       }
@@ -447,28 +479,91 @@ export class Store {
     }
   }
 
+  /** This is an index hint, never board data. A missing/corrupt marker or history
+   * rewind rebuilds it; unchanged heads need no full-history pickaxe. Git's own
+   * metadata directory keeps the disposable cache out of board commits. */
+  private async firstPauseCommit(commits: CommitInfo[]): Promise<string | null> {
+    this.pauseHistoryPath ??= resolve(this.dir, (await this.git(["rev-parse", "--git-path", "wf-board-pause-history.yaml"])).trim());
+    let marker: PauseHistoryMarker | undefined;
+    try {
+      const value: unknown = parse(await readFile(this.pauseHistoryPath, "utf8"));
+      if (value && typeof value === "object") {
+        const fields = value as Record<string, unknown>;
+        if (fields.version === 1 && typeof fields.head === "string" && (fields.first === null || typeof fields.first === "string")) {
+          const candidate = fields as PauseHistoryMarker;
+          const headIndex = commits.findIndex(c => c.commit === candidate.head), firstIndex = commits.findIndex(c => c.commit === candidate.first);
+          if (headIndex >= 0 && (candidate.first === null || (firstIndex >= 0 && firstIndex <= headIndex))) marker = candidate;
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("Cannot read pause history cache; rebuilding", String(error));
+    }
+    if (marker?.head === this.state.head && marker.first === null && Object.values(this.state.items).some(it => it.paused)) marker = undefined;
+    if (marker?.head === this.state.head) { this.pauseHistory = marker; return marker.first; }
+    const range = marker ? `${marker.head}..${this.state.head}` : this.state.head;
+    const matches = new Set((await this.git(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
+    if (marker?.first) matches.add(marker.first);
+    const first = commits.find(c => matches.has(c.commit))?.commit ?? null;
+    this.savePauseHistory({ version: 1, head: this.state.head, first });
+    return first;
+  }
+
+  private savePauseHistory(marker: PauseHistoryMarker): void {
+    this.pauseHistory = marker;
+    if (!this.pauseHistoryPath) return;
+    try { atomicWrite(this.pauseHistoryPath, marker); }
+    catch (error) { console.warn("Cannot save pause history cache; startup will rebuild it", String(error)); }
+  }
+
+  /** Historical schemas are not today's write schema. Extract only the fields
+   * consumed by pausedBy and interval timestamps, ignoring unrelated evolution. */
+  private async pauseItem(path: string, commit: string, id: string, fallbackAt: string): Promise<Item | null | undefined> {
+    try {
+      const raw = await this.readAt(path, commit);
+      if (raw === null) return null;
+      const it = pauseProjection(raw, id, fallbackAt);
+      if (!it) throw new Error("Historical item is not an object");
+      return it;
+    } catch (error) {
+      console.warn(`Skipping unreadable pause history item ${commit}:${path}`, String(error));
+      return undefined;
+    }
+  }
+
   /** Only ownership, identity or a pause marker can alter inherited pause.
    * Logs and ordinary plan progress avoid a whole-board inheritance walk. */
-  private notePauses(activity: NonNullable<Snapshot["activity"]>, before: Snapshot["items"], after: Snapshot["items"], changed: ChangedDoc[], fallbackAt: string): void {
-    const shape = (value: unknown) => {
-      const it = value as Item | null;
-      return it ? { group: it.group, record: it.record, paused: it.paused, owned: it.plan.filter(row => "item" in row && row.own).map(row => row.id) } : null;
+  private notePauses(activity: NonNullable<Snapshot["activity"]>, before: Record<string, unknown>, after: Record<string, unknown>, changed: ChangedDoc[], fallbackAt: string): void {
+    const shape = (it: Item | null) => {
+      return it ? { group: it.group, record: it.record, paused: it.paused, owned: it.plan.flatMap(row => "item" in row && row.own ? [row.item] : []) } : null;
     };
-    const relevant = changed.filter(change => change.kind === "item" && !isDeepStrictEqual(shape(change.before), shape(change.after)));
+    const relevant = changed.filter(change => change.kind === "item").map(change => ({
+      before: pauseProjection(change.before, change.id, fallbackAt), after: pauseProjection(change.after, change.id, fallbackAt),
+    })).filter(change => !isDeepStrictEqual(shape(change.before), shape(change.after)));
     if (!relevant.length) return;
+    const hasPause = (items: Record<string, unknown>) => Object.values(items).some(value => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const fields = value as Record<string, unknown>;
+      return fields.record !== true && !!pauseMetadata(fields.paused);
+    });
+    if (!hasPause(before) && !hasPause(after)) return;
+    const project = (items: Record<string, unknown>): Snapshot["items"] => Object.fromEntries(Object.entries(items).flatMap(([id, value]): Array<[string, Item]> => {
+      const it = pauseProjection(value, id, fallbackAt);
+      return it ? [[id, it]] : [];
+    }));
+    const oldItems = project(before), newItems = project(after);
     // A move starts inheritance at the move, not at the destination's older
     // pause. Document times retain sub-second precision that git dates lack.
-    const dates = relevant.flatMap(change => change.after ? [(change.after as Item).updated] : [fallbackAt]);
+    const dates = relevant.map(change => change.after?.updated ?? fallbackAt);
     const at = dates.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, dates[0] ?? fallbackAt);
-    const oldRules = rules({ ...this.state, items: before }), newRules = rules({ ...this.state, items: after });
-    for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const oldRules = rules({ ...this.state, items: oldItems }), newRules = rules({ ...this.state, items: newItems });
+    for (const id of new Set([...Object.keys(oldItems), ...Object.keys(newItems)])) {
       const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
       if (!!oldSource === !!newSource) continue;
       activity.pauses ??= {};
       const spans = Object.hasOwn(activity.pauses, id) ? activity.pauses[id]! : (activity.pauses[id] = []);
       if (newSource) {
-        const pause = after[newSource]!.paused!;
-        const newlyPaused = !before[newSource]?.paused;
+        const pause = newItems[newSource]!.paused!;
+        const newlyPaused = !oldItems[newSource]?.paused;
         spans.push({ start: newlyPaused ? pause.at : at });
       } else {
         const current = spans.at(-1);
@@ -649,6 +744,10 @@ export class Store {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
       }
+    }
+    if (this.pauseHistory?.head === this.state.head) {
+      const introduced = changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused);
+      this.savePauseHistory({ version: 1, head: next.head, first: this.pauseHistory.first ?? (introduced ? next.head : null) });
     }
     this.state = next;
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }
