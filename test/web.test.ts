@@ -734,11 +734,12 @@ test("unrelated collapsed baseline failure does not suppress target navigation",
   p.key("n"); await settle(); assert.equal(p.scrolls.length,1);
 });
 
-test("n reaches a child while a baseline for its ancestor's unread note is still pending", async () => {
+test("N reaches a child while a baseline for its ancestor's unread note is still pending", async () => {
   const s=snapshot(), hold=deferred<unknown>();
   s.notes.above={target:"it:area",kind:"comment",text:"New ancestor comment",at,state:"sent",rev:1};
   const p=await page(s,[...unread("item","child"),...unread("note","above","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "above" ? hold.promise : endpoints(s,params,null),undefined,{geometry:geom,detailGeometry:geom});
-  p.key("n"); await settle();
+  // The ancestor's note comes first in page order, so n would target it and rightly wait; the child is the last stop, so N reaches it first.
+  p.key("N"); await settle();
   assert.ok(detailItem(p,"child"),"the child is selected and shown without waiting for the ancestor note's baseline");
   hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=above"),null)); await settle();
 });
