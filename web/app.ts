@@ -69,12 +69,25 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let ruledOpen: Record<string, boolean> = {};
   try { ruledOpen = JSON.parse(localStorage.getItem("board-ruled") || "{}") || {}; } catch (e) { ruledOpen = {}; }
   function saveRuled() { try { localStorage.setItem("board-ruled", JSON.stringify(ruledOpen)); } catch (e) {} }
-  // A card its own item's plan names unfolds inline under that plan row; collapsed until opened, remembered per card.
+  // A card any item's plan names unfolds inline under that plan row of the shown item; collapsed until opened, remembered
+  // per card, so it is the same card wherever it unfolds.
   let inlineOpen: Record<string, boolean> = {};
   try { inlineOpen = JSON.parse(localStorage.getItem("board-inline-cards") || "{}") || {}; } catch (e) { inlineOpen = {}; }
   function saveInline() { try { localStorage.setItem("board-inline-cards", JSON.stringify(inlineOpen)); } catch (e) {} }
-  function inPlan(d: Decision & { id: string }) { return !!index().byId.get(d.item)?.plan.some(row => "card" in row && row.card === d.id); }
-  function inlineShown(d: Decision & { id: string }) { return inPlan(d) && !!inlineOpen[d.id]; }
+  function cardRowOf(item: string, card: string) { return index().byId.get(item)?.plan.find(row => "card" in row && row.card === card); }
+  // Whether the card's own item's plan names it, so its item shows it under that row instead of at the bottom.
+  function inPlan(d: Decision & { id: string }) { return !!cardRowOf(d.item, d.id); }
+  // The item whose plan the card unfolds under: the shown item when its plan names the card, else the card's own item
+  // when its plan does. A card no item holds stays in the list at the bottom.
+  function inlineHost(id: string) {
+    const d = snapshot.decisions[id];
+    if (!d || !snapshot.items[d.item]) return null;
+    if (selectedItem && cardRowOf(selectedItem, id)) return selectedItem;
+    return cardRowOf(d.item, id) ? d.item : null;
+  }
+  function inlineShown(d: Decision & { id: string }) { return inlineHost(d.id) !== null && !!inlineOpen[d.id]; }
+  // The item a card is reached in: the shown item when the card unfolds in its plan, else the card's own item.
+  function cardPlace(id: string) { const host = inlineHost(id); return host === selectedItem && host ? host : snapshot.decisions[id]?.item || null; }
   function planRowId(item: string, row: string) { return "plan-" + encodeURIComponent(JSON.stringify([item, row])); }
   function ruledShown(d: ViewDecision) { return Object.prototype.hasOwnProperty.call(ruledOpen, d.id) ? !!ruledOpen[d.id] : cardFresh(d); }
   let manual: Record<string, boolean> = {};
@@ -478,6 +491,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const active=() => navigation === freshNavigation && valid();
     const retry=new Set(failedDiffs);
     clearCurrent();
+    // A card the shown item's plan names is reached there, unfolded under its row, rather than in the card's own item.
+    if (target.card && selectedItem && inlineHost(target.card) === selectedItem) target={...target,item:selectedItem};
     const it=target.item && index().byId.get(target.item);
     if (it) {
       if (!ended(it) && !passes(it)) clearFilters(groupOf(it));
@@ -488,7 +503,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const d=index().decById.get(target.card);
       if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); }
       // A card its item's plan names is reached unfolded under its plan row.
-      if (d && inPlan(d) && !inlineOpen[d.id]) { inlineOpen[d.id]=true; saveInline(); }
+      if (d && it && inlineHost(d.id) === it.id && !inlineOpen[d.id]) { inlineOpen[d.id]=true; saveInline(); }
     }
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
@@ -951,7 +966,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const name=typeof id === "string" ? id : id.id, e=typeof id === "string" ? get(id) : id;
     const box=e?.closest<HTMLElement>(".card, .item");
     const card=name.startsWith("q-") ? name.slice(2) : box?.id.startsWith("q-") ? box.id.slice(2) : undefined;
-    const item=name.startsWith("detail-it-") ? name.slice(10) : name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("detail-it-") ? box.id.slice(10) : box?.id.startsWith("it-") ? box.id.slice(3) : null;
+    const item=name.startsWith("detail-it-") ? name.slice(10) : name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? cardPlace(card) : box?.id.startsWith("detail-it-") ? box.id.slice(10) : box?.id.startsWith("it-") ? box.id.slice(3) : null;
     const note=e?.dataset.sel?.startsWith("note:") ? e.dataset.sel.slice(5) : undefined;
     if (item || card || note) { void navigate({id:name,item,card,note,selection:e?.dataset.sel,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
     if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
@@ -1010,7 +1025,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = b.key && boxOfKey(b.key);
     if (b.key) {
       const container=containerOf(b.key), card=container?.startsWith("q:") ? container.slice(2) : undefined;
-      const item=container?.startsWith("it:") ? container.slice(3) : card ? snapshot.decisions[card]?.item || null : null;
+      const item=container?.startsWith("it:") ? container.slice(3) : card ? cardPlace(card) : null;
       const note=b.key.startsWith("note:") ? b.key.slice(5) : undefined;
       if (item || card || note) {
         const id=note ? noteElementId(note) : card ? "q-"+card : "it-"+item;
@@ -1168,7 +1183,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let editingAnchor: Note["anchor"] | null = null;
   function openComment(key: string, anchor?: Note["anchor"] | null) {
     if (key.startsWith("it:")) { openPath(key.slice(3)); selectItem(key.slice(3)); }
-    else if (key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
+    else if (key.startsWith("q:")) { const id=cardPlace(key.slice(2)); if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
     editing = key; editingAnchor = anchor || null;
     // Writing a comment shows the list it joins, so the saved draft and its send button are in view.
     notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
@@ -1644,30 +1659,35 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
           ? '<span class="waittag" title="' + esc(card.blocks) + '">阻塞</span>'
           : '<span class="asktag">决策卡</span>'));
-        const home = card && card.item === it.id ? index().decById.get(stored.card) : undefined;
+        const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;
         if (home) {
-          // The card's own item: the question unfolds the whole card under this row instead of jumping to it.
+          // The question unfolds the whole card under this row instead of jumping to it, whichever item holds the card.
           const toggle = el("a", "plan-link cardtoggle", esc(plain(firstLine(card!.question)) || stored.card)); toggle.href = "#";
           toggle.setAttribute("aria-expanded", String(inlineShown(home)));
           toggle.title = inlineShown(home) ? "收起这张决策卡" : "展开这张决策卡";
-          toggle.addEventListener("click", ev => {
+          const flip = (ev: Event) => {
             ev.preventDefault(); ev.stopPropagation();
             inlineOpen[home.id] = !inlineShown(home); saveInline();
             toggle.setAttribute("aria-expanded", String(inlineOpen[home.id])); toggle.title = inlineOpen[home.id] ? "收起这张决策卡" : "展开这张决策卡";
             // Opening selects the card, so c and m act on it; closing leaves the reader where it was.
             if (inlineOpen[home.id]) jump("q-" + home.id); else renderNow("card:" + home.id);
-          });
+          };
+          toggle.addEventListener("click", flip);
+          // The whole row folds and unfolds the card, so a click beside a wrapped question still acts; links and buttons
+          // inside the row keep their own action.
+          row.classList.add("cardrow");
+          row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) flip(ev); });
           main.appendChild(toggle);
         } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);
       return row;
     };
-    // An unfolded card of this item follows its row.
+    // An unfolded card follows the first row naming it in the shown item's plan.
     const appendRow = (parent: HTMLElement, value: typeof rows[number]) => {
       parent.appendChild(renderRow(value));
       const stored = value.row, d = "card" in stored ? index().decById.get(stored.card) : undefined;
-      if (d && d.item === it.id && inlineShown(d)) parent.appendChild(decisionCard(d));
+      if (d && inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) parent.appendChild(decisionCard(d));
     };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
@@ -2039,7 +2059,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     top.appendChild(h);
     if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
-      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); if (inPlan(d)) { inlineOpen[d.id] = false; saveInline(); } renderNow(homeOf(d) ? "item:"+d.item : "cards"); });
+      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); const host = inlineHost(d.id); if (host) { inlineOpen[d.id] = false; saveInline(); } renderNow(host ? "card:"+d.id : homeOf(d) ? "item:"+d.item : "cards"); });
       top.appendChild(x);
     }
     c.appendChild(top);
@@ -2170,11 +2190,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (ask && nextAsk) ask.replaceWith(nextAsk); else if (ask) ask.remove(); else if (body && nextAsk) body.insertBefore(nextAsk,[...body.children].find(e => e.classList.contains("card")) || null);
   }
   function reconcileCard(id:string) {
-    const d=index().decById.get(id), old=get("q-"+id);
-    if (d && inPlan(d)) {
-      // An inline card lives right after its plan row, only while unfolded and its item's body is shown.
-      const planned=index().byId.get(d.item)?.plan.find(r => "card" in r && r.card === id);
-      const row=bodyShown(d.item) && planned ? get(planRowId(d.item,planned.id)) : null, parent=row?.parentElement;
+    const d=index().decById.get(id), old=get("q-"+id), host=d ? inlineHost(id) : null;
+    if (d && host) {
+      // An inline card lives right after its plan row, only while unfolded and its host item's body is shown.
+      const planned=cardRowOf(host,id);
+      const row=bodyShown(host) && planned ? get(planRowId(host,planned.id)) : null, parent=row?.parentElement;
       const toggle=row?.querySelector<HTMLElement>(".cardtoggle");
       if (toggle) { toggle.setAttribute("aria-expanded",String(inlineShown(d))); toggle.title=inlineShown(d) ? "收起这张决策卡" : "展开这张决策卡"; }
       if (!row || !parent || !inlineShown(d)) old?.remove();
@@ -2244,6 +2264,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
       const paintedHome=(home:string | null) => home ? home === selectedItem && detailPainted : scope.has("cards");
+      // A card unfolded in the shown item's plan is painted with that item, wherever its own item is.
+      const shownIn=(d:ViewDecision) => selectedItem && inlineHost(d.id) === selectedItem ? selectedItem : homeOf(d);
       for (const key of scope) {
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
@@ -2261,12 +2283,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           if (it) { if (kind === "tree") heads.add(id); derived.ancestors(id).forEach(p => heads.add(p)); }
         } else if (kind === "card") {
-          const d=index().decById.get(id); if (d && !paintedHome(homeOf(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
+          const d=index().decById.get(id); if (d && !paintedHome(shownIn(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
           if (d) refs.add(d.item);
         } else if (kind === "notes") {
           const card=id.startsWith("q:") ? id.slice(2) : null;
-          const d=card ? index().decById.get(card) : undefined, home=card ? d ? homeOf(d) : null : id.slice(3);
+          const d=card ? index().decById.get(card) : undefined, home=card ? d ? shownIn(d) : null : id.slice(3);
           if (!paintedHome(home) && !(card && drawnCards.has(card)) && !(id.startsWith("it:") && drawnItems.has(id.slice(3)))) { replaceNotes(id); if (card) drawnCards.add(card); }
           const item=id.startsWith("it:") ? id.slice(3) : snapshot.decisions[id.slice(2)]?.item;
           if (item) { heads.add(item); derived.ancestors(item).forEach(p => heads.add(p)); }

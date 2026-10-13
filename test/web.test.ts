@@ -1500,7 +1500,9 @@ test("card plan rows show waiting and resolved glyphs, link their question and r
   assert.equal(planRow(p,"child","r").querySelector(".g")!.innerHTML,"✓");
   assert.equal(planRow(p,"child","gone").querySelector(".g")!.innerHTML,"⏸");
   assert.match(markup(planRow(p,"child","q")),/如何显示/); assert.match(markup(planRow(p,"child","r")),/已定的问题/);
-  assert.equal(planRow(p,"child","q").querySelector(".plan-link")!.dataset.ref,"q:q");
+  // A card another item holds unfolds under this row like the item's own card; a missing card keeps its key as a link.
+  assert.equal(planRow(p,"child","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"false");
+  assert.equal(planRow(p,"child","q").querySelector(".plan-link")!.dataset.ref,undefined);
   assert.equal(planRow(p,"child","gone").querySelector(".plan-link")!.innerHTML,"gone");
   assert.equal(item(p).querySelectorAll(".why").length,0,"plan rows have no why field");
 });
@@ -1644,6 +1646,8 @@ test("all card jump entry points await baselines before selecting and scrolling"
     else await button(p,"下一条（2/2）").click();
     await p.flush(); assert.equal(p.scrollCount,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
+    // The parent's plan row unfolds the card in the parent, which is unread too: its baseline alone does not release the jump.
+    if(path === "dependency") { other.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.equal(p.scrollCount,0,"the card's own baseline still holds the jump"); }
     hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
     other.resolve({before:s.items.area,after:s.items.area,diff:""});
   });
@@ -3589,18 +3593,90 @@ test("a card its item's plan names unfolds inline under its row, once, and navig
   assert.equal(reloaded.all().filter(e=>e.id === "q-q").length,1,"a reload keeps it unfolded");
   await planRow(p,"child","q").querySelector(".cardtoggle")!.click(); await p.flush();
   assert.equal(cards().length,0,"a second click folds it again");
-  // Another item's plan row for the card stays a link to the card's own item.
+  // Another item's plan row for the card unfolds it too, rather than linking to the card's own item.
   await expand(p,"area");
-  const link=planRow(p,"area","q").querySelector(".plan-link")!;
-  assert.equal(link.dataset.ref,"q:q"); assert.equal(planRow(p,"area","q").querySelector(".cardtoggle"),null);
-  // Following a link to the card opens its item and unfolds it inline under the plan row.
+  assert.equal(planRow(p,"area","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"false");
+  // Following a reference to the card from an item whose plan does not name it opens the card's item and unfolds it
+  // inline under the plan row.
   storage.delete("board-inline-cards");
+  s.items.area!.plan=s.items.area!.plan.filter(row => !("card" in row));
   const q=await page(s,[],null,undefined,{storage}); await expand(q,"area");
-  await planRow(q,"area","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await q.flush();
+  const ref=q.document.createElement("a"); ref.className="itemref"; ref.setAttribute("data-ref","q:q"); ref.bubbleClick=true; q.roots.get("sendbox")!.appendChild(ref);
+  await ref.click(); await q.flush();
+  assert.equal(storage.get("board-selected"),"child","the card's own item is selected");
   const shown=q.all().filter(e=>e.id === "q-q");
   assert.equal(shown.length,1);
   const target=planRow(q,"child","q"), host=target.parentElement!;
   assert.equal(host.children[host.children.indexOf(target)+1],shown[0],"navigation unfolds the card under its row");
+});
+
+test("a card row whose card belongs to another item unfolds inline there and keeps the selection", async () => {
+  // The card's own item is the finished parent, whose plan does not name it; the child's plan shares it.
+  const s=nativeSnapshot(); s.decisions.q={...card(),item:"area",blocks:"Release waits for the ruling"};
+  s.items.area!.plan=planWork([planStep("work","Work","done")],"done");
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  assert.ok(item(p,"child").id === "detail-it-child");
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(storage.get("board-selected"),"child","the shown item stays selected");
+  assert.ok(p.all().some(e => e.id === "detail-it-child") && !p.all().some(e => e.id === "detail-it-area"),"the detail pane still shows the child");
+  const shown=p.all().filter(e => e.id === "q-q"), row=planRow(p,"child","q"), parent=row.parentElement!;
+  assert.equal(shown.length,1,"one card element");
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"the card unfolds under the row that was clicked");
+  assert.ok(shown[0]!.className.split(" ").includes("cur"),"the unfolded card is selected, so c and m act on it");
+  // Commenting on it keeps the child shown and comments on the same card.
+  p.key("c"); await settle();
+  assert.equal(storage.get("board-selected"),"child","c on the inline card does not switch to the card's own item");
+  assert.ok(p.all().some(e => e.id === "ed-q_q"),"the comment box is the card's own");
+  // A second click folds it again, still in place.
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(p.all().filter(e => e.id === "q-q").length,0);
+  assert.equal(storage.get("board-selected"),"child");
+});
+
+test("a click anywhere on a card row folds and unfolds its card, while links inside the row keep their action", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card();
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  // The row element itself, as a click in the blank space after a wrapped question hits it.
+  await planRow(p,"child","q").click({clientX:0,clientY:0}); await p.flush();
+  const row=planRow(p,"child","q"), parent=row.parentElement!, shown=p.all().filter(e => e.id === "q-q");
+  assert.equal(shown.length,1,"a click on the row unfolds the card");
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"under its row");
+  assert.equal(row.querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+  assert.equal(storage.get("board-selected"),"child");
+  await planRow(p,"child","q").click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(p.all().filter(e => e.id === "q-q").length,0,"a second click on the row folds it");
+  // A link inside the row acts as itself and does not also fold or unfold the card.
+  const link=p.document.createElement("a"); link.className="itemref"; link.setAttribute("data-ref","it:area"); link.bubbleClick=true;
+  planRow(p,"child","q").appendChild(link);
+  await link.click(); await p.flush();
+  assert.equal(storage.get("board-selected"),"area","the link inside the row followed its target");
+  assert.equal(JSON.parse(storage.get("board-inline-cards")!).q,false,"the card's fold did not change");
+});
+
+test("a card row for the item's own card unfolds inline when a finished item's plan also names the card", async () => {
+  // A ruled card, so the other item naming it can be finished.
+  const s=nativeSnapshot(); s.decisions.q={...card(),status:"ruled",ruling:"B"};
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  s.items.finished={...s.items.area!,title:"Finished",plan:[cardRow("q"),planAcceptance("done")]};
+  // The finished item comes first in board order, so a lookup by card name across plans would find it first.
+  s.items={finished:s.items.finished!,...s.items};
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  assert.equal(rules(s).statusOf("finished"),"done");
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(storage.get("board-selected"),"child","the click does not move to the finished item");
+  const shown=p.all().filter(e => e.id === "q-q"), row=planRow(p,"child","q"), parent=row.parentElement!;
+  assert.equal(shown.length,1);
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"the card unfolds under the child's row");
+  // Following the card from the finished item's own row, with the finished item shown, unfolds it there instead.
+  await expand(p,"finished");
+  assert.equal(storage.get("board-selected"),"finished");
+  const there=planRow(p,"finished","q"), host=there.parentElement!;
+  assert.equal(host.children[host.children.indexOf(there)+1],p.all().find(e => e.id === "q-q"),"the remembered unfolded card shows under the finished item's row");
 });
 
 test("n visits an item, then the cards its plan unfolds, then its comments, then its other cards", async () => {
