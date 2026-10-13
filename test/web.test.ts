@@ -2981,7 +2981,7 @@ test("a decision card's send button needs a choice draft and sends only that car
   s.notes.cq = {target: "q:q", kind: "comment", text: "On the card", at, state: "draft", rev: 1};
   s.notes.other = {target: "it:child", kind: "comment", text: "Elsewhere", at, state: "draft", rev: 1};
   const p = await page(s, []); await expand(p);
-  assert.equal(cardSend(p).textContent, "发送"); assert.equal(cardSend(p).disabled, true, "no choice yet");
+  assert.equal(cardSend(p).innerHTML, "发送"); assert.equal(cardSend(p).disabled, true, "no choice yet");
   await option(p, "A").click(); await p.flush();
   assert.equal(cardSend(p).disabled, false, "a choice draft exists");
   await option(p, "A").click(); await p.flush();
