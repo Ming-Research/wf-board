@@ -440,3 +440,86 @@ test("an unmigrated dependent gives a migrated item its effective priority, and 
   const closed = rules(projects({ ...s, items: { ...s.items, waiter: { ...s.items.waiter!, status: "done" } } }, ["First"]));
   assert.equal(closed.isRoot("tool"), true); assert.equal(closed.priorityOf("tool"), "P2");
 });
+
+test("records have no status and do not contribute status roll-up or status checks", () => {
+  const s = snapshot({
+    root: { status: "wip", priority: "P1", deps: [dep("record")] },
+    record: { parent: "root", record: true, head: "Queue history", deps: [dep("cancelled")] },
+    cancelled: { status: "cancelled", priority: "P2" },
+  });
+  let r = rules(s);
+  assert.equal(r.statusOf("record"), undefined);
+  assert.equal(r.statusOf("root"), "wip");
+  assert.equal(r.isLeaf("root"), false);
+  assert.equal(r.isStatusLeaf("root"), true);
+  assert.equal(r.depsOf("root")[0]!.open, false);
+  assert.equal(r.priorityOf("record"), "P1");
+  assert.deepEqual(r.checks("record"), []);
+  assert.ok(!r.checks("root").some(c => c.text.includes("还在等别的")));
+  s.items.work = Item.parse({ title: "work", parent: "root", status: "done", updated: T0, rev: 1 });
+  r = rules(s);
+  assert.equal(r.statusOf("root"), "done");
+  s.items.work.parent = "record";
+  assert.equal(rules(s).statusOf("record"), undefined, "even a record with work children has no status");
+  assert.equal(Item.safeParse({ ...s.items.record, status: "todo" }).success, false);
+});
+
+const hour = 60 * 60 * 1000, start = Date.parse(T0);
+const timeAt = (hours: number) => new Date(start + hours * hour).toISOString();
+function activeBoard(): Snapshot {
+  const s = snapshot({ quiet: { status: "wip", priority: "P1" }, other: { status: "todo", priority: "P1", group: "Second" } });
+  s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0, other: timeAt(3) } };
+  return s;
+}
+const hasStalled = (s: Snapshot, id = "quiet", hours = 3) => rules(s, start + hours * hour).checks(id).some(c => c.text.includes("活跃时间"));
+
+test("stalled checks count the union of board-active windows, with an inclusive two-hour threshold", () => {
+  const s = activeBoard();
+  assert.equal(hasStalled(s), true, "another project wrote throughout three quiet hours");
+  assert.equal(hasStalled(s, "quiet", 2 - 1 / hour), false);
+  assert.equal(hasStalled(s, "quiet", 2), true);
+  delete s.activity;
+  assert.equal(hasStalled(s), false, "the board-wide silent interval stops every clock");
+  s.activity = { writes: Array.from({ length: 20 }, () => T0), items: {} };
+  assert.equal(hasStalled(s), false, "overlapping writes do not multiply active time");
+  s.activity.writes.push(timeAt(3));
+  assert.equal(hasStalled(s), false, "a write at now does not retroactively fill silence");
+  s.activity.writes = [T0, timeAt(1), timeAt(2), timeAt(3)];
+  assert.equal(hasStalled(s, "quiet", 3.5), true, "four separated half-hour windows total two hours");
+});
+
+test("each own document change resets a stalled leaf, including historical card or note revisions", () => {
+  const changes: Array<(s: Snapshot) => void> = [
+    s => { s.items.quiet!.updated = timeAt(2); },
+    s => { s.items.quiet!.log.push({ at: timeAt(2), text: "Progress" }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2), rev: 1 }); },
+    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2), state: "sent", rev: 1 }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2), state: "done", rev: 1 }); },
+    s => { s.activity!.items.quiet = timeAt(2); },
+    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2), rev: 1 }); },
+  ];
+  for (const change of changes) {
+    const s = activeBoard(); assert.equal(hasStalled(s), true);
+    change(s); assert.equal(hasStalled(s), false);
+  }
+});
+
+test("records, todo, done, blocked, cancelled and work parents never get stalled flags", () => {
+  for (const status of ["todo", "done", "blocked", "cancelled"] as const) {
+    const s = activeBoard(); s.items.quiet!.status = status; assert.equal(hasStalled(s), false, status);
+  }
+  const s = activeBoard(); delete s.items.quiet!.status; s.items.quiet!.record = true;
+  assert.equal(hasStalled(s), false);
+  delete s.items.quiet!.record;
+  s.items.child = Item.parse({ title: "Child", parent: "quiet", status: "wip", updated: T0, rev: 1 });
+  assert.equal(hasStalled(s), false); assert.equal(hasStalled(s, "child"), true);
+});
+
+test("current notice and note write times contribute active windows across projects", () => {
+  const s = activeBoard(); delete s.activity;
+  for (let i = 0; i < 6; i++) s.notices["notice" + i] = { text: "Changed", author: "Second", at: timeAt(i / 2), rev: 1 };
+  assert.equal(hasStalled(s), true);
+  s.notices = {};
+  for (let i = 0; i < 6; i++) s.notes["note" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
+  assert.equal(hasStalled(s), true);
+});

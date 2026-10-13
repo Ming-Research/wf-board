@@ -114,6 +114,24 @@ test("pieces count each new log entry, each new reply and one other change, as t
   assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), { log: 0, reply: 0, other: 1 }, "a cleared reply is a change");
 });
 
+test("a record-only change is unread even when both versions have no stored status", async t => {
+  const { store } = await board(t);
+  await store.commit({ author, message: "Create synthetic record", puts: [{ kind: "item", id: "record", expectRev: null,
+    doc: { title: "队列记录", group: author, record: true, priority: "P1", head: "## 完成条件\n保留队列记录。", updated: later } }] });
+  const cursor = store.snapshot().head, before = store.snapshot().items.record!;
+  await store.commit({ author, message: "Change record to work", puts: [{ kind: "item", id: "record", expectRev: before.rev,
+    doc: { ...before, record: false } }] });
+  const steps = await unreadSteps(store, cursor);
+  assert.equal(steps.length, 1, "the record label changing to a work status is visible");
+  assert.equal(steps[0]!.docs[0]!.summary, "changed to work item");
+  assert.deepEqual(steps[0]!.docs[0]!.pieces, { log: 0, reply: 0, other: 1 });
+  const diff = await stepDiff(store, steps[0]!, "item", "record");
+  assert.equal((diff.before as { record: boolean; status?: string }).record, true);
+  assert.equal((diff.after as { record: boolean; status?: string }).record, false);
+  assert.equal((diff.before as { status?: string }).status, undefined);
+  assert.equal((diff.after as { status?: string }).status, undefined);
+});
+
 
 test("document read marks exclude only marked documents and disappear from stop counts", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;

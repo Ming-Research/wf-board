@@ -406,9 +406,9 @@ test("project creation accepts any author and repo updates require the project o
   await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
   assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Changed");
   assert.equal((await store.log({ limit: 1 }))[0]!.message, "update_project Whitefoot");
-  await op.updateProject({ author: "跨项目", name: "Whitefoot", repo: "Org/Coordinated" });
+  await op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Coordinated" });
   assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Coordinated");
-  assert.equal((await store.log({ limit: 1 }))[0]!.author, "跨项目");
+  assert.equal((await store.log({ limit: 1 }))[0]!.author, "总管");
   const unchanged = store.snapshot();
   await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Missing", repo: "Org/Missing" }), /project Missing.*configured/);
   assert.deepEqual(store.snapshot(), unchanged);
@@ -551,25 +551,25 @@ test("board.yaml without migrated reads as unmigrated, and migrated: true round-
 });
 
 const MIGRATED = (p: string) => `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${p} 不再使用`;
-test("migrating a project is a 跨项目 operation that drops every non-root's stored priority with a log entry, in one commit", async t => {
+test("migrating a project is a 总管 operation that drops every non-root's stored priority with a log entry, in one commit", async t => {
   const { store, op } = await board(t, { unmigrated: true });
   async function refused(call: () => Promise<unknown>, message: RegExp) {
     const before = store.snapshot();
     await assert.rejects(call(), message);
     assert.deepEqual(store.snapshot(), before);
   }
-  await refused(() => op.updateProject({ author, name: "Whitefoot", migrated: true }), /migrated: only the coordinator project 跨项目 may migrate project Whitefoot/);
-  await refused(() => op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: false }), /migrated: a migration cannot be undone/);
-  const result = await op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: true });
+  await refused(() => op.updateProject({ author, name: "Whitefoot", migrated: true }), /migrated: only the coordinator project 总管 may migrate project Whitefoot/);
+  await refused(() => op.updateProject({ author: "总管", name: "Whitefoot", migrated: false }), /migrated: a migration cannot be undone/);
+  const result = await op.updateProject({ author: "总管", name: "Whitefoot", migrated: true });
   const s = store.snapshot(), r = rules(s);
-  assert.deepEqual(s.board.projects.map(p => [p.name, p.migrated]), [["Whitefoot", true], ["Firn", undefined], ["跨项目", undefined]]);
+  assert.deepEqual(s.board.projects.map(p => [p.name, p.migrated]), [["Whitefoot", true], ["Firn", undefined], ["总管", undefined]]);
   assert.equal(s.items.a!.priority, undefined); assert.equal(s.items.b!.priority, undefined);
-  assert.deepEqual(s.items.a!.log.at(-1), { at: later, by: "跨项目", text: MIGRATED("P1") }); assert.deepEqual(s.items.b!.log.at(-1), { at: later, by: "跨项目", text: MIGRATED("P0") });
+  assert.deepEqual(s.items.a!.log.at(-1), { at: later, by: "总管", text: MIGRATED("P1") }); assert.deepEqual(s.items.b!.log.at(-1), { at: later, by: "总管", text: MIGRATED("P0") });
   assert.equal(s.items.area!.priority, "P1"); assert.equal(s.items.other!.priority, "P1"); // a root, and another project, keep theirs
   assert.deepEqual(result.dropped, [{ id: "a", priority: "P1" }, { id: "b", priority: "P0" }]);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["board.yaml", "items/a.yaml", "items/b.yaml"]);
   assert.equal(r.priorityOf("b"), "P1"); // now from area
-  await refused(() => op.updateProject({ author: "跨项目", name: "Whitefoot", migrated: true }), /migrated: project Whitefoot is already migrated/);
+  await refused(() => op.updateProject({ author: "总管", name: "Whitefoot", migrated: true }), /migrated: project Whitefoot is already migrated/);
   await op.updateProject({ author, name: "Whitefoot", repo: "Ming-Research/Whitefoot-next" }); // the repository rule is unchanged
   assert.equal(store.snapshot().board.projects[0]!.migrated, true);
 });
@@ -726,12 +726,12 @@ test("set_term adds and replaces a term in the author's own glossary and delete_
   }
   await committed(() => op.setTerm({ author, term: "孪生对照", definition: "同一构建的第二份副本，一起跑来显示噪声。" }), author, "set_term 孪生对照", "glossaries/Whitefoot.yaml");
   await committed(() => op.setTerm({ author, term: "否决线", definition: "旧的说法" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
-  await committed(() => op.setTerm({ author: "跨项目", term: "否决线", definition: "总管的说法" }), "跨项目", "set_term 否决线", "glossaries/跨项目.yaml");
+  await committed(() => op.setTerm({ author: "总管", term: "否决线", definition: "总管的说法" }), "总管", "set_term 否决线", "glossaries/总管.yaml");
   await committed(() => op.setTerm({ author, term: "否决线", definition: "性能比较里判定变慢的界线。" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
   const entry = (term: string, definition: string, by = author) => ({ term, definition, updated: later, by });
   assert.deepEqual(store.snapshot().glossaries, {
     Whitefoot: { terms: [entry("孪生对照", "同一构建的第二份副本，一起跑来显示噪声。"), entry("否决线", "性能比较里判定变慢的界线。")], rev: 3 },
-    跨项目: { terms: [entry("否决线", "总管的说法", "跨项目")], rev: 1 },
+    总管: { terms: [entry("否决线", "总管的说法", "总管")], rev: 1 },
   }, "a replaced term keeps its place, and another project's same term stays in its own glossary");
   assert.match(await readFile(join(dir, "glossaries/Whitefoot.yaml"), "utf8"), /term: 否决线\n {4}definition: 性能比较里判定变慢的界线。/);
   await committed(() => op.deleteTerm({ author, term: "孪生对照" }), author, "delete_term 孪生对照", "glossaries/Whitefoot.yaml");
@@ -758,4 +758,68 @@ test("glossary writes refuse an unconfigured author, an empty or badly spaced te
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
   }
   await assert.rejects(store.commit({ author, message: "Duplicate", puts: [{ kind: "glossary", id: author, expectRev: 1, doc: { terms: [...store.snapshot().glossaries.Whitefoot!.terms, ...store.snapshot().glossaries.Whitefoot!.terms] } }] }), /Terms must be unique/);
+});
+
+test("records create and update without status, refuse set_status, and restore work as todo", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "record", parent: "area", title: "Merge queue", record: true, head: "Queue", parentWhy: "Holds the queue" });
+  assert.equal(store.snapshot().items.record!.record, true);
+  assert.equal(store.snapshot().items.record!.status, undefined);
+  await assert.rejects(op.setStatus({ author, id: "record", status: "done", log: "Not work" }), /record has no status/);
+  await assert.rejects(op.createItem({ author, key: "bad-record", group: author, title: "Invalid", priority: "P1", record: true, status: "todo" }), /record has no status/i);
+  await op.appendLog({ author, id: "record", text: "Queue entry" });
+  await op.updateItem({ author, id: "record", rev: store.snapshot().items.record!.rev, record: false });
+  assert.equal(store.snapshot().items.record!.status, "todo");
+  await op.setStatus({ author, id: "record", status: "wip", log: "Start work" });
+  await op.updateItem({ author, id: "record", rev: store.snapshot().items.record!.rev, record: true });
+  assert.equal(store.snapshot().items.record!.status, undefined);
+  assert.equal(store.snapshot().items.record!.head, "Queue");
+  assert.equal(store.snapshot().items.record!.log.length, 2);
+});
+
+test("record children preserve a work leaf's status and records can parent work without own-work stubs", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "record", parent: "a", title: "Queue", record: true, parentWhy: "Holds the queue" });
+  assert.equal(store.snapshot().items.a!.status, "todo");
+  await op.setStatus({ author, id: "a", status: "wip", log: "Start" });
+  assert.equal(rules(store.snapshot()).statusOf("area"), "wip");
+  await op.appendLog({ author, id: "record", text: "Prior queue entry" });
+  await op.createItem({ author, key: "work", parent: "record", title: "Work", parentWhy: "Tracks work" });
+  assert.equal(store.snapshot().items.record!.status, undefined);
+  assert.deepEqual(rules(store.snapshot()).children("record"), ["work"]);
+  await op.moveItem({ author, id: "work", parent: "area", parentWhy: "Delivers work" });
+  assert.equal(store.snapshot().items.record!.status, undefined, "losing its last child does not assign a record a status");
+});
+
+test("converting the first record child to work atomically preserves the parent's own work", async t => {
+  const { store, op } = await board(t);
+  await op.setStatus({author, id: "a", status: "wip", log: "Parent is working"});
+  await op.createItem({author, key: "record", parent: "a", parentWhy: "Tracks results", title: "Record", record: true});
+  const before = store.snapshot();
+  await assert.rejects(op.updateItem({author, id: "record", rev: before.items.record!.rev, record: false}), /parentOwnWork/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.updateItem({author, id: "record", rev: before.items.record!.rev, record: false, parentOwnWork: {key: "a-own", title: "Parent work"}});
+  const after = store.snapshot();
+  assert.equal(after.items.record!.status, "todo");
+  assert.equal(after.items["a-own"]!.status, "wip");
+  assert.equal(after.items.a!.status, undefined);
+  assert.equal(after.items.a!.head, before.items.a!.head);
+  assert.deepEqual(after.items.a!.log.slice(0, -1), before.items.a!.log);
+  assert.equal(rules(after).statusOf("a"), "wip");
+});
+
+test("adopting only record children retains a new work item's initial status", async t => {
+  const {store, op} = await board(t);
+  await op.createItem({author, key: "record", group: author, title: "Queue", priority: "P1", record: true});
+  await op.createItem({author, key: "work", group: author, title: "Work", priority: "P1", status: "wip", children: [{id: "record", why: "Keeps progress"}]});
+  assert.equal(store.snapshot().items.work!.status, "wip");
+  assert.equal(rules(store.snapshot()).statusOf("work"), "wip");
+});
+
+test("an imported record with a missing parent can become work while retaining the hierarchy check", async t => {
+  const {store, op} = await board(t);
+  await store.commit({author: "Fixture", message: "Imported orphan record", puts: [{kind: "item", id: "orphan-record", expectRev: null, doc: {title: "Orphan record", group: author, parent: "absent", record: true, priority: "P1", updated: at}}]});
+  await op.updateItem({author, id: "orphan-record", rev: store.snapshot().items["orphan-record"]!.rev, record: false});
+  assert.equal(store.snapshot().items["orphan-record"]!.status, "todo");
+  assert.ok(rules(store.snapshot()).checks("orphan-record").some(c => c.text === "上级条目不存在：absent"));
 });

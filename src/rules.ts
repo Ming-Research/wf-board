@@ -6,6 +6,13 @@
 import type { Item, Note, Priority, Snapshot, Status } from "./model.ts";
 import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
 
+/** Only an unsent note can still be edited or deleted by its author. */
+export function draftEditable(note: Pick<Note, "state"> | undefined): boolean { return note?.state === "draft"; }
+/** Shared text validity for owner note creation and draft edits. */
+export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | undefined {
+  return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
+}
+
 export interface Check {
   text: string;
   target?: { kind: "item" | "card"; id: string };
@@ -22,9 +29,13 @@ export interface Rules {
   groupOf(id: string): string;
   projectOf(id: string): string;
   isRequest(id: string): boolean;
+  /** An existing work item whose status is neither done nor cancelled. Records are not open work. */
+  isOpenWork(id: string): boolean;
   inbox(project: string): string[];
   isLeaf(id: string): boolean;
-  statusOf(id: string): Status;
+  /** No non-record children contribute work status. */
+  isStatusLeaf(id: string): boolean;
+  statusOf(id: string): Status | undefined;
   /** Its project sets `migrated: true` in board.yaml, so priority comes from dependents. */
   migrated(id: string): boolean;
   /** No open item depends on it through an item dependency; in a migrated project only a root's stored priority counts. */
@@ -72,7 +83,10 @@ const DONE_WHEN = /^#{1,6}[ \t].*(完成条件|怎样算完成)|\*\*[^*\n]*(完�
  * Array/object results are defensive copies; item() returns the snapshot's item.
  * Missing items have no metadata; tree queries still include dangling children.
  */
-export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner">): Rules {
+export const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
+export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
+
+export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
   const memo = new Map<string, Map<string, unknown>>();
   function cached<T>(name: string, key: string, make: () => T): T {
     let values = memo.get(name);
@@ -123,7 +137,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   }
   function lineOf(id: string): string { return ancestors(id).at(-1) || id; }
   function groupOf(id: string): string { return item(lineOf(id))?.group || ""; }
-  function isRequest(id: string): boolean { return !!item(id)?.request && !ended(id); }
+  function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
       const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map<string, number>();
@@ -132,11 +146,12 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     }
     return include ? ordered() : cached("areas", "", ordered);
   }
-  function statusWalk(id: string, seen: Set<string>): Status {
+  function statusWalk(id: string, seen: Set<string>): Status | undefined {
     const it = item(id);
+    if (it?.record) return undefined;
     if (seen.has(id)) return it?.status || "todo";
     seen.add(id);
-    const all = kids(id).map(k => statusWalk(k, seen));
+    const all = kids(id).map(k => statusWalk(k, seen)).filter((st): st is Status => st !== undefined);
     if (!all.length) return it?.status || "todo";
     const live = all.filter(st => st !== "cancelled");
     if (!live.length) return "cancelled";
@@ -144,12 +159,14 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     if (live.includes("blocked")) return "blocked";
     return live.every(st => st === "done") ? "done" : "todo";
   }
-  function statusOf(id: string): Status { return cached("status", id, () => statusWalk(id, new Set())); }
+  function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
   function isLeaf(id: string): boolean { return !kids(id).length; }
+  function isStatusLeaf(id: string): boolean { return !kids(id).some(k => !item(k)?.record); }
   function ended(id: string): boolean { const st = statusOf(id); return st === "done" || st === "cancelled"; }
+  function isOpenWork(id: string): boolean { return !!item(id) && statusOf(id) !== undefined && !ended(id); }
   function depsOf(id: string): Dependency[] {
     return cached("deps", id, () => (item(id)?.deps || []).map(e => {
-      if ("id" in e) return { kind: "item", id: e.id, why: e.why, missing: !item(e.id), open: !!item(e.id) && !ended(e.id) };
+      if ("id" in e) return { kind: "item", id: e.id, why: e.why, missing: !item(e.id), open: isOpenWork(e.id) };
       const d = index().decisions.get(e.card);
       return { kind: "card", id: e.card, why: e.why, missing: !d, open: d?.status === "open" };
     }));
@@ -171,7 +188,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   function cardsOf(id: string): string[] { return index().cards.get(id) || []; }
   function askPending(id: string): boolean {
     const ask = item(id)?.ask;
-    return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && n.text === ANSWER[n.kind] + ask.text);
+    return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && (n.answerText ?? n.text) === ANSWER[n.kind] + ask.text);
   }
   function cardWaiting(key: string): boolean {
     return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
@@ -249,15 +266,59 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       return out;
     });
   }
+  // Current document times cover imported/synthetic snapshots; history retains
+  // overwritten revisions and deleted cards/notes, which current fields cannot.
+  function activity() {
+    return cached("activity", "", () => {
+      const writes: number[] = [], changed = new Map<string, number>();
+      const add = (at: string | undefined, id?: string) => {
+        const time = at ? Date.parse(at) : NaN;
+        if (!Number.isFinite(time) || time > now) return;
+        writes.push(time);
+        if (id) changed.set(id, Math.max(changed.get(id) ?? -Infinity, time));
+      };
+      for (const at of s.activity?.writes ?? []) add(at);
+      for (const [id, at] of Object.entries(s.activity?.items ?? {})) add(at, id);
+      for (const [id, it] of Object.entries(s.items)) {
+        add(it.created, id); add(it.updated, id);
+        for (const entry of it.log) add(entry.at, id);
+      }
+      for (const card of Object.values(s.decisions)) { add(card.at, card.item); add(card.updated, card.item); add(card.ruledAt, card.item); }
+      for (const note of Object.values(s.notes)) {
+        const id = note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item;
+        add(note.at, id); add(note.sentAt, id); add(note.repliedAt, id);
+      }
+      for (const notice of Object.values(s.notices ?? {})) { add(notice.at); add(notice.read); }
+      for (const glossary of Object.values(s.glossaries ?? {})) for (const term of glossary.terms) add(term.updated);
+      const intervals: Array<[number, number]> = [];
+      for (const at of writes.sort((a, b) => a - b)) {
+        const end = Math.min(now, at + ACTIVE_WINDOW_MS), previous = intervals.at(-1);
+        if (previous && previous[1] >= at) previous[1] = Math.max(previous[1], end);
+        else intervals.push([at, end]);
+      }
+      return { intervals, changed };
+    });
+  }
+  function stalled(id: string): boolean {
+    const { intervals, changed } = activity(), seen = new Set<string>();
+    function latest(key: string): number {
+      if (seen.has(key)) return -Infinity;
+      seen.add(key);
+      return Math.max(changed.get(key) ?? -Infinity, ...kids(key).map(latest));
+    }
+    const since = latest(id);
+    if (!Number.isFinite(since)) return false;
+    return intervals.reduce((total, [start, end]) => total + Math.max(0, end - Math.max(start, since)), 0) >= STALLED_AFTER_MS;
+  }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
       if (!it || inArchive(id)) return out;
-      const st = statusOf(id), leaf = isLeaf(id), parent = parentOf(id), deps = depsOf(id);
+      const st = statusOf(id), leaf = isStatusLeaf(id), parent = parentOf(id), deps = depsOf(id);
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
-        else if (e.kind === "item" && statusOf(e.id) === "cancelled" && !(migrated(id) && parentOf(e.id) === id) && !ended(id)) out.push({ text: "依赖的条目已取消", target });
+        else if (st !== undefined && e.kind === "item" && statusOf(e.id) === "cancelled" && !(migrated(id) && parentOf(e.id) === id) && !ended(id)) out.push({ text: "依赖的条目已取消", target });
         else if (!e.why.trim() && !ended(id)) out.push({ text: "依赖没写为什么：", target });
       }
       if (cycles().has(id)) out.push({ text: "依赖成环" });
@@ -270,17 +331,18 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       const open = deps.filter(e => e.open);
       if (leaf && st === "blocked" && deps.length && !open.length) out.push({ text: "可解除阻塞：等的都已完成" });
       if (leaf && st === "blocked" && !deps.length && !needsOwner(id)) out.push({ text: "卡住了，但没写在等什么" });
+      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静" });
       if (leaf && st === "wip" && open.length) out.push({ text: "标为进行中，但还在等别的", target: { kind: open[0]!.kind, id: open[0]!.id } });
-      if (migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
-      if (migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
+      if (st !== undefined && migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
+      if (st !== undefined && migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       return out;
     });
   }
   return {
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    isRequest, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, statusOf, migrated, isRoot, priorityOf, writtenPriorityOf: legacy.writtenPriorityOf, raisedBy,
+    isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
+    isLeaf, isStatusLeaf, statusOf, migrated, isRoot, priorityOf, writtenPriorityOf: legacy.writtenPriorityOf, raisedBy,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

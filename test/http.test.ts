@@ -42,6 +42,8 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.match(text, /event: change/);
   const data = JSON.parse(text.match(/data: (.+)/)![1]!);
   assert.equal(data.commit, written.commit); assert.equal(data.author, author);
+  assert.ok(data.activity.writes.length > 0, "the event includes accumulated write timestamps");
+  assert.deepEqual(data.activity, store.snapshot().activity, "live updates carry the same active-time history as the snapshot");
   assert.deepEqual(data.changed, [{ kind: "item", id: "a", after: store.snapshot().items.a }]);
   controller.abort();
   const note = await api("/api/notes", { target: "q:choice", kind: "choice", text: "选 A", choice: "A" }); assert.equal(note.status, 200);
@@ -258,4 +260,32 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
   assert.equal((await api(`/api/step?id=${b.commit}&kind=decision&doc=choice`)).status, 404);
   assert.equal((await api("/api/read", {doc: "decision:missing"})).status, 400);
   assert.equal((await api("/api/read", {doc: "decision:choice", through: "bad"})).status, 400);
+});
+
+test("draft text edit HTTP shape updates an exact note and reports stale or sent revisions", async t => {
+  const {store, op} = await board(t), owner = ownerOps(store);
+  const http = createHttpServer({store, ops: op, ownerOps: owner, webDir: "web", createMcp: () => createMcpServer({store, ops: op})});
+  t.after(() => { http.close(); });
+  async function api(data: unknown) {
+    const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", {value: 7417});
+    const req = new IncomingMessage(socket); req.method = "POST"; req.url = "/api/draft"; req.headers = {host: "127.0.0.1:7417"};
+    const res = new ServerResponse(req);
+    const response = new Promise<{status: number; data: Record<string, unknown>}>(resolve => {
+      res.writeHead = status => { res.statusCode = status; return res; };
+      res.end = ((body: string) => { resolve({status: res.statusCode, data: JSON.parse(body)}); return res; }) as typeof res.end;
+    });
+    http.emit("request", req, res); req.push(Buffer.from(JSON.stringify(data))); req.push(null); return response;
+  }
+  const {id} = await owner.createNote({target: "it:a", kind: "comment", text: "Original"});
+  const before = store.snapshot().notes[id]!;
+  const edited = await api({id, rev: before.rev, text: "Edited"});
+  assert.equal(edited.status, 200);
+  assert.deepEqual(edited.data, {note: {id, doc: {...before, text: "Edited", rev: before.rev + 1}}, deleted: [], commit: store.snapshot().head});
+  assert.equal((await api({id, rev: before.rev, text: "Stale"})).status, 409);
+  assert.equal((await api({id, rev: before.rev + 1, text: " \n "})).status, 400);
+  assert.equal((await api({id, rev: before.rev + 1, text: "Wrong shape", target: "it:a"})).status, 400);
+  assert.equal((await api({id: "missing", rev: 1, text: "Absent"})).status, 404);
+  await owner.send();
+  assert.equal((await api({id, rev: store.snapshot().notes[id]!.rev, text: "Too late"})).status, 400);
+  assert.equal(store.snapshot().notes[id]!.text, "Edited");
 });

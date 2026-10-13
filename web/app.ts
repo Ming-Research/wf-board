@@ -1,4 +1,4 @@
-import { rules } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -11,7 +11,7 @@ type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
-  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
+  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: { archived: {} }, head: "" };
@@ -46,6 +46,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   type DraftKind = "choice" | "approve" | "done" | "explain";
   interface DraftOverlay { on:boolean; choice?:string; state:"draft"; promise?:Promise<boolean> }
   const optimistic = new Map<string,DraftOverlay>();
+  interface DraftEdit { text: string; rev: number }
+  const draftEdits = new Map<string, DraftEdit>();
+  const pendingEdits = new Map<string, Promise<boolean>>();
+  type DraftResult = Awaited<ReturnType<OwnerOps["setDraft"]>>;
   const noteEvents = new Map<string,number>();
   const noteTombstones = new Map<string,number>();
   const draftKey = (target:string,kind:DraftKind) => target + "|" + kind;
@@ -188,7 +192,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function statusOf(it: ViewItem) { return derived.statusOf(it.id); }
   // A cancelled item's sub-items are all cancelled too, so its subtree hides with it, as an archived one's does.
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
-  function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
+  function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
   // LEGACY PRIORITY: the written priority and the waiter that raised it, shown struck on unmigrated items.
   function writtenPriorityOf(it: ViewItem) { return derived.writtenPriorityOf(it.id); }
@@ -199,7 +203,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
   function waitsQ(d: ViewDecision) { return derived.cardWaiting(d.id); }
-  const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it));
+  const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it) ?? "");
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
   function groupOf(it: ViewItem) { return derived.groupOf(it.id); }
@@ -995,7 +999,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // One row per item in a dependency list: status, priority, where it lives (the project when it is
   // another one), and its title; a click follows it.
   function depRow(d: ViewItem, from: ViewItem, extra?: string) {
-    const st = statusOf(d), pr = priorityOf(d);
+    const st = statusOf(d) ?? "record", pr = priorityOf(d);
     // A dependency in another project names that project; within the project no label is needed.
     const where = groupOf(d) !== groupOf(from) ? groupOf(d) || "其他" : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
@@ -1039,7 +1043,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return cached("targets", () => {
       const out: Found[] = [];
       for (const it of state.items) {
-        const st = statusOf(it), parent = upItem(it);
+        const st = statusOf(it) ?? "record", parent = upItem(it);
         out.push({ kind: "item", key: it.id, title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>" });
       }
       for (const d of state.decisions) {
@@ -1193,6 +1197,64 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       });
     }
   }
+  // Acknowledgements can arrive after a newer SSE revision or deletion.
+  function applyDraftResult(result: DraftResult, started: number): boolean {
+    let changed = false;
+    snapshot = { ...snapshot, notes: { ...snapshot.notes } };
+    for (const id of result.deleted) {
+      noteTombstones.set(id, Infinity);
+      if (snapshot.notes[id]) { delete snapshot.notes[id]; changed = true; }
+    }
+    if (result.note) {
+      const { id, doc } = result.note, currentNote = snapshot.notes[id];
+      if ((currentNote ? currentNote.rev <= doc.rev : (noteEvents.get(id) ?? 0) <= started) && !sameValue(currentNote, doc)) { snapshot.notes[id] = doc; changed = true; }
+    }
+    if (changed) { snapshotGeneration++; rulePresentationDirty = true; applySnapshot(snapshot); }
+    return changed;
+  }
+  function saveDraftEdit(n: ViewNote, edit: DraftEdit): Promise<boolean> {
+    const pending = pendingEdits.get(n.id);
+    if (pending) return pending;
+    if (!connected) { showDisconnected(); return Promise.resolve(false); }
+    if (!draftEditable(snapshot.notes[n.id])) { draftEdits.delete(n.id); renderNow("notes:" + n.target); return Promise.resolve(false); }
+    const textProblem = noteTextProblem({ kind: n.kind, text: edit.text });
+    if (textProblem) { showError(new Error(textProblem)); return Promise.resolve(false); }
+    const started = eventGeneration;
+    sendMessage = "";
+    const operation = (async () => {
+      try {
+        const result = await api<DraftResult>("/api/draft", { id: n.id, rev: edit.rev, text: edit.text });
+        applyDraftResult(result, started);
+        if (draftEdits.get(n.id) === edit) draftEdits.delete(n.id);
+        return true;
+      } catch (e) { showError(e); return false; }
+      finally { pendingEdits.delete(n.id); scheduleRender("notes:" + n.target); renderSend(); }
+    })();
+    pendingEdits.set(n.id, operation);
+    renderNow("notes:" + n.target);
+    return operation;
+  }
+  function draftEditor(n: ViewNote, edit: DraftEdit): HTMLElement {
+    const ed = el("div", "editor"), row = el("div", "row"), ta = document.createElement("textarea");
+    const busy = pendingEdits.has(n.id);
+    ta.id = "edit-draft-" + n.id; ta.value = edit.text; ta.disabled = busy;
+    ta.setAttribute("aria-label", "编辑未发送的内容");
+    const picker = refPicker(ta, ed, row, () => { edit.text = ta.value; });
+    ta.addEventListener("input", () => { edit.text = ta.value; picker.update(); });
+    ta.addEventListener("blur", () => picker.close());
+    ta.addEventListener("keydown", ev => {
+      if (ev.isComposing || ev.keyCode === 229 || picker.key(ev)) return;
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); save.click(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel.click(); }
+    });
+    ed.appendChild(ta);
+    const save = el("button", "save", busy ? "保存中…" : "保存"), cancel = el("button", "cancel", "取消");
+    save.type = cancel.type = "button"; save.disabled = busy || !connected; cancel.disabled = busy;
+    save.addEventListener("click", async () => { edit.text = ta.value; await saveDraftEdit(n, edit); });
+    cancel.addEventListener("click", () => { if (pendingEdits.has(n.id)) return; draftEdits.delete(n.id); renderNow("notes:" + n.target); });
+    row.appendChild(save); row.appendChild(cancel); ed.appendChild(row);
+    return ed;
+  }
   function setDraft(target:string,kind:DraftKind,on:boolean,text:string,choice?:string):Promise<boolean> {
     const key=draftKey(target,kind), existing=optimistic.get(key);
     if (existing) return existing.promise!;
@@ -1205,17 +1267,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const operation=(async () => {
       try {
         const result=await api<{note:{id:string;doc:Note}|null;deleted:string[];commit:string}>("/api/draft",{target,kind,on,text,...choice ? {choice} : {}});
-        snapshot={...snapshot,notes:{...snapshot.notes}};
-        for (const id of result.deleted) {
-          noteTombstones.set(id,Infinity);
-          const currentNote=snapshot.notes[id];
-          if (currentNote) { delete snapshot.notes[id]; changed=true; }
-        }
-        if (result.note) {
-          const {id,doc}=result.note, currentNote=snapshot.notes[id];
-          if ((currentNote ? currentNote.rev <= doc.rev : (noteEvents.get(id) ?? 0) <= started) && !sameValue(currentNote,doc)) { snapshot.notes[id]=doc; changed=true; }
-        }
-        if (changed) { snapshotGeneration++; rulePresentationDirty=true; applySnapshot(snapshot); }
+        changed = applyDraftResult(result, started);
         return true;
       } catch (e) { showError(e); return false; }
       finally {
@@ -1264,7 +1316,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const terms = itemTerms(n.target.startsWith("it:") ? n.target.slice(3) : snapshot.decisions[n.target.slice(2)]?.item || "");
     box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
     if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
-    box.appendChild(el("div", "txt", n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + esc(n.choice || "") : linkTerms(blocks(n.text),terms)));
+    const label = n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + (n.choice || "") : undefined;
+    const canonical = n.kind === "explain" ? n.text === EXPLAIN : n.kind === "choice" ? n.text === "选 " + n.choice : n.kind === "approve" ? n.answerText === undefined || n.text === n.answerText : false;
+    box.appendChild(el("div", "txt", label === undefined ? linkTerms(blocks(n.text),terms) : esc(label) + (canonical || !n.text ? "" : '<div class="rich">' + linkTerms(blocks(n.text),terms) + "</div>")));
     if (n.reply) box.appendChild(el("div", "reply rich" + (replyFresh ? " newbar" : ""), '<div class="sub">Claude</div>' + linkTerms(blocks(n.reply),terms)));
     return box;
   }
@@ -1292,10 +1346,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       box.dataset.sel = "note:" + n.id;
       if (current === "note:" + n.id) box.classList.add("cur");
       const who = box.firstElementChild!;
-      if (n.state === "draft") {
-        const del = el("button", "linkbtn", "删除"); del.type = "button";
+      if (draftEditable(n)) {
+        const activeEdit = draftEdits.get(n.id), busy = pendingEdits.has(n.id);
+        {
+          const edit = el("button", "linkbtn", "编辑"); edit.type = "button"; edit.disabled = busy || !!activeEdit || !connected;
+          edit.addEventListener("click", () => {
+            if (!draftEditable(snapshot.notes[n.id])) return;
+            draftEdits.set(n.id, { text: n.text, rev: n.rev }); renderNow("notes:" + key);
+            get<HTMLTextAreaElement>("edit-draft-" + n.id)?.focus();
+          });
+          who.appendChild(edit);
+        }
+        const del = el("button", "linkbtn", "删除"); del.type = "button"; del.disabled = busy || !connected;
         del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
         who.appendChild(del);
+        if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
       }
       wrap.appendChild(box);
     });
@@ -1456,7 +1521,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }));
 
     const n: Record<string,number> = { wip: 0, blocked: 0, todo: 0, done: 0, cancelled: 0 };
-    state.items.forEach(i => { const st = statusOf(i); if (n[st] != null) n[st]++; });
+    state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
     ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
       .filter(([k]) => (k !== "cancelled" && k !== "blocked") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
@@ -1601,7 +1666,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!bodyOpen && !bodyShown(it.id)) { delete logShown[it.id]; delete logHold[it.id]; }
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
-    const st = statusOf(it);
+    const st = statusOf(it) ?? "record";
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
     box.id = (detail ? "detail-it-" : "it-") + it.id;
     if (detail) box.dataset.sel = "it:"+it.id;
@@ -1614,7 +1679,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const head = el("button", "item-head");
     head.type = "button";
 
-    head.appendChild(el("span", "st " + st + (before && it.status !== undefined && before.status !== it.status ? " chg-add" : ""), esc(STATUS[st] || st)));
+    head.appendChild(el("span", "st " + st + (before && (!!before.record !== !!it.record || it.status !== undefined && before.status !== it.status) ? " chg-add" : ""), esc(STATUS[st] || st)));
     // The badge shows the priority; a legacy raise also shows the written one, struck through (LEGACY PRIORITY).
     const pr = priorityOf(it), wrote = writtenPriorityOf(it);
     const pb = el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?");
@@ -1665,7 +1730,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A parent counts its leaves by status at the right of its row; archived and cancelled ones are left out.
     if ((index().children.get(it.id) || []).length) {
       const n: Record<string,number> = {};
-      leavesOf(it).filter(l => l !== it && !archivedPath(l) && !isCancelled(l)).forEach(l => { const k = statusOf(l); n[k] = (n[k] || 0) + 1; });
+      leavesOf(it).filter(l => l !== it && !archivedPath(l) && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       ["todo", "wip", "blocked", "done"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
@@ -2121,7 +2186,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   get<HTMLButtonElement>("send-all").addEventListener("click", async () => {
     if (sending) return; sending = true; sendMessage = ""; renderSend();
     try {
-      const drafts=[...optimistic.values()].map(o => o.promise!);
+      const drafts=[...[...optimistic.values()].map(o => o.promise!), ...pendingEdits.values()];
       if ((await Promise.all(drafts)).some(ok => !ok)) return;
       const result = await api<{sent: Array<{project: string}>}>("/api/send", {});
       const counts = new Map<string,number>();
@@ -2163,6 +2228,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function applySnapshot(s: Snapshot) {
     rulePresentationDirty=true;
     snapshot = s;
+    for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
     state.meta = s.board;
     state.items = Object.entries(s.items).map(([id,it]) => ({...it,id}));
     state.decisions = Object.entries(s.decisions).map(([id,d]) => ({...d,id}));
@@ -2415,7 +2481,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (!active()) return;
       eventGeneration++;
       snapshotGeneration++;
-      const change = JSON.parse((event as MessageEvent).data) as {commit: string; changed: Array<{kind: string; id: string; after: unknown}>};
+      const change = JSON.parse((event as MessageEvent).data) as {commit: string; activity?: Snapshot["activity"]; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
       const relocated:string[]=[], retitled:string[]=[];
       snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},notices:{...snapshot.notices},glossaries:{...snapshot.glossaries}};
@@ -2459,7 +2525,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });
         }
       }
-      snapshot.head = change.commit; applySnapshot(snapshot);
+      snapshot.head = change.commit;
+      if (change.activity) snapshot.activity = change.activity;
+      applySnapshot(snapshot);
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.
       if (retitled.some(k => citedRefs().has(k))) scope.add("all");
@@ -2467,6 +2535,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       scheduleRender(...scope); queueUnread(active,controller.signal,next);
     });
   }
+  // Active time can cross the stalled threshold without another board write.
+  setInterval(() => { rulePresentationDirty = true; scheduleRender("header"); }, 60_000);
   void connect();
 
 function get<T extends HTMLElement = HTMLElement>(id: string): T { return document.getElementById(id) as T; }

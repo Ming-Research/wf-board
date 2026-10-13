@@ -22,7 +22,7 @@ export interface CommitInfo { commit: string; parents: string[]; at: string; aut
 type Doc = Item | Decision | Note | Notice | Glossary;
 const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, notice: Notice, glossary: Glossary };
 const collections = { item: "items", decision: "decisions", note: "notes", notice: "notices", glossary: "glossaries" } as const;
-/** A glossary is named by its project, which may be Chinese (跨项目); other documents by their key. */
+/** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, notice: Key, glossary: GlossaryId };
 const run = promisify(execFile);
 
@@ -172,6 +172,8 @@ export class Store {
   private listeners = new Set<(change: Change) => void>();
   private writing = false;
   private readonly blobs: BlobReader;
+  /** Last known placement also resolves later changes to notes on a deleted card. */
+  private readonly cardItems = new Map<string, string>();
 
   private constructor(dir: string, state: Snapshot) {
     this.dir = dir;
@@ -257,7 +259,114 @@ export class Store {
     store.committedOwner = persistedOwner === null ? { archived: {} } : validated(OwnerState, persistedOwner, "state/owner.yaml");
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
+    await store.migrateCoordinator();
+    await store.loadActivity();
     return store;
+  }
+
+  /** Remove once the live board has migrated from 跨项目 to 总管. */
+  private async migrateCoordinator(): Promise<void> {
+    const oldName = "跨项目", newName = "总管";
+    if (!this.state.board.projects.some(p => p.name === oldName)) return;
+    if (this.state.board.projects.some(p => p.name === newName) || Object.hasOwn(this.state.glossaries, newName)) {
+      throw new Error(`Cannot rename coordinator project ${oldName} to ${newName}: destination project or glossary already exists`);
+    }
+    const rename = (name: string): string => name === oldName ? newName : name;
+    const puts: Put[] = [], deletes: Del[] = [];
+    for (const [id, original] of Object.entries(this.state.items)) {
+      const doc = structuredClone(original);
+      if (doc.group === oldName) doc.group = newName;
+      if (doc.request?.by === oldName) doc.request.by = newName;
+      for (const entry of doc.log) if (entry.by === oldName) entry.by = newName;
+      if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "item", id, doc, expectRev: original.rev });
+    }
+    for (const [id, original] of Object.entries(this.state.notes)) {
+      if (original.repliedBy === oldName) puts.push({ kind: "note", id, doc: { ...original, repliedBy: newName }, expectRev: original.rev });
+    }
+    for (const [id, original] of Object.entries(this.state.notices)) {
+      if (original.author === oldName) puts.push({ kind: "notice", id, doc: { ...original, author: newName }, expectRev: original.rev });
+    }
+    for (const [id, original] of Object.entries(this.state.glossaries)) {
+      const doc = { ...original, terms: original.terms.map(term => ({ ...term, by: rename(term.by) })) };
+      if (id === oldName) {
+        puts.push({ kind: "glossary", id: newName, doc, expectRev: null });
+        deletes.push({ kind: "glossary", id, expectRev: original.rev });
+      } else if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "glossary", id, doc, expectRev: original.rev });
+    }
+    await this.commit({ author: newName, message: `Rename coordinator project ${oldName} to ${newName}`, board: {
+      ...this.state.board, projects: this.state.board.projects.map(p => p.name === oldName ? { ...p, name: newName } : p),
+    }, puts, deletes });
+  }
+
+  /** Activity is a derived index of the existing history, including replaced and deleted documents. */
+  private async loadActivity(): Promise<void> {
+    const activity: NonNullable<Snapshot["activity"]> = { writes: [], items: {} };
+    for (const commit of (await this.log()).reverse()) {
+      const files = commit.files.filter(file => this.contentPath(file));
+      if (!files.length) continue;
+      activity.writes.push(commit.at);
+      const touched = new Set<string>();
+      const cardItems = new Map<string, string>();
+      for (const file of files) {
+        const item = /^items\/(.+)\.yaml$/.exec(file);
+        if (item) { touched.add(item[1]!); continue; }
+        if (!/^(decisions|notes)\/.+\.yaml$/.test(file)) continue;
+        for (const revision of [commit.parents[0], commit.commit]) {
+          if (!revision) continue;
+          const doc = await this.readAt(file, revision);
+          if (!doc || typeof doc !== "object") continue;
+          const fields = doc as Record<string, unknown>;
+          if (file.startsWith("decisions/") && typeof fields.item === "string") {
+            touched.add(fields.item);
+            cardItems.set(file.slice("decisions/".length, -5), fields.item);
+          }
+          if (file.startsWith("notes/") && typeof fields.target === "string") {
+            if (fields.target.startsWith("it:")) touched.add(fields.target.slice(3));
+            else if (fields.target.startsWith("q:")) {
+              const card = await this.readAt(docPath("decision", fields.target.slice(2)), revision);
+              const owner = card && typeof card === "object" && typeof (card as Record<string, unknown>).item === "string"
+                ? (card as { item: string }).item : this.cardItems.get(fields.target.slice(2));
+              if (owner) touched.add(owner);
+            }
+          }
+        }
+      }
+      this.noteActivity(activity, commit.at, touched);
+      for (const [id, item] of cardItems) this.cardItems.set(id, item);
+    }
+    activity.writes.sort();
+    this.state.activity = activity;
+  }
+
+  private contentPath(file: string): boolean {
+    return file === "board.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(file);
+  }
+
+  private noteActivity(activity: NonNullable<Snapshot["activity"]>, at: string, touched: Iterable<string>): void {
+    for (const id of touched) if (!Object.hasOwn(activity.items, id) || Date.parse(at) > Date.parse(activity.items[id]!)) activity.items[id] = at;
+  }
+
+  private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
+    const touched = new Set<string>();
+    for (const change of changed) {
+      if (change.kind === "item") touched.add(change.id);
+      if (change.kind === "decision") {
+        for (const doc of [change.before, change.after]) if (doc) touched.add((doc as Decision).item);
+      }
+      if (change.kind === "note") {
+        for (const [doc, snapshot] of [[change.before, this.state], [change.after, next]] as const) {
+          if (!doc) continue;
+          const target = (doc as Note).target;
+          if (target.startsWith("it:")) touched.add(target.slice(3));
+          else {
+            const card = snapshot.decisions[target.slice(2)];
+            const item = card?.item ?? this.cardItems.get(target.slice(2));
+            if (item) touched.add(item);
+          }
+        }
+      }
+    }
+    return touched;
   }
 
   snapshot(): Snapshot { return frozen(structuredClone(this.state)); }
@@ -376,6 +485,16 @@ export class Store {
       throw error;
     } finally {
       this.writing = false;
+    }
+    if (changed.some(c => c.kind !== "owner")) {
+      next.activity ??= { writes: [], items: {} };
+      next.activity.writes.push(event.at);
+      next.activity.writes.sort();
+      this.noteActivity(next.activity, event.at, this.changedItems(changed, next));
+      for (const change of changed) if (change.kind === "decision") {
+        const card = (change.after ?? change.before) as Decision | null;
+        if (card) this.cardItems.set(change.id, card.item);
+      }
     }
     this.state = next;
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }

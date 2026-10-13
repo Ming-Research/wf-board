@@ -305,3 +305,17 @@ test("project identity read shapes omit agents and outgoing requests use request
   }
   await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", migrated: true, areas: 1, openLeaves: { todo: 1, wip: 0, blocked: 1 }, inbox: 0 }));
 });
+
+test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "record", group: author, title: "Queue", priority: "P1", record: true });
+  const s = structuredClone(store.snapshot()), now = Date.parse("2026-10-11T06:00:00Z");
+  s.items.a!.status = "wip"; s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
+  s.activity = { writes: Array.from({length: 7}, (_, i) => new Date(now - i * 30 * 60 * 1000).toISOString()), items: {} };
+  const r = rules(s, now), record = q.row(s, r, "item", "record");
+  assert.equal(record.record, true); assert.equal(record.status, undefined);
+  assert.ok(!q.list(s, r, {status: ["todo", "wip", "blocked", "done", "cancelled"]}).some(v => v.id === "record"));
+  assert.ok(!q.brief(s, r, author).todo.some(v => v.id === "record"));
+  const flagged = q.list(s, r, {hasChecks: true}).find(v => v.id === "a");
+  assert.ok(flagged?.checks.some(c => c.text.includes("活跃时间")));
+});

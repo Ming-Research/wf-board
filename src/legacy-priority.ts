@@ -10,7 +10,7 @@ export interface LegacyContext {
   item(id: string): Item | undefined;
   kids(id: string): string[];
   isLeaf(id: string): boolean;
-  statusOf(id: string): Status;
+  statusOf(id: string): Status | undefined;
   ended(id: string): boolean;
   inArchive(id: string): boolean;
   ancestors(id: string): string[];

@@ -57,6 +57,8 @@ export const Item = z.object({
   group: z.string().min(1).optional(),
   order: z.number().optional(),
   status: Status.optional(),
+  /** A head and log without a work status. */
+  record: z.boolean().optional(),
   priority: Priority.optional(),
   head: z.string().optional(),
   log: z.array(LogEntry).default([]),
@@ -68,7 +70,7 @@ export const Item = z.object({
   created: Time.optional(),
   updated: Time,
   rev: z.number().int().positive(),
-}).strict();
+}).strict().refine(it => !it.record || it.status === undefined, "A record has no status");
 export type Item = z.infer<typeof Item>;
 
 export const Option = z.object({
@@ -113,6 +115,8 @@ export const Note = z.object({
   kind: z.enum(NOTE_KINDS),
   choice: z.string().min(1).optional(),
   text: z.string(),
+  /** Original approve/done action text, captured on first owner edit; not caller-settable. */
+  answerText: z.string().optional(),
   at: Time,
   state: z.enum(["draft", "sent", "done"]),
   sentAt: Time.optional(),
@@ -203,4 +207,6 @@ export interface Snapshot {
   owner: OwnerState;
   /** The commit this snapshot reflects. */
   head: string;
+  /** Derived from content-write history; never stored as a board document. */
+  activity?: { writes: string[]; items: Record<string, string> };
 }

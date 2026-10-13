@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { board, later, author } from "./helpers.ts";
 import { rules } from "../src/rules.ts";
+import { brief, context } from "../src/query.ts";
+import { formatContext } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { OwnerState } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -421,4 +423,82 @@ test("a write another session commits during a read neither restarts the read no
   assert.equal(owner.cursor, first.commit, "compaction stops before the still-unread later half of the step");
   assert.equal(owner.readMarks, undefined, "the mark the cursor covers is removed");
   assert.deepEqual((await unreadSteps(store, owner.cursor, owner.readMarks)).map(step => step.commits), [[second.commit], [concurrent]], "the change written during the read stays unread");
+});
+
+test("editDraft changes the exact unsent note while preserving its identity and metadata", async t => {
+  const {store} = await board(t), own = ownerOps(store, () => later);
+  for (const kind of ["comment", "choice", "approve", "done", "explain"] as const) {
+    const created = await own.createNote({target: kind === "choice" ? "q:choice" : "it:a", kind, text: "Original", ...(kind === "choice" ? {choice: "A"} : {}), anchor: {kind: "note", id: "note-1"}});
+    const before = store.snapshot().notes[created.id]!;
+    const result = await own.editDraft({id: created.id, rev: before.rev, text: "Edited\ntext"});
+    const after = store.snapshot().notes[created.id]!;
+    assert.deepEqual(after, {...before, text: "Edited\ntext", rev: before.rev + 1, ...(kind === "approve" || kind === "done" ? {answerText: "Original"} : {})});
+    assert.deepEqual(result, {note: {id: created.id, doc: after}, deleted: [], commit: store.snapshot().head});
+    assert.equal(Object.keys(store.snapshot().notes).filter(id => id === created.id).length, 1);
+    if (kind === "approve" || kind === "done") {
+      const selected = await own.setDraft({target: "it:a", kind, on: true, text: "New control action"});
+      assert.equal(selected.note!.doc.answerText, undefined, "explicitly selecting an action replaces its original identity");
+    }
+  }
+});
+
+test("editDraft refuses stale, sent, handled, empty-comment and non-edit input without writes", async t => {
+  const {store, op} = await board(t), own = ownerOps(store, () => later);
+  const {id} = await own.createNote({target: "it:a", kind: "comment", text: "Original"});
+  await own.editDraft({id, rev: 1, text: "Newer"});
+  const before = store.snapshot();
+  await assert.rejects(own.editDraft({id, rev: 1, text: "Stale"}), /expected rev 1, current rev 2/);
+  for (const input of [{id, rev: 2, text: " \n\t"}, {id, rev: 2, text: "Changed", target: "it:other"}, {id, rev: 2, text: "Changed", answerText: "Forged"}, {id, rev: 0, text: "Changed"}, {id, rev: 2, text: 4}]) {
+    await assert.rejects(own.editDraft(input as Parameters<typeof own.editDraft>[0]));
+    assert.deepEqual(store.snapshot(), before);
+  }
+  await assert.rejects(own.createNote({target: "it:a", kind: "approve", text: "Changed", answerText: "Forged"} as Parameters<typeof own.createNote>[0]));
+  await own.send();
+  const sent = store.snapshot();
+  await assert.rejects(own.editDraft({id, rev: sent.notes[id]!.rev, text: "Too late"}), /Only draft notes/);
+  assert.deepEqual(store.snapshot(), sent);
+  await op.replyNote({author, id, reply: "Handled"});
+  const handled = store.snapshot();
+  await assert.rejects(own.editDraft({id, rev: handled.notes[id]!.rev, text: "Too late"}), /Only draft notes/);
+  assert.deepEqual(store.snapshot(), handled);
+});
+
+test("an edit racing send fails its original revision once and never rewrites the sent note", async t => {
+  const {store} = await board(t), own = ownerOps(store, () => later);
+  const {id} = await own.createNote({target: "it:a", kind: "comment", text: "Original"});
+  const commit = store.commit.bind(store);
+  let attempts = 0;
+  t.mock.method(store, "commit", async (txn: Parameters<typeof store.commit>[0]) => {
+    attempts++;
+    const note = store.snapshot().notes[id]!;
+    await commit({author: "owner", message: "Concurrent send", puts: [{kind: "note", id, expectRev: note.rev, doc: {...note, state: "sent", sentAt: later}}]});
+    return commit(txn);
+  });
+  await assert.rejects(own.editDraft({id, rev: 1, text: "Edited"}), /expected rev 1, current rev 2/);
+  assert.equal(attempts, 1);
+  assert.equal(store.snapshot().notes[id]!.state, "sent");
+  assert.equal(store.snapshot().notes[id]!.text, "Original");
+});
+
+test("editing approve and done text preserves only the exact original ask identity", async t => {
+  for (const kind of ["approve", "done"] as const) await t.test(kind, async t => {
+    const {store} = await board(t), own = ownerOps(store, () => later), ask = store.snapshot().items.a!.ask!.text;
+    const prefix = kind === "approve" ? "同意：" : "已完成：";
+    const {id} = await own.createNote({target: "it:a", kind, text: prefix + ask});
+    await own.editDraft({id, rev: 1, text: "Additional conditions"});
+    await own.editDraft({id, rev: 2, text: "Revised conditions"});
+    assert.equal(store.snapshot().notes[id]!.answerText, prefix + ask);
+    await own.send();
+    assert.equal(rules(store.snapshot()).askPending("a"), false);
+    const s = store.snapshot(), r = rules(s);
+    assert.equal(brief(s, r, author).notes.find(n => n.id === id)!.answerText, prefix + ask);
+    assert.ok(formatContext(context(s, r, "a")).includes("original action: " + prefix + ask));
+    const item = store.snapshot().items.a!;
+    await store.commit({author, message: "Ask changed", puts: [{kind: "item", id: "a", expectRev: item.rev, doc: {...item, ask: {text: "Another ask"}}}]});
+    assert.equal(rules(store.snapshot()).askPending("a"), true);
+    const malformed = await own.createNote({target: "it:a", kind, text: "An unrelated original answer"});
+    await own.editDraft({id: malformed.id, rev: 1, text: prefix + "Another ask"});
+    await own.send();
+    assert.equal(rules(store.snapshot()).askPending("a"), true, "editing displayed text does not manufacture an approval");
+  });
 });

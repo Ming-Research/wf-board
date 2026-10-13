@@ -6,7 +6,7 @@ import { rules as makeRules } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string; priority?: Priority | ""; area: string; areaId: string; group: string }
+export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -25,7 +25,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const card = kind === "card" ? s.decisions[id] : kind === "note" && s.notes[id]?.target.startsWith("q:") ? s.decisions[s.notes[id]!.target.slice(2)] : undefined;
   return { kind, id, title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -67,7 +67,7 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
       for (const h of list) {
         if (f.kind && !f.kind.includes(h.kind)) continue;
         const owner = itemId(s, h.kind, h.id);
-        if (!inScope(r, owner, f) || f.status && !f.status.includes(r.statusOf(owner))) continue;
+        if (!inScope(r, owner, f) || f.status && !f.status.some(st => st === r.statusOf(owner))) continue;
         hits.push({ ...h, field: "pr", snippet: `«${label}»`, rank, index: 0 });
       }
   }
@@ -75,7 +75,7 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
     const docs = kind === "item" ? s.items : kind === "card" ? s.decisions : s.notes;
     for (const id of Object.keys(docs)) {
       const owner = itemId(s, kind, id);
-      if (!inScope(r, owner, f) || f.status && !f.status.includes(r.statusOf(owner))) continue;
+      if (!inScope(r, owner, f) || f.status && !f.status.some(st => st === r.statusOf(owner))) continue;
       for (const field of fields(s, kind, id)) {
         const doc = docs[id]!;
         const time = field.time ?? ("updated" in doc ? doc.updated : doc.at);
@@ -102,7 +102,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     if (seen.has(id) || !s.items[id] || r.isRequest(id)) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
-    if (inScope(r, id, f) && (!f.status || f.status.includes(r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
+    if (inScope(r, id, f) && (!f.status || f.status.some(st => st === r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
       (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
@@ -145,12 +145,12 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
     }), notes: relevantNotes(s, [`it:${id}`, ...cardIds.map(c => `q:${c}`)], 5), checks: r.checks(id), links: it.links, prs: references(documentText(s, "item", id), knownRepos(s)) };
 }
 
-export interface GraphNode { kind: "item" | "card"; id: string; title: string; status: string; why?: string; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
+export interface GraphNode { kind: "item" | "card"; id: string; title: string; status: string | undefined; record?: boolean; why?: string; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
 export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "up" | "down" | "both"; depth?: number }) {
   const rootKind = requireId(s, id) as "item" | "card", depth = options.depth ?? 3;
   function walk(kind: "item" | "card", key: string, direction: "up" | "down", remaining: number, path: Set<string>, why?: string, blockedAncestor = false): GraphNode {
     const token = `${kind}:${key}`, cycle = path.has(token), d = dependency(s, r, kind, key, why ?? "");
-    const open = kind === "item" ? !!s.items[key] && !["done", "cancelled"].includes(r.statusOf(key)) : s.decisions[key]?.status === "open";
+    const open = kind === "item" ? r.isOpenWork(key) : s.decisions[key]?.status === "open";
     const edges = direction === "up" ? kind === "item" ? r.depsOf(key) : [] : (kind === "item" ? r.dependents(key) : r.cardDependents(key)).map(e => ({ ...e, kind: "item" as const }));
     const nextPath = new Set([...path, token]);
     const onBlockedChain = open && (blockedAncestor || d.status === "blocked");
@@ -162,7 +162,7 @@ export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "
 }
 export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
   const areas = r.areas().filter(id => f.group === undefined || r.groupOf(id) === f.group).map(id => {
-    const rows = list(s, r, { under: id, limit: Object.keys(s.items).length }), leaves = rows.filter(it => r.isLeaf(it.id));
+    const rows = list(s, r, { under: id, limit: Object.keys(s.items).length }), leaves = rows.filter(it => r.isStatusLeaf(it.id));
     const counts = Object.fromEntries(STATUSES.map(st => [st, leaves.filter(it => it.status === st).length])) as Record<Status, number>;
     const area = row(s, r, "item", id);
     return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
@@ -173,7 +173,7 @@ export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
 
 export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
-    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && r.isLeaf(id) && !r.isRequest(id));
+    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && r.isStatusLeaf(id) && !r.isRequest(id));
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
       openLeaves: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
   });
@@ -185,13 +185,13 @@ function requestRow(s: Snapshot, r: Rules, id: string) {
   return { id, title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
-  return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, sentAt: n.sentAt ?? n.at,
+  return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
     project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
-  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
+  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isStatusLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
   const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
   for (const id of ids) for (const dep of r.depsOf(id)) if (dep.kind === "item" && dep.open && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
   return { project, inbox: r.inbox(project).map(id => requestRow(s,r,id)),
@@ -268,7 +268,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);
       else changes.push("log changed");
-    } else if (key === "status") changes.push(`status ${a.status ?? "unset"}→${b.status ?? "unset"}`);
+    } else if (key === "record") changes.push(b.record ? "changed to record" : "changed to work item");
+    else if (key === "status") changes.push(`status ${a.status ?? "unset"}→${b.status ?? "unset"}`);
     else if (key === "reply" && !a.reply && b.reply) changes.push("new reply");
     else if (["at", "repliedAt", "repliedBy", "ruledAt"].includes(key)) continue;
     else changes.push(`${key} ${b[key] === undefined ? "cleared" : "changed"}`);

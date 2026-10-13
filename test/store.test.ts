@@ -429,3 +429,115 @@ test("history queries honor an explicit upper revision and reject an unknown bou
   assert.equal(await store.inHistory(initial, "not-a-revision"), null);
   assert.equal((await store.log())[0]!.commit, second.commit, "the default still follows HEAD");
 });
+
+test("startup renames coordinator identity once without changing free text", async t => {
+  const { store, dir } = await setup(t);
+  const prose = "跨项目、跨项目依赖和前缀跨项目后缀都保留。\n第二行。";
+  const seed = await store.commit({ author: "跨项目", message: "Seed legacy coordinator", board: {
+    title: prose, eyebrow: prose, goal: prose, projects: [{ name: "跨项目", repo: "Org/Board", migrated: true }, { name: "Other" }],
+  }, puts: [
+    put("area", { ...item(prose, prose), group: "跨项目", data: prose, ask: { text: prose }, log: [{ at, by: "跨项目", text: prose }, { at, by: "前缀跨项目后缀", text: prose }] }),
+    put("request", { ...item(prose, prose), group: "Other", request: { by: "跨项目", at }, log: [{ at, by: "跨项目", text: prose }] }),
+    { kind: "decision", id: "card", expectRev: null, doc: { item: "area", question: prose, background: prose, options: [{ key: "A", text: prose }], status: "ruled", ruling: prose, updated: at } },
+    { kind: "note", id: "reply", expectRev: null, doc: { target: "q:card", kind: "comment", text: prose, reply: prose, repliedBy: "跨项目", repliedAt: at, at, state: "done" } },
+    { kind: "notice", id: "news", expectRev: null, doc: { text: prose, author: "跨项目", at } },
+    { kind: "glossary", id: "跨项目", expectRev: null, doc: { terms: [{ term: "跨项目依赖", definition: prose, by: "跨项目", updated: at }] } },
+    { kind: "glossary", id: "Other", expectRev: null, doc: { terms: [{ term: "跨项目", definition: prose, by: "跨项目", updated: at }] } },
+  ] });
+  const before = store.snapshot();
+  const migrated = await Store.open(dir), after = migrated.snapshot();
+  const expected = structuredClone(before);
+  expected.board.projects[0]!.name = "总管";
+  expected.items.area!.group = "总管";
+  expected.items.area!.log[0]!.by = "总管";
+  expected.items.area!.rev++;
+  expected.items.request!.request!.by = "总管";
+  expected.items.request!.log[0]!.by = "总管";
+  expected.items.request!.rev++;
+  expected.notes.reply!.repliedBy = "总管";
+  expected.notes.reply!.rev++;
+  expected.notices.news!.author = "总管";
+  expected.notices.news!.rev++;
+  expected.glossaries["总管"] = expected.glossaries["跨项目"]!;
+  delete expected.glossaries["跨项目"];
+  expected.glossaries["总管"]!.terms[0]!.by = "总管";
+  expected.glossaries.Other!.terms[0]!.by = "总管";
+  expected.glossaries.Other!.rev++;
+  expected.head = after.head;
+  expected.activity = after.activity;
+  assert.deepEqual(after, expected, "all prose and unrelated identity strings remain byte-for-byte identical");
+  const commits = await migrated.log({ since: seed.commit });
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0]!.author, "总管");
+  assert.equal(commits[0]!.message, "Rename coordinator project 跨项目 to 总管");
+  assert.ok(commits[0]!.files.includes("glossaries/跨项目.yaml"));
+  assert.ok(commits[0]!.files.includes("glossaries/总管.yaml"));
+  await assert.rejects(readFile(join(dir, "glossaries/跨项目.yaml")), { code: "ENOENT" });
+  assert.equal((await migrated.show("item", "area", seed.commit) as { group: string }).group, "跨项目", "history is not rewritten");
+  assert.deepEqual((await Store.open(dir)).snapshot(), after, "reopening performs no second migration");
+  assert.equal(await git(dir, "rev-parse", "HEAD"), after.head);
+});
+
+test("startup coordinator rename refuses destination project and glossary collisions without changing data", async t => {
+  for (const collision of ["project", "glossary"] as const) {
+    const { store, dir } = await setup(t);
+    await store.commit({ author: "Fixture", message: "Conflicting coordinator", board: { title: "Board", projects: [{ name: "跨项目" }, ...(collision === "project" ? [{ name: "总管" }] : [])] }, puts: collision === "glossary" ? [{ kind: "glossary", id: "总管", expectRev: null, doc: { terms: [] } }] : [] });
+    const before = store.snapshot(), bytes = await readFile(join(dir, "board.yaml"));
+    await assert.rejects(Store.open(dir), /Cannot rename coordinator project 跨项目 to 总管: destination project or glossary already exists/);
+    assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
+    assert.deepEqual(await readFile(join(dir, "board.yaml")), bytes);
+    assert.equal(await git(dir, "status", "--porcelain"), "");
+  }
+});
+
+test("activity retains every content revision and deletion across restart, but excludes owner reading writes", async t => {
+  const { store, dir } = await setup(t);
+  const initialCount = store.snapshot().activity!.writes.length;
+  // This file's tests run serially. Give each witness a distinct git time so
+  // missing a reset fails even when all commits finish in the same second.
+  async function content(txn: Parameters<typeof store.commit>[0], date: string) {
+    const previous = process.env.GIT_AUTHOR_DATE;
+    process.env.GIT_AUTHOR_DATE = date.replace(/\.000Z$/, "Z");
+    try { return await store.commit(txn); }
+    finally {
+      if (previous === undefined) delete process.env.GIT_AUTHOR_DATE;
+      else process.env.GIT_AUTHOR_DATE = previous;
+    }
+  }
+  const createdAt = "2026-10-12T01:00:00.000Z", noteAt = "2026-10-12T01:10:00.000Z", moveAt = "2026-10-12T01:20:00.000Z";
+  const deleteAt = "2026-10-12T01:30:00.000Z", deleteNoteAt = "2026-10-12T01:40:00.000Z";
+  await content({ author: "Fixture", message: "Create activity witnesses", puts: [put("constructor", item()), put("b", item()),
+    { kind: "decision", id: "card", expectRev: null, doc: { item: "constructor", question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at } },
+    { kind: "note", id: "note", expectRev: null, doc: { target: "q:card", kind: "comment", text: "N", at, state: "draft" } },
+  ] }, createdAt);
+  const note = store.snapshot().notes.note!;
+  await content({ author: "Fixture", message: "Replace note without changing its field timestamp", puts: [{ kind: "note", id: "note", expectRev: note.rev, doc: { ...note, text: "Changed" } }] }, noteAt);
+  assert.equal(store.snapshot().activity!.items.constructor, noteAt, "a note edit resets its item even when the note's timestamp is unchanged");
+  assert.equal(store.snapshot().notes.note!.at, at);
+  const card = store.snapshot().decisions.card!;
+  await content({ author: "Fixture", message: "Move card", puts: [{ kind: "decision", id: "card", expectRev: card.rev, doc: { ...card, item: "b" } }] }, moveAt);
+  assert.equal(store.snapshot().activity!.items.constructor, moveAt, "moving a card resets its old item");
+  assert.equal(store.snapshot().activity!.items.b, moveAt, "moving a card resets its new item");
+  await content({ author: "Fixture", message: "Delete card", deletes: [{ kind: "decision", id: "card", expectRev: 2 }] }, deleteAt);
+  assert.equal(store.snapshot().activity!.items.b, deleteAt);
+  await content({ author: "Fixture", message: "Delete orphan card note", deletes: [{ kind: "note", id: "note", expectRev: 2 }] }, deleteNoteAt);
+  const beforeRead = store.snapshot().activity!;
+  assert.equal(beforeRead.writes.length, initialCount + 5, "overwritten/deleted content leaves all write timestamps");
+  const history = await store.log();
+  assert.equal(beforeRead.items.b, history[0]!.at, "a later note deletion resets its deleted card's last owner");
+  assert.equal(beforeRead.items.b, deleteNoteAt);
+  assert.ok(Object.hasOwn(beforeRead.items, "constructor"), "legal prototype-named keys have own last-change entries");
+  store.setOwner({ archived: { constructor: at } });
+  await store.flushOwner("owner");
+  assert.deepEqual(store.snapshot().activity, beforeRead);
+  const reopened = await Store.open(dir);
+  assert.deepEqual(reopened.snapshot().activity, beforeRead, "the activity index can be recovered solely from git history");
+});
+
+test("startup leaves identity references alone when no legacy coordinator project is configured", async t => {
+  const { store, dir } = await setup(t);
+  await store.commit({ author: "Fixture", message: "Historical authors without legacy project", puts: [put("a", { ...item(), group: "Unconfigured", log: [{ at, by: "跨项目", text: "Historical author" }] })] });
+  const before = store.snapshot();
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
+});
