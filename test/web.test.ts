@@ -129,7 +129,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     createElement: (tag: string) => {
       const e = new Element(tag);
       e.bubbleClick=true;
-      e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,defaultPrevented:false,stopPropagation() { go=false; },preventDefault() { this.defaultPrevented=true; }},true); return go; };
+      e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,defaultPrevented:false,stopPropagation() { go=false; },preventDefault(this: { defaultPrevented: boolean }) { this.defaultPrevented=true; }},true); return go; };
       e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
       return e;
     },
