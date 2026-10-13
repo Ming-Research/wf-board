@@ -21,6 +21,98 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
 async function git(dir: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: dir })).stdout.trim(); }
 const put = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "item" as const, id, doc, expectRev });
 
+test("historical document cache stays bounded, evicts FIFO and rereads unchanged evidence", async t => {
+  const { store } = await setup(t);
+  const internals = store as unknown as {
+    readAt(path: string, commit: string): Promise<unknown | null>;
+    historicalDocuments: Map<string, Promise<unknown | null>>;
+    blobs: { read(key: string): Promise<Buffer | null> };
+  };
+  internals.historicalDocuments.clear();
+  const reads = new Map<string, number>();
+  t.mock.method(internals.blobs, "read", async (key: string) => {
+    reads.set(key, (reads.get(key) ?? 0) + 1);
+    return Buffer.from(`evidence: ${key}\n`);
+  });
+  const firstKey = "commit:items/first.yaml";
+  const first = await internals.readAt("items/first.yaml", "commit");
+  for (let i = 0; i < 4095; i++) await internals.readAt(`items/a${i}.yaml`, "commit");
+  assert.equal(internals.historicalDocuments.size, 4096);
+  assert.deepEqual(await internals.readAt("items/first.yaml", "commit"), first);
+  assert.equal(reads.get(firstKey), 1, "a hit reuses its parsed document");
+  await internals.readAt("items/overflow.yaml", "commit");
+  assert.equal(internals.historicalDocuments.size, 4096, "the cache cannot grow with history");
+  assert.equal(internals.historicalDocuments.has(firstKey), false, "hits do not change FIFO order");
+  assert.equal(internals.historicalDocuments.has("commit:items/a0.yaml"), true);
+  assert.deepEqual(await internals.readAt("items/first.yaml", "commit"), first, "eviction changes no historical evidence");
+  assert.equal(reads.get(firstKey), 2, "an evicted document is reread");
+  assert.equal(internals.historicalDocuments.size, 4096);
+  assert.equal(internals.historicalDocuments.has("commit:items/a0.yaml"), false);
+});
+
+test("pending historical reads share entries and a rejected evicted read cannot delete its replacement", async t => {
+  const { store } = await setup(t);
+  const internals = store as unknown as {
+    readAt(path: string, commit: string): Promise<unknown | null>;
+    historicalDocuments: Map<string, Promise<unknown | null>>;
+    blobs: { read(key: string): Promise<Buffer | null> };
+  };
+  internals.historicalDocuments.clear();
+  const pending: Array<{ resolve(value: Buffer | null): void; reject(error: Error): void }> = [];
+  t.mock.method(internals.blobs, "read", () => new Promise<Buffer | null>((resolve, reject) => pending.push({ resolve, reject })));
+  const first = internals.readAt("items/first.yaml", "commit");
+  const firstAgain = internals.readAt("items/first.yaml", "commit");
+  assert.equal(pending.length, 1, "concurrent readers share the same pending blob");
+  const overflow = Array.from({ length: 4096 }, (_, i) => internals.readAt(`items/a${i}.yaml`, "commit"));
+  assert.equal(internals.historicalDocuments.size, 4096, "pending reads also obey the bound");
+  const retry = internals.readAt("items/first.yaml", "commit");
+  const replacement = internals.historicalDocuments.get("commit:items/first.yaml");
+  const failures = [assert.rejects(first, /old read failed/), assert.rejects(firstAgain, /old read failed/)];
+  pending[0]!.reject(new Error("old read failed"));
+  await Promise.all(failures);
+  assert.equal(internals.historicalDocuments.get("commit:items/first.yaml"), replacement, "old rejection leaves the replacement cached");
+  const retryAgain = internals.readAt("items/first.yaml", "commit");
+  assert.equal(pending.length, 4098, "the replacement is shared rather than started again");
+  for (const read of pending.slice(1)) read.resolve(Buffer.from("evidence: unchanged\n"));
+  await Promise.all(overflow);
+  assert.deepEqual(await retryAgain, await retry);
+  assert.equal(internals.historicalDocuments.size, 4096);
+});
+
+test("normalized comparison cache retains at most four snapshots and rereads evicted commits", async t => {
+  const { store } = await setup(t);
+  const internals = store as unknown as {
+    compared: Map<string, Promise<unknown>>;
+    resolveCommit(ref: string): Promise<string>;
+    git(args: string[]): Promise<string>;
+    readAt(path: string, commit: string): Promise<unknown | null>;
+  };
+  const board = structuredClone(store.snapshot().board);
+  const reads = new Map<string, number>();
+  t.mock.method(internals, "resolveCommit", async (ref: string) => ref);
+  t.mock.method(internals, "git", async (args: string[]) => {
+    assert.deepEqual(args.slice(0, 3), ["ls-tree", "-r", "--name-only"]);
+    return "board.yaml\n";
+  });
+  t.mock.method(internals, "readAt", async (path: string, commit: string) => {
+    assert.equal(path, "board.yaml");
+    reads.set(commit, (reads.get(commit) ?? 0) + 1);
+    return board;
+  });
+  const first = await store.comparisonSnapshot("first");
+  for (const commit of ["second", "third", "fourth"]) await store.comparisonSnapshot(commit);
+  assert.equal(internals.compared.size, 4);
+  assert.strictEqual(await store.comparisonSnapshot("first"), first);
+  assert.equal(reads.get("first"), 1);
+  await store.comparisonSnapshot("fifth");
+  assert.equal(internals.compared.size, 4, "whole boards cannot accumulate for every history commit");
+  assert.equal(internals.compared.has("first"), false, "snapshot hits preserve FIFO order");
+  assert.deepEqual(await store.comparisonSnapshot("first"), first);
+  assert.equal(reads.get("first"), 2);
+  assert.equal(internals.compared.size, 4);
+  assert.equal(internals.compared.has("second"), false);
+});
+
 test("YAML round trip preserves troublesome strings and schema key order", async t => {
   const { dir, store } = await setup(t);
   const strings = ["one\ntwo\n", "one\ntwo", "one\ntwo\n\n\n", "  first\nsecond", "\tfirst\n\tsecond", "one\r\ntwo\r\n", "---\n...\n# comment\n- list\nkey: value\n|\n>", "x".repeat(10000), "中文\n🦶😀", "no", "yes", "true", "false", "1e3", "2026-10-11", "null", "~", "\n", "\n\n", "a\n  ", "a\0b\nc"];
