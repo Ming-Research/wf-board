@@ -74,7 +74,7 @@ export function targetLine(target: ItemTarget): string {
 
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
-/** The wip leaf quiet for STALLED_AFTER_MS of active time carries this label instead. */
+/** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
 export const STALLED_LABEL = "无人推进";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
@@ -154,7 +154,7 @@ const ANSWER = { approve: "同意：", done: "已完成：" };
  * Array/object results are defensive copies; item() returns the snapshot's item.
  * Missing items have no metadata; tree queries still include dangling children.
  */
-export const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
+export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
 export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
@@ -437,7 +437,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         if (accept && "text" in accept.row && accept.row.state === "done" && others.some(row => row.state !== "resolved")) out.push({ text: "验收已标完成，但还有行没完成" });
         if (accept && "text" in accept.row && (accept.row.state === "todo" || accept.row.state === "doing") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
-        if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       }
       return out;

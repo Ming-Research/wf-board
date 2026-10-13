@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <style>
-/* The page is always the split view: the item tree on the left, the selected item's detail on the right. */
+/* The selected item's detail opens beside the tree; with no selection the tree fills the page. */
 :root {
   --bg: #f3f5f4;
   --surface: #ffffff;
@@ -70,11 +70,12 @@
 body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; padding-inline: 16px; padding-block: 0 64px; }
 .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
 .page-left { min-width: 0; display: flex; flex-direction: column; gap: 26px; }
-/* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the detail pane are each
-   their own scroll container, so each scrollbar sits at the right edge of its own pane. */
+/* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the selected item's detail
+   scroll independently; without a selection the list fills the frame. */
 body.wide { margin: 0; padding-inline: 8px; padding-block: 0; height: 100dvh; display: flex; flex-direction: column; overflow-y: hidden; }
 body.wide #server-banner { flex: none; }
 body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 0; }
+body.wide .wrap.detail-collapsed { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 
 #split-divider { cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
 #split-divider:hover { background-color: var(--accent); }
@@ -99,10 +100,10 @@ header.top { padding-block: 26px 14px; display: flex; flex-direction: column; ga
 h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 0; text-wrap: balance; font-weight: 700; }
 .goal { margin: 0; max-width: 68ch; }
 .meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
-/* The summary has two rows: what asks for the owner's action, as buttons of one size and shape coloured by meaning,
-   then the counts as quiet text. */
-.summary { display: flex; flex-direction: column; gap: 8px; }
-.sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* Four concerns: owner waits, unread notices, unread navigation and filters, then tools, legend and project links. */
+.summary, .header-wait { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.sum-divider { flex: none; width: 1px; height: 1em; background: var(--rule); }
 .sbtn { font: inherit; font-size: 13px; line-height: 1.5; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sbtn:focus-visible { border-radius: 999px; }
 .sbtn.s-wait { background: var(--ask); border-color: var(--ask); color: var(--surface); font-weight: 600; }
@@ -225,8 +226,8 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .editor button { font: inherit; font-size: 13px; padding: 2px 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--accent); }
 .editor .save { background: var(--accent); color: var(--surface); }
 .editor .cancel { background: transparent; color: var(--accent); }
-.nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
-.nav a { color: var(--accent); text-decoration: none; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; min-width: 0; }
+.nav a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
 h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700; text-wrap: balance; }
 .group { display: flex; flex-direction: column; gap: 2px; }
 .group-head { font-family: var(--font-head); font-size: 20px; margin: 0; font-weight: 700; padding-bottom: 4px; border-bottom: 2px solid var(--accent); text-wrap: balance; }
@@ -321,7 +322,10 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .optbtn:disabled { cursor: default; }
 .opts { list-style: none; padding-left: 0; }
 .nextbtn { font: inherit; font-size: 12.5px; padding: 1px 10px; border-radius: 6px; border: 1px solid var(--ask); background: transparent; color: var(--ask); cursor: pointer; margin-left: auto; }
-.card-foot { display: flex; justify-content: flex-end; }
+.card-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.card-foot .nextbtn { margin-left: 0; }
+.cardsend { font: inherit; font-size: 12.5px; padding: 1px 10px; border-radius: 6px; border: 1px solid var(--ask); background: var(--ask); color: var(--surface); cursor: pointer; }
+.cardsend:disabled { opacity: .45; cursor: default; }
 .body .card { margin-top: 4px; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
@@ -342,8 +346,6 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .sbtn.s-on, .sbtn.s-on:hover { background: var(--accent); border-color: var(--accent); color: var(--surface); }
 .depfilt { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .group-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.xdeps { margin-left: auto; font: inherit; font-family: var(--font-body); font-size: 12.5px; font-weight: 500; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0; }
-.xdeps:hover { color: var(--accent); }
 .freshchip[role="button"], .asktag[role="button"], .waittag[role="button"] { cursor: pointer; }
 .item.ctx > .item-row { opacity: .5; }
 .item-row .counts { flex: none; margin-left: auto; display: flex; gap: 6px; align-self: center; font-variant-numeric: tabular-nums; }
@@ -361,7 +363,6 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .note .anchor { font-size: 12px; color: var(--muted); }
 .item.line > .item-row .item-title { font-size: 14.5px; }
 .tree.lines { margin-top: 8px; }
-.sum-k { font-size: 12px; color: var(--muted); min-width: 2.6em; letter-spacing: .04em; }
 .pendtag { font-size: 12px; padding: 0 7px; border-radius: 4px; border: 1px solid var(--fresh); color: var(--fresh); white-space: nowrap; }
 .keymenu { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 12px; z-index: 40; }
 .keymenu-btn { font: inherit; font-size: 18px; line-height: 1; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }
@@ -372,6 +373,14 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .keymenu-row { font: inherit; font-size: 13.5px; display: flex; gap: 10px; align-items: baseline; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 8px; color: var(--ink); cursor: pointer; }
 .keymenu-row:hover { background: var(--accent-soft); }
 .keymenu-row kbd { font-family: var(--font-mono); font-size: 12px; min-width: 7.5em; color: var(--accent); }
+@media (max-width: 704px) {
+  body.wide .wrap { min-width: 0; grid-template-columns: minmax(0, 1fr) 8px minmax(0, 1fr); }
+  body.wide .page-left, body.wide #item-detail { overflow-x: hidden; }
+  .header-wait, .noticepanel { overflow-wrap: anywhere; }
+  .waitrow, .notice > * { min-width: 0; max-width: 100%; }
+  .summary .sbtn { max-width: 100%; white-space: normal; }
+  .summary .readconfirm { min-width: 0; flex-wrap: wrap; }
+}
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
   .tree .tree { padding-left: 10px; margin-left: 4px; }
@@ -410,15 +419,16 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 <body class="wide">
 <div id="server-banner" role="alert" hidden></div>
 <div id="hint" role="status" hidden></div>
-<div class="wrap">
+<div class="wrap detail-collapsed">
   <div class="page-left" id="page-left">
   <header class="top">
     <div class="eyebrow" id="eyebrow">状态看板</div>
     <h1 id="goal-title">进度板</h1>
     <p class="goal" id="goal">正在读取看板数据。如果一直停在这句，说明当前视图读不到看板数据。</p>
     <div class="meta" id="meta"></div>
-    <div class="summary" id="summary"></div>
-    <nav class="nav" id="nav" aria-label="板块"></nav>
+    <div class="summary" id="summary">
+      <nav class="nav" id="nav" aria-label="板块"></nav>
+    </div>
   </header>
 
   <div id="areas"></div>
@@ -434,8 +444,8 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
     <span id="send-note"></span>
   </footer>
   </div>
-  <div id="split-divider"></div>
-  <aside id="item-detail" aria-label="条目正文"></aside>
+  <div id="split-divider" hidden></div>
+  <aside id="item-detail" aria-label="条目正文" hidden></aside>
 </div>
 
 

@@ -8,14 +8,16 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { board, author } from "./helpers.ts";
+import { board, author, later } from "./helpers.ts";
+import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 
-async function server(t: Parameters<typeof board>[0]) {
+async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
+  extra.prepare?.(fixture);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }), now: extra.now, checkIntervalMs: extra.checkIntervalMs });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -104,6 +106,32 @@ test("wake delivers only sent notes to their project and wildcard, exactly once"
   assert.deepEqual(frames.map(f => f.length), [2, 1, 3, 0]);
 });
 
+test("POST /api/send with ids wakes only for those notes and refuses a non-draft id with 400", async t => {
+  const { url, api } = await server(t);
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=*");
+  t.after(() => { socket.terminate(); });
+  await once(socket, "open");
+  const frames: Array<{note: string}> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
+  const two = await api("/api/notes", { target: "it:other", kind: "comment", text: "two" });
+  const sent = await api("/api/send", { ids: [two.data.id] });
+  assert.equal(sent.status, 200); assert.deepEqual(sent.data.sent.map((n: {id: string}) => n.id), [two.data.id]);
+  const pong = once(socket, "pong"); socket.ping(); await pong;
+  assert.deepEqual(frames.map(f => f.note), [two.data.id]);
+  assert.equal((await api("/api/send", { ids: [two.data.id] })).status, 400);
+  assert.equal((await api("/api/send", { ids: ["missing"] })).status, 404);
+  assert.deepEqual((await api("/api/send", {})).data.sent.map((n: {id: string}) => n.id), [one.data.id]);
+});
+
+test("POST /api/send with no body at all is the batch send", async t => {
+  const { url, api } = await server(t);
+  const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
+  const response = await fetch(url + "/api/send", { method: "POST" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(((await response.json()) as {sent: Array<{id: string}>}).sent.map(n => n.id), [one.data.id]);
+});
+
 test("stateful MCP client initializes, lists tools, reuses session and closes it", async t => {
   const { url } = await server(t);
   const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
@@ -180,7 +208,8 @@ test("project wake routing reaches matching project sockets and the coordinator 
   const sockets=["Whitefoot","Whitefoot","Firn","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
   t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
   const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
-  sockets.forEach((s,i)=>s.on("message",data=>frames[i]!.push(JSON.parse(data.toString()))));
+  // Fixture items may carry board checks; this test counts request and note events only.
+  sockets.forEach((s,i)=>s.on("message",data=>{ const frame=JSON.parse(data.toString()); if (frame.event!=="check") frames[i]!.push(frame); }));
   const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",accept:"Feature passes",priority:"P0",why:"Need it"});
   await op.appendLog({author,id:made.id,text:"Seen"});
   const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
@@ -203,7 +232,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
   const frames: Array<Array<Record<string,unknown>>> = [];
   t.mock.method(WebSocketServer.prototype,"handleUpgrade", (...args: Parameters<InstanceType<typeof WebSocketServer>["handleUpgrade"]>) => {
     const received: Array<Record<string,unknown>> = []; frames.push(received);
-    const ws = Object.assign(new EventEmitter(),{readyState:WebSocket.OPEN,send:(data:string)=>received.push(JSON.parse(data)),terminate(){},ping(){}});
+    const ws = Object.assign(new EventEmitter(),{readyState:WebSocket.OPEN,send:(data:string)=>{ const frame=JSON.parse(data); if (frame.event!=="check") received.push(frame); },terminate(){},ping(){}});
     args[3](ws as unknown as WebSocket,args[0]);
   });
   function request(path:string,method="POST") {
@@ -286,4 +315,65 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   await owner.send();
   assert.equal((await api({id, rev: store.snapshot().notes[id]!.rev, text: "Too late"})).status, 400);
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
+});
+
+// A root with a missing shared row carries exactly this check in the plan model.
+const BLOCKED_TEXT = "依赖的条目不存在：missing";
+const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
+async function wakeSocket(t: { after(fn: () => void): void }, url: string, session: string) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session));
+  t.after(() => socket.terminate()); await once(socket, "open");
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
+  return { frames, sync };
+}
+
+test("a committed check wakes once, not again on unrelated commits, and again after it clears and returns", async t => {
+  const { url, store, op } = await server(t);
+  const star = await wakeSocket(t, url, "*"), own = await wakeSocket(t, url, "Whitefoot"), other = await wakeSocket(t, url, "Firn");
+  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
+  await star.sync(); await own.sync(); await other.sync();
+  const expected = { event: "check", item: "c", project: "Whitefoot", title: "卡住的条目", label: "需核对", text: BLOCKED_TEXT };
+  assert.deepEqual(star.frames, [expected]);
+  assert.deepEqual(own.frames, [expected]);
+  assert.deepEqual(other.frames, [], "other projects' sockets do not receive it");
+  await op.appendLog({ author, id: "c", text: "Unrelated progress" });
+  await op.appendLog({ author: "Firn", id: "other", text: "Progress elsewhere" });
+  await star.sync();
+  assert.equal(star.frames.length, 1, "still-flagged check is not announced again");
+  await store.commit({ author, message: "Remove item", deletes: [{ kind: "item", id: "c", expectRev: store.snapshot().items.c!.rev }] });
+  await store.commit({ author, message: "Block item again", puts: [blockedItem("c")] });
+  await star.sync();
+  assert.deepEqual(star.frames, [expected, expected], "a check that disappeared and reappeared is announced again");
+});
+
+test("active time alone (one hour) raises one stalled event on the timer, and a restart announces nothing", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const start = Date.parse("2026-10-11T03:00:00Z");
+  let clock = start + 60 * 60 * 1000 - 1;
+  const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
+    const s = structuredClone(store.snapshot());
+    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", priority: "P1", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
+    s.activity = { writes: Array.from({ length: 2 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
+    store.snapshot = () => structuredClone(s);
+  } });
+  const star = await wakeSocket(t, url, "*");
+  t.mock.timers.tick(1000); await star.sync();
+  assert.deepEqual(star.frames.filter(f => f.item === "w"), [], "1 hour of active time not yet reached");
+  clock++;
+  t.mock.timers.tick(1000); await star.sync();
+  const stalled = star.frames.filter(f => f.item === "w");
+  assert.equal(stalled.length, 1);
+  assert.deepEqual(stalled[0], { event: "check", item: "w", project: "Whitefoot", title: "没人推进的叶子", label: "无人推进", text: "进行中但 1 小时（活跃时间）没有动静" });
+  t.mock.timers.tick(5000); await star.sync();
+  assert.equal(star.frames.filter(f => f.item === "w").length, 1, "later timer ticks do not repeat it");
+  // A restarted server over the same state seeds from it silently, including the standing stalled check.
+  const again = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }), now: () => clock, checkIntervalMs: 1000 });
+  again.listen(0, "127.0.0.1"); await once(again, "listening");
+  t.after(() => new Promise<void>(resolve => again.close(() => resolve())));
+  const address = again.address(); assert.ok(address && typeof address !== "string");
+  const restarted = await wakeSocket(t, `http://127.0.0.1:${address.port}`, "*");
+  t.mock.timers.tick(5000); await restarted.sync();
+  assert.deepEqual(restarted.frames, [], "standing checks are not announced after a restart");
 });
