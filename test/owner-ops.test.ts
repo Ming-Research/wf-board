@@ -306,15 +306,16 @@ test("read compaction never advances over a data change committed during its his
   await own.read({ through: cursor });
   const shown = await op.appendLog({ author, id: "b", text: "displayed document" });
   const log = store.log.bind(store);
-  let cursorReads = 0, unseen: string | undefined;
+  let historyReads = 0, unseen: string | undefined;
   t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => {
-    if (options.since === cursor && ++cursorReads === 3) {
+    // Another session writes while the read is reading history for the first time.
+    if (++historyReads === 1) {
       unseen = (await op.appendLog({ author, id: "a", text: "arrived during compaction" })).commit;
     }
     return log(options);
   });
   await own.read({ doc: "item:b", through: shown.commit });
-  assert.ok(unseen, "the data write interleaves after unread computation and before compaction history");
+  assert.ok(unseen, "the data write interleaves while the read is reading history");
   assert.equal(store.snapshot().owner.cursor, shown.commit, "compaction stops before the unseen data write");
   const steps = await unreadSteps(store, store.snapshot().owner.cursor, store.snapshot().owner.readMarks);
   assert.deepEqual(steps.map(step => step.id), [unseen]);
@@ -334,12 +335,12 @@ test("read compaction excludes a git commit whose snapshot is not published yet"
     if (args.includes("--format=%H%x00%aI")) { paused(); await resume; }
     return git(args, author);
   });
-  let cursorRanges = 0, pending: ReturnType<typeof op.appendLog> | undefined, gitHead: string | undefined;
+  let historyReads = 0, pending: ReturnType<typeof op.appendLog> | undefined, gitHead: string | undefined;
   t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => {
     const result = await log(options);
-    // The remaining-unread range has been read; pause a real data transaction
+    // The read's first history range has been read; pause a real data transaction
     // after git commits, before Store.apply publishes its snapshot.
-    if (options.since === cursor && ++cursorRanges === 2) {
+    if (++historyReads === 1) {
       pending = op.appendLog({ author, id: "a", text: "committed but unpublished" });
       await committed;
       gitHead = (await git(["rev-parse", "HEAD"])).trim();
@@ -357,26 +358,58 @@ test("read compaction excludes a git commit whose snapshot is not published yet"
   assert.deepEqual((await unreadSteps(store, s.owner.cursor, s.owner.readMarks)).map(step => step.id), [gitHead]);
 });
 
-test("read stops after three changing snapshots without changing owner state or blocking its queue", async t => {
+test("once the unread list is known, reads walk no history, and a new head walks only its new commits", async t => {
   const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
   await own.read({ through: cursor });
-  const shown = await op.appendLog({ author, id: "b", text: "displayed document" });
-  const owner = store.snapshot().owner, inHistory = store.inHistory.bind(store);
-  let changes = 0;
-  const mocked = t.mock.method(store, "inHistory", async (...args: Parameters<typeof store.inHistory>) => {
-    const result = await inHistory(...args);
-    // This is the through-commit validation at the start of every attempt.
-    // Stop injecting after four so the old unbounded loop fails rather than hangs.
-    if (args[0] === shown.commit && changes < 4) {
-      changes++;
-      await op.appendLog({ author, id: "a", text: `concurrent change ${changes}` });
+  await op.appendLog({ author, id: "a", text: "earlier unread" });
+  const b = await op.appendLog({ author, id: "b", text: "read first" });
+  // The page asks for the unread list before the owner presses r.
+  const s = store.snapshot();
+  await unreadSteps(store, s.owner.cursor, s.owner.readMarks, s.head);
+  const log = store.log.bind(store);
+  const walks: Array<{ since?: string; at?: string }> = [];
+  t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => { walks.push({ since: options.since, at: options.at }); return log(options); });
+  await own.read({ doc: "item:b", through: b.commit });
+  assert.equal(store.snapshot().owner.readMarks?.["item:b"], b.commit, "the earlier unread item keeps the mark ahead of the cursor");
+  await own.read({ doc: "item:a" });
+  assert.equal(store.snapshot().owner.cursor, b.commit, "reading the rest compacts the cursor to the head");
+  assert.deepEqual(walks, [], "a read reuses the history the unread list was computed from");
+  const next = await op.appendLog({ author, id: "b", text: "written after the reads" });
+  await own.read({ doc: "item:a" });
+  assert.deepEqual(walks, [{ since: b.commit, at: next.commit }], "a new head costs one walk over the commits after the last one known");
+  walks.length = 0;
+  await own.read({ through: next.commit });
+  assert.deepEqual(walks, [], "a cursor read walks no history either");
+  assert.equal(store.snapshot().owner.cursor, next.commit);
+  assert.deepEqual(await unreadSteps(store, next.commit), [], "everything through the head is read");
+});
+
+test("a write another session commits during a read neither restarts the read nor is read by it", async t => {
+  const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
+  await own.read({ through: cursor });
+  const first = await op.appendLog({ author, id: "b", text: "read through here" });
+  const second = await op.appendLog({ author, id: "b", text: "same author and document, so one step until a mark splits it" });
+  const s = store.snapshot();
+  await unreadSteps(store, s.owner.cursor, s.owner.readMarks, s.head);
+  const log = store.log.bind(store), show = store.show.bind(store);
+  const walks: Array<string | undefined> = [];
+  t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => { walks.push(options.at); return log(options); });
+  let concurrent: string | undefined;
+  t.mock.method(store, "show", async (...args: Parameters<typeof store.show>) => {
+    // Reading through the first commit splits the step, and the read describes the later half for the first time:
+    // another session's write lands right then, after the read captured the board.
+    if (!concurrent) {
+      const item = store.snapshot().items.a!;
+      concurrent = (await store.commit({ author: "Firn", message: "concurrent write", puts: [{ kind: "item", id: "a", expectRev: item.rev, doc: { ...item, log: [...item.log, { at: later, by: "Firn", text: "written during the read" }] } }] })).commit;
     }
-    return result;
+    return show(...args);
   });
-  await assert.rejects(own.read({ doc: "item:b", through: shown.commit }), /changed.*3|3.*changed/i);
-  assert.equal(changes, 3, "the read has a fixed retry budget");
-  assert.deepEqual(store.snapshot().owner, owner, "exhausted attempts publish no read state");
-  mocked.mock.restore();
-  await own.read({ doc: "item:b", through: shown.commit });
-  assert.equal(store.snapshot().owner.cursor, shown.commit, "the next queued action can finish");
+  await own.read({ doc: "item:b", through: first.commit });
+  assert.ok(concurrent, "the write landed while the read was in progress");
+  assert.deepEqual(walks.filter(at => at !== s.head), [], "the read never recomputes at the newer head, so it did not start over");
+  assert.deepEqual(walks, [], "nor does it walk the history it already knows");
+  const owner = store.snapshot().owner;
+  assert.equal(owner.cursor, first.commit, "compaction stops before the still-unread later half of the step");
+  assert.equal(owner.readMarks, undefined, "the mark the cursor covers is removed");
+  assert.deepEqual((await unreadSteps(store, owner.cursor, owner.readMarks)).map(step => step.commits), [[second.commit], [concurrent]], "the change written during the read stays unread");
 });

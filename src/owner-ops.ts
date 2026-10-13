@@ -7,7 +7,7 @@ import { ConflictError } from "./store.ts";
 import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
 import { rules } from "./rules.ts";
-import { unreadSteps } from "./history.ts";
+import { unreadSteps, commitsSince, inHistory } from "./history.ts";
 import type { DocKind } from "./store.ts";
 
 export class NotFoundError extends Error {}
@@ -116,64 +116,58 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const parsed = ReadInput.safeParse(a);
       if (!parsed.success) throw new OpError(`Invalid read document or full commit id: ${parsed.error.message}`);
       const input = parsed.data;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const s = store.snapshot(), through = input.through;
-        if (through && !(await store.inHistory(through, s.head))) throw new OpError("Read mark or cursor must be in board history");
-        const old = s.owner.cursor;
-        async function canAdvance(from: string | undefined, to: string): Promise<boolean> {
-          return !from || !!(await store.inHistory(from, to));
-        }
-        async function advances(from: string | undefined, to: string): Promise<void> {
-          if (!(await canAdvance(from, to))) throw new OpError("Read mark or cursor must advance from its current ancestor");
-        }
-        if (through) await advances(old, through);
-        let cursor = old;
-        const readMarks = { ...s.owner.readMarks };
-        if ("doc" in input) {
-          const [kind, id] = input.doc.split(":") as [DocKind, string];
-          const collection = kind === "item" ? s.items : kind === "decision" ? s.decisions : s.notes;
-          if (!Object.hasOwn(collection, id) && !(await store.log({ kind, id, limit: 1, at: s.head })).length) throw new OpError(`Unknown read document ${input.doc}`);
-          if (through) await advances(readMarks[input.doc], through);
+      // The read is one pass over the board as published when it starts, bounded by that head even while git or the
+      // snapshot moves on. A change another session commits meanwhile lies after that head, so it is neither read nor
+      // crossed by compaction, and the read need not start over for it.
+      const s = store.snapshot(), through = input.through;
+      if (through && !(await inHistory(store, through, s.head))) throw new OpError("Read mark or cursor must be in board history");
+      const old = s.owner.cursor;
+      async function canAdvance(from: string | undefined, to: string): Promise<boolean> {
+        return !from || await inHistory(store, from, to);
+      }
+      async function advances(from: string | undefined, to: string): Promise<void> {
+        if (!(await canAdvance(from, to))) throw new OpError("Read mark or cursor must advance from its current ancestor");
+      }
+      if (through) await advances(old, through);
+      let cursor = old;
+      const readMarks = { ...s.owner.readMarks };
+      if ("doc" in input) {
+        const [kind, id] = input.doc.split(":") as [DocKind, string];
+        const collection = kind === "item" ? s.items : kind === "decision" ? s.decisions : s.notes;
+        if (!Object.hasOwn(collection, id) && !(await store.log({ kind, id, limit: 1, at: s.head })).length) throw new OpError(`Unknown read document ${input.doc}`);
+        // A bounded read can split a coalesced step: use its displayed commit,
+        // rather than requiring the current step's final commit to match it.
+        if (through) {
+          await advances(readMarks[input.doc], through);
+          readMarks[input.doc] = through;
+        } else {
           const unread = await unreadSteps(store, old, readMarks, s.head);
           const latest = unread.filter(step => step.docs.some(doc => doc.kind === kind && doc.id === id)).at(-1);
-          // A bounded read can split a coalesced step: use its displayed commit,
-          // rather than requiring the current step's final commit to match it.
-          if (through) readMarks[input.doc] = through;
-          else if (latest) {
-            await advances(old, latest.id);
-            await advances(readMarks[input.doc], latest.id);
-            readMarks[input.doc] = latest.id;
-          }
-          else {
-            if (store.snapshot().head !== s.head) continue;
-            return;
-          }
-        } else cursor = through!;
-        // Compact only the completely read prefix. In a shared commit any unread
-        // document keeps that entire commit ahead of the cursor.
-        const remaining = await unreadSteps(store, cursor, readMarks, s.head);
-        const history = (await store.log({ since: cursor, at: s.head })).reverse();
-        const firstUnread = remaining[0]?.commits[0];
-        const stop = firstUnread ? history.findIndex(commit => commit.commit === firstUnread) : history.length;
-        const compacted = stop > 0 ? history[stop - 1]!.commit : cursor;
-        // Git histories may merge siblings; a chronological prefix need not end
-        // at a descendant of the cursor. Leave compaction for a later descendant.
-        if (compacted && await canAdvance(cursor, compacted)) {
-          cursor = compacted;
-          const afterCursor = new Set(history.slice(stop).map(c => c.commit));
-          for (const [doc, mark] of Object.entries(readMarks)) if (!afterCursor.has(mark)) delete readMarks[doc];
+          if (!latest) return;
+          await advances(old, latest.id);
+          await advances(readMarks[input.doc], latest.id);
+          readMarks[input.doc] = latest.id;
         }
-        // Queries are bounded by s.head even while git is ahead of the published
-        // snapshot. Recompute after a published change, within the retry budget.
-        if (store.snapshot().head !== s.head) continue;
-        // Preserve archive updates that arrived during the asynchronous history reads.
-        const owner = { ...store.snapshot().owner, cursor };
-        if (Object.keys(readMarks).length) owner.readMarks = readMarks;
-        else delete owner.readMarks;
-        store.setOwner(owner);
-        return;
+      } else cursor = through!;
+      // Compact only the completely read prefix. In a shared commit any unread
+      // document keeps that entire commit ahead of the cursor.
+      const remaining = await unreadSteps(store, cursor, readMarks, s.head);
+      const history = await commitsSince(store, cursor, s.head);
+      const firstUnread = remaining[0]?.commits[0];
+      const stop = firstUnread ? history.findIndex(commit => commit.commit === firstUnread) : history.length;
+      const compacted = stop > 0 ? history[stop - 1]!.commit : cursor;
+      // Git histories may merge siblings; a chronological prefix need not end
+      // at a descendant of the cursor. Leave compaction for a later descendant.
+      if (compacted && await canAdvance(cursor, compacted)) {
+        cursor = compacted;
+        const afterCursor = new Set(history.slice(stop).map(c => c.commit));
+        for (const [doc, mark] of Object.entries(readMarks)) if (!afterCursor.has(mark)) delete readMarks[doc];
       }
-      throw new OpError("Board changed during all 3 read attempts; refresh before reading again");
+      // Preserve archive updates that arrived during the asynchronous history reads.
+      const owner = { ...store.snapshot().owner, cursor };
+      if (Object.keys(readMarks).length) owner.readMarks = readMarks;
+      else delete owner.readMarks;
+      store.setOwner(owner);
     }),
   };
 }

@@ -1,4 +1,5 @@
 import { rules } from "../src/rules.ts";
+import { compareAt, stopIndex } from "./fresh.ts";
 import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
@@ -203,7 +204,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function outDeps(it: ViewItem) { return openDeps(it).filter(d => !derived.ancestors(d.id).includes(it.id)); }
   function outWaiters(it: ViewItem) { return openWaiters(it).filter(w => !derived.ancestors(it.id).includes(w.id)); }
   function checksOf(it: ViewItem) { return derived.checks(it.id); }
-  function touched(kind: string,id: string) { return steps.some(s => s.docs.some(d => d.kind === kind && d.id === id)); }
+  // The first unread step holding each document ("kind:id"), and the baselines of all steps, built once per data change:
+  // rendering asks for them per item, card and comment, and a pass over every step each time grows with the backlog.
+  function firstSteps() {
+    return cached("firstSteps", () => {
+      const first = new Map<string, {step:Step;doc:Step["docs"][number]}>();
+      for (const step of steps) for (const doc of step.docs) if (!first.has(doc.kind + ":" + doc.id)) first.set(doc.kind + ":" + doc.id, {step, doc});
+      return first;
+    });
+  }
+  function stepBaselines() { return cached("stepBaselines", () => new Set(steps.flatMap(step => step.docs.map(doc => baselineKey(step,doc))))); }
+  function touched(kind: string,id: string) { return firstSteps().has(kind + ":" + id); }
   function cardNew(d: ViewDecision) { return touched("decision",d.id); }
   function cardFresh(d: ViewDecision) { return cardNew(d) || notesOf("q:" + d.id).some(n => touched("note",n.id)); }
   function noteFresh(n: ViewNote) {
@@ -235,11 +246,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     return kinds.size ? [...kinds] : ["other"];
   }
-  function stopTouches(st: FreshStop, key: string): boolean {
+  // The item and card keys ("it:<item>", "q:<card>") whose new content a stop is part of: an item holds its own changes, its
+  // cards' and the comments on either; a card holds its own changes and its comments.
+  function touchKeys(st: FreshStop): string[] {
     const doc = st.doc;
-    if (key.startsWith("q:")) return doc.kind === "decision" && doc.id === key.slice(2) || doc.kind === "note" && snapshot.notes[doc.id]?.target === key;
-    const id = key.slice(3);
-    return doc.kind === "item" && doc.id === id || doc.kind === "decision" && snapshot.decisions[doc.id]?.item === id || doc.kind === "note" && (snapshot.notes[doc.id]?.target === key || snapshot.decisions[snapshot.notes[doc.id]?.target.slice(2) || ""]?.item === id);
+    if (doc.kind === "item") return ["it:" + doc.id];
+    if (doc.kind === "decision") { const item = snapshot.decisions[doc.id]?.item; return ["q:" + doc.id, ...(item === undefined ? [] : ["it:" + item])]; }
+    const target = snapshot.notes[doc.id]?.target;
+    if (target === undefined) return [];
+    const item = snapshot.decisions[target.slice(2) || ""]?.item;
+    return [target, ...(item === undefined ? [] : ["it:" + item])];
   }
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
@@ -357,7 +373,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // is hidden from this walk: archiving says the owner is done with it. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
-  function freshShown(i: ViewItem) { return freshStops().some(st => stopTouches(st, "it:" + i.id)); }
+  // The stops indexed once per data change, so n, the chips and the blue lines look a stop up instead of passing over
+  // every stop for each key press, item and card: each stop's place and the next one by page position (freshIndex), the
+  // first stop that is part of each item or card (touching), and the first stop in each item's subtree (under).
+  function allFreshIndex() { return cached("allFreshIndex", () => stopIndex(allFreshStops())); }
+  function freshIndex() {
+    return cached("freshIndex", () => {
+      const all = freshStops(), touching = new Map<string, number>(), under = new Map<string, number>();
+      all.forEach((st, k) => {
+        for (const key of touchKeys(st)) if (!touching.has(key)) touching.set(key, k);
+        if (st.item) for (const id of [st.item, ...derived.ancestors(st.item)]) if (!under.has(id)) under.set(id, k);
+      });
+      return { ...stopIndex(all), touching, under };
+    });
+  }
+  function freshShown(i: ViewItem) { return freshIndex().touching.has("it:" + i.id); }
   function freshStopsNow(): FreshStop[] {
     const place = new Map<string, number>();
     boardOrder().forEach((it, k) => { if (!place.has(it.id)) place.set(it.id, k); });
@@ -381,7 +411,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }));
     return [...merged.values()].filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item))).sort((a, b) => compareAt(a.at, b.at));
   }
-  function compareAt(a: number[], b: number[]) { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! - b[i]!; return 0; }
 
   function noteElementId(id:string) { return "note-"+id.replace(/[^A-Za-z0-9_-]/g,"_"); }
   function noteId(n: ViewNote) { return noteElementId(n.id); }
@@ -392,7 +421,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!all.length) return;
     const st = all[((k % all.length) + all.length) % all.length]!;
     shownStop = st.key; shownAt = st.at; shownMark = 0;
-    await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshStops().some(s => s.key === st.key));
+    await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshIndex().position.has(st.key));
   }
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
   // The new places inside a changed item, top to bottom: a changed status, title or body block, a new log entry, an added
@@ -448,9 +477,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function navigationBaselines(st: NavigationTarget) {
     const required = new Map<string,{step:Step;doc:Step["docs"][number]}>();
     const add = (kind: Step["docs"][number]["kind"], id: string) => {
-      const step = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
-      const doc = step?.docs.find(d => d.kind === kind && d.id === id);
-      if (step && doc) required.set(baselineKey(step,doc),{step,doc});
+      const first = firstSteps().get(kind + ":" + id);
+      if (first) required.set(baselineKey(first.step,first.doc),first);
     };
     const notes = (key:string) => {
       // An explicit fold stays folded as marks load; an unspecified list may still auto-open for fresh content.
@@ -473,22 +501,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // An item's one chip counts the items with something new in its subtree, itself included; a card no item holds has a
   // chip of its own. A click opens the first new place there, in page order.
   function freshChip(key: string, n: number, own: boolean) {
-    const all = freshStops();
     const id = key.startsWith("it:") ? key.slice(3) : null;
-    const mine = all.map((st, k): [FreshStop,number] => [st, k]).filter(([st]) => id ? !!st.item && (st.item === id || derived.ancestors(st.item).includes(id)) : stopTouches(st, key));
+    const first = id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
     const c = el("span", "newtag freshchip", String(Math.max(1, n)));
     c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，r 把这一条标为已阅（子条目不动）"
       : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 r";
     c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
-    if (mine.length) {
+    if (first !== undefined) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
-      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(mine[0]![1]); };
+      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(first); };
       c.addEventListener("click", go);
       c.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
     }
     return c;
   }
-  function shownFresh() { return shownStop ? allFreshStops().find(st => st.key === shownStop) || null : null; }
+  function shownFresh() { const k = shownStop === null ? undefined : allFreshIndex().position.get(shownStop); return k === undefined ? null : allFreshStops()[k]!; }
   function selectedDocument() {
     // Deleted documents have no selectable body, but n still exposes their logical stop before the displayed item.
     const st = shownFresh();
@@ -540,7 +567,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     try {
       await api("/api/read", { doc, through: latest.id });
       overlay.saving = false;
-      if (shownStop && !allFreshStops().some(st => st.key === shownStop)) shownStop = null;
+      if (shownStop && !allFreshIndex().position.has(shownStop)) shownStop = null;
       // A GET begun before acknowledgement must not supply the authoritative read result.
       unreadGeneration++; unreadFlight = undefined;
       void refreshOwner().catch(showError);
@@ -559,9 +586,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     try { for (const id of Object.keys(logShown)) if (bodyShown(id)) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
   // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
+  function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
-    const at = all.findIndex(s => s.key === shownStop);
+    const at = shownPlace();
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
       const st = all[at]!, box = st.doc.kind === "item" ? itemBox(st.doc.id) : null;
@@ -569,14 +597,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (shownMark + 1 < marks.length) { shownMark++; glideToTarget(marks[shownMark]!); return; }
       goFresh(at + 1); return;
     }
-    const after = shownAt ? all.findIndex(s => compareAt(s.at, shownAt!) > 0) : 0;
+    const after = shownAt ? freshIndex().after(shownAt) : 0;
     goFresh(after < 0 ? 0 : after);
   }
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
-    const at = all.findIndex(s => s.key === shownStop);
+    const at = shownPlace();
     if (at >= 0) { goFresh(at - 1); return; }
-    const before = shownAt ? all.findLastIndex(s => compareAt(s.at, shownAt!) < 0) : -1;
+    const before = shownAt ? freshIndex().before(shownAt) : -1;
     goFresh(before < 0 ? all.length - 1 : before);
   }
 
@@ -2033,7 +2061,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
         }
         applyReadMarks(); snapshot.owner.cursor = result.cursor; failedDiffs.clear();
-        if (shownStop && !allFreshStops().some(st => st.key === shownStop)) shownStop = null;
+        if (shownStop && !allFreshIndex().position.has(shownStop)) shownStop = null;
         const after=unreadContributions(steps), scope=new Set<string>();
         // A step can contain several documents; only a changed document contribution invalidates its content.
         for (const key of new Set([...before.keys(),...after.keys()])) {
@@ -2066,7 +2094,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function baselineKey(step:Step,doc:Step["docs"][number]) { return JSON.stringify([step.id,step.parent ?? null,doc.kind,doc.id]); }
   function loadDiff(step: Step, doc: Step["docs"][number]): Promise<void> {
     const key = baselineKey(step,doc);
-    const relevant=() => steps.some(s => s.docs.some(d => baselineKey(s,d) === key));
+    const relevant=() => stepBaselines().has(key);
     if (diffs.has(key) || failedDiffs.has(key)) return Promise.resolve();
     const pending = pendingDiffs.get(key);
     if (pending) return pending;
@@ -2102,11 +2130,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // undefined means no unread baseline (or still loading); null means the document is new.
   function unreadBefore<T>(kind: Step["docs"][number]["kind"], id: string): T | null | undefined {
-    const first = steps.find(s => s.docs.some(d => d.kind === kind && d.id === id));
+    const first = firstSteps().get(kind + ":" + id);
     if (!first) return undefined;
-    const doc = first.docs.find(d => d.kind === kind && d.id === id)!;
-    const diff = diffs.get(baselineKey(first,doc));
-    if (!diff) { void loadDiff(first,doc); return undefined; }
+    const diff = diffs.get(baselineKey(first.step,first.doc));
+    if (!diff) { void loadDiff(first.step,first.doc); return undefined; }
     return diff.before as T | null;
   }
   // Blank lines delimit blocks, except inside a fenced code block. A contiguous list or table is one block.
