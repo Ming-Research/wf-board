@@ -24,6 +24,19 @@ test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks 
   assert.ok(snippet.startsWith("…") && snippet.endsWith("…")); assert.ok(snippet.length <= 86);
 });
 
+test("search finds target goal, target value, current value and distinctive comparison baseline", async t => {
+  const { store, op } = await board(t);
+  const target = { id: "style", goal: "独特样式目标", target: "目标值123", current: "当前值456", baseline: "Chromium 同机独特基准" };
+  await op.setTargets({ author, id: "a", target });
+  const s = store.snapshot(), r = rules(s);
+  for (const text of [target.goal, target.target, target.current, target.baseline]) {
+    const hits = q.search(s, r, text);
+    assert.deepEqual(hits.map(hit => `${hit.kind}:${hit.id}:${hit.field}`), ["item:a:target.style"]);
+    assert.ok(hits[0]!.snippet.includes(`«${text}»`));
+    assert.equal(hits[0]!.time, undefined, "target search follows item time like step search");
+  }
+});
+
 test("context includes relationships, page order, open/ruled cards, replies, checks, links, PRs and bounded logs", async t => {
   const { store, op } = await board(t);
   const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
