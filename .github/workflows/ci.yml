@@ -16,3 +16,29 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm test
+  # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
+  # commits, so the checkout carries history; the browser is cached by Playwright version.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run test:e2e
