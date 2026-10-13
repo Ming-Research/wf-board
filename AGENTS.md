@@ -21,8 +21,8 @@ matches what the artifact board offered.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
   runs git.
-- `src/rules.ts`: derived board rules (parent status, priority: from
-  dependents in migrated projects, legacy elsewhere, checks, freshness).
+- `src/rules.ts`: derived board rules (plan status and frontier, ownership,
+  priority from open work plans, parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
@@ -30,6 +30,8 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/http.ts`: page, page API, events and wake
   stream; `src/main.ts`: the daemon.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
+- `src/convert-plans.ts`: one-time, lossless conversion from the old item
+  structure to provisional plans, with an independent preservation check.
 - `web/`: the owner's page (`index.html`, `app.ts`, `fresh.ts`, the index `n`
   walks, and `find.ts`, title search and reference tokens, as plain functions
   tests call directly), bundled by esbuild.
@@ -55,3 +57,9 @@ matches what the artifact board offered.
 ## Board tools
 
 - Use `set_targets` for each goal's target value, current value and comparison baseline, updating the current value after measuring.
+- Use `set_plan` for ordered steps, owned and shared items, decision cards
+  and the last acceptance step. Status comes from the plan; `set_status`
+  only cancels or reopens an item. `move_item` changes the item's owner.
+- Records have no acceptance step and pass no priority. Open work owned by
+  a record is backlog work: it has no priority until moved under a root's
+  plan, even when another item waits for it.

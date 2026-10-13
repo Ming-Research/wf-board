@@ -1,9 +1,10 @@
+import { PLAN_CONVERSION_MESSAGE } from "./convert-plans.ts";
 import { stringify } from "yaml";
 import type { Store, DocKind, CommitInfo } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
-import { changedItemSteps, stepsChanged, changedItemTargets, targetsChanged, withoutLog } from "./rules.ts";
+import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutLog } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
@@ -16,14 +17,14 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
     return { progress: 0, reply: parts.some(p => p === "new reply" || p === "reply changed") ? 1 : 0, other: before === null || after === null || parts.some(p => !["new reply", "reply changed", "state changed", "sentAt changed"].includes(p)) ? 1 : 0 };
   }
   if (kind === "decision") return { progress: 0, reply: 0, other: visible ? 1 : 0 };
-  const oldSteps = (before as Item | null)?.steps, newSteps = (after as Item | null)?.steps;
+  const oldPlan = (before as Item | null)?.plan, newPlan = (after as Item | null)?.plan;
   const oldTargets = (before as Item | null)?.targets, newTargets = (after as Item | null)?.targets;
-  const progress = (stepsChanged(oldSteps, newSteps) ? Math.max(1, changedItemSteps(oldSteps, newSteps).length) : 0)
+  const progress = (planChanged(oldPlan, newPlan) ? Math.max(1, changedItemPlan(oldPlan, newPlan).length) : 0)
     + (targetsChanged(oldTargets, newTargets) ? Math.max(1, changedItemTargets(oldTargets, newTargets).length) : 0);
   // Inspect the item itself: log text and the agent-facing summary never decide owner visibility.
   const withoutProgress = (item: unknown) => {
     if (item === null) return null;
-    const { steps: _steps, targets: _targets, ...rest } = withoutLog(item as Item);
+    const { plan: _plan, targets: _targets, ...rest } = withoutLog(item as Item);
     return rest;
   };
   const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";
@@ -145,7 +146,7 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
   let previous: Step | undefined;
   for (const [position, commit] of commits.entries()) {
     // An owner action breaks consecutiveness even though it is not a step.
-    if (commit.author === "owner") { previous = undefined; continue; }
+    if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE) { previous = undefined; continue; }
     const docs: Step["docs"] = commit.files.flatMap(file => {
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];
@@ -163,8 +164,8 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
       const key = "commit|" + commit.commit + "|" + doc.kind + "|" + doc.id;
       let hit = cache.get(key);
       if (!hit) {
-        const before = commit.parents[0] ? await store.show(doc.kind, doc.id, commit.parents[0]) : null;
-        const after = await store.show(doc.kind, doc.id, commit.commit);
+        const before = commit.parents[0] ? await store.showCompared(doc.kind, doc.id, commit.parents[0]) : null;
+        const after = await store.showCompared(doc.kind, doc.id, commit.commit);
         const summary = ownerSummary(before, after, doc.kind);
         hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
         cache.set(key, hit);
@@ -200,7 +201,7 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
 
 async function endpoints(store: Store, step: Step, kind: DocKind, id: string) {
   const parent = step.parent;
-  return { parent, before: parent ? await store.show(kind, id, parent) : null, after: await store.show(kind, id, step.id) };
+  return { parent, before: parent ? await store.showCompared(kind, id, parent) : null, after: await store.showCompared(kind, id, step.id) };
 }
 
 export async function stepDiff(store: Store, step: Step, kind: string, id: string): Promise<{ before: unknown | null; after: unknown | null; diff: string }> {

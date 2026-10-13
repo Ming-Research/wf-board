@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Item, ItemStep, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { rules as makeRules, stepsChanged, targetLine, targetsChanged } from "./rules.ts";
+import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; steps?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; plan?: string[]; targets?: string[] }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -16,9 +16,9 @@ function requireId(s: Snapshot, id: string): Kind {
   if (Object.hasOwn(s.decisions, id)) return "card";
   throw new Error(`Unknown id ${id}; use search or list to find an item or card`);
 }
-function noteItem(s: Snapshot, n: Note): string { return n.target.startsWith("it:") ? n.target.slice(3) : s.decisions[n.target.slice(2)]?.item ?? ""; }
+function noteItem(s: Snapshot, n: Note | undefined): string { if (!n) return ""; return n.target.startsWith("it:") ? n.target.slice(3) : s.decisions[n.target.slice(2)]?.item ?? ""; }
 function itemId(s: Snapshot, kind: Kind, id: string): string {
-  return kind === "item" ? id : kind === "card" ? s.decisions[id]?.item ?? "" : noteItem(s, s.notes[id]!);
+  return kind === "item" ? id : kind === "card" ? s.decisions[id]?.item ?? "" : noteItem(s, s.notes[id]);
 }
 export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const owner = itemId(s, kind, id), areaId = r.lineOf(owner);
@@ -39,7 +39,7 @@ function fields(s: Snapshot, kind: Kind, id: string): Field[] {
   if (kind === "item") {
     const it = s.items[id]!;
     return [{ field: "id", text: id, rank: 0 }, { field: "title", text: it.title, rank: 0 }, ...["head", "data"] .map(field => ({ field, text: it[field as "head" | "data"] ?? "", rank: 1 })),
-      { field: "ask", text: it.ask?.text ?? "", rank: 1 }, ...(it.steps ?? []).map(step => ({ field: `step.${step.id}`, text: [step.text, step.waits, step.reason].filter(Boolean).join(" "), rank: 1 })),
+      { field: "ask", text: it.ask?.text ?? "", rank: 1 }, ...(it.plan ?? []).filter(step => "text" in step).map(step => ({ field: `plan.${step.id}`, text: "text" in step ? [step.text, step.waits, step.reason].filter(Boolean).join(" ") : "", rank: 1 })),
       ...(it.targets ?? []).map(target => ({ field: `target.${target.id}`, text: [target.goal, target.target, target.current, target.baseline].join(" "), rank: 1 })),
       ...it.log.map((l, i) => ({ field: `log[${i}]`, text: `${l.at} ${l.by ?? ""} ${l.text}`, rank: 2, time: l.at, index: i }))];
   }
@@ -125,9 +125,26 @@ export function notes(s: Snapshot, f: NoteFilters = {}) {
 function relevantNotes(s: Snapshot, targets: string[], limit?: number) {
   return notes(s, { limit: Object.keys(s.notes).length }).filter(n => targets.includes(n.target)).slice(0, limit);
 }
-function dependency(s: Snapshot, r: Rules, kind: "item" | "card", id: string, why: string) {
+function dependency(s: Snapshot, r: Rules, kind: "item" | "card", id: string) {
   const exists = Object.hasOwn(kind === "item" ? s.items : s.decisions, id);
-  return { ...(exists ? row(s, r, kind, id) : { kind, id, title: "(missing)", status: "missing" }), why };
+  return { ...(exists ? row(s, r, kind, id) : { kind, id, title: "(missing)", status: "missing" }) };
+}
+/** Stored order is kept; levels expose parallelism without silently sorting the plan. */
+export function planLines(s: Snapshot, r: Rules, id: string, fold = false): string[] {
+  const rows = r.planRows(id), groups = r.planGroups(id), lines: string[] = [];
+  const resolved = rows.filter(p => p.state === "resolved" && !("item" in p.row && p.row.own && s.items[p.row.item]?.record));
+  if (fold && resolved.length) lines.push(`✓ ${resolved.length} 项已完成`);
+  for (const [i, p] of rows.entries()) {
+    if (fold && (p.state === "resolved" || p.excluded)) continue;
+    const row = p.row, parallel = groups.some(g => g.start <= i && i < g.end);
+    const prefix = `L${p.level} ${parallel ? "‖ " : ""}${p.glyph} ${row.id} `;
+    if ("text" in row) { lines.push(prefix + (row.accept ? "[验收] " : "") + r.stepLine(row).slice(2)); continue; }
+    if ("card" in row) { lines.push(`${prefix}${s.decisions[row.card]?.question ?? "(missing card)"} · ${s.decisions[row.card]?.status ?? "missing"}`); continue; }
+    const owner = r.parentOf(row.item), current = r.planRows(row.item).filter(p => p.state === "progress" && "text" in p.row);
+    const activity = current.map(p => "text" in p.row ? r.stepLine(p.row) : "").join("; ");
+    lines.push(`${prefix}${row.own ? "[own]" : `[shared @${owner ?? "top"}]`} ${s.items[row.item]?.title ?? "(missing item)"} · ${r.statusOf(row.item) ?? "记录"}${row.own && activity ? ` · ${activity}` : ""}`);
+  }
+  return lines;
 }
 export function context(s: Snapshot, r: Rules, id: string, options: { log?: number | "all" } = {}) {
   const kind = requireId(s, id);
@@ -137,27 +154,28 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
   }
   const it = s.items[id]!, count = options.log === "all" ? it.log.length : options.log ?? 5;
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
-  return { ...row(s, r, "item", id), steps: (it.steps ?? []).map(r.stepLine), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, migrated: r.migrated(id), raisedBy: r.raisedBy(id), earlierLogs: it.log.length - log.length,
-    ancestors: r.ancestors(id).map(a => row(s, r, "item", a)), children: r.children(id).sort(r.compareSiblings).map(c => row(s, r, "item", c)),
-    deps: r.depsOf(id).map(d => ({ ...dependency(s, r, d.kind, d.id, d.why), open: d.open, missing: d.missing })),
-    dependents: r.dependents(id).map(d => dependency(s, r, "item", d.id, d.why)),
+  const levels = r.planRows(id).map(p => p.level), seen = new Set<number>(), repeated = new Set<number>();
+  for (let i = 0; i < levels.length; i++) if (levels[i] !== levels[i - 1]) { if (seen.has(levels[i]!)) repeated.add(levels[i]!); seen.add(levels[i]!); }
+  return { ...row(s, r, "item", id), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+    ancestors: r.ancestors(id).map(a => row(s, r, "item", a)),
+    dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
       const card = s.decisions[key]!;
       return card.status === "open" ? { key, ...card } : { key, status: card.status, question: card.question, ruling: card.ruling, ruledAt: card.ruledAt };
     }), notes: relevantNotes(s, [`it:${id}`, ...cardIds.map(c => `q:${c}`)], 5), checks: r.checks(id), links: it.links, prs: references(documentText(s, "item", id), knownRepos(s)) };
 }
 
-export interface GraphNode { kind: "item" | "card"; id: string; title: string; status: string | undefined; record?: boolean; why?: string; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
+export interface GraphNode { kind: "item" | "card"; id: string; title: string; status: string | undefined; record?: boolean; own?: boolean; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
 export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "up" | "down" | "both"; depth?: number }) {
   const rootKind = requireId(s, id) as "item" | "card", depth = options.depth ?? 3;
-  function walk(kind: "item" | "card", key: string, direction: "up" | "down", remaining: number, path: Set<string>, why?: string, blockedAncestor = false): GraphNode {
-    const token = `${kind}:${key}`, cycle = path.has(token), d = dependency(s, r, kind, key, why ?? "");
+  function walk(kind: "item" | "card", key: string, direction: "up" | "down", remaining: number, path: Set<string>, own?: boolean, blockedAncestor = false): GraphNode {
+    const token = `${kind}:${key}`, cycle = path.has(token), d = dependency(s, r, kind, key);
     const open = kind === "item" ? r.isOpenWork(key) : s.decisions[key]?.status === "open";
     const edges = direction === "up" ? kind === "item" ? r.depsOf(key) : [] : (kind === "item" ? r.dependents(key) : r.cardDependents(key)).map(e => ({ ...e, kind: "item" as const }));
     const nextPath = new Set([...path, token]);
     const onBlockedChain = open && (blockedAncestor || d.status === "blocked");
-    const next = cycle || remaining <= 0 ? [] : edges.map(e => walk(e.kind, e.id, direction, remaining - 1, nextPath, e.why, onBlockedChain));
-    return { kind, id: key, title: d.title, status: d.status, ...(why === undefined ? {} : { why }), open, cycle,
+    const next = cycle || remaining <= 0 ? [] : edges.map(e => walk(e.kind, e.id, direction, remaining - 1, nextPath, e.own, onBlockedChain));
+    return { kind, id: key, title: d.title, status: d.status, ...(own === undefined ? {} : { own }), open, cycle,
       blockedChain: open && (onBlockedChain || next.some(n => n.open && n.blockedChain)), truncated: !cycle && remaining <= 0 && edges.length > 0, next };
   }
   return { id, ...(options.direction !== "down" ? { up: walk(rootKind, id, "up", depth, new Set()) } : {}), ...(options.direction !== "up" ? { down: walk(rootKind, id, "down", depth, new Set()) } : {}) };
@@ -175,9 +193,9 @@ export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
 
 export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
-    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && r.isStatusLeaf(id) && !r.isRequest(id));
+    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && !r.isRequest(id));
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
-      openLeaves: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
+      openItems: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
   });
 }
 function requestRow(s: Snapshot, r: Rules, id: string) {
@@ -193,11 +211,11 @@ function sentNotes(s: Snapshot, r: Rules) {
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
-  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isStatusLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
+  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), eligible = ids.filter(id => !r.isRequest(id) && !r.inArchive(id) && !r.isBacklog(id));
   const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
-  for (const id of ids) for (const dep of r.depsOf(id)) if (dep.kind === "item" && dep.open && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
+  for (const id of ids.filter(id => r.isOpenWork(id))) for (const dep of r.depsOf(id)) if (dep.kind === "item" && r.isOpenWork(dep.id) && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
   const progressLines = (id: string) => ({
-    ...(s.items[id]?.steps?.length ? { steps: s.items[id]!.steps!.map(r.stepLine) } : {}),
+    ...(s.items[id]?.plan?.length ? { plan: planLines(s, r, id, true) } : {}),
     ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
   });
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
@@ -205,14 +223,13 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     notes: sentNotes(s,r).filter(n => n.project === project),
     checks: ids.map(id => ({ id, title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
-    wip: leaves.filter(id => r.statusOf(id) === "wip").sort(r.compareSiblings).map(workRow),
-    todo: leaves.filter(id => r.statusOf(id) === "todo").sort(r.compareSiblings).slice(0,10).map(workRow),
+    wip: eligible.filter(id => r.isOpenWork(id) && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
+    todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.outgoing].map(item => item.id));
-  const progress = ids.filter(id => !shown.has(id) && !r.inArchive(id) && (!!s.items[id]!.steps?.length || !!s.items[id]!.targets?.length) &&
-    (s.items[id]!.record || r.statusOf(id) === "wip" || r.statusOf(id) === "blocked"))
+  const progress = ids.filter(id => !shown.has(id) && !r.inArchive(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
     .map(id => ({ id, title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
@@ -233,7 +250,7 @@ function documentText(s: Snapshot, kind: Kind, id: string): string {
   const text = fields(s, kind, id).map(f => f.text);
   if (kind === "item") {
     const it = s.items[id]!;
-    text.push(...it.links.map(l => `${l.label} ${l.url}`), ...it.deps.map(d => d.why), it.ask?.url ?? "");
+    text.push(...it.links.map(l => `${l.label} ${l.url}`), it.ask?.url ?? "");
   }
   return text.join("\n");
 }
@@ -274,10 +291,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   const a = before as Record<string, unknown>, b = after as Record<string, unknown>, changes: string[] = [];
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (["rev", "updated"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
-    // An item that gained sub-items loses its own status, now derived from them, and its priority unless it is a migrated root; its log records the split.
-    if (kind === "item" && (key === "status" || key === "priority") && b[key] === undefined) continue;
-    if (key === "steps") {
-      if (stepsChanged(a.steps as ItemStep[] | undefined, b.steps as ItemStep[] | undefined)) changes.push("steps changed");
+    if (key === "plan") {
+      if (planChanged(a.plan as PlanRow[] | undefined, b.plan as PlanRow[] | undefined)) changes.push("plan changed");
     } else if (key === "targets") {
       if (targetsChanged(a.targets as ItemTarget[] | undefined, b.targets as ItemTarget[] | undefined)) changes.push("targets changed");
     } else if (key === "log") {
@@ -309,49 +324,80 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   }
   const r = makeRules(s), grouped = new Map<string, { areaId: string; area: string; documents: DocumentChange[] }>();
   const historicalCache = new Map<string, unknown | null>();
-  for (const doc of docs.values()) {
-    const before = await store.show(doc.kind, doc.id, `${doc.commits[0]!.commit}^`), after = await store.show(doc.kind, doc.id, doc.commits.at(-1)!.commit);
-    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind;
-    // Historical deletions remain visible; their last content supplies ownership.
-    const lastBefore = `${doc.commits.at(-1)!.commit}^`;
-    const lastIndex = all.findIndex(c => c.commit === doc.commits.at(-1)!.commit);
-    async function historicalDocument(kind: DocKind, id: string): Promise<unknown | null> {
-      const cacheKey = `${lastBefore}:${kind}:${id}`;
-      if (historicalCache.has(cacheKey)) return historicalCache.get(cacheKey)!;
-      let found = await store.show(kind, id, lastBefore);
-      if (found === null) {
-        const path = `${kind === "item" ? "items" : kind === "decision" ? "decisions" : "notes"}/${id}.yaml`;
-        // Recover the last known ownership, even if that owner was deleted in
-        // an earlier commit. Never consult a revision after the document.
-        for (const commit of all.slice(lastIndex + 1)) {
-          if (!commit.files.includes(path)) continue;
-          found = await store.show(kind, id, commit.commit);
-          if (found !== null) break;
-        }
+  const snapshots = new Map<string, Promise<Snapshot>>();
+  function snapshotAt(commit: string): Promise<Snapshot> {
+    let hit = snapshots.get(commit);
+    if (!hit) { hit = store.comparisonSnapshot(commit); snapshots.set(commit, hit); }
+    return hit;
+  }
+  /** A missing document's last content at this boundary, never a later revision. */
+  async function historicalDocument(kind: "item" | "decision" | "note", id: string, boundary: string): Promise<unknown | null> {
+    const cacheKey = `${boundary}:${kind}:${id}`;
+    if (historicalCache.has(cacheKey)) return historicalCache.get(cacheKey)!;
+    const collection = kind === "item" ? "items" : kind === "decision" ? "decisions" : "notes";
+    let found: unknown | null = (await snapshotAt(boundary))[collection][id] ?? null;
+    if (found === null) {
+      const path = `${collection}/${id}.yaml`, index = all.findIndex(commit => commit.commit === boundary);
+      for (const commit of all.slice(index)) {
+        if (!commit.files.includes(path)) continue;
+        found = (await snapshotAt(commit.commit))[collection][id] ?? null;
+        if (found !== null) break;
       }
-      historicalCache.set(cacheKey, found);
-      return found;
     }
-    const historical = after ?? await store.show(doc.kind, doc.id, lastBefore) ?? before;
-    let view = s;
+    historicalCache.set(cacheKey, found);
+    return found;
+  }
+  for (const doc of docs.values()) {
+    const first = doc.commits[0]!, last = doc.commits.at(-1)!;
+    const before = first.parents[0] ? await store.showCompared(doc.kind, doc.id, first.parents[0]) : null;
+    const after = await store.showCompared(doc.kind, doc.id, last.commit);
+    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind;
+    // Deleted documents use their own final boundary. Existing documents use
+    // the captured page snapshot; neither can acquire a future owner or title.
+    const boundary = after === null ? last.parents[0] ?? last.commit : s.head;
+    const atBoundary = after === null ? await snapshotAt(boundary) : s;
+    let view = atBoundary;
     const collection = kind === "item" ? "items" : kind === "card" ? "decisions" : "notes";
-    if (!Object.hasOwn(s[collection], doc.id)) view = { ...s, [collection]: { ...s[collection], [doc.id]: historical } };
-    // A deleted note/card can also have a deleted target. Recover only the
-    // missing ownership chain at its last revision, without reading the board.
+    if (!Object.hasOwn(view[collection], doc.id)) {
+      const historical = await historicalDocument(doc.kind, doc.id, boundary);
+      if (historical === null) continue;
+      view = { ...view, [collection]: { ...view[collection], [doc.id]: historical } };
+    }
+    /** Plans own children, so finding a deleted owner requires reading its last
+     * plan. A surviving owner that removed the row is a deliberate detach and
+     * must never be resurrected from an older snapshot. */
+    async function recoverOwner(id: string): Promise<string | undefined> {
+      const present = makeRules(view).parentOf(id);
+      if (present) return present;
+      const index = all.findIndex(commit => commit.commit === boundary), tried = new Set<string>();
+      for (const commit of all.slice(index)) {
+        if (!commit.files.some(path => path.startsWith("items/"))) continue;
+        const historical = await snapshotAt(commit.commit), owner = makeRules(historical).parentOf(id);
+        if (!owner || tried.has(owner)) continue;
+        tried.add(owner);
+        if (Object.hasOwn(atBoundary.items, owner)) continue;
+        const lastOwner = await historicalDocument("item", owner, boundary) as Item | null;
+        if (!lastOwner?.plan.some(row => "item" in row && row.own && row.item === id)) continue;
+        view = { ...view, items: { ...view.items, [owner]: lastOwner } };
+        return owner;
+      }
+      return undefined;
+    }
     async function recoverItem(id: string, seen = new Set<string>()): Promise<void> {
       if (!id || seen.has(id)) return;
       seen.add(id);
       if (!Object.hasOwn(view.items, id)) {
-        const item = await historicalDocument("item", id) as Item | null;
+        const item = await historicalDocument("item", id, boundary) as Item | null;
         if (!item) return;
         view = { ...view, items: { ...view.items, [id]: item } };
       }
-      if (view.items[id]?.parent) await recoverItem(view.items[id]!.parent!, seen);
+      const owner = await recoverOwner(id);
+      if (owner) await recoverItem(owner, seen);
     }
     if (kind === "note") {
       const target = view.notes[doc.id]!.target;
       if (target.startsWith("q:") && !Object.hasOwn(view.decisions, target.slice(2))) {
-        const card = await historicalDocument("decision", target.slice(2)) as Decision | null;
+        const card = await historicalDocument("decision", target.slice(2), boundary) as Decision | null;
         if (card) view = { ...view, decisions: { ...view.decisions, [target.slice(2)]: card } };
       }
     }

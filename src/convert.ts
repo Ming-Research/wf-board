@@ -1,7 +1,11 @@
 import { z } from "zod";
-import { Board, Decision, Dep, Item, Key, Note, OwnerState } from "./model.ts";
+import { Board, Decision, Dep, Item, Key, Note, OwnerState } from "./legacy-model.ts";
 import { Store } from "./store.ts";
 import type { DocKind, Put, Del } from "./store.ts";
+import { convertPlans, updatePlanSummary } from "./convert-plans.ts";
+import type { Snapshot as LegacySnapshot } from "./legacy-model.ts";
+import type { Snapshot } from "./model.ts";
+import { verifyPlans } from "./verify-plans.ts";
 
 export interface Converted {
   board: Board;
@@ -295,11 +299,22 @@ export function convertExport(exportJson: unknown): Converted {
   return { board, asRead, current, owner, orphans, report: Array.from(counts, ([action, info]) => `${action}: ${info.count} (examples: ${[...info.examples].join(", ")})`) };
 }
 
-export async function importExport(store: Store, exportJson: unknown): Promise<{ asReadCommit: string; currentCommit: string }> {
+export async function importExport(store: Store, exportJson: unknown, options: { at?: string } = {}): Promise<{ asReadCommit: string; currentCommit: string }> {
   // The Store contract coalesces no-ops: equal checkpoint states share a commit.
   // Two distinct commits for that case require an explicit empty-checkpoint API.
-  const converted = convertExport(exportJson);
-  async function write(documents: Converted["current"], message: string): Promise<string> {
+  const legacy = convertExport(exportJson);
+  const at = options.at ?? new Date().toISOString();
+  const normalize = (documents: Converted["current"]): Snapshot => {
+    const source = { board: legacy.board, ...documents, notices: {}, glossaries: {}, owner: legacy.owner, head: "" } satisfies LegacySnapshot;
+    const result = convertPlans(source, { at });
+    result.report.errors.push(...verifyPlans(source,result));
+    updatePlanSummary(result.report,true);
+    if (result.report.errors.length) throw new Error(`Artifact import cannot bypass plan-conversion checks:\n${result.report.errors.join("\n")}`);
+    return result.snapshot;
+  };
+  const asRead = normalize(legacy.asRead), current = normalize(legacy.current);
+  const converted = { ...legacy, board: current.board, asRead, current, owner: current.owner };
+  async function write(documents: Pick<Snapshot, "items" | "decisions" | "notes">, message: string): Promise<string> {
     const snapshot = store.snapshot();
     const puts: Put[] = [];
     const deletes: Del[] = [];
@@ -312,7 +327,7 @@ export async function importExport(store: Store, exportJson: unknown): Promise<{
   const asReadCommit = await write(converted.asRead, "Import the board as the owner last read it");
   // The changes since the read land one document per commit, oldest first, so the owner reads them as separate
   // steps in time order; a document the read state already matches makes no commit.
-  const timeOf = (kind: DocKind, doc: Item | Decision | Note | undefined) => !doc ? "" : kind === "note" ? (doc as Note).repliedAt ?? (doc as Note).sentAt ?? (doc as Note).at : (doc as Item | Decision).updated;
+  const timeOf = (kind: DocKind, doc: { updated?: string; repliedAt?: string; sentAt?: string; at?: string } | undefined) => !doc ? "" : kind === "note" ? (doc as Note).repliedAt ?? (doc as Note).sentAt ?? (doc as Note).at : doc.updated ?? "";
   const changes: Array<{ kind: Exclude<DocKind, "glossary" | "notice">; id: string; at: string }> = [];
   for (const [kind, collection] of [["item", "items"], ["decision", "decisions"], ["note", "notes"]] as const) {
     for (const id of new Set([...Object.keys(converted.asRead[collection]), ...Object.keys(converted.current[collection])]))

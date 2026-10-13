@@ -1,10 +1,12 @@
+// Transient pre-plan definitions for conversion and normalized historical comparisons.
+// Keep independent of current schemas/rules; remove only when old comparison baselines retire.
 // LEGACY PRIORITY: priority as the board computed it before a project sets
 // `migrated: true` in board.yaml (docs/design.md section 5). A leaf stores its
 // priority, a parent shows its highest open leaf's, and an open waiter raises
 // the leaves under what it waits on, recording the raise for the struck
 // original priority on the page. Remove this module, and every line marked
 // "LEGACY PRIORITY" in src/ and web/, once every project is migrated.
-import type { Item, Priority, Status } from "./model.ts";
+import type { Item, Priority, Status } from "./legacy-model.ts";
 
 export interface LegacyContext {
   item(id: string): Item | undefined;

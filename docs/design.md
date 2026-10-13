@@ -1,9 +1,7 @@
 # wf-board design
 
-The local server implements this model, except item plans (section 5, Item
-plans) and their conversion (section 10, Plan conversion): their direction is
-the owner's decision of 2026-10-13, and the details there are a proposal
-awaiting the owner's approval and then implementation. Project responsibility in sections 8–9
+Item plans (section 5) and plan conversion (section 10) are the owner's
+approved design of 2026-10-13. Project responsibility in sections 8–9
 records the owner’s settled decisions and supersedes per-item `agent` ownership
 and per-project lists of agent session names.
 
@@ -332,7 +330,7 @@ log:
   change, so inserting or removing a neighboring row does not mark an unchanged
   row. Reordering or removal still marks the item unread without displaying
   removed rows. Reading the item clears its plan and target marks. A plan row is
-  changed when its own stored fields change (text, state, why, ownership,
+  changed when its own stored fields change (text, state, ownership,
   `after`, or a server date); a change in the status of the item a row points
   at is that item's change, not this one's. The 进展
   unread filter selects plan and target changes; head changes, cards and other changes remain in 其他. Logs
@@ -502,11 +500,16 @@ record) shows the check 没有计划：至少要有验收步骤.
   owned item under an open owner is never a root. An open item owned by a
   closed item shows 拥有它的条目已关闭 (it can only arise from data written
   before the cancellation refusal).
+  An open work item owned by a record is not a root, stores and derives no
+  priority, and is exempt from the missing-root-priority check.
 - **Backlog.** A project's backlog is a record whose plan owns the items it
   holds. Records pass no priority (below), so backlog items show no priority,
   matching "no commitment"; moving an item out of the backlog under a root's
   plan gives it the root's priority. This replaces the present practice of a
   P2 root named 待选工作, which gave every backlog item P2.
+  Setting priority on an open item owned by a record is refused with an
+  explanation that backlog items carry no priority until moved under a
+  root's plan; shared waiters do not override this rule.
 - **Cycles.** Item rows, owned and shared together, may not form a cycle; a
   write that closes one is refused, and a stored cycle shows 依赖成环 as
   today. Owned rows alone therefore form a forest. `after` cannot form a cycle
@@ -521,8 +524,8 @@ projects and transitively. A closed item keeps the priority that reached it
 and passes none on; card rows carry none; a cycle that no open outside
 dependent reaches has none. One change: a record passes no priority, because
 a record is not work. Before, a record counted as an open dependent; three
-records exist (the 14900K queue among them), and a run item under the queue
-record gets its priority from the shared row of the item waiting for the run.
+records exist (the 14900K queue among them); open work owned by a record
+shows no priority, even when another item's shared row waits for it.
 A root stores `priority`; every write that makes an item a non-root, or
 writes a non-root, drops its stored priority in the same commit and logs
 `不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
@@ -553,8 +556,8 @@ own-work sub-item.
 The owner's archive is unchanged: it hides a done or cancelled item and its
 owned subtree from the tree. Archiving never removes a row from any plan. An
 owner's plan still shows a row for an archived child, because the plan is the
-record of what was completed; such rows fold with the other resolved rows
-(see the page below). Opening an archived child from its row selects it as
+record of what was completed; every row stays visible, including done and
+dropped rows (see the page below). Opening an archived child from its row selects it as
 any reference does.
 
 #### Checks
@@ -698,21 +701,19 @@ follow the existing tokens with no new colours:
   parallel; rows of one level that are not adjacent show separately, and
   `context` warns about them (see open questions). The acceptance row is never
   in a group.
-- **Folded resolved rows.** A maximal run of three or more consecutive
-  resolved rows (groups count by their rows; a group is in the run only when
-  all its rows are resolved) folds into one line
-  `✓ 已完成 12 项（放弃 2）▸`. A click unfolds the run for this item; the
-  choice is saved per viewer like the log's. A run holding an unread changed
-  row, or the current `n` stop, stays unfolded. The ratio beside the heading
-  is `done/total` over all rows except dropped steps, cancelled owned items
-  and owned records, the acceptance step included.
+- **Completed rows remain visible.** Every plan row is shown in stored order,
+  including done and dropped rows; there is no resolved-row fold or saved
+  fold choice. The ratio beside the heading is `done/total` over all rows
+  except dropped steps, cancelled owned items and owned records, the
+  acceptance step included.
 
 A mock-up at the detail column's minimum width (380 pixels), for an item in
-progress with twelve completed parts:
+progress with completed and dropped parts:
 
 ```
- 计划和进展                                                   11/17
- ✓ 已完成 12 项（放弃 1）▸
+ 计划和进展                                                   1/7
+ ✓ 解析器能读配置 · 10-06
+ ✗ 旧解析方案 · 已由新解析器替代
  ┌ 可同时进行
  │● 写解析器 · 3 天 · 等 CI
  │● Halo 的协程能挂起                     [WIP] 2/5
@@ -733,8 +734,9 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
 
 ```html
 <section class="plan" aria-label="计划和进展">
-  <div class="log-head">计划和进展 <span class="steps-ratio">11/17</span></div>
-  <button class="plan-fold">✓ 已完成 12 项（放弃 1）▸</button>
+  <div class="log-head">计划和进展 <span class="steps-ratio">1/7</span></div>
+  <div class="plan-row done"><span class="g">✓</span>解析器能读配置 · 10-06</div>
+  <div class="plan-row dropped"><span class="g">✗</span>旧解析方案 · 已由新解析器替代</div>
   <div class="plan-group" role="group" aria-label="可同时进行">
     <div class="plan-group-label">可同时进行</div>
     <div class="plan-row wip"><span class="g">●</span>写解析器 · 3 天 · 等 CI</div>
@@ -760,7 +762,6 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
 .plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
 .plan-row.accept { border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 6px; }
-.plan-fold { color: var(--done); background: none; border: 0; padding: 2px 0; font: inherit; }
 </style>
 ```
 
@@ -768,7 +769,7 @@ At phone width (below 560 pixels) nothing changes structurally: rows already
 wrap; the chip and ratio of an owned row move to the second line, the group
 bracket narrows to 1 pixel, and the 16-pixel gutter stays so glyphs align.
 Unread changed rows carry the existing blue bar to the left of the gutter.
-The tree row of an item shows its plan ratio (`11/17`) where the steps ratio
+The tree row of an item shows its plan ratio (`1/7`) where the steps ratio
 was; leaf counts count owned descendants that own no work items, by status.
 
 #### Comments
@@ -806,7 +807,7 @@ overturn it.
    parallel rows adjacent but reorders what a session wrote.
 5. **Closed items after conversion.** Proceeding on: the mechanical
    conversion keeps closed children as provisional rows of their owners'
-   plans, folded; a rewrite keeps only the closed items its new plan attaches,
+   plans, fully visible; a rewrite keeps only the closed items its new plan attaches,
    and every other closed item becomes, or stays, a closed top item without a
    flag; no history or archive owner is created,
    because an item that only holds finished items is a topic group, which the
@@ -1112,7 +1113,7 @@ not scroll or navigate. A click anywhere else, Escape, a scroll or a click on
 another term closes the popover; only one is open at a time. A glossary change
 re-renders the page.
 
-The plan, its rows, groups, folding and mock-up are specified in section 5
+The plan, its rows, groups and mock-up are specified in section 5
 (How the page shows a plan). Doing-day counts refresh with the page's
 existing minute timer without a server write. The 目标 table above the plan
 has columns 目标 / 当前 / 目标值 / 比较对象 / 日期. Each row is one goal; the
@@ -1183,13 +1184,13 @@ The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
 when appending the project last. Its optional `after` names an existing
 project to place the new project immediately after; only `总管` may supply it.
-`update_project(author, name, repo?, migrated?, after?)` sets or changes a repository: a project
+`update_project(author, name, repo?, after?)` sets or changes a repository: a project
 may change its own repo, and the coordinator project `总管` may change any
 project’s repo. Only `总管` may set `after` to move a project immediately
 after another configured project; omitting it preserves the current order.
 An unknown `after` or moving a project after itself is refused. An order-only
-update needs no `repo` or `migrated`. Ordering is defined in `src/rules.ts`.
-Each call combines repository, ordering and migration changes in one data
+update needs no `repo`. Ordering is defined in `src/rules.ts`.
+Each call combines repository and ordering changes in one data
 commit. Both run in the same operations queue as item writes, including
 prospective board checks.
 
@@ -1361,8 +1362,9 @@ would freeze that structure under a new name. Conversion therefore has two
 phases:
 
 1. **Data conversion**, mechanical and lossless, in one data commit. Its only
-   job is to keep every item, status, priority, log, card, note and target,
-   and to make the new shape valid. Every plan it produces is provisional
+   job is to keep every item, log, card, note, target and ordinary step,
+   make the new shape valid, and report every status and priority difference
+   caused by the approved new derivation rules. Every plan it produces is provisional
    (section 5, Writing plans), and the board flags it 计划待重写.
 2. **Plan rewrite**, per project, by the project's session: each plan is
    written again from what the work actually needs, root first, and existing
@@ -1393,29 +1395,43 @@ changed since the approved dry run (the dry run records the data commit it
 read). The unread history converts each pre-conversion baseline with the same
 function before comparing, so the conversion itself marks nothing new and
 only real later changes show; the conversion commit is not a history step.
-The migration and the old-shape reader are removed after the live board has
-converted.
+`npm run convert:plans -- --data <copy> --dry-run --report <file>` writes the
+report outside the data directory and leaves the copy untouched. The report
+records `sourceHead`, the exact data commit. After the owner approves it,
+`WF_BOARD_PLAN_CONVERSION_HEAD=<sourceHead>` enables the daemon's startup
+migration; the offline CLI accepts `--approved-head <sourceHead>` and the
+approved `--report <file>` only with the daemon stopped. Both refuse a changed
+data head or unresolved verification failures. Conversion log entries use
+the executing caller's real timestamp; the same conversion advances only
+previously effective archive timestamps that its own logs would invalidate,
+and reports their original and new values so archive visibility is unchanged. The temporary migration and old-shape
+reader stay until conversion and the historical comparison baselines that
+need them have finished; raw audit `show` and `diff` remain unchanged.
 
 **Phase 1 mapping, item by item.**
 
 1. `group` is set on every item to its line's project.
 2. The plan is built in this order, and the item is marked
    `provisional: true` (a record too, when it gets any row):
-   1. Existing steps, with their ids, text, states and dates unchanged, in
-      their order, each after the previous one (the default).
-   2. One row per entry of `deps`, in that order, each with `after: []`
+   1. One row per entry of `deps`, in that order, each with `after: []`
       because the old data never recorded order: an item dependency whose
       target's `parent` is this item becomes an owned row, any other item
       dependency a shared row, a card dependency a card row. A target named
       twice gets one row.
-   3. One owned row for each child the item does not list in `deps`, with
+   2. One owned row for each child the item does not list in `deps`, with
       `after: []` (report: child not listed).
+   3. Existing steps, with their ids, text, states and dates unchanged, in
+      their order: the first has `after: []`, preserving its former lack of
+      a preceding step; later steps follow the previous step by default.
    4. The acceptance step (below), except on a record.
+   Dependency rows precede old steps so a later plan rewrite can make a blocked
+   item's first open step wait for them while `after` names only earlier rows.
 3. **Whys go to the log.** Rows carry no why (section 5). When an item had
    any dependency whys, the converter appends one log entry listing them, one
    line per dependency in the old order: `转换前的依赖说明：` followed by
    `- 「<target title>」（<key>）：<why>` lines, a card shown by its question.
-   Nothing else is written to logs except where step 5 below changes a row.
+   Nothing else is written to logs except the stored-priority retirement in
+   step 7; status labels never cause fabricated steps or edits to old steps.
 4. **Acceptance text.** The head section that the old check recognized (a
    heading, or a bold label at the start of a paragraph, naming 完成条件 or
    怎样算完成) is cut from the head, through the line before the next heading
@@ -1429,54 +1445,60 @@ converted.
    one. Its state is done (dated at the item's last update) when the old
    derived status was done, dropped with the reason 条目已取消 when
    cancelled, todo otherwise.
-5. **Keeping each status.** The new derived status must equal the old one;
-   where it would not, the converter makes the smallest change below, logs it
-   on the item and reports it (report: status adjusted). Any difference left
-   is reported and the dry run fails until the owner accepts it.
-
-   | Old status (leaf) | New plan would give | Change made |
-   |---|---|---|
-   | wip, no doing step | todo | The first todo step becomes doing; with no todo step, a step `wip` 「进行中（转换时补：原来只记了状态，请改成实际步骤）」 is added as doing |
-   | blocked, with open dependencies or cards | todo (a todo step or the open rows are ready) | The first unresolved step gets `after` = the open item and card rows, so only waits are ready |
-   | blocked, waiting only on a legacy ask | blocked | none |
-   | blocked, nothing open | todo | none; reported (it was already flagged 卡住了，但没写在等什么) |
-   | done, with unfinished steps | todo or wip | Those steps become dropped with the reason 转换前条目已标完成，这一步没标 |
-   | done, with an open dependency | blocked | The row is removed and its target logged on the item (none exist on 2026-10-13) |
-   | cancelled | cancelled | `status: cancelled` stays stored |
-
-   Parents' statuses were derived and nothing is stored for them. A parent
-   whose status changes only because of the new blocked rule (one child
-   blocked, another ready) keeps the new status and is reported (report:
-   rule change); this is the intended effect of the rule.
+5. **Deriving each status.** The new plan determines the status under the
+   approved rules. Old ordinary steps keep their states, text, dates and
+   sequence; no step is added, promoted, dropped or given new waits just to
+   preserve an old status label, and no dependency row is removed for that
+   purpose. Every old-versus-new status difference is listed with the item
+   id, project, title and cause (for example, an open shared row it waits on
+   or a doing step). A difference alone is not a conversion error. The
+   independent oracle derives the expected status from the converted plan
+   and refuses a mismatch with the current rules' result.
 6. Stored `status` values other than `cancelled` are removed, as are
    `parent`, `deps` and `steps`.
 7. **Priority.** Whitefoot-kit, 总管 and 网站 are migrated in the same commit:
    every non-root loses its stored priority with the log line
    `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as
-   `update_project` does today; the `migrated` field leaves `board.yaml`.
-   Because every old parent link and dependency becomes a row, every item
-   keeps the priority it had.
+   the former project migration did; the `migrated` field leaves `board.yaml`.
+   Roots seed their stored priority from their old displayed value; every
+   project's priority now propagates along all item rows under the approved
+   rule, including formerly unmigrated projects and closed children gaining
+   an owner. Open record-owned work carries none. Every old-versus-new
+   displayed-priority difference is listed with id, project, title and cause
+   (for example, propagation from an owner, moving into backlog or losing
+   rootness); the difference alone is not an error. The independent oracle
+   computes expected priority from the converted plans independently of the
+   converter and compares it with the current rules' output.
+8. **Keeping archives.** For each item whose archive was effective before
+   conversion and would be broken by conversion log entries, `archiveAt`
+   advances to the conversion time in the same commit. The report gives id,
+   project, title, original timestamp and new timestamp. Other owner state is
+   unchanged. Both direct and inherited archive visibility must be identical
+   before and after; the independent oracle checks this.
 
-**Phase 1 report.** It lists only what phase 1 itself could not keep exactly,
-each finding one entry `{item, project, kind, detail}` in
-`import/plan-conversion.yaml` in the data repository, next to the artifact
-export it supplements: status adjusted and rule change (about 20, from step
-5), ambiguous condition, duplicate or dangling targets (a target named twice,
-a missing parent or dependency target), and child not listed (174, all
-closed, informational). Everything about structure is left to phase 2,
-where a session judges it; phase 1 judges nothing.
+**Phase 1 report.** A short Chinese summary comes first: how many items were
+converted, how many status and priority differences there are, their causes,
+archive timestamp adjustments and whether all content survived verification.
+The detailed tables give every status/priority difference and archive
+adjustment, including item id, project and title; cause groups include
+examples. Findings also identify ambiguous completion sections, duplicate
+or dangling targets and children not listed by their old parents. The
+report is `import/plan-conversion.yaml` in the data repository. Structural
+rewrite pointers are left to phase 2, where each project's session judges
+what its plan should contain.
 
-**Phase 1 verification.** An oracle independent of the converter, run on the
-dry run's output: every old parent link is exactly one owned row and every
-owned row was a parent link; every old dependency is exactly one row of the
-same target, or a reported duplicate or removal, and its why appears in the
-item's log entry; every old step is a step row with the same id, text and
-dates, its state changed only where the report says so; every head equals the
-old head minus exactly the reported acceptance text; every item's derived
-status and priority equal the old ones except where reported; every work
-item has an acceptance step and every converted plan is provisional; and the
-item, card, note and log-entry counts are unchanged apart from the logged
-lines.
+**Phase 1 verification.** An oracle independent of the converter checks:
+every old parent link is exactly one owned row and every owned row was a
+parent link; every old dependency is exactly one row of the same target or a
+reported duplicate, with all whys in the one log entry; ordinary steps keep
+exact ids, text, states, dates and sequence; heads lose only the acceptance
+section; all work has a final acceptance row and every nonempty converted
+plan is provisional. It independently derives status and priority from the
+converted plans and compares them with the current rules' output, checks
+that every difference appears in the report, and verifies every item, card,
+note, target and original log by id. Added logs have an exact whitelist;
+archive timestamp changes are exactly those needed to preserve direct and
+inherited visibility, with all other owner state unchanged.
 
 **Phase 2: rewriting plans, per project.** The coordinator files one item into
 each project, "Every plan of <project> is rewritten from the work it needs".
@@ -1525,11 +1547,11 @@ restore. A provisional plan keeps working in the meantime: sessions record
 progress on it with single-row upserts, and its status and priority stay
 derived from it, so the board stays correct while phase 2 runs.
 
-**Closed items.** Phase 1 converts done and cancelled items like any other: a
-closed child becomes a resolved provisional row of its parent's plan, which
-the page folds into one 已完成 N 项 line, so 总管's item with 119 closed
-children reads as one folded line above its open rows. A closed item without
-a parent stays a closed top item: it needs no owner and raises no check.
+**Closed items.** Phase 1 converts done and cancelled items like any other:
+an existing child remains a provisional owned row in its parent's plan.
+Its row state follows the converted child's new derived status; the page
+shows every row, including completed and dropped rows. An item without a
+parent stays top-level; a closed top item needs no owner and raises no check.
 Phase 2 keeps a closed item in a plan only when the new plan attaches it, for
 example a finished goal of an open release; every other closed item becomes,
 or stays, a closed top item. No history or archive owner is created (section

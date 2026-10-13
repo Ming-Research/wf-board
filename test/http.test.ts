@@ -56,11 +56,11 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.equal((await api("/api/notes", { target: "it:missing", kind: "comment", text: "bad" })).status, 404);
   assert.equal((await api("/api/archive", { id: "a", on: "true" })).status, 400);
   assert.equal((await api("/api/archive", { id: "a", on: true })).status, 400);
-  const completed = await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
+  const completed = await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
   assert.equal((await api("/api/archive", { id: "a", on: true })).status, 200); assert.ok(store.snapshot().owner.archived.a);
   assert.equal((await api("/api/read", { through: completed.commit })).status, 200);
   assert.equal((await api("/api/unread")).data.steps.length, 0);
-  const progress = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "unread after read" } });
+  const progress = await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "unread after read" } });
   const steps = (await api("/api/unread")).data.steps; assert.equal(steps[0].id, progress.commit);
   const diff = await api(`/api/step?id=${progress.commit}&kind=item&doc=b`); assert.match(diff.data.diff, /unread after read/);
   assert.equal((await api("/api/step?id=missing&kind=item&doc=b")).status, 404);
@@ -183,7 +183,7 @@ test("project wake routing reaches matching project sockets and the coordinator 
   t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
   const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
   sockets.forEach((s,i)=>s.on("message",data=>frames[i]!.push(JSON.parse(data.toString()))));
-  const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",priority:"P0",why:"Need it"});
+  const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",accept:"Feature passes",priority:"P0",why:"Need it"});
   await op.appendLog({author,id:made.id,text:"Seen"});
   const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
   for (const socket of sockets) { const pong=once(socket,"pong"); socket.ping(); await pong; }
@@ -221,7 +221,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
     });
     http.emit("request",req,res); req.push(Buffer.from(JSON.stringify(data)));req.push(null); return done;
   }
-  const {id}=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",priority:"P0",why:"Need it"});
+  const {id}=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",accept:"Feature passes",priority:"P0",why:"Need it"});
   await op.appendLog({author,id,text:"Seen"});
   const note=await owner.createNote({target:"q:choice",kind:"explain",text:"Explain"});
   assert.deepEqual(frames.map(f=>f.length),[1,1,0,1,0]);
@@ -231,7 +231,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
   assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
   assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",by:"Firn"});
   assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot"});
-  await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",why:"Need",from:"a"});
+  await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",accept:"Witness passes",why:"Need",from:"a"});
   assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
 });
 
@@ -252,7 +252,7 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
     return response;
   }
   await api("/api/read", {through: store.snapshot().head});
-  const a = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "earlier unread" } });
+  const a = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "earlier unread" } });
   const card = store.snapshot().decisions.choice!;
   const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, background: "new background"}}]});
   assert.equal((await api("/api/read", {doc: "decision:choice", through: b.commit})).status, 200);

@@ -14,15 +14,15 @@ import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { changes } from "../src/query.ts";
 
-const doc = (fields: object) => ({ title: "t", updated: at, rev: 1, log: [], deps: [], links: [], ...fields });
+const doc = (fields: object) => ({ title: "t", updated: at, rev: 1, log: [], plan: [{ id: "accept", accept: true, text: "验收通过", state: "todo" }], group: "P", links: [], ...fields });
 const card = (item: string, fields: object = {}) => ({ item, question: "Q?", background: "b", options: [{ key: "A", text: "a" }], status: "open", updated: at, rev: 1, ...fields });
 function owned(): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
   return {
     board: { title: "T", projects: [{ name: "P" }] }, owner: { archived: {} }, notes: {},
     items: {
-      root: doc({ group: "P", ask: { text: "Merge it" }, deps: [{ id: "kid", why: "w" }] }),
-      kid: doc({ parent: "root", status: "todo" }),
-      plainOnly: doc({ group: "P", status: "todo" }),
+      root: doc({ group: "P", ask: { text: "Merge it" }, plan: [{ id: "kid", item: "kid", own: true }, { id: "accept", accept: true, text: "验收通过", state: "todo" }] }),
+      kid: doc({  }),
+      plainOnly: doc({ group: "P",  }),
     },
     decisions: {
       blocks: card("kid", { blocks: "#398 合并停着" }), plain: card("kid"), ruled: card("kid", { blocks: "x", status: "ruled" }), onlyPlain: card("plainOnly"),
@@ -155,7 +155,7 @@ test("wake: a blocking card or an ask emits a blocking event once; a non-blockin
 
 test("posting a notice makes no unread step and no entry in changes", async t => {
   const { store, op } = await board(t), before = store.snapshot().head;
-  const control = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "control change" } });
+  const control = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "control change" } });
   assert.equal((await unreadSteps(store, before)).length, 1, "a real change after the cursor is unread");
   assert.ok((await changes(store, store.snapshot(), before)).length > 0);
   const mid = store.snapshot().head;

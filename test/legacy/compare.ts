@@ -1,6 +1,6 @@
 // Shared assertion surface, not a shared rules implementation or mapper.
-import type { Snapshot } from "../../src/model.ts";
-import { rules } from "../../src/rules.ts";
+import type { Snapshot } from "../../src/legacy-model.ts";
+import { rules } from "../../src/legacy-rules.ts";
 import { legacyRules } from "./board-rules.js";
 import type { LegacyState } from "./board-rules.js";
 

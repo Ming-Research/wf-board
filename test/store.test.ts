@@ -12,7 +12,7 @@ import { Store, ConflictError, ValidationError } from "../src/store.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
-const item = (title = "An item", head = "A head") => ({ title, head, status: "todo" as const, priority: "P1" as const, updated: at });
+const item = (title = "An item", head = "A head") => ({ title, group: "P", head, plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], priority: "P1" as const, updated: at });
 async function setup(t: { after(fn: () => Promise<void>): void }) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-store-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -434,7 +434,7 @@ test("startup renames coordinator identity once without changing free text", asy
   const { store, dir } = await setup(t);
   const prose = "跨项目、跨项目依赖和前缀跨项目后缀都保留。\n第二行。";
   const seed = await store.commit({ author: "跨项目", message: "Seed legacy coordinator", board: {
-    title: prose, eyebrow: prose, goal: prose, projects: [{ name: "跨项目", repo: "Org/Board", migrated: true }, { name: "Other" }],
+    title: prose, eyebrow: prose, goal: prose, projects: [{ name: "跨项目", repo: "Org/Board" }, { name: "Other" }],
   }, puts: [
     put("area", { ...item(prose, prose), group: "跨项目", data: prose, ask: { text: prose }, log: [{ at, by: "跨项目", text: prose }, { at, by: "前缀跨项目后缀", text: prose }] }),
     put("request", { ...item(prose, prose), group: "Other", request: { by: "跨项目", at }, log: [{ at, by: "跨项目", text: prose }] }),
