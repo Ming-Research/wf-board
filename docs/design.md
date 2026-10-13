@@ -1,6 +1,9 @@
 # wf-board design
 
-The local server implements this model. Project responsibility in sections 8–9
+The local server implements this model, except item plans (section 5, Item
+plans) and their conversion (section 10, Plan conversion): their direction is
+the owner's decision of 2026-10-13, and the details there are a proposal
+awaiting the owner's approval and then implementation. Project responsibility in sections 8–9
 records the owner’s settled decisions and supersedes per-item `agent` ownership
 and per-project lists of agent session names.
 
@@ -32,8 +35,9 @@ notes).
    item, why it exists, what it depends on and what depends on it, what
    changed while they were away.
 3. Writes are hard to get wrong: the server stamps times, checks the board's
-   rules (deps carry a why, a parent lists its open sub-items, a blocked item
-   names its blocker, a cancelled item says why), and refuses a stale
+   rules (every row's target exists, every item is owned by at most
+   one plan row and never across projects, a plan ends with its acceptance
+   step, a cancelled item says why), and refuses a stale
    overwrite. Today these rules are prose in AGENTS.md that agents must
    remember, and the page only flags violations after the fact.
 4. Every change is kept with who made it and when, and nothing is lost.
@@ -51,7 +55,7 @@ From the export of 2026-10-11 07:17 UTC (`wf-board-data/import/`):
 |---|---|
 | Item bodies total about 900k characters; half the items have no log, the largest has 19k characters and 35 log entries | Nobody can read the board whole. Search first, then expand; context returns recent log entries by default and the rest on request |
 | 23 areas (top-level items), depth at most 4, 126 parents, one with 77 children | Listings page and summarize |
-| 649 deps, 631 with a why; 61 cross areas and 48 cross projects | The dependency graph must span projects and always carry the why; that is where context crosses sessions |
+| 649 deps, 631 with a why; 61 cross areas and 48 cross projects | The dependency graph must span projects and always carry the why; that is where context crosses sessions (since item plans, a row's place in its plan replaces the why; section 5) |
 | 150 of 161 decision cards are ruled, each with background, options and ruling | Ruled cards are the main record of why; search covers cards and notes, not only items |
 | 1536 bare `#NNN` references in 269 items, without the repository | Index PR references per repository; new text writes `Repo#N` |
 | 478 read records holding a full snapshot each (473 KB) | With git history a read needs only a commit id; the snapshot goes |
@@ -76,8 +80,8 @@ writing the same files would need cross-process locking and could not push
 changes to the page. A single process is the only writer, serializes all
 writes, and pushes every change to the page and to waiting sessions.
 
-**Why TypeScript.** The page's derived rules (a parent's status from its
-sub-items, priority, the 需核对 flags, freshness) are JavaScript
+**Why TypeScript.** The page's derived rules (an item's status from its
+plan, priority, the 需核对 flags, freshness) are JavaScript
 today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
@@ -123,21 +127,30 @@ keep their lines exactly as written. An item file:
 
 ```yaml
 title: 示例：换账号时交接当前状态
-parent: example-parent
-status: wip
-deps:
-  - id: example-merge
-    why: 交接时的合并队列状态取自这里。
+group: 总管
 links:
   - label: Whitefoot#341
     url: https://github.com/Ming-Research/Whitefoot/pull/341
 created: 2026-10-11T06:15:40Z
 updated: 2026-10-11T06:15:40Z
 rev: 3
+plan:
+  - id: snapshot
+    text: 写下交接快照
+    state: done
+    doneAt: 2026-10-11T06:15:40Z
+  - id: example-merge
+    item: example-merge
+    own: false
+    after: []
+  - id: accept
+    accept: true
+    text: 新的总管只读这份快照就能接着做，不用回头问 owner。
+    state: todo
 head: |
-  **是什么**：总管（协调会话）换账号时的交接快照。……
+  **问题**：总管（协调会话）换账号时……
 
-  **看板访问**：……
+  **为什么**：……
 log:
   - at: 2026-10-11T06:15:40Z
     by: 总管
@@ -159,30 +172,15 @@ log:
   a schema on read and write.
 - `rev` counts writes to the file. A write that replaces content names the
   `rev` it read and fails on a mismatch with the current content in the
-  error. Log appends, `set_steps` and `set_targets` carry no caller `rev`: the operations
+  error. Log appends, `set_plan` and `set_targets` carry no caller `rev`: the operations
   queue retries against the latest item while preserving unrelated concurrent writes.
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
-- **Item steps.** Optional ordered `steps` record an item's own parts that have
-  not been split into sub-items. Each step has a caller-chosen, stable short
-  `id`, a `text` naming its deliverable (including its key number when useful),
-  and `state: done | doing | todo | dropped`. `waits` may name what a doing
-  step awaits; a dropped step requires a nonempty `reason`. Records may have
-  steps too. Existing items without this field have no steps.
-  The server owns `doneAt`, `since` and `droppedAt`, stamps the appropriate
-  field when a step enters that state, and preserves it while that state
-  stays unchanged. Prior state dates remain as history; re-entering a state
-  stamps that state's date anew. Callers never supply dates.
-  `set_steps` accepts exactly one mode: `steps` replaces the full ordered list,
-  `step` upserts one complete step by id (retaining its position or appending
-  it), or `remove` deletes an id. A replacement preserves matching steps'
-  dates by id. Duplicate ids are refused. The operation enforces project
-  ownership and retries concurrent writes. A call that changes the steps
-  produces one data commit; a call whose resulting steps equal the current ones
-  changes nothing, not even `updated`, and writes no commit. `src/rules.ts` computes completed/total over non-dropped steps and
-  whole elapsed 24-hour days since `since`, clamped to zero. An all-dropped
-  nonempty list shows `0/0`. Compact lines use ✓ done with its month/day,
-  ● doing with its elapsed days and wait, ○ todo, and ✗ dropped with its reason.
+- **Item plan.** Every item carries one ordered `plan`, its 计划和进展: its own
+  steps, the items it owns, the items and cards of others it waits for, and
+  last its acceptance step. The plan replaces the former `steps`, `deps` and
+  `parent` fields and the head's completion-condition section; the section
+  [Item plans](#item-plans) below defines it.
 - **Item target numbers.** Optional ordered `targets` give one row per goal,
   rather than one row per measurement. Each row has a stable `id` with the
   same pattern as step ids, and required nonempty `goal`, `target`, `current`
@@ -199,77 +197,29 @@ log:
   position or appending it, and `remove` deletes an id. Replacement matches
   rows by id to preserve dates unless the current value changes. Duplicate
   ids are refused. Project ownership, concurrent-write retries, one atomic
-  commit and no-op behavior match `set_steps`: identical results change
+  commit and no-op behavior match `set_plan`: identical results change
   neither the item nor its revision and write no commit. Target changes
   count as owner-unread progress. Context and brief format each goal as one
   line: `goal: current (vs baseline) → target, YYYY-MM-DD`.
-- **Record items.** `record: true` makes an item a record with a head, optional steps, targets and log,
-  and no status; creation and `update_item` can set it. `set_status` refuses
-  records. Setting the field to true on a work leaf of the author's own
-  project removes its stored status and is refused when the item has work
-  children or belongs to another project; setting it to false restores TODO
-  if the item has no work children, otherwise its status is derived. A real
-  conversion in either direction appends a server-stamped log line saying the
-  item became a record or a work item; a call that leaves the mode unchanged
-  logs nothing. Records keep their parent, dependencies and priority rules,
-  and can hold children without inventing an own-work child. Status roll-up
-  ignores record children: an ordinary item whose children are all records
-  still holds its own status. Records never enter status queues, satisfy an
-  open dependency blocker or receive status-based checks. The page shows
-  `记录` in place of a status. When `record: false` introduces the first
-  work child of an ordinary work leaf, `update_item` requires
-  `parent_own_work: {key, title}` and transfers the parent's existing status
-  to that named child atomically, preserving its head and log. The argument
-  is accepted only for this conversion. A record may retain request metadata,
-  but is not an open inbox request. Creating a work item with only record
-  children keeps its initial status; adopting work children derives it.
-- Areas are items without a parent, as today. The fields keep their current
-  meanings; `area` is folded into `parent`, `text` into `head`, bare-string
-  deps into `{id, why}` entries flagged for a why.
-- **Migration switch.** A project's entry in `board.yaml` may carry
-  `migrated: true`, set only by `update_project` from the coordinator project
-  `总管` and never undone; that commit also drops the stored priority of
-  every item of the project that is not a root, logging
-  `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on each. An item
-  belongs to the project of its area's group. A migrated project follows the
-  next bullet. An unmigrated one, the default, keeps the legacy priority (`src/legacy-priority.ts`): a leaf stores
-  its priority, a parent shows its highest open leaf's, an open waiter raises
-  what it waits on and the page strikes the written priority beside the
-  raised one; its writes need a leaf priority and refuse none, it gets neither
-  new flag and no stored priority is dropped. Across projects a migrated item
-  counts an unmigrated dependent at its shown priority, and an open migrated
-  dependent raises an unmigrated item, never lowers it, without the strike;
-  rootness counts open dependents from both. Write operations follow the
-  project of the item written, `create_request` the receiving project, and
-  dropping a stored priority follows the project of the item that loses it.
-  The legacy path and the switch are removed once every project is migrated.
-- **Dependencies and priority** (migrated projects). The hierarchy means
-  dependency only, never topic grouping: a parent lists each sub-item among
-  its deps. Every item's head states what it delivers and its completion
-  condition, under a heading or bold label naming 完成条件 or 怎样算完成, and
-  each dependency's why names the part of that condition it is needed for. An
-  item that no open item
-  depends on (open: status neither done nor cancelled, a parent's derived) is
-  a root (a project goal, a downstream project's need or a stand-alone piece
-  of work), so an item whose dependents have all closed becomes a root to
-  prioritize or cancel. Only a root stores `priority`. Migration leaves no
-  stored priority on a non-root, and afterwards every write that makes a
-  migrated item a non-root, or writes a migrated non-root, drops its stored
-  priority in the same commit and logs `不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用`
-  on it; the write's result lists the items. So no non-root holds a stored
-  priority, and none returns when an item becomes a root again.
-  Every other item's priority is the highest among the open items that depend
-  on it, across projects and transitively, so a P0 root raises everything it
-  depends on to P0 and a child may rank above its parent, never below it. A
-  closed item keeps the priority that reached it and passes none on;
-  dependencies on decision cards carry none; a cycle that no open outside
-  dependent reaches has none. A closed root shows its own stored priority.
-  Among the 需核对 flags, an open item whose head lacks the
-  completion-condition section shows 正文没写完成条件, and an open root without
-  a stored priority shows 没有未完成的条目依赖它，却没写优先级.
-- **Stalled work.** A WIP item with no work children is flagged after at
-  least two hours of active time without a change to itself or its subtree:
-  `进行中但 2 小时（活跃时间）没有动静`. Each board content write starts a
+- **Record items.** `record: true` makes an item a record: a head, an
+  optional plan without an acceptance step, targets and log, and no status;
+  creation and `update_item` can set it. Records are defined with the plan in
+  [Item plans](#item-plans).
+- **Projects.** Every item stores its project in `group`; an item's project
+  never changes, and ownership never crosses projects, so the stored field and
+  the ownership chain always agree. The legacy `area` was folded into
+  `parent` at the artifact migration and `parent` into owned plan rows at the
+  plan conversion (section 10).
+- **Priority.** The former per-project migration switch (`migrated: true` and
+  the legacy priority of `src/legacy-priority.ts`) is retired by the plan
+  conversion, which migrates the remaining projects in the same commit
+  (section 10); every project follows the priority rule of
+  [Item plans](#item-plans).
+- **Stalled work.** A work item in progress that has at least one `doing`
+  step of its own is flagged after at least two hours of active time without
+  a change to itself: `进行中但 2 小时（活跃时间）没有动静`. An item that is in
+  progress only through an owned item has no own clock; that item carries the
+  flag. Each board content write starts a
   30-minute active interval; overlapping intervals count only once, and the
   measure clips their union to the item's last change through the current
   time. When no one writes, all clocks stop after the last interval ends.
@@ -278,8 +228,8 @@ log:
   `src/rules.ts` defines the durations and the check for both MCP and the page.
   Each check may carry a short visible `label` defined with it: this one is
   `无人推进`, shown beside the item title in place of `需核对` with the full
-  text as tooltip; checks without a label keep `需核对`. A folded parent whose
-  subtree holds stalled leaves shows `无人推进 N` beside its title.
+  text as tooltip; checks without a label keep `需核对`. A folded item whose
+  owned subtree holds stalled items shows `无人推进 N` beside its title.
   The store reconstructs an optional snapshot activity index from existing
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
@@ -316,11 +266,12 @@ log:
   whose `item` names an item whose `qs` omits them, 572 items carrying both
   `parent` and `area`, 13 notes whose stored title went stale. So a card's
   place is its `item` alone (an item's cards are derived), an item's place is
-  `parent` alone, and a note's title is derived from its target.
-- A dep may name a decision card as well as an item. Four blocked items in
-  the export wait on an open card, which the current model cannot express,
-  so the page flags them as blocked without a blocker; with card deps the
-  check "a blocked leaf has an open dep or an ask" holds for them.
+  the one plan row that owns it (its owner is derived), and a note's title is
+  derived from its target.
+- A plan row may name a decision card as well as an item. Four blocked items
+  in the export waited on an open card, which the model before card
+  dependencies could not express; a card row makes such an item blocked by
+  derivation (see [Item plans](#item-plans)).
 - Empty strings are absent fields (`ask: ""` on 117 items, `parent: ""` on
   161).
 - A note keeps its original id, so ids that sessions recorded and anchors
@@ -351,8 +302,8 @@ log:
   `n` walks page order, top to bottom: an item, its comments, then each of its
   cards and that card's comments, with documents the page does not place last,
   oldest first. Inside a changed item it visits each new place in turn (a
-  changed status, title or body block, a new or changed step or target row, an added dependency or
-  link); a new item is one stop at its start. After `r`, `n` goes on below
+  changed status, title or body block, a new or changed plan or target row, an
+  added link); a new item is one stop at its start. After `r`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
   `r` reads the whole item holding the selection, however selected: its own
   changes, its cards and the comments on both, but not its sub-items; a card
@@ -364,24 +315,27 @@ log:
   intact. Added or changed blocks carry no colour of their own (the item's blue
   line says it holds something new, and `n` lands on the first of them);
   removed content is not shown anywhere: no removed block, former title,
-  dependency, link, target row, ask or card option. Multi-paragraph card questions use the same
+  plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
-  status, priority and request rows, and added or changed dependency and link
-  rows, are not coloured either.
-  New items and cards carry no per-block marks; added steps and target rows still mark their own lines. No green background is used
+  status, priority and request rows, and added or changed link rows, are not
+  coloured either.
+  New items and cards carry no per-block marks; added plan and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `r` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
   selected item's body and comments appear in the detail column, with a short blue line beside its headline.
-  The 新 chip counts what is new inside. Added or changed step lines and target rows, new notes
-  and replies, and added dependency and link rows use the same blue bar. Steps
+  The 新 chip counts what is new inside. Added or changed plan rows and target rows, new notes
+  and replies, and added link rows use the same blue bar. Plan rows
   and targets compare by stable id against the item before its first unread
   change, so inserting or removing a neighboring row does not mark an unchanged
   row. Reordering or removal still marks the item unread without displaying
-  removed rows. Reading the item clears its step and target marks. The 进展
-  unread filter selects step and target changes; head changes, cards and other changes remain in 其他. Logs
+  removed rows. Reading the item clears its plan and target marks. A plan row is
+  changed when its own stored fields change (text, state, why, ownership,
+  `after`, or a server date); a change in the status of the item a row points
+  at is that item's change, not this one's. The 进展
+  unread filter selects plan and target changes; head changes, cards and other changes remain in 其他. Logs
   never mark the item new, never enter unread counts or stepping, and never
   receive unread bars, including appended or edited log entries. A log-only
   commit does not extend an unread change or move its comparison baseline.
@@ -408,6 +362,465 @@ log:
   shutdown, the daemon commits any remaining owner state on its own before
   pushing.
 
+### Item plans
+
+The owner decided on 2026-10-13 that every item has one list, 计划和进展
+(plan and progress), which replaces three things: the completion-condition
+section of the head, the dependency list, and the parent/child relation. Before
+it, an item's work was spread over a head section the server could only
+pattern-match, a `deps` list, a `parent` field that had to be repeated in the
+parent's `deps` (174 children in the board of 2026-10-13 are missing from their
+parent's list), separate `steps`, and own-work sub-items invented only so a
+parent's status could be derived (58 of them). One ordered list holds all of
+it, so an item's page reads top to bottom as what remains to be done, and the
+tree, status, priority and blocking are all derived from it.
+
+#### Rows
+
+A plan is an ordered list of rows, each with an `id` unique in the plan. A row
+is one of four kinds:
+
+| Kind | Stored fields | Meaning |
+|---|---|---|
+| step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were |
+| owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
+| shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
+| card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
+| acceptance | `id`, `accept: true`, `text`, `state`, `reason?`, server dates | The last row: the number or check that decides completion. It is a step with the acceptance marker |
+
+- **Ids.** A step's or acceptance step's `id` is caller-chosen and follows the
+  step-id pattern (letters, digits, `.`, `_`, `-`, at most 40). An item or card
+  row's `id` is the target's key, set by the server, so one plan names each
+  target at most once and `after` reads naturally (`after: [halo-gc]`). A step
+  id equal to a target key in the same plan is refused.
+- **No why on rows.** Item and card rows carry no `why` (owner, 2026-10-13).
+  The why existed because dependencies had no place of their own to be read;
+  a row now sits in the plan, between the rows before and after it, under the
+  item's title and with the target's title, and the plan and the titles say
+  what it is for. A step's text already says what it does. Anything more an
+  item needs to explain goes in its head's 做法 or its log. The former whys
+  are kept in each item's log by the conversion (section 10).
+- **After.** `after` lists ids of earlier rows that must be resolved before
+  this row can proceed. Absent means after the previous row (the first row:
+  after nothing); `after: []` means it can start at once. Only earlier rows
+  may be named, so the order relation cannot form a cycle. The acceptance step
+  takes no `after`: it always comes after every other row. Removing a row that
+  a later row names in `after` is refused, naming the later rows.
+- **Acceptance.** A work item's plan ends with exactly one acceptance step.
+  The schema refuses a second one, an acceptance step that is not last, and an
+  acceptance step on a record. Its text is the former head section
+  完成条件: a check that decides completion, with numbers that agree with the
+  target numbers shown above the plan. Setting it `done` is refused while any
+  other row is unresolved, naming them.
+- **Dates.** The server stamps step and acceptance dates exactly as it stamped
+  step dates: `doneAt`, `since` and `droppedAt` on entry into a state,
+  preserved while the state stays, re-stamped on re-entry; callers never
+  supply dates. Elapsed days are whole 24-hour days since `since`, clamped to
+  zero. Item and card rows carry no state or dates of their own: their state
+  is the target's, derived on read.
+
+#### Row states
+
+Each row is in one derived state, which status and display use:
+
+| Row | resolved | in progress | waiting | open |
+|---|---|---|---|---|
+| step | done, or dropped with its reason | doing | — | todo |
+| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked | target todo |
+| shared item | target done | — | target open (any status) | — |
+| card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
+| owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
+
+A shared row whose target is cancelled is not resolved: someone else dropped
+what this item waits for, and the plan's own project must remove or replace
+the row. It shows the check 依赖的条目已取消 and keeps the item from completing.
+
+A row is ready when it is unresolved and every row it comes after is
+resolved; the acceptance step is ready when every other row is resolved. The
+ready rows are the plan's frontier.
+
+#### Status
+
+A work item's status is derived from its plan; only cancellation is stored.
+
+1. `cancelled` when the item stores `status: cancelled` (set by `set_status`
+   with the reason). Cancelling is refused while an owned row's target is
+   open, naming those items: each part gets its own reason first.
+2. `done` when every row is resolved, the acceptance step included.
+3. `wip` when any row is in progress: a doing step, or an owned item in
+   progress. A doing step with `waits` (CI, a run on the 14900K, something not
+   on the board) is still in progress.
+4. `blocked` when nothing is in progress and either every frontier row is
+   waiting (a shared item still open, an open card, an owned item that is
+   itself blocked) or the item has a pending legacy ask.
+5. `todo` otherwise: some frontier row is a step or an owned item that can be
+   started.
+
+So a parent is done only when its own steps and its acceptance step are done,
+not merely when its children are (owner decision 6), and an item is blocked
+exactly when everything that could move next waits on another item, another
+project or the owner. The previous rule called a parent blocked as soon as one
+child was blocked and none was in progress, even with another child ready to
+start; under this rule that parent is `todo`, because work can proceed (9
+parents change this way in the board of 2026-10-13, reported by the
+conversion). The checks that existed only because status was set by hand go
+away: 卡住了，但没写在等什么, 可解除阻塞：等的都已完成 and 标为进行中，但还在等别的.
+
+Every work item has a plan of at least its acceptance step, so no work item
+has a stored `todo`, `wip`, `blocked` or `done` any more. An item with an
+empty plan (none exists after conversion; the schema allows it only on a
+record) shows the check 没有计划：至少要有验收步骤.
+
+#### Ownership, the tree, roots and top items
+
+- **Owner.** An item's owner is the item whose plan holds an owned row for it.
+  The tree draws an item's owned rows' targets under it, in plan order; there
+  is no separate `parent` field. Ancestors, the line (top item) of an item,
+  archive inheritance (`inArchive`), subtree counts and the 新 chip's subtree
+  all follow owners.
+- **Exactly one owner.** No item is owned by two rows. A write that would make
+  a second owned row is refused, naming the current owner and directing the
+  caller to `move_item`; a stored violation shows 被多个条目拥有.
+- **No cross-project ownership.** An owned row's target belongs to the same
+  project as the plan's item. Cross-project needs are always shared rows
+  pointing at the other project's collecting item (the item collecting
+  everything one project needs from another). A write is refused otherwise;
+  a stored violation shows 跨项目拥有.
+- **Top items.** An item no row owns is a top item (what earlier sections
+  call an area), drawn at the top level of its project. A top item is one of: a root (below); an item another
+  project's shared row waits on, such as a collecting item (drawn under the
+  existing 被其他项目依赖 separator, its priority derived); an open inbox
+  request (drawn in the inbox until triaged); or a closed item (done or
+  cancelled), which needs nothing further. An open top item that an open work
+  item of its own project waits on through a shared row shows
+  同项目有条目在等它，却没有条目拥有它, and a write that introduces this is
+  refused: within a project, the item whose plan it is a part of owns it, and
+  the others share it.
+- **Roots.** A root is an item that no open work item depends on through any
+  item row, owned or shared, as before. Only a root stores `priority`; an open
+  root without one shows 没有未完成的条目依赖它，却没写优先级, unchanged. An
+  owned item under an open owner is never a root. An open item owned by a
+  closed item shows 拥有它的条目已关闭 (it can only arise from data written
+  before the cancellation refusal).
+- **Backlog.** A project's backlog is a record whose plan owns the items it
+  holds. Records pass no priority (below), so backlog items show no priority,
+  matching "no commitment"; moving an item out of the backlog under a root's
+  plan gives it the root's priority. This replaces the present practice of a
+  P2 root named 待选工作, which gave every backlog item P2.
+- **Cycles.** Item rows, owned and shared together, may not form a cycle; a
+  write that closes one is refused, and a stored cycle shows 依赖成环 as
+  today. Owned rows alone therefore form a forest. `after` cannot form a cycle
+  because it names only earlier rows.
+
+#### Priority
+
+Unchanged in substance from the migrated rule, now for every project: a
+root's priority is its stored one; every other item's is the highest among the
+open work items whose plans hold an item row (owned or shared) for it, across
+projects and transitively. A closed item keeps the priority that reached it
+and passes none on; card rows carry none; a cycle that no open outside
+dependent reaches has none. One change: a record passes no priority, because
+a record is not work. Before, a record counted as an open dependent; three
+records exist (the 14900K queue among them), and a run item under the queue
+record gets its priority from the shared row of the item waiting for the run.
+A root stores `priority`; every write that makes an item a non-root, or
+writes a non-root, drops its stored priority in the same commit and logs
+`不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
+write's result lists the items. So no non-root holds a stored priority, and
+none returns when an item becomes a root again. A closed root shows its own
+stored priority.
+
+#### Records
+
+A record (`record: true`) may have a plan of steps, owned rows, shared rows
+and card rows, and no acceptance step; it has no status, appears in no status
+queue, is never waiting or blocking for anyone, and passes no priority. It may
+own work items (the backlog, the 14900K queue's run items). A record can be
+owned, and an owned record row is always resolved and left out of the owner's
+counts. Setting `record: true` on a work item removes its acceptance step,
+logging the step's text; setting `record: false` requires `accept` text for
+the new acceptance step. A real change of mode in either direction appends a
+server-stamped log line saying the item became a record or a work item; a
+call that leaves the mode unchanged logs nothing. Records receive no
+status-based checks, and the page shows `记录` in place of a status. A record
+may retain request metadata but is not an open inbox request.
+`parent_own_work` no longer exists: an item's own
+work is step rows in its own plan, so no conversion ever needs to invent an
+own-work sub-item.
+
+#### Archive
+
+The owner's archive is unchanged: it hides a done or cancelled item and its
+owned subtree from the tree. Archiving never removes a row from any plan. An
+owner's plan still shows a row for an archived child, because the plan is the
+record of what was completed; such rows fold with the other resolved rows
+(see the page below). Opening an archived child from its row selects it as
+any reference does.
+
+#### Checks
+
+The checks touching plans, replacing the dependency and completion-condition
+checks:
+
+| Check | Refused when newly introduced |
+|---|---|
+| 依赖的条目不存在 / 依赖的决策卡不存在 | yes |
+| 依赖成环 | yes |
+| 被多个条目拥有 | yes |
+| 跨项目拥有 | yes |
+| 同项目有条目在等它，却没有条目拥有它 | yes |
+| 没有计划：至少要有验收步骤 | yes |
+| 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
+| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
+| 依赖的条目已取消 (shared row to a cancelled item) | no |
+| 验收已标完成，但还有行没完成 (an owned item reopened after acceptance) | no |
+| 拥有它的条目已关闭 | no |
+| 只差验收：其它行都已完成 (every row resolved except an acceptance step still todo or doing; the item stays open until a session checks and marks it) | no |
+| 没有未完成的条目依赖它，却没写优先级 | no |
+| 无人推进 (stalled, above) | no |
+
+Removed: 上级条目不存在, 上级没有把它列在依赖里, 正文没写完成条件, and the
+three manual-status checks listed under Status.
+
+#### Writing plans
+
+- A new work item is created with its acceptance text (`create_item`'s
+  `accept`), so every new item has a plan from birth.
+- `set_plan` (section 6) edits rows: replace the whole plan, upsert one row,
+  or remove one. An owned row may be added only for an item that no row owns
+  (a top item of the same project, or a new item through `create_item`);
+  taking an item from another owner is `move_item`, so a transfer is always a
+  deliberate call logged on both sides. Removing an owned row, or turning it
+  into a shared row, is refused while the target is open (use `move_item`, or
+  cancel the target first); for a closed target it leaves a closed top item.
+- A replacement preserves matching rows' dates by id; duplicate ids are
+  refused; a call whose result equals the current plan changes nothing, not
+  even `updated`, and writes no commit.
+- Row changes are owner-unread progress (the 进展 filter), compared by row id
+  like steps were.
+- **Provisional plans.** The conversion (section 10) marks every plan it
+  produces `provisional: true`, a server-owned item field no caller can set.
+  A provisional plan works like any plan (status, priority and progress are
+  derived from it, and single rows can be upserted to record progress), but
+  it shows the check 计划待重写, whose label 待重写 appears beside the item's
+  title in the tree and beside the 计划和进展 heading, and its owned rows
+  carry the same small 待重写 mark. The mark clears only when a session writes
+  the whole plan with `set_plan`'s `rows` mode, which is the rewrite of
+  section 10's second phase; the server logs 重写了计划 on the item. Items
+  created after the conversion are never provisional.
+
+#### When a row becomes its own item
+
+A row of a plan is its own item, owned through an owned row, when at least
+one of these holds; otherwise it is a step.
+
+1. It has its own completion check or number, distinct from its owner's
+   acceptance step, so it can be accepted on its own.
+2. Something other than its owner must point at it: another item waits on it
+   (only an item can be the target of a shared row), or it needs a decision
+   card of its own (a card belongs to an item).
+3. It is tracked as a unit outside the board: its own pull request, release
+   or 14900K run (the 14900K queue owns one item per run).
+4. It will take more than about one working day of session work, or will
+   span sessions, so it needs its own head, log and stall clock for whoever
+   picks it up.
+5. A different session works on it at the same time as its owner's work, so
+   each session records progress in its own item.
+
+Conversely, an item that meets none of these, typically one with a single
+step and no acceptance of its own beyond its owner's, folds back into its
+owner's plan as a step: its log goes into the owner's log as one entry and
+it is cancelled with the reason 并入「owner」的计划. The own-work sub-items the
+old model required are the common case.
+
+- *Becomes an item.* Halo's plan for the Firn release has the row "Lua 5.1
+  official test suite passes". It has its own number (all of the suite's
+  files pass), and Firn's item for coroutine scripts waits on it through a
+  shared row, so it is an item owned by Halo's release item.
+- *Stays a step.* An item "Firn's rate-limiting script errors match Redis
+  word for word" has the row "reword the parser's error messages". It is done
+  in an afternoon in the same pull request, nothing else waits on it, and the
+  item's acceptance (the four scripts' replies match the oracle) already
+  checks it, so it is a step. If it had been converted as a sub-item with one
+  step and no acceptance of its own, it would fold back.
+
+#### How the page shows a plan
+
+The detail column of a selected item reads, top to bottom:
+
+1. the head row: status, priority, title, ratio, chips (unchanged), and under
+   it one line 属于「owner title」 (a link), or 顶层 · 项目名 for a top item;
+2. 目标, the target-number table (unchanged), when the item has targets;
+3. 计划和进展, the plan;
+4. the item's comment entry and comment list (see Comments below);
+5. the head (问题 / 为什么 / 做法) and the `data` line;
+6. 被依赖: the items holding a shared row for this item (the owner is
+   already on line 1, so it is not repeated);
+7. 日志, folded as today;
+8. the ask, open cards, shown ruled cards, checks and references, as today.
+
+The plan's look, row by row. One line per row, a 16-pixel gutter on the left
+carries the row's glyph in its state colour, the same colours as the status
+chips (`--done`, `--wip`, `--block`, `--todo`, `--muted`), so both themes
+follow the existing tokens with no new colours:
+
+| Glyph | Row |
+|---|---|
+| ✓ (done colour) | done step, done owned item, resolved shared item or card |
+| ● (wip colour) | doing step, owned item in progress |
+| ○ (todo colour) | todo step, owned item not started |
+| ⏸ (block colour) | waiting: shared item open, open card, blocked owned item |
+| ✗ (muted, struck text) | dropped step, cancelled owned item |
+| ◆ | acceptance step, coloured by its own state |
+
+- **Step row.** `● 写解析器 · 3 天 · 等 CI` — text, then elapsed days for a
+  doing step, `等 <waits>` when set, `10-12` (month-day) for a done step, the
+  reason after a dropped step.
+- **Owned item row.** The child's title as a link (click selects it, Back
+  returns), a status chip, the child's own ratio `2/5`, and on a second,
+  smaller muted line the child's current activity: its doing steps
+  (`● 跑 CI · 2 天`), or when none, what it waits on (`⏸ 等「Whitefoot 能读出对端地址」`),
+  or its next ready row (`下一步：○ 写测试`).
+- **Shared item row.** ⏸ or ✓, the target's title as a link with its status
+  chip, and the marker 「共用 · 归属在 <owner title>」 (or 「共用 · <project>
+  顶层」 for a top item) in muted text; a target in another project shows the
+  project name first, all on the row's second line.
+- **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
+  show today) and the question, linking to the card.
+- **Acceptance row.** Always last, separated by a thin rule, labelled 验收 in
+  a small tag, full text (it may wrap), ◆ in its state's colour.
+- **Parallel groups.** Each row's level is 0 when it comes after nothing and
+  otherwise one more than the highest level among the rows it comes after
+  (default: the previous row). Walking the rows in stored order, a maximal run
+  of two or more consecutive rows with the same level is one group, drawn with
+  a thin vertical bracket in the gutter and the label 可同时进行 above it. Rows
+  in one level never depend on one another, so a group is always truly
+  parallel; rows of one level that are not adjacent show separately, and
+  `context` warns about them (see open questions). The acceptance row is never
+  in a group.
+- **Folded resolved rows.** A maximal run of three or more consecutive
+  resolved rows (groups count by their rows; a group is in the run only when
+  all its rows are resolved) folds into one line
+  `✓ 已完成 12 项（放弃 2）▸`. A click unfolds the run for this item; the
+  choice is saved per viewer like the log's. A run holding an unread changed
+  row, or the current `n` stop, stays unfolded. The ratio beside the heading
+  is `done/total` over all rows except dropped steps, cancelled owned items
+  and owned records, the acceptance step included.
+
+A mock-up at the detail column's minimum width (380 pixels), for an item in
+progress with twelve completed parts:
+
+```
+ 计划和进展                                                   11/17
+ ✓ 已完成 12 项（放弃 1）▸
+ ┌ 可同时进行
+ │● 写解析器 · 3 天 · 等 CI
+ │● Halo 的协程能挂起                     [WIP] 2/5
+ │    ● 跑 Lua 测试集 · 1 天
+ └○ 改写文档
+ ⏸ Whitefoot 能读出对端地址                 [TODO]
+     Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」
+ ○ 发布说明
+ ─────────────────────────────────────────────────────────
+ ◆ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
+         CI 上连跑 3 次全部通过
+ ─────────────────────────────────────────────────────────
+ [评论这个条目]  评论 2 条，1 条有回复 ▸
+```
+
+The same as an HTML snippet, using only existing tokens, so dark mode follows
+`:root[data-theme="dark"]` and `prefers-color-scheme` as the rest of the page:
+
+```html
+<section class="plan" aria-label="计划和进展">
+  <div class="log-head">计划和进展 <span class="steps-ratio">11/17</span></div>
+  <button class="plan-fold">✓ 已完成 12 项（放弃 1）▸</button>
+  <div class="plan-group" role="group" aria-label="可同时进行">
+    <div class="plan-group-label">可同时进行</div>
+    <div class="plan-row wip"><span class="g">●</span>写解析器 · 3 天 · 等 CI</div>
+    <div class="plan-row wip own"><span class="g">●</span><a>Halo 的协程能挂起</a>
+      <span class="st wip">WIP</span> <span class="steps-ratio">2/5</span>
+      <div class="plan-sub">● 跑 Lua 测试集 · 1 天</div></div>
+    <div class="plan-row todo"><span class="g">○</span>改写文档</div>
+  </div>
+  <div class="plan-row blocked shared"><span class="g">⏸</span><a>Whitefoot 能读出对端地址</a>
+    <span class="st todo">TODO</span>
+    <div class="plan-sub">Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」</div></div>
+  <div class="plan-row todo"><span class="g">○</span>发布说明</div>
+  <div class="plan-row accept todo"><span class="g">◆</span><span class="tag">验收</span>
+    四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，CI 上连跑 3 次全部通过</div>
+</section>
+<style>
+.plan-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; padding: 2px 0; overflow-wrap: anywhere; }
+.plan-row > .g { grid-row: 1 / span 3; text-align: center; }
+.plan-row.done > .g { color: var(--done); } .plan-row.wip > .g { color: var(--wip); }
+.plan-row.blocked > .g { color: var(--block); } .plan-row.todo > .g { color: var(--todo); }
+.plan-row.dropped { color: var(--muted); text-decoration: line-through; }
+.plan-sub { grid-column: 2; font-size: 12.5px; color: var(--muted); }
+.plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
+.plan-group-label { font-size: 11.5px; color: var(--muted); }
+.plan-row.accept { border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 6px; }
+.plan-fold { color: var(--done); background: none; border: 0; padding: 2px 0; font: inherit; }
+</style>
+```
+
+At phone width (below 560 pixels) nothing changes structurally: rows already
+wrap; the chip and ratio of an owned row move to the second line, the group
+bracket narrows to 1 pixel, and the 16-pixel gutter stays so glyphs align.
+Unread changed rows carry the existing blue bar to the left of the gutter.
+The tree row of an item shows its plan ratio (`11/17`) where the steps ratio
+was; leaf counts count owned descendants that own no work items, by status.
+
+#### Comments
+
+The owner comments on the whole item, not on plan rows. The page puts the
+item's comment entry, a visible 评论这个条目 button that opens the existing
+composer, and the item's comment list directly under the plan. Today the only
+entry is the `c` key, comments render at the end of the detail column, and a
+comment may carry an anchor: a log entry (`{kind: log, at}`) or another note
+(`{kind: note, id}`); a selected dependency row (`dep:<item>@<target>`)
+already comments on the item without an anchor. Plan rows follow that: they
+are selectable for navigation, `c` on a row comments on the item, and no new
+anchor kind is added. Log and reply anchors stay as they are, so existing
+notes keep their anchors.
+
+#### Open questions
+
+Each is written as the assumption the design proceeds on; the owner can
+overturn it.
+
+1. **Shared row to a cancelled item.** Proceeding on: it keeps the item from
+   completing and is flagged, because a waited-for result that will never
+   come is a problem for the waiting project to settle. Alternative: count it
+   resolved like a cancelled owned item.
+2. **Records pass no priority, and a backlog is a record.** Proceeding on:
+   yes, so backlog items show no priority. Alternative: keep backlogs as P2
+   roots; then every backlog item ranks P2, as now.
+3. **Retiring legacy priority.** Proceeding on: the plan conversion migrates
+   Whitefoot-kit, 总管 and 网站 and removes the legacy path, because plans make
+   every project's structure dependency-only. Alternative: keep the switch;
+   the plan model would then need the legacy rule for those three projects.
+4. **Order of same-level rows.** Proceeding on: rows display in stored order,
+   and `context` warns when rows of one level are not adjacent. Alternative:
+   the server keeps every plan sorted by level (stable), which always makes
+   parallel rows adjacent but reorders what a session wrote.
+5. **Closed items after conversion.** Proceeding on: the mechanical
+   conversion keeps closed children as provisional rows of their owners'
+   plans, folded; a rewrite keeps only the closed items its new plan attaches,
+   and every other closed item becomes, or stays, a closed top item without a
+   flag; no history or archive owner is created,
+   because an item that only holds finished items is a topic group, which the
+   rules forbid. Alternative: a per-project record 已完成 owning loose closed
+   items, which would tidy the tree but carries no meaning.
+6. **Own-work sub-items.** Proceeding on: the mechanical conversion keeps
+   the 58 own-work sub-items as provisional owned rows; the rewrite folds each
+   back by the rule in "When a row becomes its own item". Alternative: the
+   converter folds them automatically, which rewrites history the sessions
+   did not review.
+7. **Cancelling with open parts.** Proceeding on: refused, naming the open
+   owned items, so each gets its own reason. Alternative: a cascade that
+   cancels all open owned descendants with the same reason.
+
 ## 6. MCP tools
 
 Every tool returns compact text built for an agent's context: ids, titles,
@@ -421,9 +834,9 @@ coordinate among themselves; sessions may be renamed freely.
 
 | Tool | Answers | Returns |
 |---|---|---|
-| `search(query, filters)` | Where is X mentioned? | Hits across item heads, steps, targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item and compact step and target lines; its ancestors with status; its sub-items summarized; its deps and its dependents, each with the why and status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
-| `graph(id, direction, depth)` | What does this wait on, what waits on it? | The dependency and parent tree around the item as an indented list with whys, marking blocked chains and cycles |
+| `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
+| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
@@ -431,37 +844,39 @@ coordinate among themselves; sessions may be renamed freely.
 | `list(filters)` | Structured browsing | Compact rows for items matching status, priority, area subtree, open ask, flags, updated-since |
 | `overview(group?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status, owner actions waiting, blocked items, flags |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
-| `projects()` | Which project matches this repository? | Project configuration, areas, open leaves and inbox counts |
-| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, outgoing work and its glossary terms |
+| `projects()` | Which project matches this repository? | Project configuration, top items, open items by status and inbox counts |
+| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, outgoing work and its glossary terms; each item row carries its plan's unresolved rows and a count of resolved ones |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project |
 
 ### Changing things
 
-Priority checks below are those of a migrated project; an unmigrated one
-requires a leaf priority from `create_item`, `create_request` and `move_item`'s
-`source_priority`, as before, refuses none, and has none of the three
-restructuring forms below (`create_item` with `children`, `move_item` without
-`new_parent`, a leaf destination without `parent_own_work`) (section 5).
+A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
+`<glyph>` as on the page (✓ ● ○ ⏸ ✗ ◆); an item row adds `[own]` or
+`[shared @<owner key>]`, the target's title and status, and for an owned item
+its current doing step; a card row adds the card's status; `‖` marks rows of
+a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成`. Plans
+replace the separate steps, children, deps and parent fields of these
+results, and `context` warns when rows of one level are not adjacent.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links, record?, children?, source_status?, source_priority?)` | Adds an item and lists it in the parent's deps with `parent_why`; when a work child is added to an ordinary parent with no work children, its own work and status move into the `parent_own_work` sub-item in the same commit, since its status then becomes derived; adding a record or adding under a record does not split the parent; the sub-item takes no priority, and a root parent keeps its own. `children: [{id, why}]` moves those existing items under the new item in the same commit and lists them in its deps with their whys, so it is a parent from birth with no own-work stub; each old parent follows `move_item`'s source rules, with `source_status` and `source_priority` | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it; children are distinct items of the author's project, not the new item's parent or its ancestors; omit `status` when adopting any work child, while adopting only records preserves a work item's initial status; records never take `status` |
-| `set_steps(id, steps? / step? / remove?)` | Replaces the ordered steps, upserts a complete step by stable id, or removes one | Exactly one mode; project ownership; no caller revision; server-stamped state dates; dropped requires reason; one commit with concurrent-write retry |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument |
+| `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the acceptance step), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; one acceptance step, last, done only when every other row is resolved; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `update_item(id, rev, fields, reason?, parent_own_work?)` | Changes title, head, deps, links, priority or record mode | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from; converting a record into its parent's first work child requires `parent_own_work` to preserve the parent's status |
-| `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on work leaves, never records; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents; moving work into an ordinary destination with no work children preserves its own work in a new child, while moving a record or moving under a record needs no own-work child; an ordinary destination with no work children and no work of its own (todo, no steps or targets, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; an ordinary source losing its last non-record child requires its new work leaf status; records take no source status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes the acceptance step and logs its text; `record: false` requires `accept` |
+| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
+| `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
-| `update_project(name, repo?, migrated?)` | Sets or changes a project’s repository, or migrates it (section 5): `migrated: true` and, in the same commit, the drop of every non-root's stored priority with its log entry | Repository: author is that project or the coordinator project `总管`. Migration: author is `总管`, only `true`, and only once |
-| `create_request(project, key, title, head, priority?, why, from?)` | Files into any project's inbox; optionally links the filing item, which then gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency; priority required without `from` and refused with it |
-| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves an ordinary parent's work when it has no work children, while a record parent needs no own-work child; priority only when the request stays a root |
+| `update_project(name, repo?, after?)` | Sets or changes a project’s repository or its place in the page order | Repository: author is that project or the coordinator project `总管`; order: only `总管` |
+| `create_request(project, key, title, head, accept, why, priority?, from?, after?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it |
+| `triage_request(id, owner?, after?, priority?, log)` | Accepts a request: with `owner`, the owner's plan in the request's project gains an owned row for it (usually the item collecting the filing project's needs); without, it stays a top item | Author is the request's project; same-project owner; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
@@ -491,7 +906,10 @@ new-content count, owner-wait counts and leaf counts. Clicking the row selects t
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 Each tree row stays on one line: caret, status, priority, title, chips
-and counts. Parent leaf counts leave out archived and cancelled leaves and
+and counts. The tree draws each item's owned items under it in plan order
+(section 5, Item plans); a shared row draws nothing. An item that owns work
+items counts, at the right of its row, its owned descendants that own no work
+items; the counts leave out archived and cancelled ones and
 show numbers in their status color, with status names in accessibility labels. They shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
@@ -543,12 +961,15 @@ the tree and 380 for detail. The page may overflow narrower viewports.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
-by 被依赖, head text, data, 依赖, 进展 steps, 目标 table, collapsed 日志, ask, open cards, shown ruled cards,
-checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
-cancelled items, except a dependency row marked as added. With no selection the column says
+by the order given in section 5 under "How the page shows a plan": the
+属于 line, 目标, 计划和进展, the comment entry and comment list, head text
+and data, 被依赖, collapsed 日志, ask, open cards, shown ruled cards, checks
+and refs. 被依赖 leaves out cancelled items. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
-the existing item, log, dependency, card and note selection keys and actions.
+the existing item, log, card and note selection keys and actions; a plan
+row is selectable as a dependency row was (`row:<item>@<row id>`), and
+comments on a selected row go to the item without an anchor.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
@@ -598,7 +1019,7 @@ page renders again.
 `/` anywhere except while typing in a text field opens a search box over every
 item and decision card by title, matched as in the popup (ignoring case,
 substring, any language), done and cancelled ones included. A row shows the
-status, the title, the project and the parent item (a card's holding item). Up
+status, the title, the project and the owner item (a card's holding item). Up
 and down choose, Enter or a click goes there as for a reference, and Esc or a
 click outside closes it.
 
@@ -691,15 +1112,13 @@ not scroll or navigate. A click anywhere else, Escape, a scroll or a click on
 another term closes the popover; only one is open at a time. A glossary change
 re-renders the page.
 
-The item's progress is its ordered steps, shown under 进展 where the log used
-to appear, with its non-dropped done ratio beside the title. Each line uses
-the shared rules formatter for its marker, date, days, wait or dropped reason.
-Doing-day counts refresh with the page's existing minute timer without a server
-write. When targets exist, a small 目标 table follows the steps with columns
-目标 / 当前 / 目标值 / 比较对象 / 日期. Each row is one goal; the date shows
-YYYY-MM-DD. The table is hidden for items without targets and wraps at phone
-width. 日志 follows the progress sections (or occupies their position when
-neither exists) and is collapsed by default for every item, including items with an empty log.
+The plan, its rows, groups, folding and mock-up are specified in section 5
+(How the page shows a plan). Doing-day counts refresh with the page's
+existing minute timer without a server write. The 目标 table above the plan
+has columns 目标 / 当前 / 目标值 / 比较对象 / 日期. Each row is one goal; the
+date shows YYYY-MM-DD. The table is hidden for items without targets and
+wraps at phone width. 日志 is collapsed by default for every item, including
+items with an empty log.
 One click opens the complete history and another closes it. Log entries retain
 their existing comment anchors and reference links; manually opening history
 does not make it unread.
@@ -779,7 +1198,7 @@ as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)`;
 this applies to items, their cards and owner-note replies or closures.
-Creating an area requires its group to match author. `set_term` and
+Creating a top item requires its group to match author. `set_term` and
 `delete_term` change only the author's own glossary, the coordinator
 `总管`'s included. Moving work requires
 the source and destination to belong to author’s project, and revising a
@@ -792,36 +1211,37 @@ local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
 
 Any configured project can call `create_request(project, key, title, head,
-priority?, why, from?)`; its priority rules are the receiving project's, as
-section 5 describes, and those below are a migrated project's. It creates a top-level TODO item in the receiving
-project with `request: {by: author, at}` and first log
+accept, why, priority?, from?, after?)`. It creates a top item in the
+receiving project with `request: {by: author, at}`, a plan holding the
+acceptance step `accept` that the filing project needs met, and first log
 `${author} 提出：${why}`. With `from`, the filing item must belong to author’s
-project; adding its dependency on the new request happens in the same commit,
+project; its plan gains a shared row for the new request in the same commit,
 and the request takes its priority from that item, so `priority` is refused.
 Without `from` the request is a root and `priority` is required.
 Requests stay in a separate inbox, oldest first, until the receiving project
 triages them. `triage_request` removes the marker, sets an optional priority
-when the request stays a root (no parent and no open item depending on it), logs
-the disposition, and either places the request under a parent in its
-project or retains it as an area. Placement also appends
-`分拣：放到「<parent title>」下：<why>` before the supplied log. A leaf parent requires
-`parent_own_work`, preserving its own work as in `create_item`. Moving a
-request under a parent in its project also triages it and logs the placement.
+when the request stays a root (no owner and no open item depending on it),
+logs the disposition, and either gives the request an owned row in an item of
+its project (normally the item collecting the filing project's needs) or
+keeps it a top item. Placement also appends
+`分拣：放到「<owner title>」下` before the supplied log. Moving a
+request under an owner in its project also triages it and logs the placement.
 Declining with `set_status cancelled` clears the marker and records the
 reason. An open inbox request is not an area in listings; completed or
 cancelled items are not open requests.
 
-`projects` reports name, repo, area counts, open leaf status counts
+`projects` reports name, repo, top-item counts, open item status counts
 (excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
 sent item/card owner notes, checks including cleared blockers, open cards
-still awaiting the owner, WIP leaves, the next ten TODO leaves by priority,
+still awaiting the owner, items in progress with a doing step of their own,
+the next ten items whose frontier holds a step that can start, by priority,
 outstanding work requested from other projects, and the project's glossary
-terms. Relevant item rows include compact step and target lines. `brief.progress` adds
-`{id, title, steps?, targets?}` rows for nonarchived records and WIP or blocked items with
-own steps or targets that are not already represented in the inbox, checks, WIP, TODO or
+terms. Relevant item rows include compact plan and target lines. `brief.progress` adds
+`{id, title, plan?, targets?}` rows for nonarchived records and blocked items
+that are not already represented in the inbox, checks, WIP, TODO or
 outgoing rows. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list includes open requests with `request.by === project` and open items
-targeted by its items’ cross-project dependencies, so triage does not hide
+targeted by its items’ cross-project shared rows, so triage does not hide
 linked work. Work queues omit archived items. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
 `group` filter. The page shows an inbox above each project’s areas and counts
@@ -904,12 +1324,9 @@ migrated.
    fields current. Note contents stay current except unread replies are hidden using
    target/all read times (the legacy item freshness floor does not read replies).
 
-   Every agent operation checks the prospective board and refuses newly
-   introduced missing blockers, parent dependency omissions, missing dependency
-   targets or missing reasons. Existing imported flags can still receive
-   progress. This also means splitting a blocked leaf is refused if its new
-   own-work child would have no blocker; a split does not silently relocate
-   owner actions or their notes.
+   Every agent operation checks the prospective board and refuses the newly
+   introduced violations that section 5 (Item plans, Checks) marks as
+   refused. Existing flags can still receive progress.
 
    Judgment cleanups go to the responsible sessions as items after the
    migration: 3 asks whose cards are all ruled, 3 done items with an open
@@ -933,6 +1350,250 @@ data commit before loading it with the new server; the server does not
 silently discard fields. Historical documents returned by `store.show`
 remain exactly as written, including historical session authors and fields.
 
+### Plan conversion
+
+The plan model (section 5, Item plans) replaces `parent`, `deps`, `steps`, the
+stored work statuses and the head's completion-condition section. Today's
+hierarchy is not a plan: the owner rates it at most 50 out of 100, with topic
+groups, own-work sub-items, children kept under an item only to be archived,
+and dependencies that were never parts. Turning it mechanically into plans
+would freeze that structure under a new name. Conversion therefore has two
+phases:
+
+1. **Data conversion**, mechanical and lossless, in one data commit. Its only
+   job is to keep every item, status, priority, log, card, note and target,
+   and to make the new shape valid. Every plan it produces is provisional
+   (section 5, Writing plans), and the board flags it 计划待重写.
+2. **Plan rewrite**, per project, by the project's session: each plan is
+   written again from what the work actually needs, root first, and existing
+   items are attached to it, created or cancelled. A plan stops being
+   provisional only when a session rewrites it.
+
+**What phase 1 converts.** Counts from a read-only survey of `wf-board-data`
+on 2026-10-13; the converter recomputes every number and its report is the
+record: 1336 items, of which 186 have children and 91 have no parent; 650 are
+done or cancelled (derived status), 55 of them with no parent (34 of those
+archived); the owner has archived 356 items; 3 records; 93 items with steps;
+281 item dependencies that are not parent links (115 across projects, 166
+within a project) and 58 card dependencies; 174 children their parent does not
+list in its dependencies (all closed); 58 own-work sub-items (their log says
+接过「…」自己的工作); 7 open items whose head has no completion-condition
+section (5 of them parents) and 466 closed ones; 10 in-progress leaves with
+no doing step; 9 parents whose derived status changes under the new blocked
+rule; and one root item of 总管, with 119 closed
+children.
+
+**How phase 1 runs.** The converter is a pure function from the old snapshot
+to the new snapshot plus a report, in `src/convert-plans.ts`. A dry run on a
+copy of the data (a few seconds of Node, no build) prints the report without
+writing; after the owner approves the report, the daemon applies the same
+function at startup as a store migration, like the 跨项目 → 总管 rename,
+in one commit authored by `总管`, and refuses to start if the data has
+changed since the approved dry run (the dry run records the data commit it
+read). The unread history converts each pre-conversion baseline with the same
+function before comparing, so the conversion itself marks nothing new and
+only real later changes show; the conversion commit is not a history step.
+The migration and the old-shape reader are removed after the live board has
+converted.
+
+**Phase 1 mapping, item by item.**
+
+1. `group` is set on every item to its line's project.
+2. The plan is built in this order, and the item is marked
+   `provisional: true` (a record too, when it gets any row):
+   1. Existing steps, with their ids, text, states and dates unchanged, in
+      their order, each after the previous one (the default).
+   2. One row per entry of `deps`, in that order, each with `after: []`
+      because the old data never recorded order: an item dependency whose
+      target's `parent` is this item becomes an owned row, any other item
+      dependency a shared row, a card dependency a card row. A target named
+      twice gets one row.
+   3. One owned row for each child the item does not list in `deps`, with
+      `after: []` (report: child not listed).
+   4. The acceptance step (below), except on a record.
+3. **Whys go to the log.** Rows carry no why (section 5). When an item had
+   any dependency whys, the converter appends one log entry listing them, one
+   line per dependency in the old order: `转换前的依赖说明：` followed by
+   `- 「<target title>」（<key>）：<why>` lines, a card shown by its question.
+   Nothing else is written to logs except where step 5 below changes a row.
+4. **Acceptance text.** The head section that the old check recognized (a
+   heading, or a bold label at the start of a paragraph, naming 完成条件 or
+   怎样算完成) is cut from the head, through the line before the next heading
+   or bold-label paragraph, and its body becomes the acceptance text. When
+   the head has no such section, the text is the placeholder
+   `（转换时没找到完成条件，待补）` on an open item, which raises the check
+   验收步骤待补, and `（转换前已结束，当时没写完成条件）` on a closed one,
+   which raises nothing. When the recognizer matches more than once, or
+   inside a paragraph, the converter leaves the head unchanged, uses the
+   placeholder and reports it (report: ambiguous condition); it never picks
+   one. Its state is done (dated at the item's last update) when the old
+   derived status was done, dropped with the reason 条目已取消 when
+   cancelled, todo otherwise.
+5. **Keeping each status.** The new derived status must equal the old one;
+   where it would not, the converter makes the smallest change below, logs it
+   on the item and reports it (report: status adjusted). Any difference left
+   is reported and the dry run fails until the owner accepts it.
+
+   | Old status (leaf) | New plan would give | Change made |
+   |---|---|---|
+   | wip, no doing step | todo | The first todo step becomes doing; with no todo step, a step `wip` 「进行中（转换时补：原来只记了状态，请改成实际步骤）」 is added as doing |
+   | blocked, with open dependencies or cards | todo (a todo step or the open rows are ready) | The first unresolved step gets `after` = the open item and card rows, so only waits are ready |
+   | blocked, waiting only on a legacy ask | blocked | none |
+   | blocked, nothing open | todo | none; reported (it was already flagged 卡住了，但没写在等什么) |
+   | done, with unfinished steps | todo or wip | Those steps become dropped with the reason 转换前条目已标完成，这一步没标 |
+   | done, with an open dependency | blocked | The row is removed and its target logged on the item (none exist on 2026-10-13) |
+   | cancelled | cancelled | `status: cancelled` stays stored |
+
+   Parents' statuses were derived and nothing is stored for them. A parent
+   whose status changes only because of the new blocked rule (one child
+   blocked, another ready) keeps the new status and is reported (report:
+   rule change); this is the intended effect of the rule.
+6. Stored `status` values other than `cancelled` are removed, as are
+   `parent`, `deps` and `steps`.
+7. **Priority.** Whitefoot-kit, 总管 and 网站 are migrated in the same commit:
+   every non-root loses its stored priority with the log line
+   `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as
+   `update_project` does today; the `migrated` field leaves `board.yaml`.
+   Because every old parent link and dependency becomes a row, every item
+   keeps the priority it had.
+
+**Phase 1 report.** It lists only what phase 1 itself could not keep exactly,
+each finding one entry `{item, project, kind, detail}` in
+`import/plan-conversion.yaml` in the data repository, next to the artifact
+export it supplements: status adjusted and rule change (about 20, from step
+5), ambiguous condition, duplicate or dangling targets (a target named twice,
+a missing parent or dependency target), and child not listed (174, all
+closed, informational). Everything about structure is left to phase 2,
+where a session judges it; phase 1 judges nothing.
+
+**Phase 1 verification.** An oracle independent of the converter, run on the
+dry run's output: every old parent link is exactly one owned row and every
+owned row was a parent link; every old dependency is exactly one row of the
+same target, or a reported duplicate or removal, and its why appears in the
+item's log entry; every old step is a step row with the same id, text and
+dates, its state changed only where the report says so; every head equals the
+old head minus exactly the reported acceptance text; every item's derived
+status and priority equal the old ones except where reported; every work
+item has an acceptance step and every converted plan is provisional; and the
+item, card, note and log-entry counts are unchanged apart from the logged
+lines.
+
+**Phase 2: rewriting plans, per project.** The coordinator files one item into
+each project, "Every plan of <project> is rewritten from the work it needs".
+Its acceptance step: the project has no provisional plan left, and every open
+item of the project is either a root, another project's collecting item, an
+inbox request or owned by exactly one row, and has an acceptance step that is
+not the placeholder. The board shows progress as the number of 待重写 flags
+left. The project's session follows this procedure:
+
+1. **Order.** Roots first; then each goal the root's new plan names (the
+   items the root owns, such as a release's goals); then each work item those
+   plans own, down to items with only steps. A plan is rewritten only after
+   its owner's, so ownership is decided from the top. Items not reached from
+   any root (stray open top items, the backlog) come last.
+2. **Write the plan from the work, not from the old tree.** For the item at
+   hand, decide how it will actually be pushed to completion: its acceptance
+   step (the number or check that decides it, agreeing with its target
+   numbers), then the rows needed to get there, in order, with `after` where
+   rows can run in parallel. Apply "When a row becomes its own item" (section
+   5) to each row: most become steps; a row that meets the rule becomes an
+   item.
+3. **Attach existing items.** For each row that is an item, look for an
+   existing item that already covers it, wherever it sits in the old tree (in
+   this plan's provisional rows, elsewhere in the project, in the backlog).
+   Attach it: if it is a provisional owned row of this plan, keep it; if
+   another item owns it, take it with `move_item`; if it is a top item, own it
+   with the new plan. Create the items no existing item covers with
+   `create_item`. Rows that point at another project are shared rows to that
+   project's collecting item, filed with `create_request` when none exists.
+4. **Dispose of what the new plan does not use.** Every open item that was a
+   provisional owned row of this plan and is not in the new plan is either
+   moved under the item that needs it (`move_item`), moved into the backlog
+   record, or cancelled with the reason naming what replaces it, such as
+   被「<item>」的计划取代 or 并入「<owner>」的计划 (for an item folded into a
+   step by the rule). The server refuses to drop an open owned row, so none is
+   lost silently. Closed items the new plan does not attach become closed top
+   items when their row is removed; they raise nothing and the owner's archive
+   keeps hiding them.
+5. **Write the plan in one call.** `set_plan` with `rows` writes the whole new
+   plan, which clears the provisional mark and logs 重写了计划. The session
+   appends a log entry saying in a few lines how the new plan differs from
+   the old structure (items attached, created, moved, cancelled).
+
+The old whys in each item's log are material for steps 2 and 3, not rows to
+restore. A provisional plan keeps working in the meantime: sessions record
+progress on it with single-row upserts, and its status and priority stay
+derived from it, so the board stays correct while phase 2 runs.
+
+**Closed items.** Phase 1 converts done and cancelled items like any other: a
+closed child becomes a resolved provisional row of its parent's plan, which
+the page folds into one 已完成 N 项 line, so 总管's item with 119 closed
+children reads as one folded line above its open rows. A closed item without
+a parent stays a closed top item: it needs no owner and raises no check.
+Phase 2 keeps a closed item in a plan only when the new plan attaches it, for
+example a finished goal of an open release; every other closed item becomes,
+or stays, a closed top item. No history or archive owner is created (section
+5, open question 5). Archived items stay archived.
+
+**Report on structure for phase 2.** Alongside the phase 1 report, the dry
+run lists, per project, what the rewrite should look at first; these are
+pointers, not findings, and phase 2 settles each in passing:
+
+| Kind | What it points at |
+|---|---|
+| missing condition | open item whose acceptance is the placeholder (7) |
+| own-work sub-item | 58 items created only to hold a parent's own work; the rule normally folds them into steps |
+| possible topic group | open parent without a completion condition (5) |
+| unowned shared | open top item a same-project item waits on through a shared row (2); flagged 同项目有条目在等它，却没有条目拥有它 |
+| same-project shared | every shared row within one project (166); the rewrite decides whether each target is a part of the plan, and then owns it, or a shared need |
+| record | the 3 records, which keep plans without acceptance steps |
+
+Every work item has an acceptance step from phase 1 on, so 没有计划：至少要有
+验收步骤 is empty from the first day and stays a refused write.
+
+### Owner-wide rules to change
+
+Changes to the owner-wide rules that follow from this design are tracked on
+the board.
+
+### Open questions on the conversion
+
+8. **Order of converted dependency rows.** Proceeding on: every converted
+   item or card row is `after: []` (all parallel), because the old data never
+   said otherwise, while converted steps keep their sequence; phase 2 sets the
+   real order. Alternative: convert everything sequentially, which would
+   invent an order.
+9. **Owner approval of the dry-run report** before the live conversion.
+   Proceeding on: yes, as a decision card with the report's counts.
+10. **Records and the "every item has a plan" rule.** Proceeding on: records
+    are exempt from the acceptance step, since nothing completes them; a
+    record without rows raises nothing.
+11. **What dropping the why loses.** A shared row into another project no
+    longer says, on the row, why the other project needs the item; the
+    receiving session reads it from the request's head and acceptance step
+    and from the filing reason in its first log line. `context` and `graph`
+    show titles only, and the old whys live only in logs, which `search`
+    still covers. The rule "every dependency carries a why" disappears from
+    the server instructions, the operations' checks and CLAUDE.md. Proceeding
+    on: accept this, as the owner decided; if a receiving session finds a
+    request unclear, it asks with a note or comment, not a row field.
+12. **What clears the provisional mark.** Proceeding on: any whole-plan write
+    by the session clears it, so a session could clear it by rewriting the
+    rows unchanged. The coordinator checks each project's phase 2 item log,
+    which must say how each plan changed. Alternative: also require a
+    `rewrite` reason argument, stored in the log, on the clearing call.
+13. **Cancelling a redundant item another project waits on.** Phase 2 may
+    find an item redundant while another project's shared row points at it;
+    cancelling it raises 依赖的条目已取消 there. Proceeding on: the procedure
+    moves such an item, or keeps it and points the redundant work at it,
+    rather than cancelling it; when it must be cancelled, the session tells
+    the waiting project's session first.
+14. **Unread volume during phase 2.** Each rewrite changes the item, the
+    items it moves or cancels and their owners, so the owner's 新 counts
+    grow while a project rewrites. Proceeding on: accept it; the owner can
+    read a project at a time with the 进展 filter. Alternative: author phase
+    2 moves as not unread, which would hide real structural changes.
+
 ## 11. Testing
 
 - Unit tests for the rules module, the file format round trip, `rev`
@@ -940,5 +1601,7 @@ remain exactly as written, including historical session authors and fields.
   wrong input it guards against.
 - An MCP integration test with the SDK client against a server on a temporary
   data directory.
-- The conversion check of section 10.
+- The conversion checks of section 10, including the plan conversion's
+  oracle, and for the plan rules a case per derived status, per refused
+  ownership or cycle write and per check, each failing on the wrong input.
 - CI on GitHub-hosted runners for every push.
