@@ -161,6 +161,27 @@ test("draft notes validate targets and choices, delete only drafts, send atomica
   const head = store.snapshot().head; assert.deepEqual(await own.send(), { sent: [] }); assert.equal(store.snapshot().head, head);
 });
 
+test("send with ids sends only those drafts and refuses unknown or non-draft ids without sending anything", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const a = await own.createNote({ target: "it:a", kind: "comment", text: "first" });
+  const b = await own.createNote({ target: "q:choice", kind: "choice", choice: "A", text: "选 A" });
+  const c = await own.createNote({ target: "it:other", kind: "comment", text: "third" });
+  const seen: string[] = [];
+  t.after(store.onChange(change => { if (change.message.startsWith("send ")) seen.push(change.message); }));
+  const sent = await own.send({ ids: [c.id, a.id] });
+  assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "comment", project: "Whitefoot" }, { id: c.id, target: "it:other", kind: "comment", project: "Firn" }]);
+  assert.deepEqual(seen, ["send 2 notes"]);
+  for (const id of [a.id, c.id]) { assert.equal(store.snapshot().notes[id]!.state, "sent"); assert.equal(store.snapshot().notes[id]!.sentAt, later); }
+  assert.equal(store.snapshot().notes[b.id]!.state, "draft"); assert.equal(store.snapshot().notes[b.id]!.sentAt, undefined);
+  const head = store.snapshot().head;
+  await assert.rejects(own.send({ ids: [b.id, a.id] }), /Only draft notes can be sent: /);
+  await assert.rejects(own.send({ ids: [b.id, "missing"] }), /Unknown note missing/);
+  await assert.rejects(own.send({ ids: "x" as unknown as string[] }), /list of note ids/);
+  assert.equal(store.snapshot().head, head); assert.equal(store.snapshot().notes[b.id]!.state, "draft");
+  assert.deepEqual(await own.send({ ids: [] }), { sent: [] }); assert.equal(store.snapshot().head, head);
+  assert.deepEqual((await own.send({})).sent.map(n => n.id), [b.id]);
+});
+
 test("send reports the committed target project after a concurrent owner change", async t => {
   const { store } = await board(t), own = ownerOps(store, () => later);
   const note = await own.createNote({ target: "it:a", kind: "comment", text: "Deliver after handover" });

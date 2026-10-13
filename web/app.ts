@@ -1188,6 +1188,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.setAttribute("aria-pressed",String(selected));
         (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || !!(chosen && chosen.state !== "draft");
       });
+      elements(box).filter(e => e.dataset.cardsend === d.id).forEach(e => { (e as HTMLButtonElement).disabled=!connected || sending || chosen?.state !== "draft"; });
     } else if (kind === "explain") {
       const boxes=[box,...(target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
       for (const host of boxes) {
@@ -1203,6 +1204,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.textContent=sent ? ANSWER[kind]!.sent : pending ? ANSWER[kind]!.queued : ANSWER[kind]!.label;
         (e as HTMLButtonElement).disabled=busy || sent || !connected;
       });
+      elements(box).filter(e => e.dataset.asksend === target.slice(3) && e.dataset.askkind === kind).forEach(e => { (e as HTMLButtonElement).disabled=!connected || sending || !pending; });
     }
   }
   // Acknowledgements can arrive after a newer SSE revision or deletion.
@@ -1368,6 +1370,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const del = el("button", "linkbtn", "删除"); del.type = "button"; del.disabled = busy || !connected;
         del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
         who.appendChild(del);
+        const send = el("button", "linkbtn", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected || sending;
+        send.addEventListener("click", () => sendDrafts(() => draftEditable(snapshot.notes[n.id]) ? [n.id] : []));
+        who.appendChild(send);
         if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
       }
       wrap.appendChild(box);
@@ -1670,6 +1675,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         else if (it.ask?.chat) a.appendChild(el("span", "chatnote", "请在对话窗口里确认"));
         else if (connected) a.appendChild(answerButton("approve", "it:" + it.id, it.title, it.ask!.text));
         a.appendChild(nextButton("ask-" + it.id));
+        // Sends this item's answer alone; it stays disabled until the answer is waiting to go out.
+        const kind: DraftKind | "" = /^https:\/\//.test(it.ask?.url || "") ? "done" : it.ask?.chat ? "" : "approve";
+        if (kind) {
+          const send = el("button", "cardsend", "发送");
+          send.type = "button"; send.dataset.asksend = it.id; send.dataset.askkind = kind;
+          send.disabled = !connected || sending || !pendingDraft("it:" + it.id, kind);
+          send.addEventListener("click", () => sendDrafts(() => notesOf("it:" + it.id).filter(n => n.kind === kind && n.state === "draft").map(n => n.id)));
+          a.appendChild(send);
+        }
         return a;
       }
     return null;
@@ -1951,6 +1965,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (waitsQ(d)) {
       const foot = el("div", "card-foot");
       foot.appendChild(nextButton("q-" + d.id));
+      // Sends this card's drafts alone; it stays disabled until a choice is waiting to go out.
+      const send = el("button", "cardsend", "发送");
+      send.type = "button"; send.dataset.cardsend = d.id;
+      send.disabled = !connected || sending || choiceOf(d)?.state !== "draft";
+      send.addEventListener("click", () => sendDrafts(() => notesOf("q:" + d.id).filter(n => n.state === "draft").map(n => n.id)));
+      foot.appendChild(send);
       c.appendChild(foot);
     }
     return c;
@@ -2211,17 +2231,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   get("to-top").addEventListener("click", () => glideTo(0));
 
-  get<HTMLButtonElement>("send-all").addEventListener("click", async () => {
+  // Sends every draft, or only those a card or comment picks once its pending writes have settled.
+  async function sendDrafts(pick?: () => string[]) {
     if (sending) return; sending = true; sendMessage = ""; renderSend();
     try {
       const drafts=[...[...optimistic.values()].map(o => o.promise!), ...pendingEdits.values()];
       if ((await Promise.all(drafts)).some(ok => !ok)) return;
-      const result = await api<{sent: Array<{project: string}>}>("/api/send", {});
+      const ids = pick?.();
+      if (ids && !ids.length) return;
+      const result = await api<{sent: Array<{project: string}>}>("/api/send", ids ? {ids} : {});
       const counts = new Map<string,number>();
       result.sent.forEach(n => counts.set(n.project, (counts.get(n.project) || 0) + 1));
       sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([project,n]) => project + "×" + n).join(" · ");
     } catch(e) { showError(e); } finally { sending = false; renderSend(); }
-  });
+  }
+  get<HTMLButtonElement>("send-all").addEventListener("click", () => sendDrafts());
 
   const DISCONNECTED = "已和看板服务器断开，正在重连…";
   const WRITE_TIMEOUT = "看板服务器没有响应，请刷新页面后核对操作结果。";

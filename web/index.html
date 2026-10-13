@@ -274,7 +274,10 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .optbtn:disabled { cursor: default; }
 .opts { list-style: none; padding-left: 0; }
 .nextbtn { font: inherit; font-size: 12.5px; padding: 1px 10px; border-radius: 6px; border: 1px solid var(--ask); background: transparent; color: var(--ask); cursor: pointer; margin-left: auto; }
-.card-foot { display: flex; justify-content: flex-end; }
+.card-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.card-foot .nextbtn { margin-left: 0; }
+.cardsend { font: inherit; font-size: 12.5px; padding: 1px 10px; border-radius: 6px; border: 1px solid var(--ask); background: var(--ask); color: var(--surface); cursor: pointer; }
+.cardsend:disabled { opacity: .45; cursor: default; }
 .body .card { margin-top: 4px; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }

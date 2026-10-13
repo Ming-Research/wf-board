@@ -16,7 +16,7 @@ export interface OwnerOps {
   setDraft(a: { target: string; kind: "choice" | "approve" | "done" | "explain"; on: boolean; text: string; choice?: string }): Promise<{ note: { id: string; doc: Note } | null; deleted: string[]; commit: string }>;
   editDraft(a: { id: string; rev: number; text: string }): Promise<{ note: { id: string; doc: Note }; deleted: string[]; commit: string }>;
   deleteNote(a: { id: string }): Promise<void>;
-  send(): Promise<{ sent: Array<{ id: string; target: string; kind: string; project: string }> }>;
+  send(a?: { ids?: string[] }): Promise<{ sent: Array<{ id: string; target: string; kind: string; project: string }> }>;
   archive(a: { id: string; on: boolean }): void;
   readNotice(a: { id: string } | { all: true }): Promise<{ marked: string[] }>;
   read(a: { through: string } | { doc: string; through?: string }): Promise<void>;
@@ -25,6 +25,7 @@ const queues = new WeakMap<Store, Promise<unknown>>();
 const ReadInput = z.union([z.object({ through: CommitId }).strict(), z.object({ doc: ReadDocument, through: CommitId.optional() }).strict()]);
 const NoticeInput = z.union([z.object({ id: Key }).strict(), z.object({ all: z.literal(true) }).strict()]);
 const DraftInput = Note.pick({ target: true, text: true, choice: true }).extend({ kind: z.enum(["choice", "approve", "done", "explain"]), on: z.boolean() }).strict();
+const SendInput = z.object({ ids: z.array(Key).optional() }).strict();
 const DraftEditInput = z.object({ id: Key, rev: z.number().int().positive(), text: z.string() }).strict();
 export function ownerOps(store: Store, now = () => new Date().toISOString()): OwnerOps {
   function targetExists(s: Snapshot, target: string): string {
@@ -110,8 +111,15 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       if (!draftEditable(note)) throw new OpError("Only draft notes can be deleted");
       await store.commit({ author: "owner", message: `delete_note ${a.id}`, deletes: [{ kind: "note", id: a.id, expectRev: note.rev }] });
     }),
-    send: () => run(async s => {
-      const drafts = Object.entries(s.notes).filter(([, n]) => n.state === "draft");
+    send: a => run(async s => {
+      const parsed = SendInput.safeParse(a ?? {});
+      if (!parsed.success) throw new OpError("send takes an optional list of note ids");
+      const only = parsed.data.ids === undefined ? undefined : new Set(parsed.data.ids);
+      for (const id of only ?? []) {
+        if (!Object.hasOwn(s.notes, id)) throw new NotFoundError(`Unknown note ${id}`);
+        if (s.notes[id]!.state !== "draft") throw new OpError(`Only draft notes can be sent: ${id}`);
+      }
+      const drafts = Object.entries(s.notes).filter(([id, n]) => n.state === "draft" && (!only || only.has(id)));
       const sentAt = now();
       if (drafts.length) await store.commit({ author: "owner", message: `send ${drafts.length} notes`, puts: drafts.map(([id, n]) => ({ kind: "note", id, expectRev: n.rev, doc: { ...n, state: "sent", sentAt } })) });
       // Item changes can commit while this send waits for the store.

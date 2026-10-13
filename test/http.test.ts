@@ -106,6 +106,24 @@ test("wake delivers only sent notes to their project and wildcard, exactly once"
   assert.deepEqual(frames.map(f => f.length), [2, 1, 3, 0]);
 });
 
+test("POST /api/send with ids wakes only for those notes and refuses a non-draft id with 400", async t => {
+  const { url, api } = await server(t);
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=*");
+  t.after(() => { socket.terminate(); });
+  await once(socket, "open");
+  const frames: Array<{note: string}> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
+  const two = await api("/api/notes", { target: "it:other", kind: "comment", text: "two" });
+  const sent = await api("/api/send", { ids: [two.data.id] });
+  assert.equal(sent.status, 200); assert.deepEqual(sent.data.sent.map((n: {id: string}) => n.id), [two.data.id]);
+  const pong = once(socket, "pong"); socket.ping(); await pong;
+  assert.deepEqual(frames.map(f => f.note), [two.data.id]);
+  assert.equal((await api("/api/send", { ids: [two.data.id] })).status, 400);
+  assert.equal((await api("/api/send", { ids: ["missing"] })).status, 404);
+  assert.deepEqual((await api("/api/send", {})).data.sent.map((n: {id: string}) => n.id), [one.data.id]);
+});
+
 test("stateful MCP client initializes, lists tools, reuses session and closes it", async t => {
   const { url } = await server(t);
   const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
