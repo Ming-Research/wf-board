@@ -378,7 +378,7 @@ test("detail: removed dependency and link are not shown while changed priority s
   assert.ok(!all.some(e => e.tagName === "A" && e.innerHTML === "Old link"),"a removed link is not rendered");
   assert.ok(!markup(item(p)).includes("Old ask") && !markup(item(p)).includes("chg-del"),"the former ask is not rendered");
   assert.ok(all.some(e => e.className.includes("prio") && e.className.includes("chg-add") && e.innerHTML === "P1"));
-  assert.ok(all.some(e => e.className.includes("st ") && e.className.includes("chg-add") && e.innerHTML === "WIP"));
+  assert.ok(all.some(e => e.className.includes("sg ") && e.className.includes("chg-add") && e.innerHTML === "●"));
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
 });
 
@@ -3302,11 +3302,12 @@ test("m is the mark-read key and the retired r key makes no write", async () => 
   assert.ok(markup(menu).includes("<kbd>m</kbd>")); assert.ok(!markup(menu).includes("<kbd>r</kbd>"));
 });
 
-test("project headings omit the retired cross-dependency summary while shared plan rows retain the project", async () => {
+test("project headings omit the retired cross-dependency summary and shared plan rows show only the target", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other"});
   s.items.far={...s.items.child!,group:"Other",title:"External result",plan:planWork([])};
   s.items.child!.plan=planWork([sharedRow("far")]);
   const p=await page(s,[]); await expand(p);
   assert.equal(p.all().filter(e=>e.classList.contains("xdeps")).length,0,"neither project heading displays the removed cross-dependency summary");
-  assert.match(markup(planRow(p,"child","far")),/Other[^]*External result|External result[^]*Other/,"the individual shared row still names its project's result");
+  assert.match(markup(planRow(p,"child","far")),/External result/,"the shared row names its target");
+  assert.doesNotMatch(markup(planRow(p,"child","far")),/Other/,"the owner asked for no project or owner line under a shared row");
 });
