@@ -216,10 +216,11 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   const flush=async()=> { for (let i=0;i<4;i++) { if (!options.stalledFrames) options.frames?.flush(); else options.clock!.advance(100); if (options.noFrames) options.clock?.advance(0); if (options.noFrames) await new Promise(resolve=>setTimeout(resolve,0)); await setImmediate(); } };
   await flush();
   // A live update from the server, as the page's event stream delivers it.
-  const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed: changed.map(value => {
+  // `activity`, when given, is the event's activity change (rules ActivityDelta).
+  const emit=(commit:string,changed:unknown[]=[],activity?:unknown)=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed: changed.map(value => {
     const doc = value as {kind: string; id: string; after?: unknown};
     return doc.kind === "item" ? {...doc, after: nativeDocument(doc.after, doc.id)} : doc;
-  })}) });
+  }),...(activity === undefined ? {} : {activity})}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
     // Every scroll either pane was asked to make.
@@ -3081,6 +3082,35 @@ test("record labels render in the page and stay outside status counts", async ()
   assert.match(counts[0]!, /进行中 0$/);
   assert.match(counts[1]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
   assert.match(counts[2]!, /完成 0$/);
+});
+
+// Records each item the page signs (rules presentationSignature) as a render entry "sign:<id>".
+const recordSigning = (code: string) => { assert.ok(code.includes("function signPresentation(it, next, scope) {")); return code.replace("function signPresentation(it, next, scope) {", "function signPresentation(it, next, scope) { recordRender(\"sign:\" + it.id);"); };
+test("a live update signs and repaints only the items it can change, applying the activity change to the page's copy", async () => {
+  const s = snapshot(), began = Date.parse(at), head = "a".repeat(40);
+  s.items.lone = { title: "Unrelated", group: "Project", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000, transform: recordSigning}); await expand(p); await p.flush();
+  const checkText = (id = "child") => rowOf(p, id).querySelectorAll(".checktag").map(e => e.title).join("\n");
+  assert.ok(p.renders.includes("sign:lone"), "the first pass signs every item");
+  assert.ok(checkText().includes("活跃时间"), "the leaf is stalled before the update");
+  const lone = rowOf(p, "lone"), snapshots = p.calls.filter(c => c.path === "/api/snapshot").length;
+  p.renders.length = 0;
+  // A write to the child an hour later. Its document carries no new time, so only the activity change moves its clock;
+  // nothing reaches the unrelated item.
+  const written = new Date(began + 59 * 60 * 1000).toISOString();
+  p.emit("b".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, rev: 2, head: "Progress" } }], { from: head, write: written, items: { child: written }, pauses: {} });
+  await p.flush();
+  assert.ok(!checkText().includes("活跃时间"), "the activity change reset the child's clock on the page");
+  assert.ok(p.renders.includes("sign:child") && p.renders.includes("sign:area"), "the changed item and its owner are signed again");
+  assert.ok(!p.renders.includes("sign:lone"), "an unrelated item is not signed again");
+  assert.ok(!p.renders.some(r => r instanceof Set && (r.has("item:lone") || r.has("all"))), "nor repainted");
+  assert.strictEqual(rowOf(p, "lone"), lone, "its row is the same element");
+  assert.equal(p.calls.filter(c => c.path === "/api/snapshot").length, snapshots, "a delta against the page's head needs no reload");
+  // A delta made against another head means the page missed or overtook an event: it reloads the snapshot.
+  p.emit("d".repeat(40), [{ kind: "item", id: "lone", after: { ...s.items.lone!, rev: 2, head: "Later" } }], { from: "c".repeat(40), write: written, items: { lone: written }, pauses: {} });
+  await p.flush();
+  assert.equal(p.calls.filter(c => c.path === "/api/snapshot").length, snapshots + 1, "an out-of-order delta reloads the snapshot");
 });
 
 test("page refreshes the stalled check when active time crosses the threshold without another write", async () => {

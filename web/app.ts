@@ -1,5 +1,6 @@
 import { tagApplies } from "../src/model.ts";
-import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
+import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
@@ -17,6 +18,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
+  // Keeps the parsed activity times across snapshots, so each new Rules object reads them without rescanning every log.
+  const activityCache = new DerivedCache();
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
@@ -184,7 +187,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   // Rendering indexes adapt the shared rules' ids into page view objects.
   let memo: Record<string, unknown> = {};
-  function invalidate() { memo = {}; derived = rules(snapshot); }
+  function invalidate() { memo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
   function index() {
     return cached("index", () => {
@@ -2114,6 +2117,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let waitingOrder:string[]=[];
   const renderWaiters:Array<() => void>=[];
   let rulePresentationDirty=true;
+  // Items a live update may have changed (rules affectedItems); only these are signed again while nothing asks for all.
+  let presentationAffected:Set<string> | null=null;
   let presentations=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
@@ -2134,26 +2139,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function scopedHeads(id:string,scope:Set<string>) { scope.add("head:"+id); derived.ancestors(id).forEach(p => scope.add("head:"+p)); }
   // Compare with the last painted state once per frame, including transitive derived consumers.
   function presentationScopes(scope:Set<string>) {
-    if (!rulePresentationDirty) return;
-    rulePresentationDirty=false;
-    const next=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
-    for (const it of state.items) {
-      const id=it.id;
-      const label=(kind:string,key:string) => {
-        if (kind === "card") return [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status,snapshot.decisions[key]?.blocks];
-        const owner=derived.parentOf(key);
-        return [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key),owner,owner ? snapshot.items[owner]?.title : null,derived.planRatio(key)];
-      };
-      const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
-      const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),it.tags ?? [],derived.stalledBelow(id),derived.pausedBy(id),snapshot.items[derived.pausedBy(id) || ""]?.paused,it.paused,deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
-      const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
-      next.set(id,current);
-      if (!previous) continue;
-      if (previous.signature !== signature) scope.add("item:"+id);
-      if (previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
-    }
+    if (!rulePresentationDirty && !presentationAffected) return;
+    const all=rulePresentationDirty, only=presentationAffected;
+    rulePresentationDirty=false; presentationAffected=null;
+    const next=all ? new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>() : new Map(presentations);
+    if (!all) for (const id of only!) if (!index().byId.has(id)) next.delete(id);
+    for (const it of all ? state.items : [...only!].flatMap(id => index().byId.get(id) ?? [])) signPresentation(it,next,scope);
     presentations=next;
+  }
+  function signPresentation(it:ViewItem,next:Map<string,{signature:string;shown:boolean;request:boolean;group:string}>,scope:Set<string>) {
+    const id=it.id;
+    const signature=presentationSignature(derived,snapshot.decisions,id);
+    const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
+    next.set(id,current);
+    if (!previous) return;
+    if (previous.signature !== signature) scope.add("item:"+id);
+    if (previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
   }
   function scopeForDoc(kind:string,id:string,target?:string):string[] {
     return kind === "item" ? ["item:"+id] : kind === "decision" ? ["card:"+id] : target ? ["notes:"+target] : [];
@@ -2423,8 +2424,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function showDisconnected() { get("server-banner").hidden = false; get("server-banner").textContent = DISCONNECTED; }
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
-  function applySnapshot(s: Snapshot) {
-    rulePresentationDirty=true;
+  /** `partial`: the caller names the items to sign again (presentationAffected) instead of all. */
+  function applySnapshot(s: Snapshot, partial = false) {
+    if (!partial) rulePresentationDirty=true;
     snapshot = s;
     for (const id of sentNotes) if (s.notes[id]?.state !== "draft") sentNotes.delete(id);
     for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
@@ -2668,11 +2670,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (!active()) return;
       eventGeneration++;
       snapshotGeneration++;
-      const change = JSON.parse((event as MessageEvent).data) as {commit: string; activity?: Snapshot["activity"]; changed: Array<{kind: string; id: string; after: unknown}>};
+      const change = JSON.parse((event as MessageEvent).data) as {commit: string; activity?: ActivityDelta; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
       const relocated:string[]=[], retitled:string[]=[];
+      // The rules of the snapshot before this change: the affected items are found by comparing with them.
+      const base=snapshot, baseRules:Rules=derived;
       snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},notices:{...snapshot.notices},glossaries:{...snapshot.glossaries}};
-      rulePresentationDirty=true;
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
         if (doc.kind === "note") {
@@ -2713,8 +2716,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         }
       }
       snapshot.head = change.commit;
-      if (change.activity) snapshot.activity = change.activity;
-      applySnapshot(snapshot);
+      // The activity arrives as its change against the commit before. A snapshot already at this commit holds it; one
+      // at another commit missed or overtook events, so the page reloads the whole snapshot.
+      let resync=false;
+      if (change.activity) {
+        if (base.head === change.activity.from) snapshot.activity = applyActivityDelta(base.activity, change.activity);
+        else if (base.head !== change.commit) resync=true;
+      }
+      applySnapshot(snapshot,true);
+      const seeds=changeSeeds(base,snapshot,baseRules,derived,change.changed,change.activity);
+      if (!seeds) rulePresentationDirty=true;
+      else if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of affectedItems(baseRules,derived,seeds)) presentationAffected.add(id); }
+      if (resync) void loadSnapshot(active,controller.signal).catch(() => { if (active()) serverDown(next); });
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.
       if (retitled.some(k => citedRefs().has(k))) scope.add("all");
