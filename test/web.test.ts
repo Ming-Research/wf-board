@@ -313,11 +313,11 @@ test("detail: cleared ask is not shown as removed text", async () => {
   assert.ok(!markup(item(p)).includes("Cleared ask") && !markup(item(p)).includes("chg-del"));
 });
 
-test("expanded unread marks disappear when r reads the selected item without an n walk", async () => {
+test("expanded unread marks disappear when m reads the selected item without an n walk", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"Old body"}; s.items.child!.head = "New body";
   const p = await page(s,unread(),before); await expand(p);
   assert.match(markup(item(p)), /chg-add/);
-  p.key("r"); await p.flush();
+  p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:child",through:stepId}]);
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Old body"));
 });
@@ -329,7 +329,7 @@ test("detail: baseline is first unread before and after is current snapshot rath
   await expand(p);
   assert.match(markup(item(p)), /class="chg-add"[^>]*><p>Current<\/p>/);
   assert.ok(!markup(item(p)).includes("Intermediate"));
-  p.key("n"); await setImmediate(); p.key("r"); await p.flush();
+  p.key("n"); await setImmediate(); p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:child",through:last}]);
   assert.ok(!p.all().some(e => e.innerHTML === "新 1 ›"));
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Intermediate"));
@@ -378,7 +378,7 @@ test("detail: note stops select the existing fresh reply row without duplicated 
   const row = p.all().find(e => e.id === "note-n")!;
   assert.ok(row.className.includes("cur") && !row.className.includes("newbar") && row.children.some(e => e.className.includes("reply") && e.className.includes("newbar")));
   assert.equal(p.all().filter(e => e.className.startsWith("note ")).length,1);
-  p.key("r"); await setImmediate(); await setImmediate();
+  p.key("m"); await setImmediate(); await setImmediate();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"note:n",through:stepId}]);
   assert.ok(!descendants(p.all().find(e => e.id === "note-n")!).some(e => e.className.includes("newbar")));
 });
@@ -390,7 +390,7 @@ test("detail: deleted document stops render no body but remain countable walkabl
     assert.ok(p.all().some(e => e.innerHTML === "新 1 ›"));
     p.key("n"); await setImmediate();
     assert.ok(!markup(p.roots.get("areas")!).includes("Deleted body") && !p.all().some(e => e.className.includes("unread-step")));
-    p.key("r"); await setImmediate();
+    p.key("m"); await setImmediate();
     assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:kind+":gone",through:stepId}]);
   }
 });
@@ -403,7 +403,7 @@ test("filtered parent n stop opens its body and selects its own item", async () 
   p.key("n"); await setImmediate();
   assert.ok(item(p,"area").className.includes("cur"));
   assert.match(markup(item(p,"area")), /class="chg-add"[^>]*><p>After<\/p>/);
-  p.key("r"); await setImmediate();
+  p.key("m"); await setImmediate();
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:stepId}]);
 });
 
@@ -461,25 +461,25 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n reaches items in page order, skips archived ones, and r reads the selected item but not its sub-items", async () => {
+test("n reaches items in page order, skips archived ones, and m reads the selected item but not its sub-items", async () => {
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
   const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"head changed"}]}]);
   await wideCaret(p).click(); await p.flush();
-  p.key("r"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
+  p.key("m"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
   // The page shows the parent above its child, so n reaches the parent first although the step lists the child first.
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
   assert.ok(!item(p).className.includes("cur"));
   assert.ok(!p.calls.some(c => c.path === "/api/read"));
-  p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
+  p.key("m"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").querySelector(".item-head")!).filter(e=>e.className === "newtag freshchip");
   assert.deepEqual(areaChip.map(e=>e.innerHTML),["1"],"the parent's one chip now counts only the sub-item");
   assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 1 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
-  p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 1 条在下面的子条目里/,"r says where the new content is");
-  p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
+  p.key("m"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 1 条在下面的子条目里/,"r says where the new content is");
+  p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after m, n goes on to the next stop on the page");
 });
 
 test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
@@ -517,8 +517,8 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
   assert.ok(descendants(item(p,"area").children[0]!).some(e => e.className === "newtag freshchip" && e.innerHTML === "2"),"area counts itself and its child once each");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"area's second change is not a second stop");
-  p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
-  p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after r, n continues below the read stop instead of starting over");
+  p.key("m"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after m, n continues below the read stop instead of starting over");
 });
 
 test("a dependency row names its project only when the project differs from the depending item's", async () => {
@@ -675,7 +675,7 @@ test("new reply marks only the reply, not the owner's own comment, without any b
   assert.ok(!row.className.includes("newbar") && reply.className.includes("newbar"),"one line, beside the reply");
   assert.ok(!markup(p.roots.get("areas")!).includes("状态：") && !markup(p.roots.get("areas")!).includes("回复项目"));
   assert.equal(p.all().filter(e=>e.className.includes("reply rich")).length,1);
-  p.key("r"); await settle();
+  p.key("m"); await settle();
   assert.ok(!descendants(p.all().find(e=>e.id === "note-n")!).some(e=>e.className.includes("newbar")));
 });
 
@@ -1496,12 +1496,12 @@ test("loose-card scope does not suppress a coalesced item-note update", async ()
 });
 
 
-test("r reads the card selected by 下一条 while an earlier unread item stays new", async () => {
+test("m reads the card selected by 下一条 while an earlier unread item stays new", async () => {
   const s=snapshot(), later="e".repeat(40); s.decisions.q=card(); s.items.child!.ask={text:"Approve"};
   const p=await page(s,[...unread("item","area"),...unread("decision","q",later)]); await expand(p);
   await button(p,"下一条（2/2）").click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
-  p.key("r"); await p.flush();
+  p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
   assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
   assert.ok(!descendants(p.all().find(e=>e.id === "q-q")!).some(e=>e.className.includes("freshchip")));
@@ -1509,19 +1509,19 @@ test("r reads the card selected by 下一条 while an earlier unread item stays 
   assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
 });
 
-test("r on a read selection shows a passing hint, not a kept error, and writes nothing", async () => {
+test("m on a read selection shows a passing hint, not a kept error, and writes nothing", async () => {
   const clock=new FakeClock();
-  const p=await page(snapshot(),[],null,undefined,{clock}); await item(p,"area").children[0]!.click(); p.key("r");
+  const p=await page(snapshot(),[],null,undefined,{clock}); await item(p,"area").children[0]!.click(); p.key("m");
   const hint=p.roots.get("hint")!;
   assert.equal(hint.hidden,false); assert.match(hint.textContent,/这里没有新内容/);
   assert.equal(p.roots.get("server-banner")!.hidden,true,"the error banner stays for errors");
   assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0);
   clock.advance(3000); assert.equal(hint.hidden,true,"the hint leaves by itself");
-  p.key("r"); assert.equal(hint.hidden,false);
+  p.key("m"); assert.equal(hint.hidden,false);
   p.key("j"); assert.equal(hint.hidden,true,"the next key clears it");
 });
 
-test("r reads all selected document steps from item card note and log clicks", async t => {
+test("m reads all selected document steps from item card note and log clicks", async t => {
   for(const selection of ["item","decision","note","log"] as const) await t.test(selection,async()=> {
     const s=snapshot(), first="e".repeat(40), last="f".repeat(40), kind=selection === "log" ? "item" : selection;
     s.decisions.q=card(); s.items.child!.log=[{at,text:"Latest log"}];
@@ -1530,23 +1530,23 @@ test("r reads all selected document steps from item card note and log clicks", a
     const p=await page(s,[...unread("item","area"),...unread(kind,id,first),...unread(kind,id,last)],null,undefined,{notesOpen:{"it:child":true}}); await expand(p);
     if (selection === "log") await button(p,"▸ 日志").click();
     const box=selection === "item" ? item(p) : selection === "decision" ? p.all().find(e=>e.id === "q-q")! : selection === "note" ? p.all().find(e=>e.id === "note-n")! : p.all().find(e=>e.dataset.sel?.startsWith("log:child@"))!;
-    await box.click(); p.key("r"); await p.flush();
+    await box.click(); p.key("m"); await p.flush();
     assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:last}]);
     assert.ok(item(p,"area").className.includes("fresh"));
     assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"),"all steps of the selected document were read");
   });
 });
 
-test("r on a card reads its whole item at once and restores both on error or eight-second deadline without retry", async t => {
+test("m on a card reads its whole item at once and restores both on error or eight-second deadline without retry", async t => {
   for(const failure of ["refused","deadline"] as const) await t.test(failure,async()=> {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card(); let signal:AbortSignal|undefined;
     const p=await page(s,[...unread("item","child"),...unread("decision","q","e".repeat(40))],null,undefined,{clock,response:(path,_body,init)=> { if(path === "/api/read") { signal=init.signal; return hold.promise; } }}); await expand(p);
-    await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
-    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>(c.body as {doc:string}).doc).sort(),["decision:q","item:child"],"r on the card reads the item holding it with the card");
+    await p.all().find(e=>e.id === "q-q")!.click(); p.key("m");
+    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>(c.body as {doc:string}).doc).sort(),["decision:q","item:child"],"m on the card reads the item holding it with the card");
     assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"read is painted before fetch settles");
     assert.ok(!item(p).className.includes("fresh"));
     assert.ok(!p.all().some(e=>e.innerHTML.startsWith("新 ")));
-    p.key("r"); assert.equal(p.calls.filter(c=>c.path === "/api/read").length,2,"pending reads are not repeated");
+    p.key("m"); assert.equal(p.calls.filter(c=>c.path === "/api/read").length,2,"pending reads are not repeated");
     if(failure === "refused") hold.resolve({ok:false,status:400,json:async()=>({error:"Read refused"})});
     else { clock.advance(7999); await settle(); assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh")); clock.advance(1); }
     await settle(); await p.flush();
@@ -1563,7 +1563,7 @@ test("pending selected read survives unread refresh and leaves a later change vi
   const s=snapshot(), frames=new Frames(), hold=deferred<FakeResponse>(), later="f".repeat(40); s.decisions.q=card();
   let fresh=[...unread("item","area"),...unread("decision","q","e".repeat(40))];
   const p=await page(s,fresh,null,undefined,{frames,response:path=>path === "/api/read" ? hold.promise : path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p);
-  await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+  await p.all().find(e=>e.id === "q-q")!.click(); p.key("m");
   p.emit("b".repeat(40)); await p.flush(); assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"stale unread response must respect pending read");
   fresh=[...fresh,...unread("decision","q",later)]; p.emit("c".repeat(40)); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"later change remains unread");
@@ -1580,7 +1580,7 @@ test("pending document read hides a coalesced step until acknowledgement splits 
     const s=snapshot(), frames=new Frames(), hold=deferred<FakeResponse>(), first="e".repeat(40), later="f".repeat(40); s.decisions.q=card();
     let fresh=[...unread("item","area"),...unread("decision","q",first)];
     const p=await page(s,fresh,null,undefined,{frames,response:path=>path === "/api/read" ? hold.promise : path === "/api/unread" ? reply({steps:fresh}) : undefined}); await expand(p);
-    await p.all().find(e=>e.id === "q-q")!.click(); p.key("r");
+    await p.all().find(e=>e.id === "q-q")!.click(); p.key("m");
     fresh=[fresh[0]!,{...unread("decision","q",later)[0]!,commits:[first,later]}];
     p.emit("b".repeat(40)); await p.flush();
     assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"),"overlapping combined step must not restore the old blue marks");
@@ -1595,12 +1595,12 @@ test("pending document read hides a coalesced step until acknowledgement splits 
 });
 
 
-test("r reads every selected document kind even when the fresh filter hides its latest step", async () => {
+test("m reads every selected document kind even when the fresh filter hides its latest step", async () => {
   const s=snapshot(), first="e".repeat(40), last="f".repeat(40); s.items.child!.steps=[{id:"progress",text:"Progress",state:"todo"}];
   const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:1,reply:0,other:0}}]},...unread("item","child",last)];
   const p=await page(s,fresh); await expand(p); await button(p,"进展 1").click();
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"));
-  p.key("r"); await p.flush();
+  p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:last}]);
   await button(p,"进展 0").click();
   assert.ok(item(p,"area").className.includes("fresh"));
@@ -1615,12 +1615,12 @@ async function dependencyReadContract(transform?: PageOptions["transform"]) {
   await wideCaret(p).click(); await p.flush();
   await rowOf(p).querySelector(".item-head")!.click(); await descendants(item(p)).find(e=>e.dataset.sel === "dep:child@q")!.click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
-  p.key("r"); await p.flush();
+  p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
   assert.ok(item(p,"area").className.includes("fresh"));
   assert.ok(!p.all().find(e=>e.id === "q-q")!.className.includes("fresh"));
 }
-test("r follows a dependency-selected card instead of the document previously shown by n", async () => {
+test("m follows a dependency-selected card instead of the document previously shown by n", async () => {
   await dependencyReadContract();
   let mutated=false;
   await assert.rejects(()=>dependencyReadContract(code=> {
@@ -1978,16 +1978,16 @@ test("wide n selects the stop's item and scrolls the right pane to its first fre
   assert.ok(p.scrollY<1000,"the detail's distant mark does not scroll the tree to that offset");
 });
 
-test("wide r on a selected detail log entry reads its item and leaves sub-items unread", async () => {
+test("wide m on a selected detail log entry reads its item and leaves sub-items unread", async () => {
   const s=snapshot(); s.items.area!.log=[{at,text:"Parent history"}]; s.items.area!.head="Unread head";
   const p=await page(s,[...unread("item","area"),...unread()]);
   await selectWide(p);
   await button(p,"▸ 日志").click();
   const log=detailItem(p)?.querySelector(".log-entry"); assert.ok(log,"the log entry is in the selected detail");
-  await log.click(); p.key("r"); await p.flush();
+  await log.click(); p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}]);
   await wideCaret(p).click(); await p.flush();
-  assert.ok(rowOf(p,"child").className.includes("fresh"),"r leaves the child's own new content unread");
+  assert.ok(rowOf(p,"child").className.includes("fresh"),"m leaves the child's own new content unread");
 });
 
 test("wide selected-item live update rerenders its detail and keeps the independent scroll", async () => {
@@ -2201,7 +2201,7 @@ test("wide landing in the list pins through updates until the reader scrolls the
 });
 
 test("wide blank clicks clear both selections and keyboard actions use the visible tree or navigation cursor", async t => {
-  for (const action of ["r","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
+  for (const action of ["m","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
     const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
     s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"}; if (action === "a") s.items.child!.status="done";
     s.items.other={title:"Following root",group:"Project",status:"todo",priority:"P2",ask:{text:"Other ask"},updated:at,rev:1,deps:[],links:[],log:[]};
@@ -2218,11 +2218,11 @@ test("wide blank clicks clear both selections and keyboard actions use the visib
     assert.equal(detailItem(p,"child"),null,"the old detail is removed");
     assert.equal(p.roots.get("item-detail")!.hidden,true);
     const prevented=p.key(action); await p.flush();
-    if (action === "r") {
-      assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0,"r does not read the cleared item or imply a new selection");
+    if (action === "m") {
+      assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0,"m does not read the cleared item or imply a new selection");
       assert.equal(p.roots.get("item-detail")!.hidden,true,"reading does not open a detail selection");
-      p.key("n"); await p.flush(); p.key("r"); await p.flush();
-      assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}],"n explicitly reselects the first unread item so r can read it");
+      p.key("n"); await p.flush(); p.key("m"); await p.flush();
+      assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}],"n explicitly reselects the first unread item so m can read it");
       assert.ok(rowOf(p,"child").className.includes("fresh"),"reading the reopened parent leaves the child unread");
     } else if (action === "a") {
       assert.equal(prevented,false); assert.equal(p.calls.filter(c=>c.path === "/api/archive").length,0,"archive still requires a selection after clearing");
@@ -2923,7 +2923,7 @@ test("item steps show all states, elapsed days and a ratio excluding dropped; ev
   await button(p,"▸ 日志").click(); assert.match(markup(item(p,"area")),/暂无日志/);
 });
 
-test("added and edited steps mark only their own lines until r reads them and progress filter walks them", async () => {
+test("added and edited steps mark only their own lines until m reads them and progress filter walks them", async () => {
   const s=snapshot();
   const baseline={...s.items.child!,steps:[{id:"same",text:"Unchanged",state:"todo" as const},{id:"edit",text:"Earlier",state:"todo" as const}]};
   s.items.child!.steps=[{id:"new",text:"Added",state:"todo"},{id:"same",text:"Unchanged",state:"todo"},{id:"edit",text:"Changed",state:"doing",since:at,waits:"Review"}];
@@ -2935,7 +2935,7 @@ test("added and edited steps mark only their own lines until r reads them and pr
   assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
   await button(p,"进展 1").click(); p.key("n"); await p.flush();
   assert.ok(rowOf(p).className.includes("cur"));
-  p.key("r"); await p.flush();
+  p.key("m"); await p.flush();
   assert.deepEqual(marked(),[]);
   assert.ok(!rowOf(p).className.includes("fresh"));
   assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));

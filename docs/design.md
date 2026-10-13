@@ -333,9 +333,9 @@ log:
   cards and that card's comments, with documents the page does not place last,
   oldest first. Inside a changed item it visits each new place in turn (a
   changed status, title or body block, a new or changed step, an added dependency or
-  link); a new item is one stop at its start. After `r`, `n` goes on below
+  link); a new item is one stop at its start. After `m`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
-  `r` reads the whole item holding the selection, however selected: its own
+  `m` reads the whole item holding the selection, however selected: its own
   changes, its cards and the comments on both, but not its sub-items; a card
   no item holds is read with its comments. 全部已阅 moves the cursor to the
   head after confirmation. Expanded items and cards mark changes in their own
@@ -351,9 +351,9 @@ log:
   rows, are not coloured either.
   New items and cards carry no per-block marks; added steps still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
-  own carries a blue line beside its whole body, marking exactly what `r` on it
+  own carries a blue line beside its whole body, marking exactly what `m` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. The tree shows only
+  and carries no line, since `m` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
   selected item's body and comments appear in the detail column, with a short blue line beside its headline.
   The 新 chip counts what is new inside. Added or changed step lines, new notes
@@ -376,7 +376,7 @@ log:
   then scrolls after rendering. Baselines for unrelated collapsed items or
   explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
   Deleted documents have no body to render but remain countable stops that
-  `n` can visit and `r` can read.
+  `n` can visit and `m` can read.
   This replaces the 478 per-item read
   records and their snapshots. A history step groups consecutive commits by the same
   author on the same item, so quick step updates read as one change, and
@@ -557,7 +557,7 @@ navigation behavior in the separate decisions section. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
 
-`r` acts on the item holding the current selection: the item for `it:` and
+`m` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
 The same selection works after the 下一条 walk through the waits, a click, `n`, a 新
 chip or following a dependency. It reads each of that item's documents' displayed
