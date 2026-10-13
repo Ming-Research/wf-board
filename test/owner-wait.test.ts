@@ -11,6 +11,8 @@ import { board, author, later, at } from "./helpers.ts";
 import { ownerOps, NotFoundError } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
+import { unreadSteps } from "../src/history.ts";
+import { changes } from "../src/query.ts";
 
 const doc = (fields: object) => ({ title: "t", updated: at, rev: 1, log: [], deps: [], links: [], ...fields });
 const card = (item: string, fields: object = {}) => ({ item, question: "Q?", background: "b", options: [{ key: "A", text: "a" }], status: "open", updated: at, rev: 1, ...fields });
@@ -149,4 +151,17 @@ test("wake: a blocking card or an ask emits a blocking event once; a non-blockin
   assert.equal(res.status, 200); assert.deepEqual(await res.json(), { marked: [id] });
   assert.ok(store.snapshot().notices[id]!.read);
   assert.equal((await fetch(url + "/api/notice-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: "nope" }) })).status, 404);
+});
+
+test("posting a notice makes no unread step and no entry in changes", async t => {
+  const { store, op } = await board(t), before = store.snapshot().head;
+  const control = await op.appendLog({ author, id: "a", text: "control change" });
+  assert.equal((await unreadSteps(store, before)).length, 1, "a real change after the cursor is unread");
+  assert.ok((await changes(store, store.snapshot(), before)).length > 0);
+  const mid = store.snapshot().head;
+  assert.ok(control.commit);
+  await op.postNotice({ author, text: "通知" });
+  assert.notEqual(store.snapshot().head, mid, "the notice was committed");
+  assert.equal((await unreadSteps(store, mid)).length, 0, "the notice adds no unread step");
+  assert.deepEqual(await changes(store, store.snapshot(), mid), [], "the notice is not a change");
 });
