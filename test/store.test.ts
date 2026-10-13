@@ -165,7 +165,8 @@ test("YAML round trip preserves troublesome strings and schema key order", async
   const strings = ["one\ntwo\n", "one\ntwo", "one\ntwo\n\n\n", "  first\nsecond", "\tfirst\n\tsecond", "one\r\ntwo\r\n", "---\n...\n# comment\n- list\nkey: value\n|\n>", "x".repeat(10000), "中文\n🦶😀", "no", "yes", "true", "false", "1e3", "2026-10-11", "null", "~", "\n", "\n\n", "a\n  ", "a\0b\nc"];
   await store.commit({ author: "Round trip", message: "Write all strings", puts: strings.map((s, i) => put(`s${i}`, item(s, s))) });
   for (const [i, s] of strings.entries()) {
-    const expected = Item.parse({ ...item(s, s), rev: 1 });
+    // The store issues each new item the next short number, in put order.
+    const expected = Item.parse({ ...item(s, s), num: i + 1, rev: 1 });
     const text = await readFile(join(dir, `items/s${i}.yaml`), "utf8");
     assert.deepEqual(parse(text, { version: "1.2", schema: "core" }), expected);
     assert.ok(text.indexOf("title:") < text.indexOf("head:"));
@@ -437,7 +438,7 @@ test("log/diff/show reproduce commits, author, multiline messages, paths and del
   assert.equal((await store.log({ since: first.commit, limit: 1 }))[0]!.commit, store.snapshot().head);
   assert.equal((await store.log({ since: "2000-01-01T00:00:00Z" })).length, 4);
   assert.equal((await store.log({ since: "2999-01-01T00:00:00Z" })).length, 0);
-  assert.deepEqual(await store.show("item", "a", first.commit), Item.parse({ ...item(), rev: 1 }));
+  assert.deepEqual(await store.show("item", "a", first.commit), Item.parse({ ...item(), num: 1, rev: 1 }));
   assert.equal(await store.show("item", "a", initial), null);
   assert.equal(await store.show("item", "a", "HEAD"), null);
   const diff = await store.diff("item", "a", first.commit, second.commit);
@@ -456,8 +457,8 @@ test("show returns a past document as written, including a field the current sch
   const old = await git(dir, "rev-parse", "HEAD");
   await git(dir, "revert", "--no-edit", "HEAD");
   const reopened = await Store.open(dir);
-  assert.deepEqual(await reopened.show("item", "a", old), { ...Item.parse({ ...item(), rev: 1 }), short: "Old label" });
-  assert.deepEqual(await reopened.show("item", "a", first.commit), Item.parse({ ...item(), rev: 1 }));
+  assert.deepEqual(await reopened.show("item", "a", old), { ...Item.parse({ ...item(), num: 1, rev: 1 }), short: "Old label" });
+  assert.deepEqual(await reopened.show("item", "a", first.commit), Item.parse({ ...item(), num: 1, rev: 1 }));
 });
 
 test("push sends an ahead branch to origin and skips an up-to-date branch", async t => {
@@ -982,4 +983,98 @@ test("startup leaves identity references alone when no legacy coordinator projec
   const before = store.snapshot();
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
+});
+
+const card = (item: string, fields: object = {}) => ({ item, question: "Choose?", background: "Evidence", options: [{ key: "A", text: "A" }], status: "open", updated: at, ...fields });
+const putCard = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "decision" as const, id, doc, expectRev });
+
+test("items and cards share one increasing number sequence that survives restart and is never reassigned", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("x", item()), putCard("c", card("x")), put("y", item())] });
+  let s = store.snapshot();
+  assert.deepEqual([s.items.x!.num, s.decisions.c!.num, s.items.y!.num], [1, 2, 3], "one sequence, issued in put order");
+  assert.deepEqual(parse(await readFile(join(dir, "numbers.yaml"), "utf8")), { next: 4 }, "the counter is written in the creating commit");
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["decisions/c.yaml", "items/x.yaml", "items/y.yaml", "numbers.yaml"]);
+  // An update that omits the number keeps it; one that names another number is refused.
+  await store.commit({ author: "a", message: "Update", puts: [put("x", item("Changed"), 1)] });
+  assert.equal(store.snapshot().items.x!.num, 1);
+  await assert.rejects(store.commit({ author: "a", message: "Renumber", puts: [put("x", { ...item(), num: 9 }, 2)] }), /keeps its number 1/);
+  await assert.rejects(store.commit({ author: "a", message: "Choose", puts: [put("z", { ...item(), num: 9 })] }), /only the store issues numbers/);
+  // A deleted document's number is not reused, after a restart too.
+  await store.commit({ author: "a", message: "Delete", deletes: [{ kind: "item", id: "y", expectRev: 1 }] });
+  const reopened = await Store.open(dir);
+  await reopened.commit({ author: "a", message: "Create after restart", puts: [putCard("d", card("x")), put("y", item())] });
+  s = reopened.snapshot();
+  assert.deepEqual([s.decisions.d!.num, s.items.y!.num], [4, 5]);
+  assert.deepEqual(parse(await readFile(join(dir, "numbers.yaml"), "utf8")), { next: 6 });
+});
+
+test("a failed creation issues no number and leaves the counter file as it was", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("x", item())] });
+  const internals = store as unknown as { git(args: string[], author?: string): Promise<string> };
+  const original = internals.git.bind(store);
+  t.mock.method(internals, "git", (args: string[], author?: string) => args.includes("commit") ? Promise.reject(new Error("commit failed")) : original(args, author));
+  await assert.rejects(store.commit({ author: "a", message: "Create", puts: [put("y", item())] }), /commit failed/);
+  assert.deepEqual(parse(await readFile(join(dir, "numbers.yaml"), "utf8")), { next: 2 });
+  t.mock.restoreAll();
+  await store.commit({ author: "a", message: "Create", puts: [put("y", item())] });
+  assert.equal(store.snapshot().items.y!.num, 2);
+});
+
+test("startup refuses duplicate numbers, a counter not above the highest number, and numbers without a counter", async t => {
+  for (const [name, change, error] of [
+    ["duplicate", async (dir: string) => { await writeFile(join(dir, "items/y.yaml"), (await readFile(join(dir, "items/y.yaml"), "utf8")).replace(/^num: 2$/m, "num: 1")); }, /number 1 is held by item x, item y/],
+    ["counter at max", async (dir: string) => { await writeFile(join(dir, "numbers.yaml"), "next: 3\n"); }, /next 3 is not above the highest issued number 3/],
+    ["counter below max", async (dir: string) => { await writeFile(join(dir, "numbers.yaml"), "next: 2\n"); }, /next 2 is not above the highest issued number 3/],
+    ["missing counter", async (dir: string) => { await git(dir, "rm", "-q", "numbers.yaml"); }, /numbers.yaml is missing while documents hold numbers up to 3/],
+  ] as const) await t.test(name, async t => {
+    const { dir, store } = await setup(t);
+    await store.commit({ author: "a", message: "Create", puts: [put("x", item()), put("y", item()), putCard("c", card("x"))] });
+    await change(dir);
+    await git(dir, "-c", "user.name=P", "-c", "user.email=p@example.invalid", "commit", "-qam", "Hand edit");
+    const head = await git(dir, "rev-parse", "HEAD");
+    await assert.rejects(Store.open(dir), error);
+    assert.equal(await git(dir, "rev-parse", "HEAD"), head, "nothing is repaired or committed");
+  });
+});
+
+test("startup numbers documents written before numbers existed once, oldest first, changing nothing else", async t => {
+  const { dir, store } = await setup(t);
+  // A board as the previous version wrote it: no num fields and no counter.
+  await store.commit({ author: "a", message: "Old data", puts: [
+    put("late", { ...item("Late"), created: "2026-10-11T03:00:00Z" }), put("early", { ...item("Early"), created: "2026-10-11T01:00:00Z" }),
+    put("b-tie", { ...item("Tie"), created: "2026-10-11T02:00:00Z" }), put("a-tie", { ...item("Tie"), created: "2026-10-11T02:00:00Z" }),
+    put("undated", { ...item("Undated"), updated: "2026-10-11T00:30:00Z" }),
+    putCard("card", card("early", { at: "2026-10-11T01:30:00Z" })), putCard("ruled", card("early", { status: "ruled", ruling: "Done", updated: "2026-10-11T04:00:00Z" })),
+  ] });
+  const strip = async (path: string) => writeFile(join(dir, path), (await readFile(join(dir, path), "utf8")).replace(/^num: \d+\n/m, ""));
+  for (const id of ["late", "early", "b-tie", "a-tie", "undated"]) await strip(`items/${id}.yaml`);
+  for (const id of ["card", "ruled"]) await strip(`decisions/${id}.yaml`);
+  await git(dir, "rm", "-q", "numbers.yaml");
+  await git(dir, "-c", "user.name=P", "-c", "user.email=p@example.invalid", "commit", "-qam", "Before numbers");
+  const before = await git(dir, "rev-parse", "HEAD");
+  const reopened = await Store.open(dir);
+  const s = reopened.snapshot();
+  const order = ["undated", "early", "card", "a-tie", "b-tie", "late", "ruled"];
+  assert.deepEqual(order.map(id => (s.items[id] ?? s.decisions[id])!.num), [1, 2, 3, 4, 5, 6, 7], "creation time order, ties broken by key");
+  assert.deepEqual(parse(await readFile(join(dir, "numbers.yaml"), "utf8")), { next: 8 });
+  const log = await git(dir, "log", "--format=%an%x00%s", `${before}..HEAD`);
+  assert.equal(log, "wf-board\0Number existing items and cards", "one numbering commit");
+  // Lossless: apart from num and the revision every document is byte-for-byte the same as before.
+  for (const path of [...["late", "early", "b-tie", "a-tie", "undated"].map(id => `items/${id}.yaml`), "decisions/card.yaml", "decisions/ruled.yaml"]) {
+    const was = parse(await git(dir, "show", `${before}:${path}`)) as Record<string, unknown>;
+    const now = parse(await readFile(join(dir, path), "utf8")) as Record<string, unknown>;
+    const { num, rev, ...rest } = now;
+    assert.ok(typeof num === "number");
+    assert.equal(rev, (was.rev as number) + 1);
+    assert.deepEqual({ ...rest, rev: was.rev }, was, path + " changes only num and rev");
+  }
+  assert.deepEqual((await git(dir, "diff", "--name-only", before, "HEAD")).split("\n").sort(), [
+    "decisions/card.yaml", "decisions/ruled.yaml", "items/a-tie.yaml", "items/b-tie.yaml", "items/early.yaml", "items/late.yaml", "items/undated.yaml", "numbers.yaml"]);
+  // The numbering commit starts no active time, and a second start finds nothing to number.
+  assert.equal(s.activity!.writes.length, (await reopened.log()).length - 1, "every commit but the numbering counts as board activity");
+  const head = await git(dir, "rev-parse", "HEAD");
+  await Store.open(dir);
+  assert.equal(await git(dir, "rev-parse", "HEAD"), head);
 });

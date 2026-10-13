@@ -15,7 +15,7 @@ import { rules } from "../src/rules.ts";
 import { rules as legacyRules } from "../src/legacy-rules.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
 import { ops } from "../src/ops.ts";
-import { Store, readPlanData } from "../src/store.ts";
+import { Store, readPlanData, NUMBERING_MESSAGE } from "../src/store.ts";
 const at="2026-10-13T01:00:00Z", since="2026-10-12T01:00:00Z";
 function item(fields: Record<string,unknown>={}) { return LegacyItem.parse({title:"Work",group:"P",head:"**问题**：Some problem\n\n**完成条件**：CI passes\n\n**何时**：Today",status:"todo",priority:"P1",log:[{at:since,by:"P",text:"original"}],updated:at,rev:2,...fields}); }
 function snapshot(): LegacySnapshot{return {board:LegacyBoard.parse({title:"Synthetic",projects:[{name:"P",migrated:true},{name:"Q",migrated:true}]}),items:{root:item()},decisions:{},notes:{},notices:{},glossaries:{},owner:{archived:{}},head:"a".repeat(40)};}
@@ -153,7 +153,7 @@ test("approved startup migration is one atomic commit, preserves raw history and
  const dryReport=parse(await readFile(reportFile,"utf8"));assert.equal(dryReport.sourceHead,head);
  await assert.rejects(git(process.execPath,["src/convert-plans-cli.ts","--data",dir,"--report",reportFile]),/approved-head/);
  await assert.rejects(Store.open(dir),/owner-approved/);await assert.rejects(Store.open(dir,{planConversionHead:"b".repeat(40)}),/differs/);assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);
- const store=await Store.open(dir,{planConversionHead:head});const history=await store.log({since:head});assert.equal(history.length,1);assert.equal(history[0]!.author,"总管");assert.equal(history[0]!.message,PLAN_CONVERSION_MESSAGE);assert.ok(history[0]!.files.includes("import/plan-conversion.yaml"));
+ const store=await Store.open(dir,{planConversionHead:head});const all=await store.log({since:head});assert.equal(all[0]!.message,NUMBERING_MESSAGE,"the converted board is then numbered once");const history=all.slice(1);assert.equal(history.length,1);assert.equal(history[0]!.author,"总管");assert.equal(history[0]!.message,PLAN_CONVERSION_MESSAGE);assert.ok(history[0]!.files.includes("import/plan-conversion.yaml"));
  assert.ok("deps"in(await store.show("item","root",head)as object));assert.ok("plan"in(await store.showCompared("item","root",head)as object));
  assert.deepEqual((await store.comparisonSnapshot(head)).items.root!.plan,store.snapshot().items.root!.plan);const report=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8"));assert.equal(report.sourceHead,head);assert.deepEqual(report.errors,[]);assert.match(report.summary,/均已保留/);assert.doesNotMatch(report.summary,/等待独立保留校验/);
  assert.equal((await Store.open(dir)).snapshot().head,store.snapshot().head);
@@ -246,7 +246,7 @@ test("summary gives Chinese cause counts and claims preservation only after succ
  await assert.rejects(Store.open(dir,{planConversionHead:head}));assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);assert.equal(await readFile(join(dir,"state/owner.yaml"),"utf8"),originalOwner);assert.deepEqual(await readFile(join(dir,"items/root.yaml")),originalItem);assert.equal((await git("git",["diff","--cached","--name-only"],{cwd:dir})).stdout.trim(),"");await assert.rejects(readFile(join(dir,"import/plan-conversion.yaml")),{code:"ENOENT"});
  await rm(join(dir,".git/hooks/pre-commit"));
  const store=await Store.open(dir,{planConversionHead:head}),report=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8"));assert.equal(report.counts.droppedArchives,1);assert.equal(Object.hasOwn(store.snapshot().owner,"archived"),false);assert.equal(store.snapshot().owner.cursor,baseline);assert.equal(Object.hasOwn(parse(await readFile(join(dir,"state/owner.yaml"),"utf8")),"archived"),false);assert.match(report.summary,/均已保留/);assert.doesNotMatch(report.summary,/等待独立保留校验/);
- const history=await store.log({since:head});assert.equal(history.length,1);assert.ok(history[0]!.files.includes("state/owner.yaml"));assert.equal(Object.hasOwn(parse((await git("git",["show",`${history[0]!.commit}:state/owner.yaml`],{cwd:dir})).stdout),"archived"),false);assert.equal((await store.show("item","root",head)as {updated:string}).updated,oldAt);
+ const all=await store.log({since:head});assert.equal(all[0]!.message,NUMBERING_MESSAGE,"the converted board is then numbered once");const history=all.slice(1);assert.equal(history.length,1);assert.ok(history[0]!.files.includes("state/owner.yaml"));assert.equal(Object.hasOwn(parse((await git("git",["show",`${history[0]!.commit}:state/owner.yaml`],{cwd:dir})).stdout),"archived"),false);assert.equal((await store.show("item","root",head)as {updated:string}).updated,oldAt);
 });
 
 

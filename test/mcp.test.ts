@@ -352,3 +352,33 @@ test("MCP set_pause is coordinator-only and paused status works in list and over
   const resumed = await client.callTool({ name: "set_pause", arguments: { author: "总管", id: "area", paused: false } });
   assert.ok(!resumed.isError, text(resumed)); assert.equal(store.snapshot().items.area!.paused, undefined);
 });
+
+test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Number test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const s = store.snapshot(), call = async (name: string, args: Record<string, unknown>) => {
+    const result = await client.callTool({ name, arguments: args });
+    return { error: result.isError === true, text: (result.content as Array<{ text: string }>)[0]!.text };
+  };
+  // The seed creates area, other, a, b, then the cards choice and ruled: one sequence in creation order.
+  assert.deepEqual([s.items.area!.num, s.items.a!.num, s.decisions.choice!.num, s.decisions.ruled!.num], [1, 3, 5, 6]);
+  for (const ref of ["#3", "3"]) {
+    const item = await call("context", { id: ref });
+    assert.equal(item.error, false, item.text); assert.match(item.text, /^a · .*· #3$/m, ref + " resolves to item a and its row ends with its number");
+  }
+  const card = await call("context", { id: "#5" });
+  assert.equal(card.error, false, card.text); assert.match(card.text, /^choice · OPEN · 中文方案？ · rev 1 · #5$/m);
+  assert.match((await call("context", { id: "a" })).text, /^a · .*· #3$/m);
+  assert.match((await call("graph", { id: "#4", direction: "up" })).text, /^item:b #4 · /m);
+  assert.match((await call("list", {})).text, /^area · .*· #1$/m);
+  assert.match((await call("context", { id: "#99" })).text, /Unknown id #99/);
+  assert.equal((await call("context", { id: "#3x" })).error, true, "a malformed number reference is refused by the schema");
+  // A key made of digits names that document, not the number.
+  await op.createItem({ author, key: "1", owner: "area", title: "Digits key", accept: "ok" });
+  assert.match((await call("context", { id: "1" })).text, /^1 · .*Digits key.*· #7$/m);
+  assert.match((await call("context", { id: "#1" })).text, /^area · /m);
+  const brief = JSON.parse((await call("brief", { project: "Whitefoot" })).text) as { cards: Array<{ id: string; num?: number }> };
+  assert.equal(brief.cards.find(c => c.id === "choice")?.num, 5);
+});

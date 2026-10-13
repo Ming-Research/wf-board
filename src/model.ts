@@ -10,6 +10,21 @@ export const Time = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{
 /** An item or decision key, which is also its file name. */
 export const Key = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);
 
+/**
+ * A permanent short number for an item or a decision card, so the owner can name one as "#812". Items and cards share
+ * one sequence. Only the store issues numbers, in creation order, and never reuses or reassigns one; keys stay the
+ * identity everywhere else. Optional on read only for data written before numbers existed, which the store numbers once.
+ */
+export const Num = z.number().int().positive();
+/** The store's persisted counter, numbers.yaml: the number the next new item or card receives. */
+export const Numbers = z.object({ next: Num }).strict();
+export type Numbers = z.infer<typeof Numbers>;
+/** The number a short-number reference names, "#812" or "812", or undefined for any other text. */
+export function numRef(text: string): number | undefined {
+  const m = /^#?([1-9]\d{0,14})$/.exec(text.trim());
+  return m ? Number(m[1]) : undefined;
+}
+
 export const STATUSES = ["todo", "wip", "blocked", "paused", "done", "cancelled"] as const;
 export const Status = z.enum(STATUSES);
 export type Status = z.infer<typeof Status>;
@@ -106,6 +121,7 @@ export type Ask = z.infer<typeof Ask>;
  * derived from its plan; cancellation alone is stored as a status.
  */
 export const Item = z.object({
+  num: Num.optional(),
   title: z.string().min(1),
   request: z.object({ by: z.string().min(1), at: Time }).strict().optional(),
   group: z.string().min(1),
@@ -149,6 +165,7 @@ export const DECISION_STATUSES = ["open", "ruled", "withtree", "elsewhere"] as c
 
 /** A decision card. Its place on the board is `item` alone; an item's cards are derived. */
 export const Decision = z.object({
+  num: Num.optional(),
   item: Key,
   question: z.string().min(1),
   background: z.string().min(1),

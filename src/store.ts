@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, Numbers, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
@@ -19,7 +19,8 @@ import { rules } from "./rules.ts";
 export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
-export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport }
+/** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
+export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
 export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
@@ -30,6 +31,9 @@ const collections = { item: "items", decision: "decisions", note: "notes", notic
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, notice: Key, glossary: GlossaryId };
 const run = promisify(execFile);
+/** The persisted short-number counter (model.ts Numbers). */
+const numbersPath = "numbers.yaml";
+export const NUMBERING_MESSAGE = "Number existing items and cards";
 
 // History grows for the lifetime of the daemon. Retain recent parsed documents,
 // but fewer much larger whole boards; normalization is needed at format
@@ -233,6 +237,9 @@ export class Store {
   /** Last known placement also resolves later changes to notes on a deleted card. */
   private readonly cardItems = new Map<string, string>();
   private pauseHistory?: PauseHistoryMarker;
+  /** The next short number to issue; numbers.yaml holds it once any number was issued. */
+  private nextNum = 1;
+  private numbersInHead = false;
   private pauseHistoryPath?: string;
   // Keep a defensive frozen copy, never expose mutable transaction state. Owner
   // reads can change without a commit, and startup replaces the activity index.
@@ -344,10 +351,17 @@ export class Store {
       ownerFileExists = true;
       owner = await load("state/owner.yaml", OwnerState) ?? owner;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    let numbers: Numbers | undefined;
+    try {
+      await stat(join(dir, numbersPath));
+      numbers = await load(numbersPath, Numbers);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (invalid.length || !board) throw new ValidationError(invalid);
+    checkNumbers(docs, numbers);
     const store = new Store(dir, { board, ...docs, owner, head: "" });
+    if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", "items", "decisions", "notes", "notices", "glossaries"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "notices", "glossaries"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
     store.state.head = (await store.git(["rev-parse", "HEAD"])).trim();
     // Owner state can legitimately be newer than HEAD after a daemon restart.
@@ -356,6 +370,7 @@ export class Store {
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
     await store.migrateCoordinator();
+    await store.numberExisting();
     await store.loadActivity();
     return store;
   }
@@ -394,11 +409,26 @@ export class Store {
     }, puts, deletes });
   }
 
+  /** Give every unnumbered item and card a short number, oldest first, in one commit. On a board written before
+   * numbers existed this numbers everything once; afterwards every document already has one and nothing happens.
+   * Only `num` (and the revision) changes on each document. */
+  private async numberExisting(): Promise<void> {
+    const pending: Array<{ kind: "item" | "decision"; id: string; at: string; doc: Item | Decision }> = [];
+    for (const [id, doc] of Object.entries(this.state.items)) if (doc.num === undefined) pending.push({ kind: "item", id, at: doc.created ?? doc.updated, doc });
+    for (const [id, doc] of Object.entries(this.state.decisions)) if (doc.num === undefined) pending.push({ kind: "decision", id, at: doc.at ?? doc.updated, doc });
+    if (!pending.length) return;
+    pending.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) || (a.kind === b.kind ? 0 : a.kind === "item" ? -1 : 1));
+    await this.commit({ author: "wf-board", message: NUMBERING_MESSAGE, numberExisting: true,
+      puts: pending.map(({ kind, id, doc }) => ({ kind, id, doc, expectRev: doc.rev })) });
+  }
+
   /** Activity is a derived index of the existing history, including replaced and deleted documents. */
   private async loadActivity(): Promise<void> {
     const activity: NonNullable<Snapshot["activity"]> = { writes: [], items: {} };
     const commits = (await this.log()).reverse();
     for (const commit of commits) {
+      // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
+      if (commit.message === NUMBERING_MESSAGE) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -647,6 +677,7 @@ export class Store {
       if ((current?.rev ?? null) !== op.expectRev) throw new ConflictError(op.kind, op.id, op.expectRev, current);
     }
     const invalid: InvalidDocument[] = [];
+    let nextNum = this.nextNum;
     for (const put of txn.puts ?? []) {
       const path = docPath(put.kind, put.id);
       const records = next[collections[put.kind]] as Record<string, Doc>;
@@ -656,7 +687,16 @@ export class Store {
       const alias = Object.keys(records).find(id => id !== put.id && id.toLowerCase() === put.id.toLowerCase());
       if (alias) throw new ValidationError([{ path, issues: `ID ${put.id} conflicts with ${alias} (letter case only)` }]);
       try {
-        const input = typeof put.doc === "object" && put.doc !== null && !Array.isArray(put.doc) ? put.doc : {};
+        const input: Record<string, unknown> = typeof put.doc === "object" && put.doc !== null && !Array.isArray(put.doc) ? { ...put.doc } : {};
+        // Short numbers: only this queue issues them, so two documents never share one; a document keeps its number.
+        if (put.kind === "item" || put.kind === "decision") {
+          const issued = (before as Item | Decision | null)?.num, given = input.num;
+          if (issued !== undefined) {
+            if (given !== undefined && given !== issued) throw new ValidationError([{ path, issues: `num: ${put.kind} ${put.id} keeps its number ${issued}; it cannot become ${String(given)}` }]);
+            input.num = issued;
+          } else if (given !== undefined) throw new ValidationError([{ path, issues: "num: only the store issues numbers" }]);
+          else if (before === null || txn.numberExisting) input.num = nextNum++;
+        }
         const after = validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path);
         if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
@@ -694,6 +734,8 @@ export class Store {
     const reportPath = "import/plan-conversion.yaml";
     const priorReport = txn.planConversionReport ? await readFile(join(this.dir, reportPath), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }) : undefined;
     if (txn.planConversionReport) paths.push(reportPath);
+    const numbersChanged = nextNum !== this.nextNum;
+    if (numbersChanged) paths.push(numbersPath);
     if ((await this.git(["diff", "--cached", "--name-only"])).trim()) throw new Error("Refusing to commit an already staged index");
     this.writing = true;
     let event: Change;
@@ -705,6 +747,7 @@ export class Store {
         else atomicWrite(path, changed[i]!.after);
       }
       if (txn.planConversionReport) { mkdirSync(join(this.dir, "import"), { recursive: true }); atomicWrite(join(this.dir, reportPath), txn.planConversionReport); }
+      if (numbersChanged) atomicWrite(join(this.dir, numbersPath), validated(Numbers, { next: nextNum }, numbersPath));
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
       await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message], txn.author);
@@ -731,6 +774,10 @@ export class Store {
         if (priorReport === undefined) rmSync(join(this.dir, reportPath), { force: true });
         else writeFileSync(join(this.dir, reportPath), priorReport);
       }
+      if (numbersChanged) {
+        if (this.numbersInHead) await this.git(["restore", "--source=HEAD", "--worktree", "--", numbersPath]);
+        else rmSync(join(this.dir, numbersPath), { force: true });
+      }
       if (this.ownerPending()) this.writeOwner();
       throw error;
     } finally {
@@ -752,6 +799,7 @@ export class Store {
       this.savePauseHistory({ version: 1, head: next.head, first: this.pauseHistory.first ?? (introduced ? next.head : null) });
     }
     this.state = next;
+    if (numbersChanged) { this.nextNum = nextNum; this.numbersInHead = true; }
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }
     // An observer cannot turn a committed transaction into an apparent failure.
     for (const listener of this.listeners) { try { listener(event); } catch { /* observer owns its error handling */ } }
@@ -942,6 +990,19 @@ export class Store {
   }
 }
 
+/** Refuse a board whose numbers could repeat: two documents sharing one, a counter not above every issued number, or
+ * numbers without their counter. Never repaired silently; the owner decides how to fix the data. */
+function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numbers | undefined): void {
+  const holders = new Map<number, string[]>();
+  for (const [kind, collection] of [["item", docs.items], ["decision", docs.decisions]] as const)
+    for (const [id, doc] of Object.entries(collection)) if (doc.num !== undefined) holders.set(doc.num, [...holders.get(doc.num) ?? [], `${kind} ${id}`]);
+  const problems = [...holders].filter(([, ids]) => ids.length > 1).map(([num, ids]) => `number ${num} is held by ${ids.join(", ")}`);
+  const max = Math.max(0, ...holders.keys());
+  if (numbers === undefined && max > 0) problems.push(`${numbersPath} is missing while documents hold numbers up to ${max}`);
+  if (numbers !== undefined && numbers.next <= max) problems.push(`${numbersPath} next ${numbers.next} is not above the highest issued number ${max}`);
+  if (problems.length) throw new Error(`Short numbers are inconsistent; refusing to start:\n${problems.join("\n")}`);
+}
+
 /** Transient reader for the CLI and startup migration; all data-file IO stays in Store. */
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
@@ -964,7 +1025,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml","items","decisions","notes","notices","glossaries"],{cwd:dir});
+  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","notices","glossaries"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;

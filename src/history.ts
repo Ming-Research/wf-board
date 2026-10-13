@@ -4,6 +4,7 @@ import { setImmediate } from "node:timers/promises";
 import { changedItemSteps, stepsChanged } from "./legacy-rules.ts";
 import type { Item as LegacyItem } from "./legacy-model.ts";
 import type { Store, DocKind, CommitInfo } from "./store.ts";
+import { NUMBERING_MESSAGE } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
@@ -154,7 +155,8 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
     // page/MCP requests throughout a long cold history walk.
     await setImmediate();
     // An owner action breaks consecutiveness even though it is not a step.
-    if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE) { previous = undefined; continue; }
+    // Format migrations (the plan conversion, numbering existing documents) are not news to the owner.
+    if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE || commit.message === NUMBERING_MESSAGE) { previous = undefined; continue; }
     const docs: Step["docs"] = commit.files.flatMap(file => {
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];

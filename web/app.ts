@@ -67,6 +67,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let ruledOpen: Record<string, boolean> = {};
   try { ruledOpen = JSON.parse(localStorage.getItem("board-ruled") || "{}") || {}; } catch (e) { ruledOpen = {}; }
   function saveRuled() { try { localStorage.setItem("board-ruled", JSON.stringify(ruledOpen)); } catch (e) {} }
+  // A card its own item's plan names unfolds inline under that plan row; collapsed until opened, remembered per card.
+  let inlineOpen: Record<string, boolean> = {};
+  try { inlineOpen = JSON.parse(localStorage.getItem("board-inline-cards") || "{}") || {}; } catch (e) { inlineOpen = {}; }
+  function saveInline() { try { localStorage.setItem("board-inline-cards", JSON.stringify(inlineOpen)); } catch (e) {} }
+  function inPlan(d: Decision & { id: string }) { return !!index().byId.get(d.item)?.plan.some(row => "card" in row && row.card === d.id); }
+  function inlineShown(d: Decision & { id: string }) { return inPlan(d) && !!inlineOpen[d.id]; }
+  function planRowId(item: string, row: string) { return "plan-" + encodeURIComponent(JSON.stringify([item, row])); }
   function ruledShown(d: ViewDecision) { return Object.prototype.hasOwnProperty.call(ruledOpen, d.id) ? !!ruledOpen[d.id] : cardFresh(d); }
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
@@ -434,7 +441,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (d.kind === "decision") { card = d.id; item = snapshot.decisions[d.id]?.item || null; }
       if (d.kind === "note") { const n = snapshot.notes[d.id]; notes = n?.target; if (notes?.startsWith("q:")) { card = notes.slice(2); item = snapshot.decisions[card]?.item || null; } else item = notes?.slice(3) || null; }
       const row = item !== null && place.has(item) ? place.get(item)! : Number.MAX_SAFE_INTEGER;
-      const cardRank = card ? 1 + Math.max(0, item ? derived.cardsOf(item).indexOf(card) : 0) : 0;
+      // Page order inside an item: the item, the cards its plan unfolds (in plan order), its own comments, then its other cards.
+      const planned = item ? (snapshot.items[item]?.plan ?? []).filter(row => "card" in row && snapshot.decisions[row.card]?.item === item).map(row => (row as {card:string}).card) : [];
+      const cardRank = card ? planned.includes(card) ? 1 + planned.indexOf(card) : 1 + planned.length + 1 + Math.max(0, item ? derived.cardsOf(item).indexOf(card) : 0) : d.kind === "note" ? 1 + planned.length : 0;
       merged.set(key, { key, step: step.id, doc: d, kinds: docKinds(d), sel: d.kind === "item" ? "it:" + d.id : d.kind === "decision" ? "q:" + d.id : "note:" + d.id, item, card, notes,
         at: [row, cardRank, d.kind === "note" ? 1 : 0, row === Number.MAX_SAFE_INTEGER ? k : 0] });
     }));
@@ -470,7 +479,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       openPath(it.id);
       selectItem(it.id);
     }
-    if (target.card) { const d=index().decById.get(target.card); if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); } }
+    if (target.card) {
+      const d=index().decById.get(target.card);
+      if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); }
+      // A card its item's plan names is reached unfolded under its plan row.
+      if (d && inPlan(d) && !inlineOpen[d.id]) { inlineOpen[d.id]=true; saveInline(); }
+    }
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
     scheduleRender(...(target.card ? ["card:"+target.card] : []),...(comments ? ["notes:"+comments] : []));
@@ -1013,13 +1027,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A dependency in another project names that project; within the project no label is needed.
     const where = groupOf(d) !== groupOf(from) ? groupOf(d) || "其他" : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
-      '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>"
+      statusChip(d, st)
       + '<span class="prio ' + (pr ? pr.toLowerCase() : "none") + '">' + (pr || "P?") + "</span>"
       + (where ? '<span class="where">' + inline(where) + "</span>" : "")
       + '<span class="t">' + inline(d.title) + "</span>" + (extra ? '<span class="where">' + extra + "</span>" : ""));
     b.type = "button";
     b.addEventListener("click", ev => { ev.stopPropagation(); follow(d.id); });
     return b;
+  }
+  // An item's status chip shows its short number; the chip's colour carries the status, which its tooltip names.
+  // A paused item keeps the ◌ mark. An item without a number (data not yet numbered) shows the status word.
+  function chipText(it: Item, st: string) {
+    return it.num === undefined ? STATUS[st] || st : (st === "paused" ? "◌ " : "") + it.num;
+  }
+  function statusChip(it: Item, st: string) {
+    return '<span class="st ' + st + '"' + (it.num === undefined ? "" : ' title="' + esc(STATUS[st] || st) + '"') + ">" + esc(chipText(it, st)) + "</span>";
   }
   function cardTag(id: string, d: Decision | undefined) {
     return !d ? '<span class="st cancelled">已删除</span>'
@@ -1037,11 +1059,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const out: Found[] = [];
       for (const it of state.items) {
         const st = statusOf(it) ?? "record", parent = upItem(it);
-        out.push({ kind: "item", key: it.id, title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>" });
+        out.push({ kind: "item", key: it.id, ...(it.num === undefined ? {} : { num: it.num }), title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: statusChip(it, st) });
       }
       for (const d of state.decisions) {
         const home = index().byId.get(d.item);
-        out.push({ kind: "card", key: d.id, title: plain(firstLine(d.question)) || "决策", project: home ? groupOf(home) : "", parent: home ? plain(home.title) : "", tag: cardTag(d.id, d) });
+        out.push({ kind: "card", key: d.id, ...(d.num === undefined ? {} : { num: d.num }), title: plain(firstLine(d.question)) || "决策", project: home ? groupOf(home) : "", parent: home ? plain(home.title) : "", tag: cardTag(d.id, d) });
       }
       return out;
     });
@@ -1091,7 +1113,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = el("div", "searchbox"), list = el("div", "search-list");
     box.id = "search"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "搜索条目和决策卡");
     const input = document.createElement("input");
-    input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题"; input.setAttribute("aria-label", "搜索条目和决策卡的标题");
+    input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题或编号"; input.setAttribute("aria-label", "搜索条目和决策卡的标题或编号");
     box.appendChild(input); box.appendChild(list);
     const found = targetList(list, t => { closeSearch(); jumpTo(t.kind, t.key); }, "searchrow");
     const update = () => {
@@ -1579,7 +1601,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const stored = value.row, accept = "accept" in stored && stored.accept;
       const row = el("div", "plan-row " + stateClass(value) + (accept ? " accept" : "") + (fon("progress") && changed.has(stored.id) ? " newbar" : ""));
       row.dataset.sel = "row:" + it.id + "@" + stored.id;
-      row.id = "plan-" + encodeURIComponent(JSON.stringify([it.id, stored.id]));
+      row.id = planRowId(it.id, stored.id);
       if (current === row.dataset.sel) row.classList.add("cur");
       row.appendChild(el("span", "g", value.glyph));
       const main = el("div", "plan-main");
@@ -1609,10 +1631,30 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
           ? '<span class="waittag" title="' + esc(card.blocks) + '">阻塞</span>'
           : '<span class="asktag">决策卡</span>'));
-        main.appendChild(ref("card", stored.card, card?.question || stored.card));
+        const home = card && card.item === it.id ? index().decById.get(stored.card) : undefined;
+        if (home) {
+          // The card's own item: the question unfolds the whole card under this row instead of jumping to it.
+          const toggle = el("a", "plan-link cardtoggle", esc(plain(firstLine(card!.question)) || stored.card)); toggle.href = "#";
+          toggle.setAttribute("aria-expanded", String(inlineShown(home)));
+          toggle.title = inlineShown(home) ? "收起这张决策卡" : "展开这张决策卡";
+          toggle.addEventListener("click", ev => {
+            ev.preventDefault(); ev.stopPropagation();
+            inlineOpen[home.id] = !inlineShown(home); saveInline();
+            toggle.setAttribute("aria-expanded", String(inlineOpen[home.id])); toggle.title = inlineOpen[home.id] ? "收起这张决策卡" : "展开这张决策卡";
+            // Opening selects the card, so c and m act on it; closing leaves the reader where it was.
+            if (inlineOpen[home.id]) jump("q-" + home.id); else renderNow("card:" + home.id);
+          });
+          main.appendChild(toggle);
+        } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);
       return row;
+    };
+    // An unfolded card of this item follows its row.
+    const appendRow = (parent: HTMLElement, value: typeof rows[number]) => {
+      parent.appendChild(renderRow(value));
+      const stored = value.row, d = "card" in stored ? index().decById.get(stored.card) : undefined;
+      if (d && d.item === it.id && inlineShown(d)) parent.appendChild(decisionCard(d));
     };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
@@ -1621,10 +1663,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     const renderUnit = (unit: typeof units[number]) => {
       const group = groups.get(unit.start);
-      if (!group) { box.appendChild(renderRow(rows[unit.start]!)); return; }
+      if (!group) { appendRow(box, rows[unit.start]!); return; }
       const bracket = el("div", "plan-group"); bracket.setAttribute("role", "group"); bracket.setAttribute("aria-label", "可同时进行");
       bracket.appendChild(el("div", "plan-group-label", "可同时进行"));
-      rows.slice(unit.start,unit.end).forEach(row => bracket.appendChild(renderRow(row))); box.appendChild(bracket);
+      rows.slice(unit.start,unit.end).forEach(row => appendRow(bracket, row)); box.appendChild(bracket);
     };
     units.forEach(renderUnit);
     return box;
@@ -1756,11 +1798,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const d = index().decById.get(q);
           const label = d ? (d.question || "决策") : "决策";
           const talk = d ? notesOf("q:" + q).filter(listed).length : 0;
-          const b = el("button", "ref q" + (openQ(q) ? " open" : "") + (d && d.status !== "open" && ruledShown(d) ? " shown" : ""), esc(label.length > 24 ? label.slice(0, 24) + "…" : label) + (d && d.status !== "open" && d.ruling ? " · " + esc(d.ruling.length > 18 ? d.ruling.slice(0, 18) + "…" : d.ruling) : "") + (talk ? " · 评论 " + talk : ""));
+          const b = el("button", "ref q" + (openQ(q) ? " open" : "") + (d && (inPlan(d) ? inlineShown(d) : d.status !== "open" && ruledShown(d)) ? " shown" : ""), esc(label.length > 24 ? label.slice(0, 24) + "…" : label) + (d && d.status !== "open" && d.ruling ? " · " + esc(d.ruling.length > 18 ? d.ruling.slice(0, 18) + "…" : d.ruling) : "") + (talk ? " · 评论 " + talk : ""));
           b.type = "button";
           b.title = d ? (d.status === "open" ? "待你决定" : "点开查看这张已结束的决策卡和它的评论") : "";
           b.addEventListener("click", () => {
             if (!d) return;
+            if (inPlan(d)) { const show = !inlineShown(d); inlineOpen[q] = show; saveInline(); if (show) jump("q-"+q); else renderNow("card:"+q); return; }
             if (d.status !== "open") { const show = !ruledShown(d); ruledOpen[q] = show; saveRuled(); if (show) jump("q-"+q); else renderNow("card:"+q); return; }
             jump("q-" + q);
           });
@@ -1822,7 +1865,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // that document and use the same current reference targets for comparison.
     const beforeRules = before ? rules({ ...snapshot, items: { ...snapshot.items, [it.id]: before } }) : undefined;
     const beforeStatus = beforeRules?.statusOf(it.id) ?? (before ? "record" : undefined);
-    head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(STATUS[st] || st)));
+    head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     const pr = priorityOf(it);
     head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
@@ -1898,7 +1941,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const terms = itemTerms(it.id);
       const targets = targetsSection(it, before); if (targets) body.appendChild(targets);
       const plan = planSection(it, before, terms); if (plan) body.appendChild(plan);
-      body.appendChild(itemComments(it));
+      // Progress first, then the stable head, then the owner's comments on it, then the log.
       if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it)),terms)));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
@@ -1906,11 +1949,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const list = el("div", "deplists"); list.appendChild(el("div", "k", "被依赖"));
         ws.forEach(row => list.appendChild(depRow(row,it))); body.appendChild(list);
       }
+      body.appendChild(itemComments(it));
       body.appendChild(logSection(it, terms));
-      // The owner's request and decision cards follow its progress and optional log history.
+      // The owner's request and the cards its plan does not name follow its progress and optional log history.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);
-      cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
-      ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
+      cardsUnder(it).filter(d => !inPlan(d)).forEach(d => body.appendChild(decisionCard(d)));
+      ruledUnder(it).filter(d => !inPlan(d) && ruledShown(d)).forEach(d => body.appendChild(decisionCard(d)));
       if (ck.length) {
         const cb = el("div", "checks");
         ck.forEach(c => { const r = el("div", null, "需核对：" + esc(c.text) + " "); if (c.target) r.appendChild(depLink(c.target)); cb.appendChild(r); });
@@ -2009,6 +2053,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
     else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
     if (closed) h.appendChild(el("span", "closedtag" + (before && before.status !== d.status ? " chg-add" : ""), d.ruling ? "已裁定" : "已结束"));
+    if (d.num !== undefined) h.appendChild(el("span", "cardnum", String(d.num))).title = "决策卡编号";
     if (proseBlocks(d.question).length > 1) {
       h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),linkTerms(markedBlocks(before?.question,d.question),terms)));
     } else appendTitle(h,d.question || "",before === null ? null : before?.question,"",terms);
@@ -2019,7 +2064,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     top.appendChild(h);
     if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
-      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); renderNow(homeOf(d) ? "item:"+d.item : "cards"); });
+      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); if (inPlan(d)) { inlineOpen[d.id] = false; saveInline(); } renderNow(homeOf(d) ? "item:"+d.item : "cards"); });
       top.appendChild(x);
     }
     c.appendChild(top);
@@ -2151,6 +2196,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function reconcileCard(id:string) {
     const d=index().decById.get(id), old=get("q-"+id);
+    if (d && inPlan(d)) {
+      // An inline card lives right after its plan row, only while unfolded and its item's body is shown.
+      const row=bodyShown(d.item) ? get(planRowId(d.item,id)) : null, parent=row?.parentElement;
+      const toggle=row?.querySelector<HTMLElement>(".cardtoggle");
+      if (toggle) { toggle.setAttribute("aria-expanded",String(inlineShown(d))); toggle.title=inlineShown(d) ? "收起这张决策卡" : "展开这张决策卡"; }
+      if (!row || !parent || !inlineShown(d)) old?.remove();
+      else {
+        const next=decisionCard(d);
+        old?.remove();
+        parent.insertBefore(next,[...parent.children][[...parent.children].indexOf(row)+1] || null);
+      }
+      get("decisions").hidden=!get("cards").children.length;
+      return;
+    }
     const home=d ? homeOf(d) : null, item=home ? itemBox(home) : null;
     const container=d && (home ? bodyShown(home) && item?.querySelector<HTMLElement>(":scope > .body") : get("cards"));
     if (!d || !container || d.status !== "open" && !ruledShown(d)) { old?.remove(); }
@@ -2159,7 +2218,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const after=last ? [...container.children][[...container.children].indexOf(last)+1] || null : [...container.children].find(e => e.classList.contains("checks") || e.classList.contains("refs")) || null;
       const next=decisionCard(d);
       if (old && old.parentElement === container) old.replaceWith(next); else { old?.remove(); container.insertBefore(next,after); }
-      const ids=home ? [...cardsUnder(index().byId.get(home)!),...ruledUnder(index().byId.get(home)!).filter(ruledShown)].map(d => d.id) : state.decisions.filter(d => !homeOf(d) && (d.status === "open" || ruledShown(d))).sort(byOrder).map(d => d.id);
+      const ids=home ? [...cardsUnder(index().byId.get(home)!),...ruledUnder(index().byId.get(home)!).filter(ruledShown)].filter(d => !inPlan(d)).map(d => d.id) : state.decisions.filter(d => !homeOf(d) && (d.status === "open" || ruledShown(d))).sort(byOrder).map(d => d.id);
       const cards=ids.map(id => get("q-"+id)).filter((e):e is HTMLElement => !!e && e.parentElement === container);
       cards.forEach(card => container.insertBefore(card,after));
     }
