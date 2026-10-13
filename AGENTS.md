@@ -92,11 +92,11 @@ code skips this section.
 
 ### Stalled items
 
-The board flags an item in progress whose subtree has not changed for two
-hours of active time. Active time counts only stretches in which some session
-wrote to the board,
-so a usage pause, Claude Code being closed or a network outage stops every
-item's clock at once. A stalled item's card offers: start a session for it,
+The board flags a leaf item in progress that has not changed for two hours
+of active time. A moment is active when some session wrote to the board in
+the 30 minutes before it, so a usage pause, Claude Code being closed or a
+network outage stops every item's clock together, 30 minutes after the last
+write. A stalled item's card offers: start a session for it,
 assign it to a named live session, or move it back to not started.
 
 ### Usage windows
