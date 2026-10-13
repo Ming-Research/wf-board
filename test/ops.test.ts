@@ -809,3 +809,105 @@ test("every ownership attachment triages pending requests atomically and records
     await assert.rejects(op.triageRequest({ author, id: "incoming", log: "Triage again" }), /not an open request/);
   });
 });
+
+test("coordinator pause and resume are atomic, server-stamped and preserve every plan row", async t => {
+  const { store, op, dir } = await board(t);
+  await op.clearAsk({ author, id: "a", log: "Owner already approved" });
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Implementation", state: "doing" } });
+  const before = store.snapshot(), plans = Object.fromEntries(Object.entries(before.items).map(([id, it]) => [id, it.plan]));
+  const statuses = Object.fromEntries(["area", "a", "b"].map(id => [id, rules(before).statusOf(id)]));
+  const count = (await store.log()).length;
+  const result = await op.setPause({ author: "总管", id: "area", paused: true, reason: "  Owner paused the project  " });
+  const paused = store.snapshot();
+  assert.equal((await store.log()).length, count + 1);
+  assert.equal(result.commit, paused.head);
+  assert.deepEqual(paused.items.area!.paused, { reason: "Owner paused the project", at: later });
+  assert.deepEqual(paused.items.area!.log.at(-1), { at: later, by: "总管", text: "暂停：Owner paused the project" });
+  for (const id of ["area", "a", "b"]) assert.equal(rules(paused).statusOf(id), "paused");
+  assert.deepEqual(Object.fromEntries(Object.entries(paused.items).map(([id, it]) => [id, it.plan])), plans);
+  assert.deepEqual((await Store.open(dir)).snapshot().items.area!.paused, paused.items.area!.paused);
+  await op.setPause({ author: "总管", id: "a", paused: false });
+  assert.equal(store.snapshot().head, paused.head, "resuming an inherited pause changes nothing");
+  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner paused the project" });
+  assert.equal(store.snapshot().head, paused.head, "repeating the same pause adds no commit or log");
+  await op.setPause({ author: "总管", id: "area", paused: false });
+  const resumed = store.snapshot();
+  assert.equal((await store.log()).length, count + 2);
+  assert.equal(resumed.items.area!.paused, undefined);
+  assert.deepEqual(resumed.items.area!.log.at(-1), { at: later, by: "总管", text: "恢复" });
+  for (const id of ["area", "a", "b"]) assert.equal(rules(resumed).statusOf(id), statuses[id]);
+  assert.deepEqual(Object.fromEntries(Object.entries(resumed.items).map(([id, it]) => [id, it.plan])), plans);
+});
+
+test("pause refusals preserve memory, disk and commits for authors, missing reason and closed or record targets", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createItem({ author, group: author, key: "record-pause", title: "Record", record: true });
+  await op.createItem({ author, group: author, key: "done-pause", title: "Done", priority: "P1", accept: "Done accepted" });
+  await op.setPlan({ author, id: "done-pause", rows: [{ id: "accept", accept: true, text: "Done accepted", state: "done" }] });
+  await op.createItem({ author, group: author, key: "cancel-pause", title: "Cancelled", priority: "P1", accept: "Cancelled accepted" });
+  await op.setStatus({ author, id: "cancel-pause", status: "cancelled", log: "No longer needed" });
+  const cases: Array<[Parameters<Ops["setPause"]>[0], RegExp]> = [
+    [{ author, id: "a", paused: true, reason: "No permission" }, /author.*only 总管/],
+    [{ author, id: "a", paused: false }, /author.*only 总管/],
+    [{ author: "总管", id: "a", paused: true }, /reason.*required/],
+    [{ author: "总管", id: "a", paused: true, reason: "   " }, /reason.*(nonempty|required)/],
+    [{ author: "总管", id: "record-pause", paused: true, reason: "Record" }, /record cannot be paused/],
+    [{ author: "总管", id: "record-pause", paused: false }, /record cannot be paused/],
+    [{ author: "总管", id: "done-pause", paused: true, reason: "Done" }, /done or cancelled/],
+    [{ author: "总管", id: "cancel-pause", paused: true, reason: "Cancelled" }, /done or cancelled/],
+    [{ author: "总管", id: "done-pause", paused: false }, /done or cancelled/],
+    [{ author: "总管", id: "cancel-pause", paused: false }, /done or cancelled/],
+  ];
+  const before = store.snapshot(), count = (await store.log()).length;
+  for (const [input, refusal] of cases) {
+    await assert.rejects(op.setPause(input), refusal);
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+});
+
+test("project cancellation and record conversion cannot clear an owner pause", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, group: author, key: "pause-cancel", title: "Work", priority: "P1", accept: "Check", plan: [{ id: "doing", text: "Implementation", state: "doing" }] });
+  await op.setPause({ author: "总管", id: "pause-cancel", paused: true, reason: "Parked" });
+  const paused = store.snapshot().items["pause-cancel"]!, plan = paused.plan, marker = paused.paused;
+  await op.setStatus({ author, id: "pause-cancel", status: "cancelled", log: "No longer needed" });
+  assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "cancelled");
+  assert.deepEqual(store.snapshot().items["pause-cancel"]!.paused, marker, "cancellation does not clear the owner's pause");
+  assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
+  await op.setStatus({ author, id: "pause-cancel", status: "open", log: "Needed again" });
+  assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "paused", "reopening cannot silently resume the owner's pause");
+  await op.setPause({ author: "总管", id: "pause-cancel", paused: false });
+  assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "wip");
+  assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
+  await op.setPause({ author: "总管", id: "a", paused: true, reason: "Parked" });
+  const before = store.snapshot(), count = (await store.log()).length;
+  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), /record.*owner pause.*owner or 总管.*set_pause/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.equal((await store.log()).length, count);
+  await op.setPause({ author: "总管", id: "a", paused: false });
+  await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, record: true });
+  assert.equal(store.snapshot().items.a!.paused, undefined);
+  assert.equal(store.snapshot().items.a!.record, true);
+});
+
+test("only the coordinator can clear a retained pause after work completes or is cancelled", async t => {
+  const { store, op } = await board(t);
+  for (const state of ["done", "cancelled"] as const) {
+    const id = `pause-closed-${state}`;
+    await op.createItem({ author, group: author, key: id, title: "Closed work", priority: "P1", accept: "Check" });
+    await op.setPause({ author: "总管", id, paused: true, reason: "Owner paused" });
+    if (state === "done") await op.setPlan({ author, id, rows: [{ id: "accept", accept: true, text: "Check", state: "done" }] });
+    else await op.setStatus({ author, id, status: "cancelled", log: "Not needed" });
+    const before = store.snapshot(), plan = before.items[id]!.plan;
+    assert.equal(rules(before).statusOf(id), state);
+    assert.ok(before.items[id]!.paused, "ordinary closure retains the owner's marker");
+    await assert.rejects(op.setPause({ author, id, paused: false }), /only 总管/);
+    assert.deepEqual(store.snapshot(), before);
+    await op.setPause({ author: "总管", id, paused: false });
+    assert.equal(store.snapshot().items[id]!.paused, undefined);
+    assert.equal(rules(store.snapshot()).statusOf(id), state);
+    assert.deepEqual(store.snapshot().items[id]!.plan, plan);
+  }
+});

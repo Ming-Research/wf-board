@@ -102,7 +102,11 @@ export interface Rules {
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
   statusOf(id: string): Status | undefined;
-  /** Open work directly owned by any record has no root or priority role. */
+  /** Nearest explicit pause on this item or its same-project ownership chain. */
+  pausedBy(id: string): string | undefined;
+  /** Effective pause on open work; done and cancelled always win. */
+  isPaused(id: string): boolean;
+  /** Open work directly owned by a record has no root or stored-priority role. */
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
@@ -213,6 +217,19 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function lineOf(id: string): string { return ancestors(id).at(-1) || id; }
+  function pausedBy(id: string): string | undefined {
+    return cached("pausedBy", id, () => {
+      const seen = new Set<string>(), group = item(id)?.group;
+      for (let current: string | undefined = id; current && !seen.has(current); current = parentOf(current)) {
+        seen.add(current);
+        const it = item(current);
+        if (!it || it.group !== group) break;
+        if (!it.record && it.paused) return current;
+      }
+      return undefined;
+    });
+  }
+  function isPaused(id: string): boolean { return statusOf(id) === "paused"; }
   function groupOf(id: string): string { return item(id)?.group || ""; }
   function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
@@ -223,7 +240,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     }
     return include ? ordered() : cached("areas", "", ordered);
   }
-  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded"> {
+  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded"> & { paused?: boolean } {
     if ("text" in row) return {
       state: row.state === "doing" ? "progress" : row.state === "todo" ? "open" : "resolved",
       dropped: row.state === "dropped", excluded: row.state === "dropped",
@@ -233,17 +250,18 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     if (!target) return { state: "waiting", dropped: false, excluded: false };
     if (target.record) return { state: "resolved", dropped: false, excluded: row.own };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
-    const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" ? "waiting" : status === "wip" ? "progress" : "open";
-    return { state, dropped, excluded: dropped };
+    const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
+    return { state, dropped, excluded: dropped, paused: status === "paused" };
   }
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
     const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
     for (const row of item(id)?.plan ?? []) {
       const preceding = row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
-      const derived = rowState(row, seen);
+      const { paused, ...derived } = rowState(row, seen);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
-      const glyph = derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
+      const glyph = paused ? "◌"
+        : derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
       const entry = { row, ...derived, ready, level, glyph };
       out.push(entry); byId.set(row.id, entry);
     }
@@ -278,7 +296,9 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     const rows = planRowsWalk(id, seen);
     seen.delete(id);
     const frontier = rows.filter(row => row.ready);
-    const status = !rows.length ? "todo" : rows.every(row => row.state === "resolved") ? "done"
+    const status = rows.length && rows.every(row => row.state === "resolved") ? "done"
+      : pausedBy(id) ? "paused"
+      : !rows.length ? "todo"
       : rows.some(row => row.state === "progress") ? "wip"
       : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
@@ -344,7 +364,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       for (let changed = true; changed;) {
         changed = false;
         for (const id of ids) {
-          const r = Math.min(rankOf(id), ...waiters(id).filter(isOpenWork).map(rankOf));
+          const r = Math.min(rankOf(id), ...waiters(id).filter(waiter => isOpenWork(waiter) && !isPaused(waiter)).map(rankOf));
           if (r < rankOf(id)) { rank.set(id, r); changed = true; }
         }
       }
@@ -408,9 +428,22 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function stalled(id: string): boolean {
+    if (isPaused(id)) return false;
     const { intervals, changed } = activity(), since = changed.get(id) ?? -Infinity;
     if (!Number.isFinite(since)) return false;
-    return intervals.reduce((total, [start, end]) => total + Math.max(0, end - Math.max(start, since)), 0) >= STALLED_AFTER_MS;
+    const pauses: Array<[number, number]> = [];
+    const recorded = (s.activity?.pauses?.[id] ?? []).map(pause => [Date.parse(pause.start), pause.end ? Date.parse(pause.end) : now] as [number, number])
+      .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start).sort((a, b) => a[0] - b[0]);
+    for (const [start, end] of recorded) {
+      const previous = pauses.at(-1);
+      if (previous && previous[1] >= start) previous[1] = Math.max(previous[1], end);
+      else pauses.push([start, end]);
+    }
+    return intervals.reduce((total, [start, end]) => {
+      const from = Math.max(start, since);
+      const paused = pauses.reduce((sum, [pauseStart, pauseEnd]) => sum + Math.max(0, Math.min(end, pauseEnd) - Math.max(from, pauseStart)), 0);
+      return total + Math.max(0, end - from) - paused;
+    }, 0) >= STALLED_AFTER_MS;
   }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
@@ -429,6 +462,9 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
+      if (st === "paused") for (const waiter of waiters(id)) {
+        if (isOpenWork(waiter) && !isPaused(waiter)) out.push({ text: `暂停了，但 ${item(waiter)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter } });
+      }
       if (!it.record) {
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
         if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
@@ -448,7 +484,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, isStatusLeaf, statusOf, isBacklog, isRoot, priorityOf,
+    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

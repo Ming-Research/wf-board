@@ -158,7 +158,8 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
   const levels = r.planRows(id).map(p => p.level), seen = new Set<number>(), repeated = new Set<number>();
   for (let i = 0; i < levels.length; i++) if (levels[i] !== levels[i - 1]) { if (seen.has(levels[i]!)) repeated.add(levels[i]!); seen.add(levels[i]!); }
-  return { ...row(s, r, "item", id), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+  const pauseOwner = r.pausedBy(id), pause = pauseOwner ? s.items[pauseOwner]?.paused : undefined;
+  return { ...row(s, r, "item", id), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)),
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
@@ -182,10 +183,10 @@ export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "
   }
   return { id, ...(options.direction !== "down" ? { up: walk(rootKind, id, "up", depth, new Set()) } : {}), ...(options.direction !== "up" ? { down: walk(rootKind, id, "down", depth, new Set()) } : {}) };
 }
-export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
+export function overview(s: Snapshot, r: Rules, f: { group?: string; status?: Status[] } = {}) {
   const areas = r.areas().filter(id => (f.group === undefined || r.groupOf(id) === f.group) && !["done", "cancelled"].includes(r.statusOf(id) ?? "")).map(id => {
-    const rows = list(s, r, { under: id, limit: Object.keys(s.items).length });
-    const leaves = list(s, r, { under: id, status: [...STATUSES], limit: Object.keys(s.items).length }).filter(it => r.isStatusLeaf(it.id));
+    const rows = list(s, r, { under: id, status: f.status, limit: Object.keys(s.items).length });
+    const leaves = list(s, r, { under: id, status: f.status ?? [...STATUSES], limit: Object.keys(s.items).length }).filter(it => r.isStatusLeaf(it.id));
     const counts = Object.fromEntries(STATUSES.map(st => [st, leaves.filter(it => it.status === st).length])) as Record<Status, number>;
     const area = row(s, r, "item", id);
     return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
@@ -198,7 +199,7 @@ export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
     const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && !r.isRequest(id));
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
-      openItems: Object.fromEntries((["todo", "wip", "blocked"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
+      openItems: Object.fromEntries((["todo", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
   });
 }
 function requestRow(s: Snapshot, r: Rules, id: string) {
@@ -226,12 +227,13 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     notes: sentNotes(s,r).filter(n => n.project === project),
     checks: ids.map(id => ({ id, title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
-    wip: eligible.filter(id => r.isOpenWork(id) && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
-    todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
+    paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
+    wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
+    todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
   };
-  const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.outgoing].map(item => item.id));
+  const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
   const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
     .map(id => ({ id, title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };

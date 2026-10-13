@@ -23,6 +23,7 @@ export interface Ops {
   setTargets(a: { author: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
+  setPause(a: { author: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
@@ -80,7 +81,7 @@ interface Work { moved?: string[]; id: string; kind: Put["kind"] | "board"; mess
 function requiredCheckItems(before: Snapshot, after: Snapshot, work: Work, oldRules: ReturnType<typeof rules>, newRules: ReturnType<typeof rules>): Set<string> {
   if (work.board) return new Set(Object.keys(after.items));
   const affected = new Set<string>();
-  const itemInputs = (it: Item | undefined) => it && { group: it.group, record: it.record, status: it.status, plan: it.plan, ask: it.ask };
+  const itemInputs = (it: Item | undefined) => it && { group: it.group, record: it.record, status: it.status, paused: it.paused, plan: it.plan, ask: it.ask };
   const noteInputs = (note: Note | undefined) => note && { target: note.target, kind: note.kind, state: note.state, text: note.text, answerText: note.answerText };
   const card = (key: string) => {
     for (const s of [before, after]) { const owner = s.decisions[key]?.item; if (owner) affected.add(owner); }
@@ -99,6 +100,9 @@ function requiredCheckItems(before: Snapshot, after: Snapshot, work: Work, oldRu
       }
     }
   }
+  // Ownership changes and pause markers can change every descendant's effective
+  // pause without writing that descendant. Follow both ownership trees first.
+  for (const id of affected) for (const r of [oldRules, newRules]) for (const child of r.children(id)) affected.add(child);
   // Set iteration visits newly added members too, giving a transitive closure.
   for (const id of affected) for (const r of [oldRules, newRules]) for (const waiter of r.dependents(id)) affected.add(waiter.id);
   const checked = new Set(affected);
@@ -433,6 +437,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = { ...it, updated: at, log: [...it.log] };
       for (const key of ["title", "head", "links", "priority", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
+        if (it.paused) throw new OpError("record: this item carries an owner pause; ask the owner or 总管 to resume it with set_pause before changing it to a record");
         if (a.accept !== undefined) throw new OpError("accept: refused for a record");
         const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
         doc.plan = (it.plan ?? []).filter(row => !("accept" in row && row.accept)); delete doc.status;
@@ -455,6 +460,23 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.status === "cancelled") { doc.status = "cancelled"; delete doc.request; } else delete doc.status;
       return doc;
     }, false, ` ${a.status}`),
+    setPause: a => run(a, (s, at) => {
+      if (a.author !== "总管") throw new OpError("author: only 总管 or the owner page may pause or resume an item");
+      if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
+      const it = requireItem(s, a.id);
+      if (it.record) throw new OpError("paused: a record cannot be paused or resumed");
+      const closed = ["done", "cancelled"].includes(rules(s).statusOf(a.id) ?? "");
+      if (closed && (a.paused || !it.paused)) throw new OpError("paused: done or cancelled items cannot be paused or resumed unless clearing an existing owner pause");
+      if (a.paused && (typeof a.reason !== "string" || !a.reason.trim())) throw new OpError("reason: required when pausing an item");
+      if (a.reason !== undefined && typeof a.reason !== "string") throw new OpError("reason: provide text");
+      const reason = a.reason?.trim();
+      const unchanged = a.paused ? it.paused?.reason === reason : !it.paused;
+      const doc = unchanged ? it : { ...it, updated: at, log: [...it.log, entry(a.author, at, a.paused ? `暂停：${reason}` : "恢复")] };
+      if (!unchanged) {
+        if (a.paused) doc.paused = { reason: reason!, at }; else delete doc.paused;
+      }
+      return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)] };
+    }, false, true),
     moveItem: a => run(a, (s, at) => {
       ownedItem(s, a.id, a.author);
       if (a.owner && a.priority) throw new OpError("priority: refused with owner");

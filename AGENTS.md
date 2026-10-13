@@ -61,6 +61,9 @@ matches what the artifact board offered.
   and at least one acceptance step where the check happens, usually before
   merge or release rows. Status comes from the plan; `set_status`
   only cancels or reopens an item. `move_item` changes the item's owner.
+- Only the owner page or `总管` uses `set_pause` to pause or resume work,
+  with a reason when pausing. It preserves every plan row, applies through
+  same-project ownership, and stops priority propagation and stalled clocks.
 - Records have no acceptance step and pass no priority. Open work owned by
   a record stores no priority, but derives the highest priority from open
   shared dependents, or none without them. Record ownership passes none.
@@ -111,7 +114,9 @@ code skips this section.
 
 The board flags a work item with its own doing plan step that has not
 changed for one hour of active time; progress derived only from owned items
-is flagged on those items, without a separate ancestor clock. A moment is active when some session wrote to the board in
+is flagged on those items, without a separate ancestor clock. Effectively
+paused work has no stalled flag, and its paused intervals do not count toward
+active time. A moment is active when some session wrote to the board in
 the 30 minutes before it, so a usage pause, Claude Code being closed or a
 network outage stops every item's clock together, 30 minutes after the last
 write. A stalled item's card offers: start a session for it,

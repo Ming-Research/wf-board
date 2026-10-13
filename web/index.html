@@ -152,6 +152,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-row.done > .g { color: var(--done); }
 .plan-row.wip > .g { color: var(--wip); }
 .plan-row.blocked > .g { color: var(--block); }
+.plan-row.paused > .g { color: var(--muted); }
 .plan-row.todo > .g { color: var(--todo); }
 .plan-row.dropped { color: var(--muted); text-decoration: line-through; }
 .plan-main { grid-column: 2; min-width: 0; }
@@ -233,6 +234,10 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .item.todo { --bar: var(--bar-todo); }
 .item.cancelled { --bar: var(--bar-cancel); }
 .item.blocked { --bar: var(--bar-block); }
+.item.paused { --bar: var(--bar-cancel); }
+.pause-control { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; font-size: 12px; }
+.pause-reason { color: var(--muted); }
+.pause-input { min-width: 0; width: 200px; max-width: 100%; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 6px; font: inherit; }
 .item.cancelled .item-title { color: var(--muted); text-decoration: line-through; }
 .item.done .item-title { color: var(--muted); }
 .item.cur, .card.cur { background: var(--cur); }
@@ -248,14 +253,14 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .caret { font-family: var(--font-mono); font-size: 12px; color: var(--muted); width: 1em; flex: none; }
 .st { font-family: var(--font-mono); font-size: 12px; padding: 0 7px; border-radius: 4px; line-height: 1.7; white-space: nowrap; }
 .st { padding: 0 7px; display: inline-block; min-width: calc(5ch + 14px); text-align: center; border-radius: 4px; }
-.st.todo, .st.cancelled { background: var(--todo-soft); }
+.st.todo, .st.cancelled, .st.paused { background: var(--todo-soft); }
 .st.wip { background: var(--wip-soft); }
 .st.blocked { background: var(--block-soft); }
 .st.done { background: var(--done-soft); }
 .st.wip { color: var(--wip); font-weight: 700; }
 .st.done { color: var(--done); font-weight: 600; }
 .st.todo { color: var(--todo); font-weight: 600; }
-.st.cancelled { color: var(--muted); font-weight: 600; }
+.st.cancelled, .st.paused { color: var(--muted); font-weight: 600; }
 .st.blocked { color: var(--block); font-weight: 700; }
 .blocktag { font-size: 12px; font-weight: 600; background: var(--bar-block); color: #fff; padding: 0 6px; border-radius: 4px; }
 .prio { font-family: var(--font-mono); font-size: 12px; font-weight: 700; padding: 0 6px; border-radius: 4px; line-height: 1.7; color: #fff; }

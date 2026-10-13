@@ -11,7 +11,7 @@ type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
-  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP", record: "记录" };
+  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
@@ -75,6 +75,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let treeWidth: number | null = null;
   try { const stored=Number(localStorage.getItem("board-tree-width")); if (Number.isFinite(stored) && stored > 0) treeWidth=stored; } catch {}
   let selectedItem: string | null = null;
+  let pauseEditing: string | null = null;
+  const pauseReasons = new Map<string,string>();
+  const pauseBusy = new Set<string>();
   try { selectedItem = localStorage.getItem("board-selected"); } catch {}
   let selectionRestored = false, detailDirty = true;
   function rememberSelected(id: string | null) {
@@ -289,6 +292,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const STATUS_FILTERS: Filter[] = [
     ["wip", "进行中", "进行中的条目", it => statusOf(it) === "wip"],
     ["blocked", "卡住", "卡住的条目", it => statusOf(it) === "blocked"],
+    ["paused", "暂停", "由主人暂停的条目，包括暂停条目的下级", it => statusOf(it) === "paused"],
     ["todo", "未开始", "还没开始的条目，包括部分完成但没人在做的", it => statusOf(it) === "todo"],
     ["done", "完成", "所有完成的条目", it => statusOf(it) === "done"],
     ["done7", "7 天内完成", "最近 7 天完成的条目", it => statusOf(it) === "done" && Date.parse(latestOf(it)) > Date.now() - WEEK],
@@ -1499,10 +1503,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
 
-    const n: Record<string,number> = { wip: 0, blocked: 0, todo: 0, done: 0, cancelled: 0 };
+    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, todo: 0, done: 0, cancelled: 0 };
     state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
-    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
-      .filter(([k]) => (k !== "cancelled" && k !== "blocked") || n[k])
+    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
+      .filter(([k]) => (k !== "cancelled" && k !== "blocked" && k !== "paused") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
     view.appendChild(stats);
     view.appendChild(nav);
@@ -1566,7 +1570,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const heading = el("div", "log-head", "计划和进展");
     if (it.provisional && !isCancelled(it)) heading.appendChild(el("span", "checktag", "待重写"));
     heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total)); box.appendChild(heading);
-    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
+    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : "item" in row.row && derived.isPaused(row.row.item) ? "paused" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
     const ref = (kind: "item" | "card", id: string, title: string) => {
       const link = el("a", "plan-link itemref", esc(plain(title))); link.href = "#"; link.dataset.ref = (kind === "item" ? "it:" : "q:") + id;
       return link;
@@ -1623,6 +1627,65 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       rows.slice(unit.start,unit.end).forEach(row => bracket.appendChild(renderRow(row))); box.appendChild(bracket);
     };
     units.forEach(renderUnit);
+    return box;
+  }
+  function pauseControl(it: ViewItem) {
+    // A completed source may still pause open work below an owned record.
+    // Its existing marker can be cleared; closed work can never gain one.
+    if (it.record || ended(it) && !it.paused) return null;
+    const box = el("div", "pause-control");
+    const button = (cls: string, text: string, title: string, onClick: () => void) => {
+      const control = el("button", "sbtn s-plain " + cls, text); control.type = "button"; control.title = title;
+      control.addEventListener("click", onClick); return control;
+    };
+    const source = derived.pausedBy(it.id), pause = source ? snapshot.items[source]?.paused : undefined;
+    if (pause) {
+      const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
+      if (source !== it.id) {
+        reason.appendChild(document.createTextNode(" · 由「"));
+        const ancestor = index().byId.get(source!);
+        if (ancestor) reason.appendChild(depLink(ancestor));
+        reason.appendChild(document.createTextNode("」暂停，请在该条目恢复"));
+      }
+      box.appendChild(reason);
+    }
+    // Inherited pauses are resumed at their source; clearing a child's local
+    // marker never clears an ancestor's pause.
+    const write = async (paused: boolean, reason?: string) => {
+      if (!connected) { showDisconnected(); return; }
+      if (pauseBusy.has(it.id)) return;
+      pauseBusy.add(it.id); renderNow("item:" + it.id);
+      try {
+        await api("/api/pause", {id:it.id,paused,...reason ? {reason} : {}});
+        if (pauseEditing === it.id) pauseEditing = null;
+        pauseReasons.delete(it.id);
+      } catch (error) { showError(error); }
+      finally { pauseBusy.delete(it.id); renderNow("item:" + it.id); }
+    };
+    if (it.paused) {
+      const resume = button("pause-resume", "恢复", "恢复此条目的计划，保留所有计划行", () => write(false));
+      resume.disabled = pauseBusy.has(it.id); box.appendChild(resume);
+    } else if (pauseEditing === it.id) {
+      const input = el("input", "pause-input"); input.type = "text";
+      input.value = pauseReasons.get(it.id) || "";
+      input.placeholder = "暂停原因"; input.setAttribute("aria-label", "暂停原因");
+      input.disabled = pauseBusy.has(it.id);
+      input.addEventListener("input", () => pauseReasons.set(it.id,input.value));
+      const confirm = button("pause-confirm", "确认暂停", "暂停此条目及其下级，保留计划", () => {
+        const reason = input.value.trim();
+        if (!reason) { showError(new Error("请填写暂停原因")); input.focus(); return; }
+        return write(true,reason);
+      });
+      confirm.disabled = pauseBusy.has(it.id);
+      const cancel = button("pause-cancel", "取消", "", () => { pauseEditing = null; pauseReasons.delete(it.id); renderNow("item:"+it.id); });
+      cancel.disabled = pauseBusy.has(it.id);
+      box.appendChild(input); box.appendChild(confirm); box.appendChild(cancel);
+    } else if (!source) {
+      box.appendChild(button("pause-start", "暂停", "由主人暂停此条目及其下级，保留计划", () => {
+        pauseEditing = it.id; renderNow("item:" + it.id);
+        itemBox(it.id)?.querySelector<HTMLInputElement>(".pause-input")?.focus();
+      }));
+    }
     return box;
   }
   function itemComments(it: ViewItem) {
@@ -1816,7 +1879,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       // Done and cancelled parts are not counted on the row: only what is still open.
-      ["todo", "wip", "blocked"].forEach(k => { if (n[k]) {
+      ["todo", "wip", "blocked", "paused"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
         count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);
@@ -1824,6 +1887,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
+    if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
       const body = el("div", "body");
@@ -2062,7 +2126,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       };
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),derived.pausedBy(id),snapshot.items[derived.pausedBy(id) || ""]?.paused,it.paused,deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
       const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;
