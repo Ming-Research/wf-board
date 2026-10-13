@@ -1181,7 +1181,7 @@ test("prose and priority updates preserve sibling cards and owned rows remain in
   assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-child","it-sibling"],"owned order never follows changed priority");
   p.emit("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,plan:planWork([],"done")}}]); await p.flush();
   assert.equal(rowOf(p,"area").querySelector(".counts .done"),null,"a finished part is not counted on its owner's row");
-  const todoCount=rowOf(p,"area").querySelector(".counts .todo")!; assert.equal(todoCount.innerHTML,"1"); assert.equal(todoCount.attributes["aria-label"],"TODO 1");
+  const open=rowOf(p,"area").querySelectorAll(".counts .st"); assert.equal(open.length,1,"the sibling still open is counted"); assert.equal(open[0]!.innerHTML,"1");
 });
 test("send waits for optimistic draft acknowledgement and refuses to send a failed draft", async t => {
   for(const failed of [false,true]) await t.test(failed ? "failure" : "acknowledgement",async()=> {
