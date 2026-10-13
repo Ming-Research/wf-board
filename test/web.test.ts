@@ -2532,7 +2532,8 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
   assert.ok(p.all().some(e=>e.innerHTML === "决策卡 1 ›"));
   const t=waitSnapshot(), q=await page(t,[]);
   await button(q,"阻塞 3 ›").click(); await q.flush();
-  assert.ok(q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is the ask on the P0 item, which opens in the detail");
+  // The walk follows board order (area before hot), blocking waits first: the first stop is the older card on child.
+  assert.ok(q.all().some(e=>e.id === "detail-it-child") && !q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is a blocking card on child, which opens in the detail");
 });
 test("top controls: 未读 labels the second row with 进展, 其他 and 全部已阅; 评论回复 sits in the first row; the view row has no label", async () => {
   const s=snapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
@@ -2599,7 +2600,8 @@ test("要你知道 lists unread notices newest first, 已读 hides one through t
   assert.equal(rows.length,2); assert.match(markup(rows[0]!),/新的/); assert.match(markup(rows[0]!),/Firn/); assert.match(markup(rows[1]!),/旧的/);
   assert.ok(!markup(section()!).includes("已读的"));
   assert.ok(rows[0]!.children.some(e=>e.className.includes("notice-item")),"a notice with an item links to it");
-  assert.ok(p.roots.get("summary")!.children.indexOf(section()!) >= 1);
+  const kids=p.roots.get("summary")!.children;
+  assert.ok(kids.includes(section()!) && kids.indexOf(section()!) < kids.length-1,"the list is a direct child of the summary, above the view row");
   await rows[0]!.children.find(e=>e.className.includes("notice-read"))!.click();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/notice-read").map(c=>c.body),[{id:"n2"}]);
   await p.change("f".repeat(40),[{kind:"notice",id:"n2",after:{...s.notices.n2!,read:at,rev:2}}]); await p.flush();

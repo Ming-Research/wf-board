@@ -405,11 +405,12 @@ and send box remain available.
 In tree rows, the blue new-content chip, the filled dark purple chip (blocking
 waits in the item and below it, asks included) and the filled dark red chip
 (waiting cards without `blocks`, in the item and below it) show only their
-numbers; a chip whose count is 0 is absent. Their tooltips and accessibility
-labels retain their full meaning, and a purple or red chip leads to the first
-such wait. The purple differs from the light-purple 卡住 status styling, which
-is unchanged. Every 新 chip shows only its number, including detail headlines
-and cards. The existing ☰ menu help keeps its shortcut sentence and explains
+numbers; a chip whose count is 0 is absent. Their tooltips and
+accessibility labels retain their full meaning, and a purple or red chip leads
+to the first such wait. The purple differs from the light-purple 卡住 status
+styling, which is unchanged.
+Every 新 chip shows only its number, including detail headlines and cards.
+The existing ☰ menu help keeps its shortcut sentence and explains
 only the blue new-content number, the purple and red wait numbers and
 right-side status-colored leaf counts alongside its keyboard actions.
 
