@@ -15,6 +15,7 @@ const HASH: Syntax = { comment: ["#"], words: false };
 const WF: Syntax = { comment: ["//"], words: true };
 const LANGS: Record<string, Syntax> = {
   wf: WF, whitefoot: WF,
+  lua: { comment: ["--"], words: false }, llvm: { comment: [";"], words: false },
   sh: HASH, bash: HASH, shell: HASH, zsh: HASH, yaml: HASH, yml: HASH, python: HASH, py: HASH, toml: HASH,
   rust: SLASH, rs: SLASH, c: SLASH, cpp: SLASH, "c++": SLASH, go: SLASH, js: SLASH, javascript: SLASH, ts: SLASH, typescript: SLASH, java: SLASH, json: SLASH,
 };

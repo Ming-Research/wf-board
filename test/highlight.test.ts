@@ -41,6 +41,8 @@ test("another language gets comments, strings and numbers only", () => {
   assert.match(html, /<span class="tk-c">\/\/ c<\/span>/);
   assert.ok(!html.includes('tk-c">#'));
   assert.match(highlightCode("# c\nx", "sh", false), /<span class="tk-c"># c<\/span>/);
+  assert.match(highlightCode("local x = 1 -- c", "lua", false), /<span class="tk-c">-- c<\/span>/);
+  assert.match(highlightCode('; c\n"probe-stack"="inline-asm"', "llvm", false), /<span class="tk-c">; c<\/span>/);
 });
 
 test("codeBlock numbers from 3 lines, counting blank lines, and not below", () => {
