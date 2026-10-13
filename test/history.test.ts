@@ -41,6 +41,27 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
   await assert.rejects(stepDiff(store, steps[0]!, "note", "missing"), /not in this step/);
 });
 
+test("a step diff is git's own diff of the two commits, and asking again spawns no git", async t => {
+  const { store, op, dir } = await board(t), cursor = store.snapshot().head;
+  await op.setPlan({ author, id: "a", row: { id: "first", state: "todo", text: "first new entry" } });
+  await op.appendLog({ author, id: "a", text: "a log line between" });
+  await op.setPlan({ author, id: "a", row: { id: "second", state: "doing", text: "second new entry" } });
+  const [step] = await unreadSteps(store, cursor);
+  assert.ok(step && step.parent);
+  // The git path: the command the store runs, run here directly.
+  const git = (await promisify(execFile)("git", ["diff", "--no-ext-diff", "--no-textconv", step.parent, step.id, "--", "items/a.yaml"], { cwd: dir })).stdout;
+  const internals = store as unknown as { git(args: string[]): Promise<string> };
+  const spawned = t.mock.method(internals, "git");
+  const first = await stepDiff(store, step, "item", "a");
+  assert.equal(first.diff, git, "the same text git gives");
+  assert.equal(spawned.mock.calls.length, 1, "the first request runs git diff once");
+  const again = await stepDiff(store, step, "item", "a");
+  assert.equal(again.diff, git);
+  assert.equal(spawned.mock.calls.length, 1, "a repeated request is answered without git");
+  assert.equal((await store.diff("item", "b", step.parent, step.id)), "", "another path is its own entry");
+  assert.equal(spawned.mock.calls.length, 2);
+});
+
 test("multi-document writes are separate steps and deletion keeps its before document", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   await op.createItem({ author, key: "child", owner: "a", accept: "Child accepted", title: "new child" });

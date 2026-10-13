@@ -37,6 +37,10 @@ matches what the artifact board offered.
   tests call directly), bundled by esbuild.
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
   never enters this repository.
+- `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
+  collection per write, change-event bytes, peak memory) on a synthetic board
+  of the live board's size; CI runs it on this tree and on the commit the
+  branch started from, as a step that never fails the run.
 
 ## Checks
 
@@ -65,7 +69,8 @@ matches what the artifact board offered.
   request in a comment, with a reason when pausing. It preserves every plan row, applies through
   same-project ownership, and stops priority propagation and stalled clocks.
 - Tag every item with at least one tag from the vocabulary (`tags` lists
-  them with meanings; `set_tags` sets an item's whole list; `create_item`
+  them with meanings; `set_tags` sets an item's whole list; `set_tags_many`
+  sets many items' lists in one commit, the way to backfill; `create_item`
   and `create_request` take `tags`). Only `总管` changes the vocabulary
   (`set_tag`, `rename_tag`, `remove_tag`), and only after the owner approves
   the change on a decision card; the server checks the author, not the card.

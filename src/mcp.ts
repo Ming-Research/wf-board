@@ -4,7 +4,6 @@ import { Key, Time, Status, Priority, Link, Option, NOTE_KINDS, PlanRowInput, Pl
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
-import { rules } from "./rules.ts";
 import * as q from "./query.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
@@ -106,7 +105,8 @@ export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; n
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
     const snapshot = store.snapshot();
-    return { snapshot, rules: rules(snapshot, now ? Date.parse(now()) : Date.now()) };
+    // One shared Rules object per snapshot and minute (store.derived), not one per read.
+    return { snapshot, rules: store.derived.rules(snapshot, now ? Date.parse(now()) : Date.now()) };
   }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
     const schema: z.ZodObject = z.object(shape).strict();
@@ -189,6 +189,9 @@ export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; n
     author, id, rev: z.number().int().positive().describe("Revision read from context; stale writes are refused."), title: text("Replacement title.").optional(), head: text("Replacement context.").optional(), reason: text("Why head changed.").optional(), record: z.boolean().describe("A record has no work status or acceptance; it passes no priority.").optional(), accept: text("Acceptance for a record becoming work.").optional(), links: links.optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional(), data: clearableText("Replacement numbers; null clears."), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(),
   }, a => result(ops.updateItem(a)), true);
   register("set_tags", "Set your item's whole tag list: every tag must be in the vocabulary (tags) and apply to the item's project, at least one, no repeats. Identical lists are no-ops. No revision is required. Use it to backfill items the 缺标签 check lists.", { author, id, tags: tagList }, a => result(ops.setTags(a)), true);
+  register("set_tags_many", "Set the whole tag lists of many of your items in one commit, for backfilling the 缺标签 check: each entry is checked as set_tags checks it, and one refused entry refuses the whole write. Entries whose list is unchanged write nothing; when none changes, no commit is made.", {
+    author, items: z.array(z.object({ id, tags: tagList }).strict()).min(1).describe("Each item once, with its whole tag list."),
+  }, a => result(ops.setTagsMany(a)), true);
   register("set_tag", "Vocabulary change, only author 总管 and only after the owner approved it on a decision card: add a tag or change an existing tag's meaning or projects. meaning is one sentence telling agents when to apply the tag. projects limits the tag to those projects; null makes it apply to every project; omitted keeps the current setting (a new tag then applies to every project). Narrowing projects is refused while an item of another project carries the tag.", { author, name: TagName.describe("Short Chinese label, 1–12 characters without whitespace or commas; unique."), meaning: text("One sentence telling agents when to apply the tag."), projects: z.array(text("Configured project name.")).min(1).nullable().optional().describe("Projects that may use the tag; null for every project.") }, a => result(ops.setTag(a)), true);
   register("rename_tag", "Vocabulary change, only author 总管 and only after the owner approved it on a decision card: rename a tag and every item carrying it in one commit, logging the rename on each item.", { author, name: TagName.describe("Existing tag."), to: TagName.describe("Unused new name.") }, a => result(ops.renameTag(a)), true);
   register("remove_tag", "Vocabulary change, only author 总管 and only after the owner approved it on a decision card: remove a tag. Refused while any item carries it, unless replace names another tag that applies to all those items' projects; every carrying item then gets the replacement, in the same commit.", { author, name: TagName.describe("Existing tag."), replace: TagName.describe("Existing other tag every carrying item receives instead.").optional() }, a => result(ops.removeTag(a)), true);

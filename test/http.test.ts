@@ -13,6 +13,7 @@ import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
+import { applyActivityDelta } from "../src/rules.ts";
 
 async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
@@ -39,13 +40,16 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.equal(response.headers.get("content-type"), "text/event-stream");
   const reader = response.body!.getReader(); await reader.read();
   const event = reader.read();
+  const prior = store.snapshot();
   const written = await op.appendLog({ author, id: "a", text: "HTTP event witness" });
   const chunk = await event; const text = new TextDecoder().decode(chunk.value);
   assert.match(text, /event: change/);
   const data = JSON.parse(text.match(/data: (.+)/)![1]!);
   assert.equal(data.commit, written.commit); assert.equal(data.author, author);
-  assert.ok(data.activity.writes.length > 0, "the event includes accumulated write timestamps");
-  assert.deepEqual(data.activity, store.snapshot().activity, "live updates carry the same active-time history as the snapshot");
+  // The event carries the activity's change, not the whole growing history; applied to the snapshot before, it gives the current one.
+  assert.equal(data.activity.from, prior.head);
+  assert.equal(data.activity.writes, undefined, "the event does not carry the accumulated write timestamps");
+  assert.deepEqual(applyActivityDelta(prior.activity, data.activity), store.snapshot().activity, "live updates keep the same active-time history as the snapshot");
   assert.deepEqual(data.changed, [{ kind: "item", id: "a", after: store.snapshot().items.a }]);
   controller.abort();
   const note = await api("/api/notes", { target: "q:choice", kind: "choice", text: "选 A", choice: "A" }); assert.equal(note.status, 200);
@@ -346,6 +350,24 @@ test("a committed check wakes once, not again on unrelated commits, and again af
   await store.commit({ author, message: "Block item again", puts: [blockedItem("c")] });
   await star.sync();
   assert.deepEqual(star.frames, [expected, expected], "a check that disappeared and reappeared is announced again");
+});
+
+test("after a write the check scan rederives only the items the write can reach", async t => {
+  const { url, store, op } = await server(t);
+  const star = await wakeSocket(t, url, "*");
+  const checked: string[] = [], shared = store.derived.rules.bind(store.derived);
+  t.mock.method(store.derived, "rules", (s: Parameters<typeof shared>[0], now?: number) => {
+    const r = shared(s, now);
+    return { ...r, checks: (id: string) => { if (s === store.snapshot()) checked.push(id); return r.checks(id); } };
+  });
+  await op.appendLog({ author: "Firn", id: "other", text: "Progress elsewhere" });
+  await star.sync();
+  assert.ok(checked.includes("other"), "the written item is checked again");
+  assert.deepEqual(checked.filter(id => ["area", "a", "b"].includes(id)), [], "items the write cannot reach are not");
+  // A write that makes a check appear is still announced at once.
+  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
+  await star.sync();
+  assert.deepEqual(star.frames.filter(f => f.event === "check").map(f => f.item), ["c"]);
 });
 
 test("active time alone (one hour) raises one stalled event on the timer, and a restart announces nothing", async t => {

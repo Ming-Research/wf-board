@@ -3,7 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, Item, Note } from "./model.ts";
-import { rules, checkLabel } from "./rules.ts";
+import { checkLabel, affectedItems, changeSeeds } from "./rules.ts";
+import type { Snapshot } from "./model.ts";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -135,24 +136,30 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     const data = JSON.stringify(event);
     for (const connection of connections) if ((connection.session === "*" || event.project === connection.session) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
   }
-  // The (item, check text) pairs flagged now; a pair absent from it that appears emits one "check" event.
+  // The (item, check text) pairs flagged now, by item; a pair absent from it that appears emits one "check" event.
   // Seeded at start without emitting, so a restart does not announce every standing check.
-  let flagged = new Set<string>();
-  function scanChecks(announce: boolean, s = store.snapshot()) {
-    const r = rules(s, now()), next = new Set<string>();
-    for (const id of Object.keys(s.items)) {
-      if (!r.isOpenWork(id)) continue;
+  let flagged = new Map<string, Set<string>>();
+  // The snapshot the last scan read: a change is compared with it to find the items whose checks it can change.
+  let scanned: Snapshot | undefined;
+  /** `only`: rescan these items and keep every other item's pairs (rules affectedItems: a write changes no other item's
+   * checks; elapsed active time alone is the timer's full scan). */
+  function scanChecks(announce: boolean, s = store.snapshot(), only?: Iterable<string>) {
+    const r = store.derived.rules(s, now()), next = only ? new Map(flagged) : new Map<string, Set<string>>();
+    for (const id of only ?? Object.keys(s.items)) {
+      next.delete(id);
+      if (!Object.hasOwn(s.items, id) || !r.isOpenWork(id)) continue;
+      const pairs = new Set<string>(), was = flagged.get(id);
       for (const c of r.checks(id)) {
-        const key = JSON.stringify([id, c.text]);
-        next.add(key);
-        if (announce && !flagged.has(key)) wake({event:"check",item:id,project:r.projectOf(id),title:s.items[id]!.title,label:checkLabel(c),text:c.text});
+        pairs.add(c.text);
+        if (announce && !was?.has(c.text)) wake({event:"check",item:id,project:r.projectOf(id),title:s.items[id]!.title,label:checkLabel(c),text:c.text});
       }
+      if (pairs.size) next.set(id, pairs);
     }
-    flagged = next;
+    flagged = next; scanned = s;
   }
   scanChecks(false);
   const off = store.onChange(change => {
-    const s = store.snapshot(), r = rules(s, now());
+    const s = store.snapshot(), r = store.derived.rules(s, now());
     for (const doc of change.changed) {
       if (doc.kind === "item" && doc.before === null && (doc.after as Item | null)?.request) {
         const it = doc.after as Item;
@@ -172,8 +179,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item)});
       }
     }
-    scanChecks(true, s);
-    const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: s.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
+    // Only the items this change can reach, when the last scan read the snapshot this change was made against.
+    const before = scanned && scanned.head === change.activity.from ? store.derived.rules(scanned, now()) : undefined;
+    const seeds = before && changeSeeds(scanned!, s, before, r, change.changed, change.activity);
+    scanChecks(true, s, before && seeds ? affectedItems(before, r, seeds) : undefined);
+    // The activity index travels as its change, not whole: the page applies it to the snapshot it holds (web/app.ts).
+    const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: change.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
     for (const stream of streams) stream.write(data);
   });
   const heartbeat = setInterval(() => {
