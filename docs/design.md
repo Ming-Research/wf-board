@@ -914,9 +914,7 @@ highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 A tree row's right-hand counts show only open parts (todo, in progress,
 blocked); done and cancelled parts are not counted there, and a cancelled
-item shows no check tags. Each tree row stays on one line: caret, status glyph (✓ ● ○ ⏸ ✗ as on plan
-rows, with the status name as its tooltip; a record keeps its 记录 tag),
-priority, title, chips
+item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work
 items counts, at the right of its row, its owned descendants that own no work
