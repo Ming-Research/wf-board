@@ -31,12 +31,21 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     }
     return result;
   }
+  // This independent oracle discovers cycles through its active walk, rather
+  // than importing the production graph analysis. A result touched by a cycle
+  // guard is path-dependent and must never become a nested-target cache entry.
+  const targetStatuses=new Map<string,Status|undefined>();let cycleHits=0;
   function walk(id:string,trail:Set<string>):Status|undefined {
-    const item=snapshot.items[id];if(!item||item.record)return undefined;if(item.status==="cancelled")return "cancelled";if(trail.has(id))return "blocked";
+    const item=snapshot.items[id];if(!item||item.record)return undefined;if(item.status==="cancelled")return "cancelled";
+    if(trail.has(id)){cycleHits++;return "blocked";}
+    if(targetStatuses.has(id))return targetStatuses.get(id);
+    const before=cycleHits;
     const active=new Set(trail);active.add(id);const values=rows(id,active);
-    if(!values.length)return "todo";if(values.every(row=>row.state==="resolved"))return "done";if(values.some(row=>row.state==="progress"))return "wip";
     const frontier=values.filter(row=>row.ready);
-    return askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")?"blocked":"todo";
+    const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":values.some(row=>row.state==="progress")?"wip"
+      :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")?"blocked":"todo";
+    if(cycleHits===before)targetStatuses.set(id,status);
+    return status;
   }
   const statuses=new Map<string,Status|undefined>();
   function statusOf(id:string){if(!statuses.has(id))statuses.set(id,walk(id,new Set()));return statuses.get(id);}
@@ -46,7 +55,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
   const ranks=new Map<string,number>(), priorityRank=(priority:Priority|undefined)=>priority==="P0"?0:priority==="P1"?1:priority==="P2"?2:3;
   for(const [id,item] of Object.entries(snapshot.items))if(root(id))ranks.set(id,priorityRank(seed ? seed(id) || undefined : item.priority));
   for(let changed=true;changed;){changed=false;for(const id of Object.keys(snapshot.items)){
-    if(backlog(id))continue;const old=ranks.get(id)??3;let value=old;
+    const old=ranks.get(id)??3;let value=old;
     for(const dependent of waiters.get(id)??[])if(open(dependent))value=Math.min(value,ranks.get(dependent)??3);
     if(value<old){ranks.set(id,value);changed=true;}
   }}

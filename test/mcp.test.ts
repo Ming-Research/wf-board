@@ -202,6 +202,43 @@ test("MCP plan rows have server dates and compact levels, targets and ownership 
   assert.equal(dated.isError, true); assert.deepEqual(store.snapshot(), before);
 });
 
+test("writes answer with their produced plan state; refusals and context identify open owned parts", async t => {
+  const { client, text, store } = await connected(t);
+  const write = async (id: string, state: "todo" | "doing" | "done") => {
+    const result = await client.callTool({ name: "set_plan", arguments: { author, id, row: { id: "accept", text: "Acceptance passes", accept: true, state } } });
+    assert.equal(result.isError, undefined, text(result));
+    assert.match(text(result), new RegExp(`rev ${store.snapshot().items[id]!.rev} · commit ${store.snapshot().head}`));
+    return text(result);
+  };
+  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "choice", choice: "A", ruling: "Owner accepted" } });
+  assert.equal(ruled.isError, undefined, text(ruled));
+  const finished = await write("a", "done");
+  assert.match(finished, /^a · DONE P1/m);
+  assert.match(finished, /^ancestor area now TODO P1 \(was BLOCK P1\)$/m);
+  assert.match(await write("b", "done"), /^b · DONE P1/m);
+  assert.match(await write("area", "doing"), /^area · WIP P1/m);
+  assert.match(await write("area", "done"), /^area · DONE P1/m);
+  // Reopening one accepted row makes its owner open again; acceptance must be
+  // reopened first because completed acceptance cannot precede unresolved parts.
+  await write("area", "todo");
+  await write("a", "todo");
+  const before = store.snapshot();
+  const refused = await client.callTool({ name: "set_status", arguments: { author, id: "area", status: "cancelled", log: "Drop" } });
+  assert.equal(refused.isError, true);
+  assert.match(text(refused), /owned items are still open: a, b; cancel or move each part first/);
+  assert.deepEqual(store.snapshot(), before);
+  const context = text(await client.callTool({ name: "context", arguments: { id: "area" } }));
+  assert.match(context, /^status derived from plan$/m);
+  assert.match(context, /L0.*a \[own\].*中文检查 · blocked/);
+  assert.match(context, /L0.*b \[own\].*阻塞证据 · blocked/);
+  const dependent = text(await client.callTool({ name: "context", arguments: { id: "b" } }));
+  assert.match(dependent, /⏸ a \[shared @area\].*中文检查 · blocked/);
+  assert.match(dependent, /验收已标完成，但还有行没完成/);
+  const prs = text(await client.callTool({ name: "search", arguments: { query: "Whitefoot#341" } }));
+  assert.equal(prs.split("\n").filter(line => line.includes("without repository")).length, 1);
+  assert.match(prs, /also a bare #341 without repository.*item:b/);
+});
+
 test("MCP creates acceptance, adopts children, moves owners and cancels or reopens only", async t => {
   const { client, text, store } = await connected(t);
   const created = await client.callTool({ name: "create_item", arguments: { author, key: "new", title: "New", group: author, accept: "Pass", priority: "P0", children: ["a"] } });

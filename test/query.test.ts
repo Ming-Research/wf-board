@@ -353,13 +353,31 @@ test("context and brief show plan levels, parallel marks, acceptance and resolve
   assert.match(context.plan[1]!,/^L0 ‖ ● review /); assert.match(context.plan[1]!,/2 天.*Review committee/);
   assert.match(context.plan.at(-1)!,/◆ accept .*验收/);
   const brief=q.brief(s,r,author),current=brief.wip.find(row=>row.id==="a")!;
-  assert.ok(current.plan!.some(line=>line.includes("2 项已完成")),"brief folds done and dropped rows into a count");
+  assert.ok(current.plan!.includes("✓ 1 项已完成"),"brief counts only the done row as completed");
+  assert.ok(current.plan!.includes("✗ 1 项已放弃"),"brief counts the dropped row separately");
   assert.equal(Object.hasOwn(q.row(s,r,"item","a"),"plan"),false,"ordinary list row remains compact");
   assert.ok(q.search(s,r,"Review committee").some(hit=>hit.id==="a"&&hit.field==="plan.review"));
   assert.ok(q.search(s,r,"Alternative selected").some(hit=>hit.id==="a"&&hit.field==="plan.drop"));
   assert.ok(q.search(s,r,"验收通过").some(hit=>hit.id==="a"&&hit.field==="plan.accept"));
   assert.ok(q.prs(s,r,"Whitefoot",777).qualified.some(hit=>hit.id==="a"));
   assert.equal(q.describeChanges({plan:s.items.a!.plan},{plan:s.items.a!.plan.slice(0,-1)},"item"),"plan changed");
+});
+
+test("brief counts owned records as completed and cancelled owned items as dropped", async t => {
+  const { store } = await board(t), s = store.snapshot();
+  s.items.queue = { ...s.items.other!, group: author, record: true, plan: [
+    { id: "finished", text: "Finished work", state: "done", after: [] },
+    { id: "abandoned", text: "Abandoned work", state: "dropped", reason: "Superseded", after: [] },
+    { id: "record", item: "record", own: true, after: [] },
+    { id: "cancelled", item: "cancelled", own: true, after: [] },
+    { id: "pending", text: "Next work", state: "todo", after: [] },
+  ] };
+  s.items.record = { ...s.items.other!, group: author, record: true, plan: [] };
+  s.items.cancelled = { ...s.items.other!, group: author, status: "cancelled" };
+  const r = rules(s), progress = q.brief(s, r, author).progress.find(row => row.id === "queue");
+  assert.ok(progress);
+  assert.deepEqual(progress.plan, ["✓ 2 项已完成", "✗ 2 项已放弃", "L0 ‖ ○ pending Next work"]);
+  assert.equal(q.context(s, r, "queue").plan.length, 5, "context retains every row");
 });
 
 test("context warns about non-adjacent same-level rows without sorting them", async t => {

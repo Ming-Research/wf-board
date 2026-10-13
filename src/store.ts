@@ -73,6 +73,15 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   return result.data;
 }
 
+/** Old records can also carry retired fields; record alone does not identify a format. */
+function retiredItemShape(doc: unknown): boolean {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
+  const fields = doc as Record<string, unknown>;
+  return ["parent", "deps", "steps"].some(key => Object.hasOwn(fields, key))
+    || ["todo", "wip", "blocked", "done"].includes(String(fields.status))
+    || (fields.record !== true && !Object.hasOwn(fields, "plan"));
+}
+
 function docPath(kind: DocKind, id: string): string {
   validated(ids[kind], id, `${kind} id ${id}`);
   return `${collections[kind]}/${id}.yaml`;
@@ -642,18 +651,37 @@ export class Store {
     return this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", docPath(kind, id)]);
   }
 
+  private readonly historicalDocuments = new Map<string, Promise<unknown | null>>();
   private async readAt(path: string, commit: string): Promise<unknown | null> {
-    const blob = await this.blobs.read(`${commit}:${path}`);
-    if (blob === null) return null;
-    try { return parse(blob.toString("utf8"), { version: "1.2", schema: "core" }); }
-    catch (error) { throw new ValidationError([{ path: `${commit}:${path}`, issues: String(error) }]); }
+    const key = `${commit}:${path}`;
+    let hit = this.historicalDocuments.get(key);
+    if (!hit) {
+      hit = (async () => {
+        const blob = await this.blobs.read(key);
+        if (blob === null) return null;
+        try { return frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })); }
+        catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
+      })();
+      this.historicalDocuments.set(key, hit);
+      hit.catch(() => this.historicalDocuments.delete(key));
+    }
+    return hit;
   }
 
   async show(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
     const path = docPath(kind, id);
     const hash = await this.resolveCommit(commit);
     // A past version is returned as written: it may hold fields a later schema dropped, which history must still show.
-    return this.readAt(path, hash);
+    return structuredClone(await this.readAt(path, hash));
+  }
+
+  /** Compare like formats directly. Only an endpoint spanning the schema change
+   * needs a whole-board normalization; raw evidence remains available through show(). */
+  async comparisonDocuments(kind: DocKind, id: string, from: string | null, to: string): Promise<{ before: unknown | null; after: unknown | null }> {
+    const before = from ? await this.show(kind, id, from) : null, after = await this.show(kind, id, to);
+    const legacy = retiredItemShape;
+    if (kind !== "item" || before === null || after === null || legacy(before) === legacy(after)) return { before, after };
+    return { before: legacy(before) ? await this.showCompared(kind, id, from!) : before, after: legacy(after) ? await this.showCompared(kind, id, to) : after };
   }
 
   private readonly compared = new Map<string, Promise<Snapshot>>();
@@ -754,13 +782,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
 }
 function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
-  const retiredItemShape = (doc: unknown): boolean => {
-    if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
-    const fields = doc as Record<string, unknown>;
-    return ["parent", "deps", "steps"].some(key => Object.hasOwn(fields, key))
-      || ["todo", "wip", "blocked", "done"].includes(String(fields.status))
-      || (fields.record !== true && !Object.hasOwn(fields, "plan"));
-  };
+
   const boardFields = raw["board.yaml"] as { projects?: unknown } | undefined;
   const legacyBoard = Array.isArray(boardFields?.projects) && boardFields.projects.some(project =>
     project && typeof project === "object" && Object.hasOwn(project, "migrated"));

@@ -61,8 +61,8 @@ matches what the artifact board offered.
   and the last acceptance step. Status comes from the plan; `set_status`
   only cancels or reopens an item. `move_item` changes the item's owner.
 - Records have no acceptance step and pass no priority. Open work owned by
-  a record is backlog work: it has no priority until moved under a root's
-  plan, even when another item waits for it.
+  a record stores no priority, but derives the highest priority from open
+  shared dependents, or none without them. Record ownership passes none.
 
 ## Coordinator
 
@@ -139,9 +139,9 @@ first (`gh api orgs/Ming-Research/actions/runners`). One run at a time. Each
 waiting run is a work item owned by the queue record. The coordinator marks
 its acceptance step done when the run finishes; the waiting item's plan
 holds a shared row for that run item and makes its next work follow that row,
-so it shows blocked until the run is done. Open runs owned by the record have
-no priority; the coordinator orders the queue by the priorities of the work
-waiting for each run.
+so it shows blocked until the run is done. Open runs derive priority from
+the open work waiting for each run; the coordinator orders the queue by
+that priority. The queue record itself passes none.
 
 - Native Ubuntu, P-cores CPUs 0-15 as hyperthread pairs, fixed at 5.0 GHz
   with the performance governor. Timed jobs pin to P-cores with `taskset`

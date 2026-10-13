@@ -267,7 +267,11 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     }
     return groups;
   }
+  // Cycle members keep the path-sensitive guard; acyclic targets have the same
+  // result in every caller and are evaluated once per immutable snapshot.
+  const targetStatuses = new Map<string, Status | undefined>();
   function statusWalk(id: string, seen: Set<string>): Status | undefined {
+    if (targetStatuses.has(id)) return targetStatuses.get(id);
     const it = item(id);
     if (!it || it.record) return undefined;
     if (it.status === "cancelled") return "cancelled";
@@ -275,11 +279,12 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     seen.add(id);
     const rows = planRowsWalk(id, seen);
     seen.delete(id);
-    if (!rows.length) return "todo";
-    if (rows.every(row => row.state === "resolved")) return "done";
-    if (rows.some(row => row.state === "progress")) return "wip";
     const frontier = rows.filter(row => row.ready);
-    return askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
+    const status = !rows.length ? "todo" : rows.every(row => row.state === "resolved") ? "done"
+      : rows.some(row => row.state === "progress") ? "wip"
+      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
+    if (!cycles().has(id)) targetStatuses.set(id, status);
+    return status;
   }
   function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
   function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
@@ -331,8 +336,8 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     return isOpenWork(id) && (index().owners.get(id) || []).some(owner => item(owner)?.record);
   }
   function isRoot(id: string): boolean { return !!item(id) && !isBacklog(id) && !waiters(id).some(isOpenWork); }
-  // Only roots seed the least fixed point. Closed work, records and open
-  // record-owned work never pass priority, even when another project waits.
+  // Only roots seed the least fixed point. Records and closed work pass none;
+  // record-owned work receives priority from its other open dependents.
   function ranks() {
     return cached("ranks", "", () => {
       const ids = [...index().items.keys()], rank = new Map<string, number>();
@@ -341,7 +346,6 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       for (let changed = true; changed;) {
         changed = false;
         for (const id of ids) {
-          if (isBacklog(id)) continue;
           const r = Math.min(rankOf(id), ...waiters(id).filter(isOpenWork).map(rankOf));
           if (r < rankOf(id)) { rank.set(id, r); changed = true; }
         }

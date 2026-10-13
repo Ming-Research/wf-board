@@ -9,7 +9,7 @@ import { derivePlanOracle } from "./plan-conversion-oracle.ts";
 import type { PlanConversion } from "./convert-plans.ts";
 
 export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string[] {
-  const errors: string[] = [], next=result.snapshot, before=oldRules(old), actual=newRules(next), after=derivePlanOracle(next,id=>before.priorityOf(id));
+  const errors: string[] = [], next=result.snapshot, before=oldRules(old), actual=newRules(next), after=derivePlanOracle(next,id=>before.priorityOf(id)||old.items[id]?.priority||"");
   const check=(ok:boolean,path:string)=>{if(!ok)errors.push(path);};
   const keys=(value:object)=>Object.keys(value).sort();
   const survey: Record<string,number>={parents:0,topItems:0,closed:0,closedTop:0,archived:0,stepsItems:0,sharedItemDeps:0,crossProjectDeps:0,sameProjectDeps:0,cardDeps:0,unlistedChildren:0,ownWorkSubitems:0,openMissingAcceptance:0,closedMissingAcceptance:0,wipWithoutDoing:0,ruleChanges:0};
@@ -44,7 +44,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     const allOriginalIds=new Set([...originalRefs.map(row=>row.id),...expectedSteps.map(step=>step.id)]);
     let acceptId="accept";for(let n=2;allOriginalIds.has(acceptId);n++)acceptId=`accept-${n}`;
     if(source.deps.length)addLog("转换前的依赖说明：\n"+source.deps.map(dep=>{const key="id"in dep?dep.id:dep.card;return `- 「${("id"in dep?old.items[key]?.title:old.decisions[key]?.question)??key}」（${key}）：${dep.why}`;}).join("\n"));
-    if(!(after.isRoot(id)&&before.priorityOf(id))&&source.priority)addLog(`迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${source.priority} 不再使用`);
+    if(!after.isRoot(id)&&source.priority)addLog(`迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${source.priority} 不再使用`);
     const expectedPrefix: PlanRow[]=[...originalRefs,...expectedSteps];
     check(equal(target.plan.slice(0,expectedPrefix.length),expectedPrefix),`${id}: full reference/step sequence or fields changed`);
     check(equal(target.plan.map(row=>row.id),[...expectedPrefix.map(row=>row.id),...(source.record?[]:[acceptId])]),`${id}: full plan row sequence changed`);
@@ -61,7 +61,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     check(target.head===expectedHead,`${id}: head changed beyond acceptance section`);
     const accepts=target.plan.filter(row=>"text"in row&&row.accept);
     check(accepts.length===(source.record?0:1),`${id}: acceptance count`);
-    const acceptance=accepts[0];if(acceptance&&"text"in acceptance){const st=before.statusOf(id);const placeholder=st==="done"||st==="cancelled"?"（转换前已结束，当时没写完成条件）":"（转换时没找到完成条件，待补）";check(acceptance.text===(expectedText??placeholder),`${id}: acceptance text changed`);check(target.plan.at(-1)===acceptance,`${id}: acceptance not last`);check(acceptance.doneAt===(st==="done"?source.updated:undefined)&&acceptance.droppedAt===(st==="cancelled"?source.updated:undefined)&&acceptance.reason===(st==="cancelled"?"条目已取消":undefined),`${id}: acceptance dates/reason changed`);check(acceptance.state===(st==="done"?"done":st==="cancelled"?"dropped":"todo"),`${id}: acceptance state changed`);}
+    const acceptance=accepts[0];if(acceptance&&"text"in acceptance){const st=before.statusOf(id);const placeholder=st==="done"||st==="cancelled"?"（转换前已结束，当时没写完成条件）":"（转换时没找到完成条件，待补）";check(acceptance.text===(expectedText??placeholder),`${id}: acceptance text changed`);check(target.plan.at(-1)===acceptance,`${id}: acceptance not last`);check(acceptance.doneAt===(st==="done"?source.updated:undefined)&&acceptance.droppedAt===undefined&&acceptance.reason===undefined,`${id}: acceptance dates/reason changed`);check(acceptance.state===(st==="done"?"done":"todo"),`${id}: acceptance state changed`);}
     const oldStatus=before.statusOf(id),newStatus=after.statusOf(id);
     const children=before.children(id), closed=oldStatus==="done"||oldStatus==="cancelled";
     if(children.length)inc("parents");if(!source.parent)inc("topItems");if(closed)inc("closed");if(closed&&!source.parent)inc("closedTop");if(before.isArchived(id))inc("archived");if(source.steps?.length)inc("stepsItems");
@@ -74,7 +74,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     check(actual.isRoot(id)===after.isRoot(id)&&actual.isBacklog(id)===after.isBacklog(id),`${id}: root/backlog rule disagreement`);
     check(actual.priorityOf(id)===after.priorityOf(id),`${id}: plan priority rule disagreement`);
     check(equal(actual.planRows(id).map(row=>({id:row.row.id,state:row.state,ready:row.ready})),after.rows(id)),`${id}: plan frontier rule disagreement`);
-    const expectedSeed=after.isRoot(id)?before.priorityOf(id)||undefined:undefined;
+    const expectedSeed=after.isRoot(id)?before.priorityOf(id)||source.priority:undefined;
     check(target.priority===expectedSeed,`${id}: stored root seed changed`);
     const identity={item:id,project:before.groupOf(id),title:source.title};
     if(oldStatus!==newStatus){
@@ -87,10 +87,10 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
       if(cause==="ready frontier"&&!before.isStatusLeaf(id))inc("ruleChanges");
     }
     const op=before.priorityOf(id),np=after.priorityOf(id);
-    if(op!==np){const unlisted=!!source.parent&&!old.items[source.parent]?.deps.some(dep=>"id"in dep&&dep.id===id);const cause=after.isBacklog(id)?"moved into backlog":!before.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";expectedPriorityChanges.push({...identity,old:op,new:np,cause,detail:""});
+    if(op!==np){const unlisted=!!source.parent&&!old.items[source.parent]?.deps.some(dep=>"id"in dep&&dep.id===id);const cause=after.isRoot(id)?"root priority retained":after.isBacklog(id)?np?"shared plan dependents":"moved into backlog":!before.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";expectedPriorityChanges.push({...identity,old:op,new:np,cause,detail:""});
       const reported=result.report.priorityChanges.find(change=>change.item===id);
       const dependents=Object.entries(next.items).filter(([dependent,item])=>after.isOpenWork(dependent)&&item.plan.some(row=>"item"in row&&row.item===id)&&(!np||after.priorityOf(dependent)===np)).map(([dependent])=>dependent).slice(0,3);
-      const evidence=after.isBacklog(id)&&source.parent?[source.parent]:dependents;
+      const evidence=after.isBacklog(id)&&!np&&source.parent?[source.parent]:dependents;
       check(!!reported&&evidence.every(dependent=>reported.detail.includes(dependent)),`${id}: priority cause sources missing`);
     }
     check(target.status===(oldStatus==="cancelled"?"cancelled":undefined),`${id}: stored status changed`);
