@@ -117,7 +117,7 @@ wf-board-data/
   notes/<id>.yaml         one file per owner note with its reply
   notices/<id>.yaml       one file per notice (a non-blocking change the owner should know)
   glossaries/<project>.yaml  one file per project glossary, named by the project
-  state/owner.yaml        the owner's read cursor and archived items
+  state/owner.yaml        the owner's read cursor and read-ahead marks
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -235,7 +235,7 @@ log:
   touch both items; later notes on deleted cards retain their last known
   item. No extra data file is stored. Content commits touching board metadata,
   items, cards, notes, notices or glossaries count; commits containing only
-  owner reading cursors or archive state do not. Current document timestamps
+  owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   Live updates carry the activity index, MCP recomputes checks on read, and
   the page recomputes them every minute so a quiet item can become stalled
@@ -352,9 +352,9 @@ log:
   This replaces the 478 per-item read
   records and their snapshots. A history step groups consecutive commits by the same
   author on the same item, so quick step updates read as one change, and
-  the owner's own actions (notes, archiving) never count as unread. Scrubbing
+  the owner's own actions (notes and reads) never count as unread. Scrubbing
   back through earlier changes with a slider uses the same history and is
-  deferred until needed. Reads and archives update owner state immediately
+  deferred until needed. Reads update owner state immediately
   and save it locally without a commit. A local save arriving during a data
   commit waits for that commit to finish. Pending owner state normally joins
   the next data commit, so ordinary reads make no commit noise. On orderly
@@ -475,8 +475,7 @@ record) shows the check 没有计划：至少要有验收步骤.
 - **Owner.** An item's owner is the item whose plan holds an owned row for it.
   The tree draws an item's owned rows' targets under it, in plan order; there
   is no separate `parent` field. Ancestors, the line (top item) of an item,
-  archive inheritance (`inArchive`), subtree counts and the 新 chip's subtree
-  all follow owners.
+  subtree counts and the 新 chip's subtree all follow owners.
 - **Exactly one owner.** No item is owned by two rows. A write that would make
   a second owned row is refused, naming the current owner and directing the
   caller to `move_item`; a stored violation shows 被多个条目拥有.
@@ -552,14 +551,17 @@ may retain request metadata but is not an open inbox request.
 work is step rows in its own plan, so no conversion ever needs to invent an
 own-work sub-item.
 
-#### Archive
+#### Closed items and visibility
 
-The owner's archive is unchanged: it hides a done or cancelled item and its
-owned subtree from the tree. Archiving never removes a row from any plan. An
-owner's plan still shows a row for an archived child, because the plan is the
-record of what was completed; every row stays visible, including done and
-dropped rows (see the page below). Opening an archived child from its row selects it as
-any reference does.
+Archiving does not exist: there is no archive field, API, button or shortcut.
+Done and cancelled items are hidden as their own tree and list nodes by
+default; the project's 完成 or 取消 status filter shows them. 完成 includes
+all done items, while 7 天内完成 remains a recent-completion shortcut.
+Their rows in every plan always show the state glyph, title and link;
+following a link opens the hidden item's detail without changing filters.
+Unread changes on a closed item, its cards and replies remain in 新 and the
+navigation stops. Reading and reviewing them does not require drawing the
+item in the default tree.
 
 #### Checks
 
@@ -810,7 +812,7 @@ overturn it.
    conversion keeps closed children as provisional rows of their owners'
    plans, fully visible; a rewrite keeps only the closed items its new plan attaches,
    and every other closed item becomes, or stays, a closed top item without a
-   flag; no history or archive owner is created,
+   flag; no history-only owner is created,
    because an item that only holds finished items is a topic group, which the
    rules forbid. Alternative: a per-project record 已完成 owning loose closed
    items, which would tidy the tree but carries no meaning.
@@ -843,7 +845,7 @@ coordinate among themselves; sessions may be renamed freely.
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
-| `list(filters)` | Structured browsing | Compact rows for items matching status, priority, area subtree, open ask, flags, updated-since |
+| `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status, owner actions waiting, blocked items, flags |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `projects()` | Which project matches this repository? | Project configuration, top items, open items by status and inbox counts |
@@ -888,7 +890,7 @@ results, and `context` warns when rows of one level are not adjacent.
 The current template is kept. Its data layer, `window.claude.use("db")` and
 `window.claude.use("comments")`, is replaced by a small client that loads a
 snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
-the owner's notes, reads and archive actions to `/api/...`. The rules module
+the owner's notes and reads to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
 The page always has two columns: there is no single-column layout, and
@@ -896,13 +898,12 @@ viewport width never changes it. It uses the full window with compact tree
 margins and equal, smaller detail side padding.
 The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
-The tree leaves out archived and cancelled items with their subtrees; a
-project's 已归档 or 取消 filter shows them where they sit.
-Only an item whose derived status is done or cancelled can be archived: the
-archive operation refuses any other, and the `a` key shows 只有完成或取消的条目能归档 without
-calling it. Un-archiving is allowed for any item, so items archived while open
-can be restored, and `a` on an item inside an archived subtree un-archives its
-nearest archived ancestor rather than archiving the item.
+The tree hides done and cancelled items by default. A project's 完成 or
+取消 filter shows them in their stored ownership positions; 7 天内完成
+narrows completed items by age. Every plan row stays visible regardless of
+these filters. A plan reference, search result or unread stop opens a hidden
+item's detail without changing the filters. Closed items' unread changes,
+including card and reply changes, still reach 新 and the navigation stops.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
@@ -911,7 +912,7 @@ Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work
 items counts, at the right of its row, its owned descendants that own no work
-items; the counts leave out archived and cancelled ones and
+items; the counts leave out cancelled ones and
 show numbers in their status color, with status names in accessibility labels. They shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
@@ -979,9 +980,10 @@ Enter on a focused head selects its item; j/k move focus. Actions use the
 current selection, falling back to the selected item or the top visible tree
 row.
 
-`n`, `N` and 新 chips select the stop's item, unfold its
-ancestors and bring its tree row into view, then scroll the right column to
-the exact fresh mark, card or note. A card held by no item keeps its existing
+`n`, `N` and 新 chips select the stop's item and open its detail. When its
+tree node is visible, they unfold its ancestors and bring that row into view;
+closed-item stops do not change the filters or require a tree node. They then
+scroll the right column to the exact fresh mark, card or note. A card held by no item keeps its existing
 navigation behavior in the separate decisions section. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
@@ -1011,8 +1013,9 @@ block text (a link needs `](`). The note keeps the token as typed, so a
 session reading it through the MCP tools sees the key. Wherever block text
 renders (heads, steps, log entries, comments, replies, cards), a token whose target
 exists shows the target's current title as a link; a click selects that item
-(for a card, its item with the card shown), unfolds its ancestors and shows it
-in the detail column, and Back returns, as with a dependency link. A token
+(for a card, its item with the card shown) and shows its detail. When the
+tree node is visible, its ancestors unfold; a hidden closed item opens
+without changing filters. Back returns, as with a dependency link. A token
 whose target is gone shows its key struck through. Tokens inside code spans or
 fenced code stay as typed. When a target's title changes, or a target appears
 or goes, and any item, decision card, note or the board goal refers to it, the
@@ -1207,7 +1210,7 @@ the source and destination to belong to author’s project, and revising a
 card’s owning item checks both owners. A refusal names the item’s project
 and directs the caller to file into it with `create_request`. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
-owner-note, send, archive and read operations are separate from agent
+owner-note, send and read operations are separate from agent
 operations and remain unrestricted. Project names are supplied by trusted
 local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
@@ -1239,12 +1242,12 @@ still awaiting the owner, items in progress with a doing step of their own,
 the next ten items whose frontier holds a step that can start, by priority,
 outstanding work requested from other projects, and the project's glossary
 terms. Relevant item rows include compact plan and target lines. `brief.progress` adds
-`{id, title, plan?, targets?}` rows for nonarchived records and blocked items
+`{id, title, plan?, targets?}` rows for records and blocked items
 that are not already represented in the inbox, checks, WIP, TODO or
 outgoing rows. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list includes open requests with `request.by === project` and open items
 targeted by its items’ cross-project shared rows, so triage does not hide
-linked work. Work queues omit archived items. Read rows, project summaries
+linked work. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
 `group` filter. The page shows an inbox above each project’s areas and counts
 sent notes per project, such as `已发出 3 条：Halo-wf×2 · Firn-wf×1`.
@@ -1403,9 +1406,9 @@ records `sourceHead`, the exact data commit. After the owner approves it,
 migration; the offline CLI accepts `--approved-head <sourceHead>` and the
 approved `--report <file>` only with the daemon stopped. Both refuse a changed
 data head or unresolved verification failures. Conversion log entries use
-the executing caller's real timestamp; the same conversion advances only
-previously effective archive timestamps that its own logs would invalidate,
-and reports their original and new values so archive visibility is unchanged. The temporary migration and old-shape
+the executing caller's real timestamp. The conversion deletes the retired
+owner archive field and reports the total number of entries removed, including
+ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
 
@@ -1470,18 +1473,24 @@ need them have finished; raw audit `show` and `diff` remain unchanged.
    rootness); the difference alone is not an error. The independent oracle
    computes expected priority from the converted plans independently of the
    converter and compares it with the current rules' output.
-8. **Keeping archives.** For each item whose archive was effective before
-   conversion and would be broken by conversion log entries, `archiveAt`
-   advances to the conversion time in the same commit. The report gives id,
-   project, title, original timestamp and new timestamp. Other owner state is
-   unchanged. Both direct and inherited archive visibility must be identical
-   before and after; the independent oracle checks this.
+8. **Removing archives.** The conversion drops the owner's entire retired
+   `archived` field and reports `counts.droppedArchives`, the count of all its
+   entries, not just effective archives. Read cursors and read-ahead marks
+   survive unchanged. No archive timestamp is advanced and there is no
+   before/after archive visibility rule. Already planned data that still has
+   the old owner field uses an archive-only conversion: its plans, content,
+   item revisions and provisional flags remain unchanged. The owner field
+   removal and report enter the same approved commit; a failed commit restores
+   the exact original owner sidefile.
 
 **Phase 1 report.** A short Chinese summary comes first: how many items were
 converted, how many status and priority differences there are, their causes,
-archive timestamp adjustments and whether all content survived verification.
-The detailed tables give every status/priority difference and archive
-adjustment, including item id, project and title; cause groups include
+the number of retired archive records dropped and whether all content
+survived verification. A separate line flags old wip items with no progress
+row for phase-two plan writing, giving the actual counts becoming todo and
+blocked instead of treating the whole cause group as todo.
+The detailed tables give every status/priority difference, including item
+id, project and title; cause groups include
 examples. Findings also identify ambiguous completion sections, duplicate
 or dangling targets and children not listed by their old parents. The
 report is `import/plan-conversion.yaml` in the data repository. Structural
@@ -1498,8 +1507,11 @@ plan is provisional. It independently derives status and priority from the
 converted plans and compares them with the current rules' output, checks
 that every difference appears in the report, and verifies every item, card,
 note, target and original log by id. Added logs have an exact whitelist;
-archive timestamp changes are exactly those needed to preserve direct and
-inherited visibility, with all other owner state unchanged.
+the retired archive field is absent, its removal count is exact, and all
+other owner state is unchanged. Archive-only upgrades preserve the original
+`planConversionAt` provenance used to normalize old comparison baselines;
+the new report's `at` still records this upgrade's real time. Raw historical
+evidence is never rewritten.
 
 **Phase 2: rewriting plans, per project.** The coordinator files one item into
 each project, "Every plan of <project> is rewritten from the work it needs".
@@ -1536,8 +1548,8 @@ left. The project's session follows this procedure:
    被「<item>」的计划取代 or 并入「<owner>」的计划 (for an item folded into a
    step by the rule). The server refuses to drop an open owned row, so none is
    lost silently. Closed items the new plan does not attach become closed top
-   items when their row is removed; they raise nothing and the owner's archive
-   keeps hiding them.
+   items when their row is removed; they raise nothing and remain hidden from
+   the default tree until the completed/cancelled filter shows them.
 5. **Write the plan in one call.** `set_plan` with `rows` writes the whole new
    plan, which clears the provisional mark and logs 重写了计划. The session
    appends a log entry saying in a few lines how the new plan differs from
@@ -1555,8 +1567,9 @@ shows every row, including completed and dropped rows. An item without a
 parent stays top-level; a closed top item needs no owner and raises no check.
 Phase 2 keeps a closed item in a plan only when the new plan attaches it, for
 example a finished goal of an open release; every other closed item becomes,
-or stays, a closed top item. No history or archive owner is created (section
-5, open question 5). Archived items stay archived.
+or stays, a closed top item. No history-only owner is created (section
+5, open question 5). Closed items stay reachable from plan rows, explicit
+filters and unread navigation.
 
 **Report on structure for phase 2.** Alongside the phase 1 report, the dry
 run lists, per project, what the rewrite should look at first; these are

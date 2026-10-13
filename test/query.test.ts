@@ -401,3 +401,24 @@ test("context and brief retain compact target lines beside plans", async t => {
   assert.equal(q.describeChanges({}, {targets:s.items.a!.targets},"item"),"targets changed");
   assert.equal(q.describeChanges({targets:s.items.a!.targets},{targets:[{...s.items.a!.targets![0]!,current:"4 倍 Chromium"}]},"item"),"targets changed");
 });
+
+
+test("default lists omit done and cancelled items, while explicit status filters and plan rows retain them", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
+  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  const s = store.snapshot(), r = rules(s);
+  const visible = q.list(s, r).map(item => item.id);
+  assert.ok(!visible.includes("done-result")); assert.ok(!visible.includes("cancelled-result"));
+  assert.deepEqual(q.list(s, r, { status: ["done", "cancelled"] }).map(item => item.id), ["done-result", "cancelled-result"]);
+  const plan = q.context(s, r, "a");
+  assert.ok("plan" in plan && plan.plan.some(line => line.includes("Finished result")));
+  assert.ok("plan" in plan && plan.plan.some(line => line.includes("Cancelled result")));
+  assert.equal(q.context(s, r, "done-result").id, "done-result", "a hidden item can still be opened directly");
+  const overview = q.overview(s, r).flatMap(project => project.areas);
+  assert.ok(!overview.some(item => ["done-result", "cancelled-result"].includes(item.id)));
+  assert.equal(overview.find(item => item.id === "area")!.counts.done, 1, "completion totals still include hidden work");
+  assert.equal(overview.find(item => item.id === "area")!.counts.cancelled, 1);
+});

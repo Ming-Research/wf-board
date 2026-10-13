@@ -123,8 +123,6 @@ export interface Rules {
   blockingBelow(id: string): number;
   /** Waiting cards without `blocks` in the item's subtree, the item included. */
   nonBlockingBelow(id: string): number;
-  isArchived(id: string): boolean;
-  inArchive(id: string): boolean;
   onCycle(id: string): boolean;
   checks(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
@@ -328,15 +326,6 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   function needsOwner(id: string): boolean {
     return cached("needsOwner", id, () => askPending(id) || cardsOf(id).some(cardWaiting));
   }
-  function isArchived(id: string): boolean {
-    return cached("archived", id, () => {
-      const it = item(id), at = Object.hasOwn(s.owner.archived, id) ? s.owner.archived[id] : undefined;
-      if (!it || !at) return false;
-      const times = [it.updated, ...it.log.map(e => e.at), ...notesOf("it:" + id).filter(n => n.reply).map(n => n.repliedAt || n.sentAt || n.at)];
-      return !(times.sort().at(-1)! > at);
-    });
-  }
-  function inArchive(id: string): boolean { return cached("inArchive", id, () => [id, ...ancestors(id)].some(isArchived)); }
   const waiters = (id: string): string[] => (reverseDeps().items.get(id) || []).map(w => w.id);
   function isBacklog(id: string): boolean {
     return isOpenWork(id) && (index().owners.get(id) || []).some(owner => item(owner)?.record);
@@ -424,7 +413,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
-      if (!it || inArchive(id)) return out;
+      if (!it) return out;
       const st = statusOf(id), parent = parentOf(id), deps = depsOf(id), rows = planRows(id);
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
@@ -463,7 +452,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
     cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
-    blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), isArchived, inArchive, onCycle: id => cycles().has(id),
+    blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
     checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };

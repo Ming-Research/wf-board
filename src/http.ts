@@ -104,7 +104,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const result = await ownerOps.send();
         json(res, 200, result); return;
       }
-      if (path === "/api/archive") { ownerOps.archive(args(await body(req))); json(res, 200, { ok: true }); return; }
       if (path === "/api/notice-read") { json(res, 200, await ownerOps.readNotice(args(await body(req)))); return; }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
     }

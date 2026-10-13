@@ -18,7 +18,7 @@ const doc = (fields: object) => ({ title: "t", updated: at, rev: 1, log: [], pla
 const card = (item: string, fields: object = {}) => ({ item, question: "Q?", background: "b", options: [{ key: "A", text: "a" }], status: "open", updated: at, rev: 1, ...fields });
 function owned(): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
   return {
-    board: { title: "T", projects: [{ name: "P" }] }, owner: { archived: {} }, notes: {},
+    board: { title: "T", projects: [{ name: "P" }] }, owner: {}, notes: {},
     items: {
       root: doc({ group: "P", ask: { text: "Merge it" }, plan: [{ id: "kid", item: "kid", own: true }, { id: "accept", accept: true, text: "验收通过", state: "todo" }] }),
       kid: doc({  }),

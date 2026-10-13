@@ -1,5 +1,5 @@
 /** Temporary, lossless phase-one mapping. Remove after the board and its read baselines migrate. */
-import { Item, Board, Time } from "./model.ts";
+import { Item, Board, Time, OwnerState } from "./model.ts";
 import type { Snapshot, PlanRow, Priority } from "./model.ts";
 import type { Snapshot as LegacySnapshot } from "./legacy-model.ts";
 import { rules as legacyRules } from "./legacy-rules.ts";
@@ -13,23 +13,19 @@ export interface PlanChange {
   item: string; project: string; title: string;
   old: string; new: string; cause: string; detail: string;
 }
-export interface ArchiveChange {
-  item: string; project: string; title: string;
-  oldArchiveAt: string; newArchiveAt: string; cause: string; detail: string;
-}
 export interface PlanConversionReport {
   summary: string;
   sourceHead: string;
   at: string;
-  counts: { items: number; records: number; decisions: number; notes: number; targets: number; oldLogs: number; newLogs: number; provisional: number };
+  planConversionAt?: string;
+  counts: { items: number; records: number; decisions: number; notes: number; targets: number; oldLogs: number; newLogs: number; provisional: number; droppedArchives: number };
   findings: PlanFinding[];
   rewritePointers: PlanFinding[];
   survey: Record<string, number>;
-  byProject: Record<string, { findings: number; rewritePointers: number; statusChanges: number; priorityChanges: number; archiveChanges: number }>;
-  byCause: { status: Record<string, number>; priority: Record<string, number>; archive: Record<string, number> };
+  byProject: Record<string, { findings: number; rewritePointers: number; statusChanges: number; priorityChanges: number }>;
+  byCause: { status: Record<string, number>; priority: Record<string, number> };
   statusChanges: PlanChange[];
   priorityChanges: PlanChange[];
-  archiveChanges: ArchiveChange[];
   errors: string[];
 }
 export interface PlanConversion { snapshot: Snapshot; report: PlanConversionReport }
@@ -66,8 +62,9 @@ export function extractAcceptance(head: string | undefined): { head: string | un
 export function convertPlans(old: LegacySnapshot, options: { at: string }): PlanConversion {
   const at = Time.parse(options.at);
   const previous = legacyRules(old), findings: PlanFinding[] = [];
-  const snapshot: Snapshot = { ...structuredClone(old), board: Board.parse({ ...old.board, projects: old.board.projects.map(({ migrated: _migrated, ...p }) => p) }), items: {} };
-  const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0 }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{},priority:{},archive:{}}, statusChanges: [], priorityChanges: [], archiveChanges: [], errors: [] };
+  const {archived: _archives, ...owner} = old.owner;
+  const snapshot: Snapshot = { ...structuredClone(old), owner: OwnerState.parse(owner), board: Board.parse({ ...old.board, projects: old.board.projects.map(({ migrated: _migrated, ...p }) => p) }), items: {} };
+  const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, planConversionAt:at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0, droppedArchives: Object.keys(old.owner.archived).length }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{},priority:{}}, statusChanges: [], priorityChanges: [], errors: [] };
   const note = (id: string, kind: string, detail: string) => findings.push({ item: id, project: previous.groupOf(id), kind, detail });
   for (const [id, original] of Object.entries(old.items)) {
     const { parent: _parent, deps, steps, status: _status, priority: _priority, ...rest } = structuredClone(original);
@@ -148,13 +145,6 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
       report.priorityChanges.push({...identity,old:oldPriority,new:newPriority,cause,detail:explanation});
       note(id,"priority changed",`${oldPriority || "none"} → ${newPriority || "none"}：${explanation}`);
     }
-    // Actual conversion logs must not revive an effectively archived item.
-    if(previous.isArchived(id)&&!current.isArchived(id)){
-      const oldArchiveAt=old.owner.archived[id]!;
-      snapshot.owner.archived[id]=at;
-      report.archiveChanges.push({...identity,oldArchiveAt,newArchiveAt:at,cause:"conversion logs",detail:"只推进原来有效的归档时间，使新增转换日志不改变归档可见性。"});
-      note(id,"archive timestamp advanced",`${oldArchiveAt} → ${at}：转换后仍保持归档。`);
-    }
     const parsed=Item.safeParse(snapshot.items[id]);if(!parsed.success)report.errors.push(`${id}: ${parsed.error.message}`);else snapshot.items[id]=parsed.data;
   }
   // Phase two gets pointers to source facts, not automatic structural judgments.
@@ -172,19 +162,37 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
     survey.unlistedChildren = (survey.unlistedChildren ?? 0) + children.filter(child=>!it.deps.some(dep=>"id"in dep&&dep.id===child)).length;
   }
   report.survey=survey;
-  for(const id of Object.keys(old.items)){const project=previous.groupOf(id);report.byProject[project]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0,archiveChanges:0};}
+  for(const id of Object.keys(old.items)){const project=previous.groupOf(id);report.byProject[project]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};}
   for(const finding of report.findings)report.byProject[finding.project]!.findings++;
   for(const finding of report.rewritePointers)report.byProject[finding.project]!.rewritePointers++;
   for(const change of report.statusChanges)report.byProject[previous.groupOf(change.item)]!.statusChanges++;
   for(const change of report.priorityChanges)report.byProject[previous.groupOf(change.item)]!.priorityChanges++;
-  for(const change of report.archiveChanges)report.byProject[previous.groupOf(change.item)]!.archiveChanges++;
   for(const change of report.statusChanges)report.byCause.status[change.cause]=(report.byCause.status[change.cause]??0)+1;
   for(const change of report.priorityChanges)report.byCause.priority[change.cause]=(report.byCause.priority[change.cause]??0)+1;
-  for(const change of report.archiveChanges)report.byCause.archive[change.cause]=(report.byCause.archive[change.cause]??0)+1;
   updatePlanSummary(report);
   report.counts.newLogs=Object.values(snapshot.items).reduce((n,it)=>n+it.log.length,0);
   report.counts.provisional=Object.values(snapshot.items).filter(it=>it.provisional).length;
   return { snapshot, report };
+}
+
+/** Archive-only upgrade for data that already uses plans; never rewrites its plans. */
+export function removeArchives(source: Snapshot, options: { at: string; planConversionAt?: string }): PlanConversion {
+  const at = Time.parse(options.at);
+  const { archived = {}, ...owner } = source.owner as Snapshot["owner"] & { archived?: Record<string,string> };
+  const snapshot = structuredClone(source);
+  snapshot.owner = OwnerState.parse(owner);
+  const logs = Object.values(source.items).reduce((n,item)=>n+item.log.length,0);
+  const report: PlanConversionReport = {
+    summary: "", sourceHead: source.head, at, ...(options.planConversionAt?{planConversionAt:Time.parse(options.planConversionAt)}:{}),
+    counts: { items:Object.keys(source.items).length, records:Object.values(source.items).filter(item=>item.record).length,
+      decisions:Object.keys(source.decisions).length, notes:Object.keys(source.notes).length,
+      targets:Object.values(source.items).reduce((n,item)=>n+(item.targets?.length??0),0), oldLogs:logs,newLogs:logs,
+      provisional:Object.values(source.items).filter(item=>item.provisional).length,droppedArchives:Object.keys(archived).length },
+    findings:[],rewritePointers:[],survey:{},byProject:{},byCause:{status:{},priority:{}},statusChanges:[],priorityChanges:[],errors:[],
+  };
+  for(const item of Object.values(source.items))report.byProject[item.group]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
+  updatePlanSummary(report);
+  return {snapshot,report};
 }
 
 /** Called again after independent verification so the report never claims unverified preservation. */
@@ -192,6 +200,8 @@ export function updatePlanSummary(report: PlanConversionReport, verified = false
   const result=verified&&!report.errors.length?"独立校验确认原有条目、步骤、日期、日志、决策卡、评论和目标均已保留。":verified?`独立校验发现 ${report.errors.length} 个结构或保留错误，不能应用转换。`:"等待独立保留校验。";
   const labels: Record<string,string>={"doing rows count":"原有进行中行现在决定状态","unfinished plan rows":"已标完成的计划仍有未完成行","manual progress removed":"不再沿用手写进行中状态","waiting frontier":"下一步只有等待行","ready frontier":"计划存在可开始的行","pending ask":"仍在等待旧的 owner 请求","moved into backlog":"记录拥有的未完成工作不继承优先级","legacy priority retired":"旧的优先级规则退役","owned row added":"补齐原来未列出的拥有行","open plan dependents":"按未完成计划的引用传播优先级"};
   const mainCauses=(counts:Record<string,number>)=>Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([cause,count])=>`${labels[cause]??cause} ${count} 处`).join("；")||"没有变化";
-  const archiveResult=verified&&!report.errors.length?"归档可见性保持不变":"归档可见性仍待完整校验";
-  report.summary=`转换 ${report.counts.items} 个条目，不补写或改写原有进展。状态变化 ${report.statusChanges.length} 处，主要原因：${mainCauses(report.byCause.status)}。优先级变化 ${report.priorityChanges.length} 处，主要原因：${mainCauses(report.byCause.priority)}。\n只推进 ${report.archiveChanges.length} 个原来有效的归档时间；${archiveResult}。${result} 阶段二重写线索另列。`;
+  const manual=report.statusChanges.filter(change=>change.old === "wip" && change.cause === "manual progress removed");
+  const todo=manual.filter(change=>change.new === "todo").length;
+  const blocked=manual.filter(change=>change.new === "blocked").length;
+  report.summary=`转换 ${report.counts.items} 个条目，不补写或改写原有进展。状态变化 ${report.statusChanges.length} 处，主要原因：${mainCauses(report.byCause.status)}。优先级变化 ${report.priorityChanges.length} 处，主要原因：${mainCauses(report.byCause.priority)}。\n已删除 ${report.counts.droppedArchives} 条旧归档记录；其它 owner 状态不变。${result}\n需在阶段二重写计划：${manual.length} 个旧 wip 条目没有进行中行，其中 ${todo} 个变为 todo，${blocked} 个因等待行变为 blocked；没有补写 doing 步骤。`;
 }

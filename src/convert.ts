@@ -341,6 +341,6 @@ export async function importExport(store: Store, exportJson: unknown, options: {
     const txn = doc ? { puts: [{ kind, id, doc, expectRev: existing ? existing.rev : null }] } : { deletes: [{ kind, id, expectRev: existing!.rev }] };
     currentCommit = (await store.commit({ author: "migration", message: `Import ${kind} ${id} as changed since the owner's last read`, ...txn })).commit;
   }
-  store.setOwner({ cursor: asReadCommit, archived: converted.owner.archived });
+  store.setOwner({ ...converted.owner, cursor: asReadCommit });
   return { asReadCommit, currentCommit };
 }

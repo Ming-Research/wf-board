@@ -52,7 +52,7 @@ test("commits that change no item, card or note are not steps", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   const a = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "before settings" } });
   await store.commit({ author, message: "retitle board", board: { ...store.snapshot().board, title: "Renamed board" } });
-  store.setOwner({ archived: { other: later } });
+  store.setOwner({ cursor });
   await store.flushOwner(author);
   const b = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "after settings" } });
   const steps = await unreadSteps(store, cursor);
@@ -430,5 +430,28 @@ test("a merged history the cached run cannot hold is read from git and gives the
   await pairs(reopened, all, "merged");
   for (const cursor of [undefined, ...all]) {
     assert.deepEqual(await outcome(unreadSteps(reopened, cursor, {}, top)), await outcome(fromScratch(reopened, cursor, {}, top)), `merged: from ${cursor}`);
+  }
+});
+
+
+test("done and cancelled items retain unread changes and readable endpoint diffs", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
+  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  const cursor = store.snapshot().head;
+  await op.appendLog({ author, id: "done-result", text: "Evidence after completion" });
+  await op.appendLog({ author, id: "cancelled-result", text: "Reason clarified after cancellation" });
+  assert.deepEqual(await unreadSteps(store, cursor), [], "log-only edits remain excluded from owner unread stops");
+  await op.updateItem({ author, id: "done-result", rev: store.snapshot().items["done-result"]!.rev, head: "Completion evidence clarified", reason: "Update the lasting result" });
+  await op.updateItem({ author, id: "cancelled-result", rev: store.snapshot().items["cancelled-result"]!.rev, head: "Cancellation scope clarified", reason: "Update the lasting scope" });
+  const steps = await unreadSteps(store, cursor);
+  assert.deepEqual(steps.flatMap(step => step.docs.map(doc => doc.id)), ["done-result", "cancelled-result"]);
+  for (const step of steps) {
+    const doc = step.docs[0]!;
+    const diff = await stepDiff(store, step, "item", doc.id);
+    assert.ok(diff.before && diff.after);
+    assert.match(diff.diff, /Completion evidence clarified|Cancellation scope clarified/);
   }
 });

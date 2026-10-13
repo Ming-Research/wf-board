@@ -50,11 +50,5 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     for(const dependent of waiters.get(id)??[])if(open(dependent))value=Math.min(value,ranks.get(dependent)??3);
     if(value<old){ranks.set(id,value);changed=true;}
   }}
-  function archived(id:string,owner=snapshot.owner){
-    const item=snapshot.items[id],at=owner.archived[id];if(!item||!at)return false;
-    const times=[item.updated,...item.log.map(log=>log.at),...Object.values(snapshot.notes).filter(note=>note.target===`it:${id}`&&note.reply).map(note=>note.repliedAt??note.sentAt??note.at)];
-    return !times.some(time=>time>at);
-  }
-  function inArchive(id:string){const seen=new Set<string>(),pending=[id];while(pending.length){const key=pending.pop()!;if(seen.has(key))continue;seen.add(key);if(archived(key))return true;pending.push(...(owners.get(key)??[]));}return false;}
-  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,priorityOf:(id:string):Priority|""=>(["P0","P1","P2"] as const)[ranks.get(id)??3]??"",rows:(id:string)=>rows(id,new Set([id])),archived,inArchive};
+  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,priorityOf:(id:string):Priority|""=>(["P0","P1","P2"] as const)[ranks.get(id)??3]??"",rows:(id:string)=>rows(id,new Set([id]))};
 }

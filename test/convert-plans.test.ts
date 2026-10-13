@@ -8,10 +8,9 @@ import { promisify } from "node:util";
 import { stringify, parse } from "yaml";
 import { Item as LegacyItem, Board as LegacyBoard } from "../src/legacy-model.ts";
 import type { Snapshot as LegacySnapshot } from "../src/legacy-model.ts";
-import { convertPlans, extractAcceptance, MISSING_ACCEPT, CLOSED_ACCEPT, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "../src/convert-plans.ts";
-import { verifyPlans } from "../src/verify-plans.ts";
+import { convertPlans, removeArchives, extractAcceptance, MISSING_ACCEPT, CLOSED_ACCEPT, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "../src/convert-plans.ts";
+import { verifyPlans, verifyArchiveRemoval } from "../src/verify-plans.ts";
 import { rules } from "../src/rules.ts";
-import { rules as legacyRules } from "../src/legacy-rules.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
 import { ops } from "../src/ops.ts";
 import { Store, readPlanData } from "../src/store.ts";
@@ -80,14 +79,15 @@ test("independent oracle rejects corruption while reporting honest status and pr
  const missingSeed=structuredClone(result);delete missingSeed.snapshot.items.root!.priority;assert.ok(verifyPlans(source,missingSeed).some(error=>error.includes("root seed")));
 });
 
-test("only effective archives broken by actual conversion logs advance, with exact map/report preservation",()=>{
- const source=snapshot();source.items.root=item({status:"done",deps:[{id:"other",why:"Completed result"}],steps:[{id:"unfinished",text:"Unfinished",state:"todo"}]});source.items.other=item({group:"Q",status:"done"});source.items.child=item({parent:"root",group:undefined,status:"done"});source.owner.archived={root:at,other:since,orphan:since};assert.equal(legacyRules(source).inArchive("child"),true);
- const result=convertPlans(source,{at:"2026-10-13T02:00:00Z"});assert.deepEqual(result.report.errors,[]);assert.deepEqual(verifyPlans(source,result),[]);
- assert.deepEqual(source.owner.archived,{root:at,other:since,orphan:since});assert.deepEqual(result.snapshot.owner.archived,{root:"2026-10-13T02:00:00Z",other:since,orphan:since});
- assert.equal(result.report.archiveChanges.length,1);assert.equal(result.report.archiveChanges[0]!.oldArchiveAt,at);assert.equal(result.report.archiveChanges[0]!.newArchiveAt,"2026-10-13T02:00:00Z");assert.equal(rules(result.snapshot).isArchived("root"),true);assert.equal(rules(result.snapshot).isArchived("other"),false);assert.equal(rules(result.snapshot).inArchive("child"),true);assert.equal(Object.hasOwn(result.snapshot.owner.archived,"child"),false);
- const changed=structuredClone(result);changed.snapshot.owner.archived.orphan=at;assert.ok(verifyPlans(source,changed).some(error=>error.includes("archive map")));
- const unstamped=structuredClone(result);unstamped.snapshot.owner.archived.root=at;assert.ok(verifyPlans(source,unstamped).some(error=>error.includes("archive")));
- const fakeReport=structuredClone(result);fakeReport.report.archiveChanges[0]!.oldArchiveAt=since;assert.ok(verifyPlans(source,fakeReport).some(error=>error.includes("archive adjustment report")));
+test("conversion drops every archive record, including ineffective and orphan records, while preserving reading state",()=>{
+ const source=snapshot();source.items.root=item({status:"done",deps:[{id:"other",why:"Completed result"}],steps:[{id:"unfinished",text:"Unfinished",state:"todo"}]});source.items.other=item({group:"Q",status:"done"});source.items.child=item({parent:"root",group:undefined,status:"done"});
+ source.owner={archived:{root:at,other:since,orphan:since},cursor:source.head,readMarks:{"item:child":source.head}};
+ const original=structuredClone(source),result=convertPlans(source,{at:"2026-10-13T02:00:00Z"});assert.deepEqual(result.report.errors,[]);assert.deepEqual(verifyPlans(source,result),[]);
+ assert.deepEqual(source,original);assert.deepEqual(result.snapshot.owner,{cursor:source.head,readMarks:{"item:child":source.head}});
+ assert.equal(result.report.counts.droppedArchives,3);
+ const restored=structuredClone(result);Object.assign(restored.snapshot.owner,{archived:{orphan:since}});assert.ok(verifyPlans(source,restored).some(error=>error.includes("owner")));
+ const wrongCount=structuredClone(result);wrongCount.report.counts.droppedArchives--;assert.ok(verifyPlans(source,wrongCount).some(error=>error.includes("archive count")));
+ const lostRead=structuredClone(result);delete lostRead.snapshot.owner.readMarks;assert.ok(verifyPlans(source,lostRead).some(error=>error.includes("owner state")));
 });
 
 test("approved startup migration is one atomic commit, preserves raw history and normalizes baselines; stale approval refuses",async t=>{
@@ -178,11 +178,11 @@ test("unread comparison preserves real changes across conversion while excluding
 test("summary gives Chinese cause counts and claims preservation only after successful independent verification",()=>{
  const source=snapshot();source.items.root=item({status:"wip"});const result=checked(source);
  assert.equal(Object.keys(result.report)[0],"summary");assert.match(result.report.summary,/等待独立保留校验/);assert.match(result.report.summary,/不再沿用手写进行中状态 1 处/);
- updatePlanSummary(result.report,true);assert.match(result.report.summary,/均已保留/);
+ updatePlanSummary(result.report,true);assert.match(result.report.summary,/均已保留/);assert.match(result.report.summary,/需在阶段二重写计划：1 个旧 wip 条目没有进行中行，其中 1 个变为 todo，0 个因等待行变为 blocked/);
  result.report.errors.push("Synthetic corruption");updatePlanSummary(result.report,true);assert.doesNotMatch(result.report.summary,/均已保留/);assert.match(result.report.summary,/不能应用转换/);
 });
 
- test("startup persists archive advancement with the conversion and restores the exact owner sidefile on failure",async t=>{
+ test("startup drops archives with the conversion and restores the exact owner sidefile on failure",async t=>{
  const {dir,git,source,head:baseline}=await legacyRepository(t),oldAt="2000-01-01T00:00:00Z";
  source.items.root=item({status:"done",updated:oldAt,log:[{at:oldAt,text:"Original"}],deps:[{id:"closed",why:"Done result"}]});source.items.closed=item({status:"done",group:"Q",updated:oldAt,log:[]});source.owner.archived={root:oldAt};
  await writeFile(join(dir,"items/root.yaml"),stringify(source.items.root));await writeFile(join(dir,"items/closed.yaml"),stringify(source.items.closed));
@@ -193,6 +193,60 @@ test("summary gives Chinese cause counts and claims preservation only after succ
  await writeFile(join(dir,".git/hooks/pre-commit"),"#!/bin/sh\nexit 1\n",{mode:0o755});
  await assert.rejects(Store.open(dir,{planConversionHead:head}));assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);assert.equal(await readFile(join(dir,"state/owner.yaml"),"utf8"),originalOwner);assert.deepEqual(await readFile(join(dir,"items/root.yaml")),originalItem);assert.equal((await git("git",["diff","--cached","--name-only"],{cwd:dir})).stdout.trim(),"");await assert.rejects(readFile(join(dir,"import/plan-conversion.yaml")),{code:"ENOENT"});
  await rm(join(dir,".git/hooks/pre-commit"));
- const store=await Store.open(dir,{planConversionHead:head}),report=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8"));assert.equal(report.archiveChanges.length,1);assert.equal(store.snapshot().owner.archived.root,report.at);assert.equal(store.snapshot().owner.cursor,baseline);assert.equal(parse(await readFile(join(dir,"state/owner.yaml"),"utf8")).archived.root,report.at);assert.match(report.summary,/均已保留/);assert.doesNotMatch(report.summary,/等待独立保留校验/);assert.equal(rules(store.snapshot()).isArchived("root"),true);
- const history=await store.log({since:head});assert.equal(history.length,1);assert.ok(history[0]!.files.includes("state/owner.yaml"));assert.equal(parse((await git("git",["show",`${history[0]!.commit}:state/owner.yaml`],{cwd:dir})).stdout).archived.root,report.at);assert.equal((await store.show("item","root",head)as {updated:string}).updated,oldAt);
+ const store=await Store.open(dir,{planConversionHead:head}),report=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8"));assert.equal(report.counts.droppedArchives,1);assert.equal(Object.hasOwn(store.snapshot().owner,"archived"),false);assert.equal(store.snapshot().owner.cursor,baseline);assert.equal(Object.hasOwn(parse(await readFile(join(dir,"state/owner.yaml"),"utf8")),"archived"),false);assert.match(report.summary,/均已保留/);assert.doesNotMatch(report.summary,/等待独立保留校验/);
+ const history=await store.log({since:head});assert.equal(history.length,1);assert.ok(history[0]!.files.includes("state/owner.yaml"));assert.equal(Object.hasOwn(parse((await git("git",["show",`${history[0]!.commit}:state/owner.yaml`],{cwd:dir})).stdout),"archived"),false);assert.equal((await store.show("item","root",head)as {updated:string}).updated,oldAt);
+});
+
+
+test("native plans with old archives migrate owner state only, preserving plans, revisions, history and read marks", async t => {
+ const dir=await mkdtemp(join(tmpdir(),"wf-board-native-archives-"));t.after(()=>rm(dir,{recursive:true,force:true}));const git=promisify(execFile);
+ const initial=await Store.open(dir,{init:true,board:{title:"Native plans",projects:[{name:"P"}]}});
+ await initial.commit({author:"P",message:"Native plan witnesses",puts:[
+  {kind:"item",id:"work",expectRev:null,doc:{title:"Work",group:"P",priority:"P0",plan:[{id:"working",text:"Actual current work",state:"doing",since},{id:"accept",text:"Pass",state:"todo",accept:true}],targets:[{id:"rate",goal:"Rate",target:"3",current:"2",baseline:"main",date:since}],log:[{at:since,by:"P",text:"Native log"}],updated:at}},
+  {kind:"item",id:"done",expectRev:null,doc:{title:"Done",group:"P",priority:"P1",plan:[{id:"accept",text:"Pass",state:"done",doneAt:at,accept:true}],updated:at}},
+ ]});
+ const before=initial.snapshot(),oldOwner={cursor:before.head,readMarks:{"item:work":before.head},archived:{done:at,orphan:since}};
+ await mkdir(join(dir,"state"),{recursive:true});await writeFile(join(dir,"state/owner.yaml"),stringify(oldOwner));
+ await git("git",["add","state/owner.yaml"],{cwd:dir});await git("git",["-c","user.name=Test","-c","user.email=test@example.invalid","-c","commit.gpgsign=false","commit","-m","Native plans with old archives"],{cwd:dir});
+ const head=(await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),itemBytes=await readFile(join(dir,"items/work.yaml"));
+ const read=await readPlanData(dir);assert.equal(read.legacy,false);assert.equal(read.hasArchives,true);
+ const source=read.snapshot as import("../src/model.ts").Snapshot, result=removeArchives(source,{at});assert.deepEqual(verifyArchiveRemoval(source,result),[]);
+ const corruptedContent=structuredClone(result);corruptedContent.snapshot.items.work!.plan[0]!.id="lost";assert.ok(verifyArchiveRemoval(source,corruptedContent).some(error=>error.includes("changed content")));
+ const resurrectedArchive=structuredClone(result);Object.assign(resurrectedArchive.snapshot.owner,{archived:{done:at}});assert.ok(verifyArchiveRemoval(source,resurrectedArchive).some(error=>error.includes("archive field")));
+ const changedCount=structuredClone(result);changedCount.report.counts.droppedArchives--;assert.ok(verifyArchiveRemoval(source,changedCount).some(error=>error.includes("archive count")));
+ const lostRead=structuredClone(result);delete lostRead.snapshot.owner.readMarks;assert.ok(verifyArchiveRemoval(source,lostRead).some(error=>error.includes("other owner fields")));
+ const inventedPointer=structuredClone(result);inventedPointer.report.rewritePointers.push({item:"work",project:"P",kind:"invented",detail:"Not archive removal"});assert.ok(verifyArchiveRemoval(source,inventedPointer).some(error=>error.includes("invented differences")));
+ const reportDir=await mkdtemp(join(tmpdir(),"wf-board-native-archive-report-"));t.after(()=>rm(reportDir,{recursive:true,force:true}));const reportFile=join(reportDir,"report.yaml");
+ const dry=await git(process.execPath,["src/convert-plans-cli.ts","--data",dir,"--dry-run","--report",reportFile]);assert.match(dry.stdout,/"errors":0/);
+ const dryReport=parse(await readFile(reportFile,"utf8"));assert.equal(dryReport.counts.droppedArchives,2);assert.deepEqual(dryReport.statusChanges,[]);assert.deepEqual(dryReport.priorityChanges,[]);assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);
+ await assert.rejects(Store.open(dir),/owner-approved/);
+ const migrated=await Store.open(dir,{planConversionHead:head}),next=migrated.snapshot();assert.deepEqual(next.items,before.items);assert.deepEqual(next.owner,{cursor:before.head,readMarks:{"item:work":before.head}});assert.deepEqual(await readFile(join(dir,"items/work.yaml")),itemBytes);
+ const commits=await migrated.log({since:head});assert.equal(commits.length,1);assert.ok(commits[0]!.files.includes("state/owner.yaml"));assert.ok(commits[0]!.files.includes("import/plan-conversion.yaml"));assert.ok(!commits[0]!.files.some(file=>file.startsWith("items/")));
+ assert.deepEqual((await migrated.comparisonSnapshot(head)).owner,next.owner,"historical native plans normalize removed owner fields only for comparison");
+ assert.deepEqual(await migrated.showCompared("item","work",head),before.items.work);assert.deepEqual(await migrated.show("item","work",head),before.items.work);
+ assert.deepEqual(parse((await git("git",["show",`${head}:state/owner.yaml`],{cwd:dir})).stdout),oldOwner,"raw history retains archive provenance");
+ assert.deepEqual(await unreadSteps(migrated,head),[],"archive retirement is not a content unread stop");
+ assert.equal((await Store.open(dir)).snapshot().head,next.head,"reopening does not convert again");
+});
+
+
+test("archive retirement preserves the first plan-conversion timestamp for old unread baselines", async t => {
+ const {dir,git,source}=await legacyRepository(t);
+ source.items.root=item({deps:[{id:"result",why:"Original dependency explanation"}]});source.items.result=item({group:"Q",status:"done"});
+ await writeFile(join(dir,"items/root.yaml"),stringify(source.items.root));await writeFile(join(dir,"items/result.yaml"),stringify(source.items.result));
+ await git("git",["add","items"],{cwd:dir});await git("git",["-c","user.name=Test","-c","user.email=test@example.invalid","-c","commit.gpgsign=false","commit","-m","Legacy dependency witness"],{cwd:dir});
+ const legacyHead=(await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
+ const initial=await Store.open(dir,{planConversionHead:legacyHead}),firstPlanHead=initial.snapshot().head;
+ const firstReport=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8")),originalComparison=await initial.comparisonSnapshot(legacyHead),rawLegacy=await initial.show("item","root",legacyHead);
+ assert.ok(originalComparison.items.root!.log.some(entry=>entry.text.includes("Original dependency explanation")&&entry.at===firstReport.at));
+ const oldOwner={cursor:legacyHead,archived:{result:at}};
+ await writeFile(join(dir,"state/owner.yaml"),stringify(oldOwner));await git("git",["add","state/owner.yaml"],{cwd:dir});await git("git",["-c","user.name=Test","-c","user.email=test@example.invalid","-c","commit.gpgsign=false","commit","-m","Reintroduced old archive state"],{cwd:dir});
+ const archiveHead=(await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),upgraded=await Store.open(dir,{planConversionHead:archiveHead});
+ const removalReport=parse(await readFile(join(dir,"import/plan-conversion.yaml"),"utf8"));assert.notEqual(removalReport.at,firstReport.at);assert.equal(removalReport.planConversionAt,firstReport.planConversionAt??firstReport.at);
+ assert.deepEqual(await upgraded.comparisonSnapshot(legacyHead),originalComparison,"archive-only report replacement cannot restamp historical conversion logs");
+ assert.deepEqual(await upgraded.show("item","root",legacyHead),rawLegacy,"raw legacy audit is never normalized or rewritten");
+ assert.deepEqual(await unreadSteps(upgraded,firstPlanHead),[],"archive owner writes and archive migration add no content unread changes");
+ const later=await ops(upgraded,()=>"2030-01-01T00:00:00Z").setPlan({author:"P",id:"root",row:{id:"actual",text:"Later real plan progress",state:"doing",after:[]}});
+ const unread=await unreadSteps(upgraded,legacyHead);assert.equal(unread.length,1);assert.deepEqual(unread[0]!.commits,[later.commit]);assert.deepEqual(unread[0]!.docs[0]!.pieces,{progress:1,reply:0,other:0});
+ const progress=await stepDiff(upgraded,unread[0]!,"item","root");assert.match(progress.diff,/Later real plan progress/);assert.deepEqual(await upgraded.comparisonSnapshot(legacyHead),originalComparison);
 });

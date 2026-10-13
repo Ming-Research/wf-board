@@ -285,7 +285,7 @@ function planRow(p: Awaited<ReturnType<typeof page>>, itemId: string, rowId: str
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): PageFixture {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -308,9 +308,18 @@ function unread(kind = "item", doc = "child", id = stepId) { return [{id,commits
 // The page always shows the selected item's body in the detail column. expand unfolds the parent "area" and selects the
 // item, so its body, cards and comments are on the page.
 async function expand(p: Awaited<ReturnType<typeof page>>, id = "child") {
-  const caret = rowOf(p, "area").querySelector(".caret")!;
-  if (caret.attributes["aria-expanded"] !== "true" && !caret.disabled) await caret.click();
-  await rowOf(p, id).querySelector(".item-head")!.click();
+  const unfold=async () => {
+    const caret=rowOf(p,"area")?.querySelector(".caret");
+    if (caret && caret.attributes["aria-expanded"] !== "true" && !caret.disabled) { await caret.click(); await p.flush(); }
+  };
+  await unfold();
+  if (!rowOf(p,id)) {
+    for (const show of p.all().filter(e => e.tagName === "BUTTON" && (/^完成 \d/.test(e.innerHTML) || /^取消 \d/.test(e.innerHTML)))) {
+      await show.click(); await p.flush(); await unfold();
+      if (rowOf(p,id)) break;
+    }
+  }
+  await rowOf(p,id).querySelector(".item-head")!.click();
   await setImmediate(); await setImmediate();
 }
 // An item's tree row, and the item as the reader sees it: its detail box when it is the selected item, else its row.
@@ -535,10 +544,10 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n reaches items in page order, skips archived ones, and r reads the selected item but not its sub-items", async () => {
+test("n reaches hidden completed items in page order, and r reads the selected item but not its sub-items", async () => {
   const s = snapshot(), id = "e".repeat(40);
-  s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
-  s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
+  s.items.other = {title:"Completed",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.area!.deps.push({id:"other",why:"needs other"});
   const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"head changed"}]}]);
   await wideCaret(p).click(); await p.flush();
   p.key("r"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
@@ -549,11 +558,13 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").querySelector(".item-head")!).filter(e=>e.className === "newtag freshchip");
-  assert.deepEqual(areaChip.map(e=>e.innerHTML),["1"],"the parent's one chip now counts only the sub-item");
-  assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 1 条/);
+  assert.deepEqual(areaChip.map(e=>e.innerHTML),["2"],"the parent counts both open and hidden completed sub-items");
+  assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 2 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
-  p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 1 条在下面的子条目里/,"r says where the new content is");
+  p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 2 条在下面的子条目里/,"r says where the new content is");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
+  p.key("n"); await p.flush(); assert.ok(detailItem(p,"other").className.includes("cur"),"the hidden completed item remains the next unread stop");
+  assert.ok(!rowOf(p,"other"),"unread navigation leaves its node hidden");
 });
 
 test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
@@ -999,10 +1010,9 @@ test("all-read guard detects writes before confirmation or on cancel and missing
 });
 
 test("all mutating requests time out at eight seconds and recover their controls without late success", async t => {
-  for (const action of ["send","notes","read","archive","delete","json"] as const) await t.test(action, async () => {
+  for (const action of ["send","notes","read","delete","json"] as const) await t.test(action, async () => {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(), body=deferred<unknown>(); let signal:AbortSignal|undefined;
     s.notes.d={target:"it:area",kind:"comment",text:"Draft",at,state:"draft",rev:1};
-    if (action === "archive") s.items.child!.status="done";
     const path=action === "json" ? "/api/send" : action === "delete" ? "/api/notes/d" : "/api/"+action;
     const p=await page(s,unread("item","area"),null,undefined,{clock,response:(url,_value,init)=>{ if (url !== path) return; signal=init.signal; return action === "json" ? {ok:true,status:200,json:()=>body.promise} : hold.promise; }});
     let control:Element, pending:Promise<unknown>|undefined;
@@ -1010,8 +1020,7 @@ test("all mutating requests time out at eight seconds and recover their controls
     else if (action === "read") { await button(p,"全部已阅").click(); control=button(p,"确认"); pending=control.click(); }
     else {
       p.key("n"); await settle();
-      if (action === "archive") { control=p.all().find(e=>e.className === "keymenu-row" && e.innerHTML.includes("归档或取消归档"))!; pending=control.click(); }
-      else if (action === "notes") { p.key("c"); await settle(); const text=p.all().find(e=>e.id === "ed-it_area")!; text.value="New draft"; control=button(p,"保存"); pending=control.click(); }
+      if (action === "notes") { p.key("c"); await settle(); const text=p.all().find(e=>e.id === "ed-it_area")!; text.value="New draft"; control=button(p,"保存"); pending=control.click(); }
       else { if (!button(p,"删除")) { const toggle=p.all().find(e=>e.className.startsWith("notes-toggle") && e.innerHTML.includes("评论 1 条"))!; await toggle.click(); } control=button(p,"删除"); pending=control.click(); }
     }
     await settle(); clock.advance(7999); await settle(); assert.ok(p.roots.get("hint")!.hidden || !p.roots.get("hint")!.textContent.includes("刷新"));
@@ -1326,14 +1335,14 @@ test("older SSE notes cannot overwrite an acknowledged draft or resurrect its de
   });
 });
 
-test("reply unarchives an item into its visible project tree", async () => {
-  const s=snapshot(), frames=new Frames(); s.owner.archived.child="2026-10-12T00:00:00Z";
-  const p=await page(s,[],null,undefined,{frames}); assert.ok(!p.all().some(e=>e.id === "it-child"),"the archived child is hidden");
-  assert.equal(rowOf(p,"area").querySelector(".caret")!.disabled,true,"the parent has no visible sub-item to unfold while its only child is archived");
+test("replies on a completed item leave its node hidden while its plan row stays visible", async () => {
+  const s=nativeSnapshot(), frames=new Frames(); s.items.child!.plan=planWork([],"done");
+  const p=await page(s,[],null,undefined,{frames}); await expand(p,"area");
+  assert.ok(!rowOf(p,"child")); assert.equal(rowOf(p,"area").querySelector(".caret")!.disabled,true);
   p.emit("b".repeat(40),[{kind:"note",id:"reply",after:{target:"it:child",kind:"comment",text:"Question",reply:"Answered",at,state:"done",repliedAt:"2026-10-13T00:00:00Z",rev:1}}]); await p.flush();
-  const caret=rowOf(p,"area").querySelector(".caret")!; assert.equal(caret.disabled,false,"the reply restores a visible sub-item under the parent");
-  await caret.click(); await p.flush();
-  assert.ok(p.all().some(e=>e.id === "it-child"),"reply restores previously archived subtree");
+  assert.ok(!rowOf(p,"child")); assert.equal(planRow(p,"area","child").querySelector(".g")!.innerHTML,"✓");
+  await planRow(p,"area","child").querySelector(".plan-link")!.click(); await p.flush();
+  assert.ok(detailItem(p,"child")); assert.ok(!rowOf(p,"child")); assert.match(markup(detailItem(p,"child")),/Answered/);
 });
 
 test("unread navigation waits for its scheduled frame before measuring", async () => {
@@ -1371,11 +1380,12 @@ test("already expanded containers reveal folded notes and ruled cards when jumpe
   assert.ok(p.all().some(e=>e.id === "q-q" && e.className.includes("cur")),"reference reveals ended card in already open body");
 });
 
-test("unarchiving a sibling retains unrelated card identity within its project", async () => {
-  const s=snapshot(), frames=new Frames(); s.items.other={...s.items.child!,title:"Hidden sibling"}; s.items.area!.deps.push({id:"other",why:"Sibling"}); s.owner.archived.other="2026-10-12T00:00:00Z"; s.decisions.q=card();
+test("reopening a completed sibling restores its node and retains unrelated card identity", async () => {
+  const s=nativeSnapshot(), frames=new Frames(); s.items.other={...s.items.child!,title:"Hidden sibling",plan:planWork([],"done")}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("other")]); s.decisions.q=card();
   const p=await page(s,[],null,undefined,{frames}); await expand(p); const q=p.all().find(e=>e.id === "q-q")!;
-  p.emit("b".repeat(40),[{kind:"note",id:"reply",after:{target:"it:other",kind:"comment",text:"Question",reply:"Answer",at,state:"done",repliedAt:"2026-10-13T00:00:00Z",rev:1}}]); await p.flush();
-  assert.ok(p.all().some(e=>e.id === "it-other")); assert.ok(p.all().find(e=>e.id === "q-q") === q,"group membership refresh reuses unrelated sibling card");
+  assert.ok(!rowOf(p,"other"));
+  p.emit("b".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,plan:planWork([planStep("again","Verify changed result")])}}]); await p.flush();
+  assert.ok(rowOf(p,"other")); assert.ok(p.all().find(e=>e.id === "q-q") === q,"group membership refresh reuses unrelated sibling card");
 });
 
 test("draft deletion acknowledgement removes duplicates delivered after the click", async () => {
@@ -1399,13 +1409,15 @@ test("atomic owner-plan changes reconcile child membership while reusing sibling
   p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,rev:4,priority:"P0"}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"]);
 });
-test("finishing an inbox request moves it into the normal project tree", async () => {
+test("finishing an inbox request hides it until the completed filter shows it in the normal tree", async () => {
   const s=snapshot(), frames=new Frames(); s.items.request={...s.items.child!,parent:undefined,group:"Project",request:{by:"Elsewhere",at}}; s.items.request2={...s.items.request!,title:"Later request",priority:"P2",request:{by:"Elsewhere",at:"2026-10-12T00:00:00Z"}};
   const p=await page(s,[],null,undefined,{frames}); assert.ok(item(p,"request").closest(".inbox"));
   p.emit("a".repeat(40),[{kind:"item",id:"request2",after:{...s.items.request2!,priority:"P0"}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-request" || e.id === "it-request2").map(e=>e.id),["it-request","it-request2"],"inbox remains ordered by request time");
   p.emit("b".repeat(40),[{kind:"item",id:"request",after:{...s.items.request!,status:"done"}}]); await p.flush();
-  assert.ok(!item(p,"request").closest(".inbox"),"ended request leaves inbox without a request-object edit");
+  assert.ok(!rowOf(p,"request"),"ended request leaves the inbox and default tree without a request-object edit");
+  await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "完成 1")!.click(); await p.flush();
+  assert.ok(rowOf(p,"request") && !rowOf(p,"request").closest(".inbox"),"the completed filter shows the ended request in the normal tree");
 });
 
 test("scoped unread card membership inserts replies and removes read ended cards without rebuilding peers", async t => {
@@ -1472,12 +1484,12 @@ test("a fast baseline rejection is attempted once per jump and retries on the ne
   p.key("n"); await settle(); await p.flush(); assert.equal(attempts,1); assert.equal(p.scrollCount,0); p.key("n"); await p.flush(); assert.equal(attempts,2); assert.ok(p.scrollCount>0);
 });
 
-test("document jump restores an already-open target hidden by filtering or archive", async t => {
-  for (const hiding of ["filter","archive"]) await t.test(hiding,async()=> {
+test("document jump restores an already-open target hidden by filtering or completion", async t => {
+  for (const hiding of ["filter","completion"]) await t.test(hiding,async()=> {
     const s=snapshot(), frames=new Frames(); s.items.child!.status="todo"; s.items.sibling={...s.items.child!,title:"Sibling",status:"wip",deps:[{id:"child",why:"Needs child"}]}; s.items.area!.deps.push({id:"sibling",why:"Sibling"});
     const p=await page(s,[],null,undefined,{frames}); await expand(p); await rowOf(p,"sibling").querySelector(".item-head")!.click();
     if(hiding === "filter") await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
-    else { p.emit("b".repeat(40),[{kind:"owner",id:"owner",after:{archived:{child:"2026-10-12T00:00:00Z"}}}]); await p.flush(); }
+    else { p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,status:"done"}}]); await p.flush(); }
     assert.ok(!item(p)); const dep=planRow(p,"sibling","child").querySelector(".plan-link")!; assert.ok(dep); await (dep.querySelector(".plan-link") ?? dep).click(); await p.flush();
     assert.ok(item(p),"jump materializes the previously open target again"); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrollCount>0);
   });
@@ -2164,15 +2176,11 @@ test("wide landing in the list pins through updates until the reader scrolls the
 });
 
 test("wide blank clicks clear the current selection while actions fall back to the displayed item", async t => {
-  for (const action of ["r","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
+  for (const action of ["r","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
     const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
-    s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"}; if (action === "a") s.items.child!.status="done";
+    s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
     s.items.other={title:"Following root",group:"Project",status:"todo",priority:"P2",ask:{text:"Other ask"},updated:at,rev:1,deps:[],links:[],log:[]};
-    const p=await page(s,fresh,null,undefined,{geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100}),response:(path,input)=> {
-      if (path !== "/api/archive") return undefined;
-      const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]=at; else delete s.owner.archived[id];
-      return reply({ok:true});
-    }});
+    const p=await page(s,fresh,null,undefined,{geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100})});
     await wideCaret(p).click(); await p.flush(); await selectWide(p,"child");
     const displayed=detailItem(p,"child"); assert.ok(displayed);
     const blank=p.document.createElement("div"); blank.focus(); await blank.click();
@@ -2182,8 +2190,7 @@ test("wide blank clicks clear the current selection while actions fall back to t
     if (action === "r") {
       assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:"e".repeat(40)}]);
       assert.ok(rowOf(p,"area").className.includes("fresh"),"fallback read leaves the parent's own unread content alone");
-    } else if (action === "a") assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"child",on:true}]);
-    else if (action === "c") { assert.ok(p.document.getElementById("ed-it_child")); assert.equal(p.document.getElementById("ed-it_area"),null); }
+    } else if (action === "c") { assert.ok(p.document.getElementById("ed-it_child")); assert.equal(p.document.getElementById("ed-it_area"),null); }
     else if (action === "e") assert.equal((p.calls.find(c=>c.path === "/api/draft")!.body as {target:string}).target,"it:child");
     else if (action === "Enter") { assert.equal(prevented,true); assert.ok(rowOf(p,"child").className.includes("cur"),"Enter selects the displayed item's head after a blank click"); }
     else if (action === "j" || action === "k") {
@@ -2195,62 +2202,91 @@ test("wide blank clicks clear the current selection while actions fall back to t
 });
 
 test("an operation error shows in the bottom hint for three seconds and leaves the connection banner alone", async () => {
-  const clock=new FakeClock(), s=snapshot(), failing=(path:string)=> path === "/api/archive" ? {ok:false,status:400,json:async()=>({error:"Archive refused"})} as FakeResponse : undefined;
-  s.items.child!.status="done";
+  const clock=new FakeClock(), s=snapshot(), failing=(path:string)=> path === "/api/read" ? {ok:false,status:400,json:async()=>({error:"Read refused"})} as FakeResponse : undefined;
   const p=await page(s,unread("item","area"),null,undefined,{clock,response:failing});
   const hint=p.roots.get("hint")!, banner=p.roots.get("server-banner")!;
-  p.key("n"); await p.flush(); p.key("a"); await p.flush();
-  assert.equal(p.calls.filter(c=>c.path === "/api/archive").length,1,"the failing write was attempted");
-  assert.equal(hint.hidden,false); assert.equal(hint.textContent,"Archive refused");
+  p.key("n"); await p.flush(); p.key("r"); await p.flush();
+  assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1,"the failing write was attempted");
+  assert.equal(hint.hidden,false); assert.equal(hint.textContent,"Read refused");
   assert.equal(banner.hidden,true,"an operation error is an event, not the connection state"); assert.equal(banner.textContent,"");
   clock.advance(2999); assert.equal(hint.hidden,false,"the hint is still showing just before three seconds");
   clock.advance(1); assert.equal(hint.hidden,true,"the hint leaves by itself after three seconds");
   assert.equal(banner.hidden,true);
 });
 
-test("a archives only done or cancelled items: an open item makes no archive call and shows the reason", async () => {
-  const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
-  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
-  p.key("n"); await p.flush(); p.key("a"); await p.flush();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive"),[],"a wip parent is not archived");
-  assert.equal(p.roots.get("hint")!.hidden,false); assert.equal(p.roots.get("hint")!.textContent,"只有完成或取消的条目能归档");
-  const d=snapshot(); d.items.child!.status="done";
-  const q=await page(d,unread("item","area"),null,undefined,{response:archive});
-  q.key("n"); await q.flush(); q.key("a"); await q.flush();
-  assert.deepEqual(q.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}],"a parent whose sub-items are all done archives");
+test("completed and cancelled nodes default to hidden and the status filters show all ages in place", async () => {
+  const s=nativeSnapshot();
+  s.items.child!.plan=planWork([],"done").map(row=>"text" in row ? {...row,doneAt:"2020-01-01T00:00:00Z"} : row); s.items.child!.updated="2020-01-01T00:00:00Z";
+  s.items.gone={...s.items.child!,title:"Cancelled child",status:"cancelled",plan:planWork([],"dropped")};
+  s.items.rootDone={...s.items.child!,title:"Completed root"};
+  s.items.rootGone={...s.items.gone!,title:"Cancelled root"};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("gone"),planStep("work","Remaining parent work","doing",{after:[]})]);
+  const p=await page(s,[]); await expand(p,"area");
+  for (const id of ["child","gone","rootDone","rootGone"]) assert.ok(!rowOf(p,id));
+  assert.equal(planRow(p,"area","child").querySelector(".g")!.innerHTML,"✓");
+  assert.equal(planRow(p,"area","gone").querySelector(".g")!.innerHTML,"×");
+  assert.match(markup(planRow(p,"area","child")),/Child/); assert.match(markup(planRow(p,"area","gone")),/Cancelled child/);
+  const done=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "完成 2")!; await done.click(); await p.flush();
+  assert.ok(rowOf(p,"child") && rowOf(p,"rootDone"),"完成 shows old completed work and roots, not only the seven-day window");
+  assert.ok(!rowOf(p,"gone") && !rowOf(p,"rootGone"));
+  const cancelled=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "取消 2")!; await cancelled.click(); await p.flush();
+  assert.ok(rowOf(p,"gone") && rowOf(p,"rootGone"));
+  assert.deepEqual(rowOf(p,"area").parentElement!.querySelector("ul")!.children.map(li=>li.children[0]!.id),["it-child","it-gone"],"the combined filters keep owned row order");
+  await button(p,"清除筛选").click(); await p.flush();
+  assert.ok(!rowOf(p,"child") && !rowOf(p,"gone"));
+  assert.ok(planRow(p,"area","child") && planRow(p,"area","gone"),"filter reset never removes plan rows from selected detail");
 });
 
-test("a archives a cancelled item", async () => {
-  const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
-  s.items.child!.status="cancelled";
-  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
-  p.key("n"); await p.flush(); p.key("a"); await p.flush();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}],"a parent whose sub-items are all cancelled archives");
-  assert.notEqual(p.roots.get("hint")!.textContent,"只有完成或取消的条目能归档");
+test("hidden closed item references open detail and Back returns without changing the filter choice", async t => {
+  for (const state of ["done","cancelled"] as const) await t.test(state,async()=> {
+    const s=nativeSnapshot(), storage=new Map<string,string>();
+    s.items.child!.plan=planWork([],state === "done" ? "done" : "dropped");
+    if (state === "cancelled") s.items.child!.status="cancelled";
+    const p=await page(s,[],null,undefined,{storage}); await expand(p,"area");
+    await planRow(p,"area","child").querySelector(".plan-link")!.click(); await p.flush();
+    assert.ok(detailItem(p,"child").className.includes("cur")); assert.ok(!rowOf(p,"child"));
+    assert.ok(!storage.has("board-filters2"),"following a plan row does not switch the closed status filter on");
+    p.key("Backspace"); await p.flush(); assert.ok(detailItem(p,"area"));
+    const reloaded=await page(s,[],null,undefined,{storage:new Map<string,string>([...storage,["board-selected","child"]])});
+    assert.ok(detailItem(reloaded,"child")); assert.ok(!rowOf(reloaded,"child"),"reload keeps a hidden selected item's detail available");
+  });
 });
 
-test("an archived cancelled item shows under 已归档 and not under 取消", async () => {
-  const s=snapshot(); s.items.child!.status="cancelled";
-  const archive=(path:string,input:unknown)=> { if (path !== "/api/archive") return undefined; const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]="2999-01-01T00:00:00Z"; else delete s.owner.archived[id]; return reply({ok:true}); };
-  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
-  p.key("n"); await p.flush(); p.key("a"); await p.flush();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}]);
-  assert.ok(!p.all().some(e=>e.id === "it-area"),"the archived cancelled item leaves the default tree");
+test("hidden completed and cancelled items retain unread item, card and reply stops and can be read", async t => {
+  for (const state of ["done","cancelled"] as const) for (const kind of ["item","decision","note"] as const) await t.test(state+" "+kind,async()=> {
+    const s=nativeSnapshot(), baseline={...s.items.child!,head:"Before"};
+    s.items.child!.plan=planWork([],state === "done" ? "done" : "dropped"); s.items.child!.head="Changed";
+    if (state === "cancelled") s.items.child!.status="cancelled";
+    s.decisions.q={...card(),status:"ruled",ruling:"A"};
+    s.notes.n={target:"it:child",kind:"comment",text:"Question",at,state:"done",reply:"New answer",repliedAt:at,rev:1};
+    const id=kind === "item" ? "child" : kind === "decision" ? "q" : "n";
+    const p=await page(s,unread(kind,id),kind === "item" ? baseline : null); await expand(p,"area");
+    assert.ok(!rowOf(p,"child")); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+    const chip=rowOf(p,"area").querySelector(".freshchip")!; assert.ok(chip,"a hidden child's unread content still reaches its visible owner");
+    await chip.click(); await p.flush();
+    assert.ok(detailItem(p,"child")); assert.ok(!rowOf(p,"child"));
+    const target=kind === "item" ? detailItem(p,"child") : p.document.getElementById(kind === "decision" ? "q-q" : "note-n")!;
+    assert.ok(target.className.includes("cur"));
+    if (kind === "item") assert.match(markup(detailItem(p,"child")),/chg-add[^]*Changed/,"baseline marks load without a tree node");
+    p.key("r"); await p.flush();
+    assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:stepId}]);
+    assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));
+  });
 });
 
-test("a on an item inside an archived subtree un-archives the nearest archived ancestor", async () => {
-  const s=snapshot(); s.owner.archived.area="2999-01-01T00:00:00Z";
-  const p=await page(s,[],null,undefined,{response:(path,input)=> {
-    if (path !== "/api/archive") return undefined;
-    const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]="2999-01-01T00:00:00Z"; else delete s.owner.archived[id];
-    return reply({ok:true});
-  }});
-  await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("已归档"))!.click(); await p.flush();
-  await expand(p,"area"); assert.ok(item(p,"child"),"the archived subtree shows under 已归档");
-  await item(p,"child").querySelector(".item-head")!.click(); await p.flush();
-  p.key("a"); await p.flush();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:false}],"the child is not archived; its archived ancestor is restored");
-  assert.equal(p.roots.get("server-banner")!.hidden,true);
+test("retired stored filter values do not hide the project's open nodes", async () => {
+  const storage=new Map<string,string>([["board-filters2",JSON.stringify({Project:{status:["archived"],dep:""}})]]);
+  const p=await page(nativeSnapshot(),[],null,undefined,{storage}); await expand(p);
+  assert.ok(rowOf(p,"area") && rowOf(p,"child"));
+  assert.ok(!p.all().some(e=>e.innerHTML.includes("归档")));
+});
+
+test("archive controls and shortcut are removed", async () => {
+  const p=await page(nativeSnapshot(),[]); await expand(p);
+  assert.ok(!p.all().some(e => e.innerHTML.includes("归档")));
+  assert.equal(p.key("a"),false,"the retired key has no action");
+  assert.ok(!p.calls.some(c => c.path === "/api/archive"));
+  const source=await readFile("web/app.ts","utf8"); assert.ok(!source.includes("/api/archive"));
 });
 
 test("a shared waiter raises priority and the page shows the derived value without a legacy struck value", async () => {
@@ -2549,12 +2585,12 @@ test("search: arrows and Enter jump to the item with its ancestors unfolded, eve
   assert.ok(rowOf(p, "child").className.includes("selected"), "its ancestors are unfolded and its row selected");
   p.key("/"); await type("取消"); p.key("Enter", input()); await p.flush();
   assert.ok(detailItem(p, "dropped"), "a cancelled item hidden from the tree is shown");
-  assert.ok(rowOf(p, "dropped").className.includes("selected"));
+  assert.ok(!rowOf(p,"dropped"),"following a closed item leaves its tree node hidden");
   p.key("/"); await type("显示"); await rows()[0]!.click(); await p.flush();
   assert.equal(p.document.getElementById("search"), null);
   assert.ok(detailItem(p, "child") && p.all().find(e => e.id === "q-q")!.className.includes("cur"), "a card result shows its item and selects the card");
   p.key("/"); await type("alpha"); p.key("Enter", input()); await p.flush();
-  assert.ok(detailItem(p, "shipped") && rowOf(p, "shipped").className.includes("selected"), "a done item is reachable");
+  assert.ok(detailItem(p,"shipped") && !rowOf(p,"shipped"),"a done item is reachable without exposing its tree node");
 });
 
 test("/ is ignored while typing in a text field, a text area or editable content", async () => {

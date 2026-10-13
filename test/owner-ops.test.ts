@@ -206,63 +206,15 @@ test("read advances monotonically; unknown, off-history and merged sibling commi
   await mergedOwner.read({ through: merged }); assert.equal(reopened.snapshot().owner.cursor, merged);
 });
 
-test("archive and cursor create no commits and ride with the next data write", async t => {
+test("cursor reads create no commits and ride with the next data write", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later);
-  await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
   const head = store.snapshot().head;
-  own.archive({ id: "a", on: true }); await own.read({ through: head });
-  assert.equal(store.snapshot().head, head); assert.equal(store.snapshot().owner.archived.a, later);
+  await own.read({ through: head });
+  assert.equal(store.snapshot().head, head);
   let ownerChange: unknown;
   const off = store.onChange(c => { ownerChange = c.changed.find(d => d.kind === "owner")?.after; }); t.after(off);
   await op.appendLog({ author, id: "b", text: "rides with this commit" });
-  assert.deepEqual(ownerChange, { archived: { a: later }, cursor: head });
-  own.archive({ id: "a", on: false }); assert.equal(store.snapshot().owner.archived.a, undefined);
-  await assert.rejects(async () => own.archive({ id: "missing", on: true }), /Unknown item/);
-});
-
-// Migration permits clocks ahead of the daemon; archiving still covers what was shown.
-test("archive includes future item, log and reply timestamps", async t => {
-  const {store,op} = await board(t), own = ownerOps(store, () => later);
-  await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
-  const item = store.snapshot().items.a!;
-  await store.commit({author, message:"future clock witness", puts:[{kind:"item",id:"a",expectRev:item.rev,doc:{...item,updated:"2030-01-01T00:00:00Z",log:[...item.log,{at:"2030-02-01T00:00:00Z",text:"future log"}]}}]});
-  const note = store.snapshot().notes["note-1"]!;
-  await store.commit({author,message:"future reply witness",puts:[{kind:"note",id:"note-1",expectRev:note.rev,doc:{...note,state:"done",reply:"future reply",repliedAt:"2030-03-01T00:00:00Z"}}]});
-  own.archive({id:"a",on:true});
-  assert.equal(store.snapshot().owner.archived.a,"2030-03-01T00:00:00Z");
-  assert.equal(rules(store.snapshot()).isArchived("a"),true);
-});
-
-
-test("only done or cancelled items archive, a parent counts when all its sub-items are done, and any item un-archives", async t => {
-  const { store, op } = await board(t), own = ownerOps(store, () => later);
-  // a is todo, b is blocked and area is derived from them, so none is done.
-  for (const id of ["a", "b", "area"]) assert.throws(() => own.archive({ id, on: true }), /Only done or cancelled items can be archived/, id);
-  await op.setPlan({ author, id: "a", row: { id: "work", text: "推进工作", state: "doing" } });
-  assert.throws(() => own.archive({ id: "a", on: true }), /Only done or cancelled items/, "wip");
-  await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
-  assert.throws(() => own.archive({ id: "area", on: true }), /Only done or cancelled items/, "a parent with an open sub-item");
-  await op.setPlan({ author, id: "b", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
-  assert.deepEqual(Object.keys(store.snapshot().owner.archived), [], "refusals archive nothing");
-  await op.setPlan({ author, id: "area", row: { id: "accept", accept: true, text: "解释器目标通过", state: "done" } });
-  own.archive({ id: "area", on: true }); own.archive({ id: "a", on: true });
-  assert.deepEqual(Object.keys(store.snapshot().owner.archived).sort(), ["a", "area"]);
-  // Progress brings the item back as open work; the archive entry stays, and turning it off is still allowed.
-  store.setOwner({ ...store.snapshot().owner, archived: { ...store.snapshot().owner.archived, b: "2999-01-01T00:00:00Z" } });
-  await op.setPlan({ author, id: "b", row: { id: "accept", accept: true, text: "验收通过", state: "todo" } });
-  assert.equal(rules(store.snapshot()).isArchived("b"), true);
-  assert.notEqual(rules(store.snapshot()).statusOf("b"), "done");
-  own.archive({ id: "b", on: false });
-  assert.equal(store.snapshot().owner.archived.b, undefined);
-});
-
-test("a cancelled item archives, and an open or blocked one is still refused", async t => {
-  const { store, op } = await board(t), own = ownerOps(store, () => later);
-  await op.setStatus({ author, id: "a", status: "cancelled", log: "Dropped" });
-  own.archive({ id: "a", on: true });
-  assert.ok(store.snapshot().owner.archived.a, "cancelled archives");
-  assert.throws(() => own.archive({ id: "b", on: true }), /Only done or cancelled items can be archived/, "b is still open");
-  assert.equal(store.snapshot().owner.archived.b, undefined);
+  assert.deepEqual(ownerChange, { cursor: head });
 });
 
 test("document reads persist with the next data write and compact the completed prefix", async t => {
@@ -296,8 +248,8 @@ test("cursor reads prune marks while invalid and backward document marks are ref
     await assert.rejects(own.read(input as Parameters<typeof own.read>[0]), /document|history|commit|advance|Unrecognized/i);
     assert.deepEqual(store.snapshot().owner, state, "rejected input leaves read state intact");
   }
-  assert.equal(OwnerState.safeParse({archived: {}, readMarks: {"it:b": b.commit}}).success, false);
-  assert.equal(OwnerState.safeParse({archived: {}, readMarks: {"item:b": "short"}}).success, false);
+  assert.equal(OwnerState.safeParse({readMarks: {"it:b": b.commit}}).success, false);
+  assert.equal(OwnerState.safeParse({readMarks: {"item:b": "short"}}).success, false);
   await own.read({ through: b.commit });
   assert.equal(store.snapshot().owner.readMarks, undefined);
 });
@@ -518,4 +470,10 @@ test("document reads compact across internal logs without making them unread aga
   assert.deepEqual(await unreadSteps(store, owner.cursor, owner.readMarks), [], "further logs leave the item read");
   const next = await op.setPlan({author, id: "a", row: {id: "work", text: "A later result", state: "todo"}});
   assert.deepEqual((await unreadSteps(store, owner.cursor, owner.readMarks)).map(step => step.id), [next.commit]);
+});
+
+
+test("owner reading schema rejects removed archive state", () => {
+  assert.deepEqual(OwnerState.parse({}), {});
+  assert.equal(OwnerState.safeParse({ archived: {} }).success, false);
 });

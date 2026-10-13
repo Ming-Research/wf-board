@@ -17,7 +17,6 @@ export interface OwnerOps {
   editDraft(a: { id: string; rev: number; text: string }): Promise<{ note: { id: string; doc: Note }; deleted: string[]; commit: string }>;
   deleteNote(a: { id: string }): Promise<void>;
   send(): Promise<{ sent: Array<{ id: string; target: string; kind: string; project: string }> }>;
-  archive(a: { id: string; on: boolean }): void;
   readNotice(a: { id: string } | { all: true }): Promise<{ marked: string[] }>;
   read(a: { through: string } | { doc: string; through?: string }): Promise<void>;
 }
@@ -128,20 +127,6 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       if (ids.length) await store.commit({ author: "owner", message: `read_notice ${ids.length > 1 ? ids.length + " notices" : ids[0]}`, puts: ids.map(id => ({ kind: "notice", id, expectRev: s.notices[id]!.rev, doc: { ...s.notices[id]!, read: at } })) });
       return { marked: ids };
     }),
-    archive: a => {
-      if (!Key.safeParse(a.id).success || !z.boolean().safeParse(a.on).success) throw new OpError("archive needs an item id and boolean on");
-      const s = store.snapshot();
-      if (!Object.hasOwn(s.items, a.id)) throw new NotFoundError(`Unknown item ${a.id}`);
-      const archived = { ...s.owner.archived };
-      if (a.on) {
-        const status = rules(s).statusOf(a.id);
-        if (status !== "done" && status !== "cancelled") throw new OpError(`Only done or cancelled items can be archived; ${a.id} is ${status ?? "a record"}`);
-        const item = s.items[a.id]!;
-        const times = [now(), item.updated, ...item.log.map(e => e.at), ...Object.values(s.notes).filter(n => n.target === `it:${a.id}` && n.reply).map(n => n.repliedAt || n.sentAt || n.at)];
-        archived[a.id] = times.sort().at(-1)!;
-      } else delete archived[a.id];
-      store.setOwner({ ...s.owner, archived });
-    },
     read: a => run(async () => {
       const parsed = ReadInput.safeParse(a);
       if (!parsed.success) throw new OpError(`Invalid read document or full commit id: ${parsed.error.message}`);
@@ -193,7 +178,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
         const afterCursor = new Set(history.slice(stop).map(c => c.commit));
         for (const [doc, mark] of Object.entries(readMarks)) if (!afterCursor.has(mark)) delete readMarks[doc];
       }
-      // Preserve archive updates that arrived during the asynchronous history reads.
+      // Preserve owner state that arrived during the asynchronous history reads.
       const owner = { ...store.snapshot().owner, cursor };
       if (Object.keys(readMarks).length) owner.readMarks = readMarks;
       else delete owner.readMarks;

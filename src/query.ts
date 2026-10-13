@@ -104,7 +104,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     if (seen.has(id) || !s.items[id] || r.isRequest(id)) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
-    if (inScope(r, id, f) && (!f.status || f.status.some(st => st === r.statusOf(id))) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
+    if (inScope(r, id, f) && (f.status ? f.status.some(st => st === r.statusOf(id)) : !["done", "cancelled"].includes(r.statusOf(id) ?? "")) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
       (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
@@ -181,8 +181,9 @@ export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "
   return { id, ...(options.direction !== "down" ? { up: walk(rootKind, id, "up", depth, new Set()) } : {}), ...(options.direction !== "up" ? { down: walk(rootKind, id, "down", depth, new Set()) } : {}) };
 }
 export function overview(s: Snapshot, r: Rules, f: { group?: string } = {}) {
-  const areas = r.areas().filter(id => f.group === undefined || r.groupOf(id) === f.group).map(id => {
-    const rows = list(s, r, { under: id, limit: Object.keys(s.items).length }), leaves = rows.filter(it => r.isStatusLeaf(it.id));
+  const areas = r.areas().filter(id => (f.group === undefined || r.groupOf(id) === f.group) && !["done", "cancelled"].includes(r.statusOf(id) ?? "")).map(id => {
+    const rows = list(s, r, { under: id, limit: Object.keys(s.items).length });
+    const leaves = list(s, r, { under: id, status: [...STATUSES], limit: Object.keys(s.items).length }).filter(it => r.isStatusLeaf(it.id));
     const counts = Object.fromEntries(STATUSES.map(st => [st, leaves.filter(it => it.status === st).length])) as Record<Status, number>;
     const area = row(s, r, "item", id);
     return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
@@ -211,7 +212,7 @@ function sentNotes(s: Snapshot, r: Rules) {
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
-  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), eligible = ids.filter(id => !r.isRequest(id) && !r.inArchive(id) && !r.isBacklog(id));
+  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), eligible = ids.filter(id => !r.isRequest(id) && !r.isBacklog(id));
   const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
   for (const id of ids.filter(id => r.isOpenWork(id))) for (const dep of r.depsOf(id)) if (dep.kind === "item" && r.isOpenWork(dep.id) && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
   const progressLines = (id: string) => ({
@@ -229,7 +230,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.outgoing].map(item => item.id));
-  const progress = ids.filter(id => !shown.has(id) && !r.inArchive(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
+  const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
     .map(id => ({ id, title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
