@@ -82,7 +82,7 @@ interface PageOptions {
   transform?: (code:string) => string;
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
-  clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
+  now?: () => number; clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
@@ -132,7 +132,10 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind,fn); }
     close() { this.closed=true; }
   }
+  const intervals: Array<() => void> = [];
   const context = {
+    Date: class extends Date { static now() { return options.now?.() ?? Date.now(); } },
+    setInterval: (fn: () => void) => { intervals.push(fn); return intervals.length; },
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
@@ -166,6 +169,12 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         else unread = through === "all" ? [] : unread.slice(stop + 1);
         value = { ok: true };
       }
+      else if (path === "/api/draft" && input.id) {
+        const a = input as {id: string; rev: number; text: string}, previous = snapshot.notes[a.id]!;
+        const doc: Note = { ...previous, text: a.text, rev: previous.rev + 1, ...(previous.kind === "approve" || previous.kind === "done" ? {answerText: previous.answerText ?? previous.text} : {}) };
+        snapshot.notes[a.id] = doc;
+        value = {note: {id: a.id, doc}, deleted: [], commit: "c".repeat(40)};
+      }
       else if (path === "/api/draft") {
         const a=input as {target:string;kind:Note["kind"];on:boolean;text:string;choice?:string};
         const deleted=Object.keys(snapshot.notes).filter(id=>snapshot.notes[id]!.target === a.target && snapshot.notes[id]!.kind === a.kind && snapshot.notes[id]!.state === "draft");
@@ -187,7 +196,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   // A live update from the server, as the page's event stream delivers it.
   const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
-  return { roots, all, calls, document, wrap, change, emit, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
+  return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
     // Every scroll either pane was asked to make.
     get scrollCount() { return scrolls.length + detailScrolls.length; },
     // Where the list is scrolled: the left pane. `windowScrollY` is the window, which the page never scrolls.
@@ -2592,7 +2601,7 @@ test("等你 panel is gone when the last blocking wait is answered", async () =>
 });
 test("要你知道 lists unread notices newest first, 已读 hides one through the API, and the section disappears when none is left", async () => {
   const s=snapshot();
-  s.notices={n1:{text:"旧的 **通知**",author:"跨项目",at:"2026-10-01T00:00:00Z",rev:1},n2:{text:"新的，见 [[it:child]]",item:"child",author:"Firn",at:"2026-10-03T00:00:00Z",rev:1},n3:{text:"已读的",author:"Firn",at:"2026-10-02T00:00:00Z",read:at,rev:1}};
+  s.notices={n1:{text:"旧的 **通知**",author:"总管",at:"2026-10-01T00:00:00Z",rev:1},n2:{text:"新的，见 [[it:child]]",item:"child",author:"Firn",at:"2026-10-03T00:00:00Z",rev:1},n3:{text:"已读的",author:"Firn",at:"2026-10-02T00:00:00Z",read:at,rev:1}};
   const p=await page(s,[],null,undefined,{response:(path)=> path === "/api/notice-read" ? {ok:true,status:200,json:async()=>({marked:[]})} : undefined});
   const section=()=>p.all().find(e=>e.id === "notices");
   assert.equal(section()!.children[0]!.innerHTML,"要你知道 2");
@@ -2619,4 +2628,110 @@ test("等你 panel shortens a long card question at 40 characters", async () => 
   const row=(blocks:string)=>rows.find(e=>e.innerHTML.includes(blocks))!;
   assert.ok(row("停着甲").innerHTML.includes(q40) && !row("停着甲").innerHTML.includes("…"),"exactly 40 characters stays whole");
   assert.ok(row("停着乙").innerHTML.includes(q40+"…") && !row("停着乙").innerHTML.includes(q41),"41 characters is cut to 40 with an ellipsis");
+});
+
+test("record labels render in the page and stay outside status counts", async () => {
+  const s = snapshot(); s.items.child!.record = true; delete s.items.child!.status;
+  const p = await page(s, []);
+  const row = p.all().find(e => e.id === "it-child")!;
+  assert.ok(row.querySelectorAll(".st").some(e => e.innerHTML === "记录"));
+  assert.ok(!row.querySelectorAll(".st").some(e => /TODO|WIP/.test(e.innerHTML)));
+});
+
+test("page refreshes the stalled check when active time crosses the threshold without another write", async () => {
+  const s = snapshot(), began = Date.parse(at);
+  let now = began + 2 * 60 * 60 * 1000 - 1;
+  s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  const p = await page(s, [], null, undefined, {now: () => now});
+  const checkText = () => p.all().map(e => e.innerHTML + e.title).join(" ");
+  assert.ok(!checkText().includes("活跃时间"));
+  now++;
+  p.intervals.forEach(fn => fn()); await p.flush();
+  assert.ok(checkText().includes("活跃时间"));
+});
+
+function noteButton(p: Awaited<ReturnType<typeof page>>, id: string, label: string) {
+  const note = p.document.getElementById("note-" + id)!;
+  return descendants(note).find(e => e.tagName === "BUTTON" && (e.innerHTML === label || e.textContent === label));
+}
+function typeDraftEdit(p: Awaited<ReturnType<typeof page>>, id: string, text: string) {
+  const ta = p.document.getElementById("edit-draft-" + id)!;
+  ta.value = text;
+  for (const handler of ta.handlers.get("input") ?? []) handler({target: ta});
+  return ta;
+}
+
+test("draft comment editor prefills, cancels without writing, and saves the existing note", async () => {
+  const s = snapshot();
+  s.notes.d = {target: "it:child", kind: "comment", text: "Original", at, state: "draft", rev: 4, anchor: {kind: "log", at}};
+  s.notes.sent = {...s.notes.d, text: "Sent", state: "sent", rev: 1};
+  s.notes.done = {...s.notes.d, text: "Handled", state: "done", rev: 1};
+  const p = await page(s, [], null, undefined, {notesOpen: {"it:child": true}}); await expand(p);
+  assert.ok(noteButton(p, "d", "编辑"));
+  assert.equal(noteButton(p, "sent", "编辑"), undefined); assert.equal(noteButton(p, "done", "编辑"), undefined);
+  await noteButton(p, "d", "编辑")!.click();
+  assert.equal(p.document.getElementById("edit-draft-d")!.value, "Original");
+  typeDraftEdit(p, "d", "Discard this"); await noteButton(p, "d", "取消")!.click();
+  assert.equal(p.document.getElementById("edit-draft-d"), null);
+  assert.equal(p.calls.filter(c => c.path === "/api/draft" || c.path === "/api/notes").length, 0);
+  await noteButton(p, "d", "编辑")!.click(); typeDraftEdit(p, "d", "Edited\ntext");
+  await noteButton(p, "d", "保存")!.click(); await p.flush();
+  assert.deepEqual(p.calls.find(c => c.path === "/api/draft")!.body, {id: "d", rev: 4, text: "Edited\ntext"});
+  assert.equal(p.calls.filter(c => c.path === "/api/notes").length, 0, "editing never creates a replacement comment");
+  assert.equal(p.document.getElementById("edit-draft-d"), null);
+  assert.match(markup(p.document.getElementById("note-d")!), /Edited/);
+  assert.equal(s.notes.d!.state, "draft"); assert.equal(s.notes.d!.anchor?.kind, "log");
+});
+
+test("edited explanation requests display the edited text and keep their kind", async () => {
+  const s = snapshot(); s.notes.ex = {target: "it:child", kind: "explain", text: "请详细解释这一项。", at, state: "draft", rev: 1};
+  const p = await page(s, [], null, undefined, {notesOpen: {"it:child": true}}); await expand(p);
+  await noteButton(p, "ex", "编辑")!.click();
+  assert.equal(p.document.getElementById("edit-draft-ex")!.value, "请详细解释这一项。");
+  typeDraftEdit(p, "ex", "请解释为什么选择这个方案。"); await noteButton(p, "ex", "保存")!.click(); await p.flush();
+  const text = markup(p.document.getElementById("note-ex")!);
+  assert.match(text, /请求：详细解释/); assert.match(text, /请解释为什么选择这个方案/);
+  assert.equal(s.notes.ex!.kind, "explain");
+});
+
+test("draft edits keep typed text and original revision across rerenders and newer note events", async () => {
+  const s = snapshot(); s.notes.d = {target: "it:child", kind: "comment", text: "Original", at, state: "draft", rev: 1};
+  const p = await page(s, [], null, undefined, {frames: new Frames(), notesOpen: {"it:child": true}, response: path => path === "/api/draft" ? {ok: false, status: 409, json: async () => ({error: "expected rev 1, current rev 2"})} : undefined}); await expand(p); await p.flush();
+  await noteButton(p, "d", "编辑")!.click(); typeDraftEdit(p, "d", "My unsaved text");
+  p.intervals.forEach(fn => fn()); await p.flush();
+  p.emit("d".repeat(40), [{kind: "note", id: "d", after: {...s.notes.d, text: "Other edit", rev: 2}}]); await p.flush();
+  assert.equal(p.document.getElementById("edit-draft-d")!.value, "My unsaved text");
+  await noteButton(p, "d", "保存")!.click(); await p.flush();
+  assert.deepEqual(p.calls.find(c => c.path === "/api/draft")!.body, {id: "d", rev: 1, text: "My unsaved text"});
+  assert.equal(p.document.getElementById("edit-draft-d")!.value, "My unsaved text");
+  assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 1);
+  shownInHint(p, /expected rev 1, current rev 2/);
+});
+
+test("send waits for draft text saves and stops after a failed save", async t => {
+  for (const failed of [false, true]) await t.test(String(failed), async () => {
+    const s = snapshot(), hold = deferred<FakeResponse>(); s.notes.d = {target: "it:child", kind: "comment", text: "Original", at, state: "draft", rev: 1};
+    const p = await page(s, [], null, undefined, {notesOpen: {"it:child": true}, response: path => path === "/api/draft" ? hold.promise : undefined}); await expand(p);
+    await noteButton(p, "d", "编辑")!.click(); typeDraftEdit(p, "d", "Edited");
+    const saving = noteButton(p, "d", "保存")!.click();
+    assert.equal(noteButton(p, "d", "删除")!.disabled, true);
+    const sending = p.roots.get("send-all")!.click(); await settle();
+    assert.equal(p.calls.filter(c => c.path === "/api/send").length, 0);
+    if (failed) hold.reject(new Error("Edit refused"));
+    else hold.resolve(reply({note: {id: "d", doc: {...s.notes.d, text: "Edited", rev: 2}}, deleted: [], commit: "c".repeat(40)}));
+    await saving; await sending; await p.flush();
+    assert.equal(p.calls.filter(c => c.path === "/api/send").length, failed ? 0 : 1);
+  });
+});
+
+test("a sent transition closes a draft editor and a late save cannot restore the draft", async () => {
+  const s = snapshot(), hold = deferred<FakeResponse>(); s.notes.d = {target: "it:child", kind: "comment", text: "Original", at, state: "draft", rev: 1};
+  const p = await page(s, [], null, undefined, {frames: new Frames(), notesOpen: {"it:child": true}, response: path => path === "/api/draft" ? hold.promise : undefined}); await expand(p); await p.flush();
+  await noteButton(p, "d", "编辑")!.click(); typeDraftEdit(p, "d", "Edited"); const saving = noteButton(p, "d", "保存")!.click();
+  p.emit("e".repeat(40), [{kind: "note", id: "d", after: {...s.notes.d, text: "Newest sent text", state: "sent", sentAt: at, rev: 3}}]); await p.flush();
+  assert.equal(p.document.getElementById("edit-draft-d"), null); assert.equal(noteButton(p, "d", "编辑"), undefined); assert.equal(noteButton(p, "d", "删除"), undefined);
+  hold.resolve(reply({note: {id: "d", doc: {...s.notes.d, text: "Older acknowledgement", rev: 2}}, deleted: [], commit: "c".repeat(40)}));
+  await saving; await p.flush();
+  assert.match(markup(p.document.getElementById("note-d")!), /Newest sent text/);
+  assert.equal(noteButton(p, "d", "编辑"), undefined);
 });

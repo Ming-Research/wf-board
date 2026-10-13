@@ -96,7 +96,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
     if (method === "POST") {
       if (path === "/api/notes") { const result = await ownerOps.createNote(args(await body(req))); json(res, 200, { id: result.id }); return; }
-      if (path === "/api/draft") { json(res, 200, await ownerOps.setDraft(args(await body(req)))); return; }
+      if (path === "/api/draft") {
+        const input = args<Record<string, unknown>>(await body(req));
+        json(res, 200, await (Object.hasOwn(input, "id") ? ownerOps.editDraft(args(input)) : ownerOps.setDraft(args(input)))); return;
+      }
       if (path === "/api/send") {
         const result = await ownerOps.send();
         json(res, 200, result); return;
@@ -153,7 +156,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item)});
       }
     }
-    const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
+    const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: s.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
     for (const stream of streams) stream.write(data);
   });
   const heartbeat = setInterval(() => {

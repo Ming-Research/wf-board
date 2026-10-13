@@ -163,12 +163,28 @@ log:
   error. Only log entries are conflict-free appends and carry no `rev`.
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
+- **Record items.** `record: true` makes an item a record with a head and log,
+  and no status; creation and `update_item` can set it. `set_status` refuses
+  records. Setting the field to true removes a stored status; setting it to
+  false restores TODO if the item has no work children, otherwise its status
+  is derived. Records keep their parent, dependencies and priority rules,
+  and can hold children without inventing an own-work child. Status roll-up
+  ignores record children: an ordinary item whose children are all records
+  still holds its own status. Records never enter status queues, satisfy an
+  open dependency blocker or receive status-based checks. The page shows
+  `记录` in place of a status. When `record: false` introduces the first
+  work child of an ordinary work leaf, `update_item` requires
+  `parent_own_work: {key, title}` and transfers the parent's existing status
+  to that named child atomically, preserving its head and log. The argument
+  is accepted only for this conversion. A record may retain request metadata,
+  but is not an open inbox request. Creating a work item with only record
+  children keeps its initial status; adopting work children derives it.
 - Areas are items without a parent, as today. The fields keep their current
   meanings; `area` is folded into `parent`, `text` into `head`, bare-string
   deps into `{id, why}` entries flagged for a why.
 - **Migration switch.** A project's entry in `board.yaml` may carry
   `migrated: true`, set only by `update_project` from the coordinator project
-  `跨项目` and never undone; that commit also drops the stored priority of
+  `总管` and never undone; that commit also drops the stored priority of
   every item of the project that is not a root, logging
   `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on each. An item
   belongs to the project of its area's group. A migrated project follows the
@@ -207,6 +223,26 @@ log:
   Among the 需核对 flags, an open item whose head lacks the
   completion-condition section shows 正文没写完成条件, and an open root without
   a stored priority shows 没有未完成的条目依赖它，却没写优先级.
+- **Stalled work.** A WIP item with no work children is flagged after at
+  least two hours of active time without a change to itself or its subtree:
+  `进行中但 2 小时（活跃时间）没有动静`. Each board content write starts a
+  30-minute active interval; overlapping intervals count only once, and the
+  measure clips their union to the item's last change through the current
+  time. When no one writes, all clocks stop after the last interval ends.
+  Item revisions, log entries, cards and notes on the item reset its last
+  change. Records and items in other statuses are never flagged.
+  `src/rules.ts` defines the durations and the check for both MCP and the page.
+  The store reconstructs an optional snapshot activity index from existing
+  git history, retaining every content commit timestamp and each item's last
+  change, including overwritten and deleted cards and notes. Card moves
+  touch both items; later notes on deleted cards retain their last known
+  item. No extra data file is stored. Content commits touching board metadata,
+  items, cards, notes, notices or glossaries count; commits containing only
+  owner reading cursors or archive state do not. Current document timestamps
+  also supply the available dating evidence for imported or synthetic data.
+  Live updates carry the activity index, MCP recomputes checks on read, and
+  the page recomputes them every minute so a quiet item can become stalled
+  without another write.
 - **Blocking waits.** An owner wait either stops named work or does not. A
   decision card may carry `blocks`, one sentence naming the work that is
   stopped until the owner rules (for example `#398 合并停着`); a card with `blocks`
@@ -321,7 +357,7 @@ Every tool returns compact text built for an agent's context: ids, titles,
 status and the relevant lines, never whole files unless asked. Writes take
 `author`, the name of the project the session works for, selected from
 `projects` by matching `repo` to its repository's GitHub remote. The
-coordinator writes as `跨项目`. Several sessions may share a project and
+coordinator writes as `总管`. Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely.
 
 ### Finding things
@@ -353,20 +389,20 @@ restructuring forms below (`create_item` with `children`, `move_item` without
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links, children?, source_status?, source_priority?)` | Adds an item and lists it in the parent's deps with `parent_why`; when the parent is still a leaf, its own work and status move into the `parent_own_work` sub-item in the same commit, since a parent's status is derived (found in the first CLI trial: a leaf's WIP silently became its new child's TODO); the sub-item takes no priority, and a root parent keeps its own. `children: [{id, why}]` moves those existing items under the new item in the same commit and lists them in its deps with their whys, so it is a parent from birth with no own-work stub; each old parent follows `move_item`'s source rules, with `source_status` and `source_priority` | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it; children are distinct items of the author's project, not the new item's parent or its ancestors, and come without `status` |
+| `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links, record?, children?, source_status?, source_priority?)` | Adds an item and lists it in the parent's deps with `parent_why`; when a work child is added to an ordinary parent with no work children, its own work and status move into the `parent_own_work` sub-item in the same commit, since its status then becomes derived; adding a record or adding under a record does not split the parent; the sub-item takes no priority, and a root parent keeps its own. `children: [{id, why}]` moves those existing items under the new item in the same commit and lists them in its deps with their whys, so it is a parent from birth with no own-work stub; each old parent follows `move_item`'s source rules, with `source_status` and `source_priority` | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it; children are distinct items of the author's project, not the new item's parent or its ancestors; omit `status` when adopting any work child, while adopting only records preserves a work item's initial status; records never take `status` |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `update_item(id, rev, fields, reason?)` | Changes title, head, deps, links, priority | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from |
-| `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents, preserving a destination leaf's own work in a new child; a destination leaf with no work of its own (todo, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; the source's last child requires its new leaf status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
+| `update_item(id, rev, fields, reason?, parent_own_work?)` | Changes title, head, deps, links, priority or record mode | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from; converting a record into its parent's first work child requires `parent_own_work` to preserve the parent's status |
+| `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on work leaves, never records; blocked needs an open dep or an ask; cancelled and done need the log line |
+| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents; moving work into an ordinary destination with no work children preserves its own work in a new child, while moving a record or moving under a record needs no own-work child; an ordinary destination with no work children and no work of its own (todo, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; an ordinary source losing its last non-record child requires its new work leaf status; records take no source status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
-| `update_project(name, repo?, migrated?)` | Sets or changes a project’s repository, or migrates it (section 5): `migrated: true` and, in the same commit, the drop of every non-root's stored priority with its log entry | Repository: author is that project or the coordinator project `跨项目`. Migration: author is `跨项目`, only `true`, and only once |
+| `update_project(name, repo?, migrated?)` | Sets or changes a project’s repository, or migrates it (section 5): `migrated: true` and, in the same commit, the drop of every non-root's stored priority with its log entry | Repository: author is that project or the coordinator project `总管`. Migration: author is `总管`, only `true`, and only once |
 | `create_request(project, key, title, head, priority?, why, from?)` | Files into any project's inbox; optionally links the filing item, which then gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to author’s project; atomic dependency; priority required without `from` and refused with it |
-| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves leaf parent work; priority only when the request stays a root |
+| `triage_request(id, parent?, parent_why?, parent_own_work?, priority?, log)` | Accepts a request into the work hierarchy or as an area | Author is the request’s project; same-project parent; preserves an ordinary parent's work when it has no work children, while a record parent needs no own-work child; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
@@ -517,6 +553,36 @@ The affected control stays busy until that write settles. Sending waits for
 pending draft writes and stops if one fails, so an immediately displayed choice
 cannot be omitted from the send by a slower draft request.
 
+Every displayed unsent note has 编辑 beside 删除. The existing rules for
+which notes appear on the page stay the same. Editing replaces its displayed
+text with an in-place textarea prefilled from the existing note; 保存 updates that exact
+note and 取消 discards the local edit. This includes displayed comments and
+explanation requests; the exact-id API supports every draft kind, including
+generated answers. The existing action kind and selected option stay fixed; the page keeps their action label and displays edited text.
+`POST /api/draft` also accepts the strict edit shape `{id, rev, text}`. It
+changes only a draft's text, preserving its id, target, kind, choice, creation
+time and anchor. It rejects sent or handled notes, a stale revision, and an
+empty or whitespace-only comment. Its response uses the same authoritative
+`note`, `deleted` (empty for an edit) and `commit` fields as control writes.
+An edit conflict is returned to the page, never retried with a newer revision.
+
+Approve and done notes match a legacy ask by its exact original action text.
+The first edit of either kind captures that original text in the optional,
+server-owned `answerText`; later edits keep it. Ask matching uses `answerText`
+when present and otherwise the stored text. Editing therefore neither changes
+which ask was answered nor turns an originally mismatched answer into an
+approval. Agent context and sent-note summaries include the original action
+text when it is present. Creating a note cannot supply this field. A new
+selection through the existing action control resets it to that control's current action.
+
+The editor keeps its typed text and original revision across live updates and
+scoped renders. A sent or deleted note closes its editor. While a save is
+pending its editor and delete action are disabled; sending waits for that
+save and stops if it fails. Edit acknowledgements obey the existing revision
+ordering, so a late response cannot overwrite a newer live update. Editing
+uses the same eight-second deadline, connection checks and no-retry policy
+as other owner writes.
+
 Live changes, unread results and loaded baselines schedule a shared render on
 the next animation frame. A 100-millisecond timer runs the callback if the
 frame has not fired; whichever runs first cancels the other, and the callback
@@ -620,11 +686,11 @@ boards without `projects` load with an empty list.
 
 At a repository root, a session calls `projects`, picks the project whose
 `repo` matches its repository’s GitHub remote (the coordinator uses
-`跨项目`), uses that project’s name as `author` in every write, then reads
+`总管`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
 `create_project` configures `{name, repo?}` and accepts any author string.
 `update_project(author, name, repo)` sets or changes a repository: a project
-may change its own repo, and the coordinator project `跨项目` may change any
+may change its own repo, and the coordinator project `总管` may change any
 project’s repo. Both run in the same operations queue as item writes,
 including prospective board checks.
 
@@ -635,7 +701,7 @@ caller’s repository. Item mutations require `author === projectOf(target)`;
 this applies to items, their cards and owner-note replies or closures.
 Creating an area requires its group to match author. `set_term` and
 `delete_term` change only the author's own glossary, the coordinator
-`跨项目`'s included. Moving work requires
+`总管`'s included. Moving work requires
 the source and destination to belong to author’s project, and revising a
 card’s owning item checks both owners. A refusal names the item’s project
 and directs the caller to file into it with `create_request`. Cross-project
@@ -690,6 +756,17 @@ not carry a session prefix; existing keys stay, because notes and log text
 cite them.
 
 ## 10. Migration
+
+At startup, after schema validation and the clean-worktree check, a temporary
+store migration renames the coordinator project from `跨项目` to `总管` in
+one data commit. It changes the project name, item groups and request authors,
+log authors, note reply authors, notice authors, glossary term authors and the
+coordinator glossary filename. It compares whole identity fields, preserving
+heads, log prose, notes, titles and any text containing the old name exactly.
+Existing historical commits remain unchanged. A destination project or glossary
+collision is refused before changing any file. Once the old project name is
+absent, reopening is a no-op. Remove this migration after the live board has
+migrated.
 
 1. Convert the export into the file format, keeping every id, in one commit.
    The survey of the export found no broken dependency, cycle, bad timestamp

@@ -143,7 +143,7 @@ test("MCP onboarding and write schemas use project identities", async t => {
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
   const instructions = client.getInstructions()!, tools = (await client.listTools()).tools;
-  await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.match(instructions, /跨项目/); assert.doesNotMatch(instructions, /claim_project|session-list/); });
+  await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.match(instructions, /总管/); assert.doesNotMatch(instructions, /claim_project|session-list/); });
   for (const tool of tools.filter(tool => tool.inputSchema.properties?.author)) {
     await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`)"));
   }
@@ -169,15 +169,15 @@ test("MCP write schemas take a priority only for a root and relay the refusal", 
   assert.equal(update.isError, true); assert.match(text(update), /优先级来自这些条目（area）/);
 });
 
-test("MCP migrates a project for 跨项目, restructures with children and without new_parent, and reports dropped priorities", async t => {
+test("MCP migrates a project for 总管, restructures with children and without new_parent, and reports dropped priorities", async t => {
   const { store, op } = await board(t, { sharedProjects: true, unmigrated: true }), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Migration test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
   const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const refused = await client.callTool({ name: "update_project", arguments: { author, name: "Whitefoot", migrated: true } });
-  assert.equal(refused.isError, true); assert.match(text(refused), /only the coordinator project 跨项目/);
-  const migrated = await client.callTool({ name: "update_project", arguments: { author: "跨项目", name: "Whitefoot", migrated: true } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /only the coordinator project 总管/);
+  const migrated = await client.callTool({ name: "update_project", arguments: { author: "总管", name: "Whitefoot", migrated: true } });
   assert.equal(migrated.isError, undefined, text(migrated)); assert.match(text(migrated), /^dropped stored priority, no longer a root: a P1, b P0$/m);
   const root = await client.callTool({ name: "move_item", arguments: { author, id: "b", priority: "P0" } });
   assert.equal(root.isError, undefined, text(root)); assert.match(text(root), /^b · BLOCK P0 /m);
@@ -200,7 +200,7 @@ test("set_term, glossary, brief and delete_term work end to end, and an unconfig
   assert.match((await call("set_term", { author, term: "否决线", definition: "性能比较里\n判定变慢的界线。" })).text, /^set_term 否决线 · commit [a-f0-9]{40}$/);
   await call("set_term", { author: "Firn", term: "回收压力", definition: "频繁触发回收的运行方式。" });
   assert.equal((await call("glossary", {})).text, "Whitefoot:\n  否决线: 性能比较里 判定变慢的界线。\nFirn:\n  回收压力: 频繁触发回收的运行方式。");
-  assert.equal((await call("glossary", { project: "跨项目" })).text, "跨项目: no terms");
+  assert.equal((await call("glossary", { project: "总管" })).text, "总管: no terms");
   assert.deepEqual(JSON.parse((await call("brief", { project: author })).text).glossary, ["否决线"]);
   const refused = await call("set_term", { author: "Snowghost", term: "术语", definition: "定义" });
   assert.equal(refused.error, true); assert.match(refused.text, /author Snowghost: choose a configured project/);
@@ -221,4 +221,27 @@ test("a reference token in an owner note reaches sessions as typed, with the key
   assert.equal(store.snapshot().notes[note.id]!.text, "compare with [[it:b]] and [[q:choice]]", "the store keeps the token, not the title");
   assert.match(text(await client.callTool({ name: "notes", arguments: { filters: {} } })), /compare with \[\[it:b\]\] and \[\[q:choice\]\]/);
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /compare with \[\[it:b\]\] and \[\[q:choice\]\]/);
+});
+
+test("MCP re-evaluates active time without a new commit and exposes record creation and updates", async t => {
+  const { store, op } = await board(t);
+  const start = Date.parse("2026-10-11T03:00:00Z");
+  let clock = start + 2 * 60 * 60 * 1000 - 1;
+  const server = createMcpServer({store, ops: op, now: () => new Date(clock).toISOString()});
+  const client = new Client({name: "Test agent", version: "1"});
+  const [st, ct] = InMemoryTransport.createLinkedPair(); await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tools = (await client.listTools()).tools;
+  for (const name of ["create_item", "update_item"]) assert.ok(tools.find(tool => tool.name === name)!.inputSchema.properties!.record);
+  const s = structuredClone(store.snapshot()); s.items.a!.status = "wip"; s.items.a!.updated = new Date(start).toISOString();
+  s.decisions = {}; s.notes = {};
+  s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
+  store.snapshot = () => structuredClone(s);
+  const context = async () => {
+    const result = await client.callTool({ name: "context", arguments: {id: "a"} });
+    assert.ok(!result.isError); return (result.content as Array<{text: string}>)[0]!.text;
+  };
+  assert.ok(!(await context()).includes("活跃时间"));
+  clock++;
+  assert.ok((await context()).includes("活跃时间"));
 });

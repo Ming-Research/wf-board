@@ -6,7 +6,7 @@ import type { Snapshot } from "./model.ts";
 import { ConflictError } from "./store.ts";
 import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
-import { rules } from "./rules.ts";
+import { rules, draftEditable, noteTextProblem } from "./rules.ts";
 import { unreadSteps, commitsSince, inHistory } from "./history.ts";
 import type { DocKind } from "./store.ts";
 
@@ -14,6 +14,7 @@ export class NotFoundError extends Error {}
 export interface OwnerOps {
   createNote(a: { target: string; kind: Note["kind"]; text: string; choice?: string; anchor?: Note["anchor"] }): Promise<{ id: string; commit: string }>;
   setDraft(a: { target: string; kind: "choice" | "approve" | "done" | "explain"; on: boolean; text: string; choice?: string }): Promise<{ note: { id: string; doc: Note } | null; deleted: string[]; commit: string }>;
+  editDraft(a: { id: string; rev: number; text: string }): Promise<{ note: { id: string; doc: Note }; deleted: string[]; commit: string }>;
   deleteNote(a: { id: string }): Promise<void>;
   send(): Promise<{ sent: Array<{ id: string; target: string; kind: string; project: string }> }>;
   archive(a: { id: string; on: boolean }): void;
@@ -24,6 +25,7 @@ const queues = new WeakMap<Store, Promise<unknown>>();
 const ReadInput = z.union([z.object({ through: CommitId }).strict(), z.object({ doc: ReadDocument, through: CommitId.optional() }).strict()]);
 const NoticeInput = z.union([z.object({ id: Key }).strict(), z.object({ all: z.literal(true) }).strict()]);
 const DraftInput = Note.pick({ target: true, text: true, choice: true }).extend({ kind: z.enum(["choice", "approve", "done", "explain"]), on: z.boolean() }).strict();
+const DraftEditInput = z.object({ id: Key, rev: z.number().int().positive(), text: z.string() }).strict();
 export function ownerOps(store: Store, now = () => new Date().toISOString()): OwnerOps {
   function targetExists(s: Snapshot, target: string): string {
     const key = target.slice(target.indexOf(":") + 1);
@@ -38,22 +40,23 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
     do { id = Array.from({ length: 20 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(s.notes, id));
     return id;
   }
-  function run<T>(fn: (s: Snapshot) => Promise<T>): Promise<T> {
+  function run<T>(fn: (s: Snapshot) => Promise<T>, retryConflicts = true): Promise<T> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       for (;;) {
         try { return await fn(store.snapshot()); }
-        catch (e) { if (!(e instanceof ConflictError)) throw e; }
+        catch (e) { if (!retryConflicts || !(e instanceof ConflictError)) throw e; }
       }
     });
     queues.set(store, task.catch(() => {})); return task;
   }
   return {
     createNote: a => run(async s => {
-      const parsed = Note.omit({ at: true, state: true, rev: true, sentAt: true, reply: true, repliedAt: true, repliedBy: true }).safeParse(a);
+      const parsed = Note.omit({ at: true, state: true, rev: true, answerText: true, sentAt: true, reply: true, repliedAt: true, repliedBy: true }).safeParse(a);
       if (!parsed.success) throw new OpError(parsed.error.message);
       const doc = parsed.data;
       const key = targetExists(s, doc.target);
-      if (doc.kind === "comment" && !doc.text.trim()) throw new OpError("A comment needs text");
+      const textProblem = noteTextProblem(doc);
+      if (textProblem) throw new OpError(textProblem);
       validateChoice(s, doc, key);
       const id = noteId(s);
       const result = await store.commit({ author: "owner", message: `create_note ${id}`, puts: [{ kind: "note", id, expectRev: null, doc: { ...doc, at: now(), state: "draft" } }] });
@@ -72,6 +75,8 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const id = on ? retained?.[0] ?? noteId(s) : undefined;
       const doc = on ? Note.parse({ ...retained?.[1], ...input, choice: input.choice, at: retained?.[1].at ?? now(), state: "draft", rev: retained?.[1].rev ?? 1 }) : undefined;
       if (doc && doc.choice === undefined) delete doc.choice;
+      // A control explicitly selects a new action; text edits alone preserve the old one.
+      if (doc) delete doc.answerText;
       const changed = on && (!retained || !isDeepStrictEqual(retained[1], doc));
       if (!changed && !deleted.length) return { note: id && doc ? { id, doc } : null, deleted, commit: s.head };
       // Choice answers remain final even after handling. Item answers can be
@@ -86,10 +91,23 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       });
       return { note: id && doc ? { id, doc: { ...doc, rev: result.revs[`note:${id}`] ?? doc.rev } } : null, deleted, commit: result.commit };
     }),
+    editDraft: a => run(async s => {
+      const parsed = DraftEditInput.safeParse(a);
+      if (!parsed.success) throw new OpError(parsed.error.message);
+      const input = parsed.data, note = Object.hasOwn(s.notes, input.id) ? s.notes[input.id] : undefined;
+      if (!note) throw new NotFoundError(`Unknown note ${input.id}`);
+      if (!draftEditable(note)) throw new OpError("Only draft notes can be edited");
+      if (note.rev !== input.rev) throw new ConflictError("note", input.id, input.rev, note);
+      const originalAction = note.kind === "approve" || note.kind === "done" ? { answerText: note.answerText ?? note.text } : {};
+      const doc = Note.parse({ ...note, text: input.text, ...originalAction }), textProblem = noteTextProblem(doc);
+      if (textProblem) throw new OpError(textProblem);
+      const result = await store.commit({ author: "owner", message: `edit_draft ${input.id}`, puts: [{ kind: "note", id: input.id, expectRev: input.rev, doc }] });
+      return { note: { id: input.id, doc: { ...doc, rev: result.revs[`note:${input.id}`] ?? doc.rev } }, deleted: [], commit: result.commit };
+    }, false),
     deleteNote: a => run(async s => {
       const note = Object.hasOwn(s.notes, a.id) ? s.notes[a.id] : undefined;
       if (!note) throw new NotFoundError(`Unknown note ${a.id}`);
-      if (note.state !== "draft") throw new OpError("Only draft notes can be deleted");
+      if (!draftEditable(note)) throw new OpError("Only draft notes can be deleted");
       await store.commit({ author: "owner", message: `delete_note ${a.id}`, deletes: [{ kind: "note", id: a.id, expectRev: note.rev }] });
     }),
     send: () => run(async s => {
@@ -117,7 +135,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const archived = { ...s.owner.archived };
       if (a.on) {
         const status = rules(s).statusOf(a.id);
-        if (status !== "done" && status !== "cancelled") throw new OpError(`Only done or cancelled items can be archived; ${a.id} is ${status}`);
+        if (status !== "done" && status !== "cancelled") throw new OpError(`Only done or cancelled items can be archived; ${a.id} is ${status ?? "a record"}`);
         const item = s.items[a.id]!;
         const times = [now(), item.updated, ...item.log.map(e => e.at), ...Object.values(s.notes).filter(n => n.target === `it:${a.id}` && n.reply).map(n => n.repliedAt || n.sentAt || n.at)];
         archived[a.id] = times.sort().at(-1)!;
