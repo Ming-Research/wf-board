@@ -2236,7 +2236,7 @@ test("completed and cancelled nodes default to hidden and the status filters sho
   const p=await page(s,[]); await expand(p,"area");
   for (const id of ["child","gone","rootDone","rootGone"]) assert.ok(!rowOf(p,id));
   assert.equal(planRow(p,"area","child").querySelector(".g")!.innerHTML,"✓");
-  assert.equal(planRow(p,"area","gone").querySelector(".g")!.innerHTML,"×");
+  assert.equal(planRow(p,"area","gone").querySelector(".g")!.innerHTML,"✗");
   assert.match(markup(planRow(p,"area","child")),/Child/); assert.match(markup(planRow(p,"area","gone")),/Cancelled child/);
   const done=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "完成 2")!; await done.click(); await p.flush();
   assert.ok(rowOf(p,"child") && rowOf(p,"rootDone"),"完成 shows old completed work and roots, not only the seven-day window");
@@ -2298,6 +2298,7 @@ test("retired stored filter values do not hide the project's open nodes", async 
 test("archive controls and shortcut are removed", async () => {
   const p=await page(nativeSnapshot(),[]); await expand(p);
   assert.ok(!p.all().some(e => e.innerHTML.includes("归档")));
+  assert.match(p.document.getElementById("keymenu")!.querySelector(".keymenu-head")!.innerHTML,/右侧状态色数字是子树叶条目按状态分类的数量，不计取消的条目。/);
   assert.equal(p.key("a"),false,"the retired key has no action");
   assert.ok(!p.calls.some(c => c.path === "/api/archive"));
   const source=await readFile("web/app.ts","utf8"); assert.ok(!source.includes("/api/archive"));
