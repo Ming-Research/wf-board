@@ -32,7 +32,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     invalidate();
   }
   let shownStop: string | null = null;
-  // Where the last stop n showed sits on the page, so the walk continues after it once r has read it.
+  // Where the last stop n showed sits on the page, so the walk continues after it once m has read it.
   let shownAt: number[] | null = null;
   // Which new place inside the shown item n reached last.
   let shownMark = 0;
@@ -517,8 +517,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const id = key.startsWith("it:") ? key.slice(3) : null;
     const first = id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
     const c = el("span", "newtag freshchip", String(Math.max(1, n)));
-    c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，r 把这一条标为已阅（子条目不动）"
-      : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 r";
+    c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，m 把这一条标为已阅（子条目不动）"
+      : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 m";
     c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
     if (first !== undefined) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
@@ -540,7 +540,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (key?.startsWith("log:") || key?.startsWith("row:")) return "item:" + key.slice(4, key.indexOf("@"));
     return null;
   }
-  // What r reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
+  // What m reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
   // the comments on both) but not its sub-items; a card no item holds; or the deleted document n is showing.
   function selectedUnit() {
     const doc = selectedDocument(); if (!doc) return null;
@@ -597,7 +597,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     freshNavigation++;
     try { await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
-  // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
+  // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
@@ -621,7 +621,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
-  // r, c and e act on it, or on the item or card that holds it.
+  // m, c and e act on it, or on the item or card that holds it.
   let current: string | null = null;
   function effectiveSelection() { return current ?? (selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
@@ -666,6 +666,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (current?.startsWith("it:")) get("it-"+current.slice(3))?.classList.remove("cur");
   }
   function clearCurrent() { clearSelectionClasses(); current = null; }
+  function clearSelectedItem() {
+    clearCurrent();
+    get("it-"+selectedItem)?.classList.remove("selected");
+    rememberSelected(null);
+    // Keep n/N's place, but no logical stop remains selected for m.
+    shownStop=null;
+    releaseLanding();
+    detailDirty=true;
+    renderNow("detail");
+  }
   // A drag that selects text ends in a click on the row where it started; that click must not toggle, follow or
   // re-render the row, or the selection is gone. Movement is required: a press on a button keeps a selection made
   // elsewhere, so a plain click with text still selected is a click.
@@ -674,15 +684,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   document.addEventListener("click", ev => {
     const moved = pressedAt && Math.abs(ev.clientX - pressedAt.x) + Math.abs(ev.clientY - pressedAt.y) > 4;
     const sel = getSelection();
-    if (moved && sel && !sel.isCollapsed) { ev.stopPropagation(); ev.preventDefault(); }
-  }, true);
-  // A click on an item or card selects it; a click on blank space (not on a control) clears the selection.
-  document.addEventListener("click", ev => {
+    if (moved && sel && !sel.isCollapsed) { ev.stopPropagation(); ev.preventDefault(); return; }
+    // A click on an item or card selects it; blank space outside a control clears both selection states.
     const t = ev.target as HTMLElement & {type?: string};
-    if (t.closest && t.closest<HTMLElement>("button.caret")) return;
+    if (t.closest && t.closest<HTMLElement>("button.caret, #split-divider")) return;
     const box = t.closest && t.closest<HTMLElement>("[data-sel], #areas .item, #areas .card, #cards .card, #item-detail .card");
     if (box) setCurrent(box);
-    else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearCurrent();
+    else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearSelectedItem();
   }, true);
   // Otherwise the item or card the reader is looking at near the top of the screen.
   function targetOnScreen() {
@@ -698,7 +706,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!first) return null;
     return first.id.startsWith("q-") ? "q:" + first.id.slice(2) : "it:" + first.id.slice(3);
   }
-  // Shortcuts, listed with their actions in ACTIONS below and in the ☰ menu: n, r, c, e, a, w;
+  // Shortcuts, listed with their actions in ACTIONS below and in the ☰ menu: n, m, c, e, w;
   // Backspace or [ goes back after following a dependency; Esc closes lists; gg goes to the top and G to the bottom, as in vi.
   // They stay off only while typing: a focused checkbox or button does not swallow them.
   let lastG = 0;
@@ -776,7 +784,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "/", label: "按标题搜索所有条目和决策卡", run: () => { openSearch(); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
-    { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
+    { key: "m", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
     { key: "c", label: "评论选中的内容（条目、卡片、某条日志或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
     { key: "Backspace", show: "Backspace 或 [", label: "跟着依赖跳转后返回", run: () => { goBack(); return true; } },
@@ -790,7 +798,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       b.addEventListener("click", ev => { ev.stopPropagation(); m.classList.toggle("open"); });
       m.appendChild(b);
       const list = el("div", "keymenu-list");
-      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>" +
+      list.appendChild(el("div", "keymenu-head", "快捷键：已阅需要选中条目或卡片；评论和解释在没选中时作用于屏幕最上面那一条<br>" +
         "蓝色数字是本条及子树有新内容的条目数。" +
         "紫色数字是本条及下面阻塞工作、等你处理的处数，红色数字是不挡工作的决策卡张数。" +
         "右侧状态色数字是子树叶条目按状态分类的数量，不计取消的条目。"));
@@ -1097,21 +1105,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     b.addEventListener("click", ev => { ev.stopPropagation(); if (card) followCard(d.id); else follow(d.id); }); return b;
   }
 
-  // One line per project group: how much open work there waits on other projects, and how much waits on it.
-  function crossSummary(g: string) {
-    const out = new Map<string,number>(), inn = new Map<string,number>();
-    state.items.forEach(w => {
-      if (ended(w)) return;
-      openDeps(w).forEach(d => {
-        const gw = groupOf(w), gd = groupOf(d);
-        if (gw === gd) return;
-        if (gw === g) out.set(gd, (out.get(gd) || 0) + 1);
-        if (gd === g) inn.set(gw, (inn.get(gw) || 0) + 1);
-      });
-    });
-    const name = (x: string) => plain(x) || "其他";
-    return [...out].map(([k, n]) => "等 " + name(k) + " " + n).concat([...inn].map(([k, n]) => "被 " + name(k) + " 等 " + n)).join(" · ");
-  }
   // Comments are kept in the board's own store; the owner writes them inline and sends the batch at once.
   const EXPLAIN = "请详细解释这一项。";
   function titleOf(key: string) {
@@ -1153,6 +1146,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.setAttribute("aria-pressed",String(selected));
         (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || !!(chosen && chosen.state !== "draft");
       });
+      elements(box).filter(e => e.dataset.cardsend === d.id).forEach(e => { (e as HTMLButtonElement).disabled=!connected || chosen?.state !== "draft"; });
     } else if (kind === "explain") {
       const boxes=[box,...(target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
       for (const host of boxes) {
@@ -1168,6 +1162,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.textContent=sent ? ANSWER[kind]!.sent : pending ? ANSWER[kind]!.queued : ANSWER[kind]!.label;
         (e as HTMLButtonElement).disabled=busy || sent || !connected;
       });
+      elements(box).filter(e => e.dataset.asksend === target.slice(3) && e.dataset.askkind === kind).forEach(e => { (e as HTMLButtonElement).disabled=!connected || !pending; });
     }
   }
   // Acknowledgements can arrive after a newer SSE revision or deletion.
@@ -1326,6 +1321,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
         who.appendChild(del);
         if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
+        // Sends this comment alone, below its text; the editor stays as it is.
+        const send = el("button", "cardsend", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected;
+        send.addEventListener("click", () => sendDrafts(() => draftEditable(snapshot.notes[n.id]) ? [n.id] : []));
+        box.appendChild(send);
       }
       wrap.appendChild(box);
     });
@@ -1430,23 +1429,26 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     meta.innerHTML = "";
 
     const sum = get("summary");
+    const nav = get("nav");
+    nav.remove(); // Keep the project links and their element while rebuilding the summary around them.
     sum.innerHTML = "";
-    // Three rows, then the quiet status counts beside the view buttons. Row 1: what needs the owner (阻塞, 决策卡, 新,
-    // 评论回复), with the 等你 panel and the 要你知道 list under it. Row 2 (未读): the other kinds of new things, the
-    // filter reset and 全部已阅. Row 3: fold buttons and the status legend.
+    // One concern per row: owner waits, unread notices, new-content navigation and filters, then tools and links.
+    const waitingRow = el("div", "header-row header-wait"); waitingRow.id = "wait-row";
     const acts = el("div", "sum-row"), unreadRow = el("div", "sum-row"), view = el("div", "sum-row"), stats = el("div", "sum-stats");
+    unreadRow.id = "unread-row"; view.id = "tools-row";
     const sbtn = (cls: string, text: string, title: string, onClick: () => void) => { const b = el("button", "sbtn " + cls, text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", onClick); return b; };
     const blocking = stops().filter(blockingStop).length, plainCards = stops().length - blocking;
     if (blocking) acts.appendChild(sbtn("s-block", "阻塞 " + blocking + " ›", "工作停着等你，从第一条开始", () => goStop(0)));
     if (plainCards) acts.appendChild(sbtn("s-wait", "决策卡 " + plainCards + " ›", "不挡工作的决策卡，从第一张开始", () => goStop(blocking)));
     // Counts are items, as the chips count them; n visits each new place inside them.
     const fresh = countOf(freshStops());
-    if (fresh) acts.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
+    if (fresh) unreadRow.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
     // Which kinds of new things count, picked like the project filters; each shows how many items have that kind.
     const everyFresh = allFreshStops();
-    FRESH_KINDS.forEach(([kind, label, title]) => {
+    ["progress", "other", "reply"].forEach(key => {
+      const [kind, label, title] = FRESH_KINDS.find(([kind]) => kind === key)!;
       const n = countOf(everyFresh.filter(st => st.kinds.includes(kind))), on = freshSel.includes(kind);
-      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); (kind === "reply" ? acts : unreadRow).appendChild(b); }
+      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); unreadRow.appendChild(b); }
     });
     if (freshSel.length) unreadRow.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
     if (steps.length && connected) {
@@ -1466,7 +1468,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       });
       unreadRow.appendChild(all);
     }
-    if (unreadRow.children.length) unreadRow.insertBefore(el("span", "sum-k", "未读"), unreadRow.firstChild);
+    if (fresh && unreadRow.children.length > 1) {
+      const divider = el("span", "sum-divider"); divider.setAttribute("aria-hidden", "true");
+      unreadRow.insertBefore(divider, unreadRow.children[1]!);
+    }
 
     const fold = sbtn("s-plain", "全部折叠", "折叠所有条目和评论", () => {
       // Folding everything also folds every comment list, including ones that new replies had opened.
@@ -1491,8 +1496,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       .filter(([k]) => (k !== "cancelled" && k !== "blocked") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
     view.appendChild(stats);
-    if (acts.children.length) sum.appendChild(acts);
-    const panel = waitPanel(); if (panel) sum.appendChild(panel);
+    view.appendChild(nav);
+    if (acts.children.length) waitingRow.appendChild(acts);
+    const panel = waitPanel(); if (panel) waitingRow.appendChild(panel);
+    if (waitingRow.children.length) sum.appendChild(waitingRow);
     const known = noticePanel(); if (known) sum.appendChild(known);
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
@@ -1738,6 +1745,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         else if (it.ask?.chat) a.appendChild(el("span", "chatnote", "请在对话窗口里确认"));
         else if (connected) a.appendChild(answerButton("approve", "it:" + it.id, it.title, it.ask!.text));
         a.appendChild(nextButton("ask-" + it.id));
+        // Sends this item's answer alone; it stays disabled until the answer is waiting to go out.
+        const kind: DraftKind | "" = /^https:\/\//.test(it.ask?.url || "") ? "done" : it.ask?.chat ? "" : "approve";
+        if (kind) {
+          const send = el("button", "cardsend", "发送");
+          send.type = "button"; send.dataset.asksend = it.id; send.dataset.askkind = kind;
+          send.disabled = !connected || !pendingDraft("it:" + it.id, kind);
+          send.addEventListener("click", () => sendDrafts(() => notesOf("it:" + it.id).filter(n => n.kind === kind && n.state === "draft").map(n => n.id)));
+          a.appendChild(send);
+        }
         return a;
       }
     return null;
@@ -1779,7 +1795,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // One tag per distinct label, each explained by its checks' full texts.
     for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
     const stalledBelow = sub.length && !open ? derived.stalledBelow(it.id) : 0;
-    if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 2 小时（活跃时间）没有动静";
+    if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 1 小时（活跃时间）没有动静";
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (below.fresh[it.id] || 0);
     if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
@@ -1796,7 +1812,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         chip.addEventListener("click",go); chip.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
       }
     }
-    // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
+    // The blue line marks what m on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
     if (ownFresh) box.classList.add("fresh");
     // A head click selects the item whose detail is displayed.
@@ -1911,8 +1927,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       box.id = "group-" + gi;
       box.dataset.group=g.name;
       const gh = el("h2", "group-head", inline(g.name || "其他"));
-      const xs = crossSummary(g.name);
-      if (xs) { const x = el("button", "xdeps", esc(xs)); x.type = "button"; x.title = "只看跨项目依赖"; x.addEventListener("click", () => setDepFilter(g.name, "cross")); gh.appendChild(x); }
       box.appendChild(gh);
       if (!partial) { const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl); }
       const requests = derived.inbox(g.name);
@@ -1998,6 +2012,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (waitsQ(d)) {
       const foot = el("div", "card-foot");
       foot.appendChild(nextButton("q-" + d.id));
+      // Sends this card's drafts alone; it stays disabled until a choice is waiting to go out.
+      const send = el("button", "cardsend", "发送");
+      send.type = "button"; send.dataset.cardsend = d.id;
+      send.disabled = !connected || choiceOf(d)?.state !== "draft";
+      send.addEventListener("click", () => sendDrafts(() => notesOf("q:" + d.id).filter(n => n.state === "draft").map(n => n.id)));
+      foot.appendChild(send);
       c.appendChild(foot);
     }
     return c;
@@ -2115,14 +2135,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const retained=new Map(elements(pane).filter(e => e.classList.contains("card")).map(e => [e.id,e]));
     pane.innerHTML="";
     const it=selectedItem && index().byId.get(selectedItem);
+    pane.hidden=!it;
+    divider.hidden=!it;
+    if (it) wrap.classList.remove("detail-collapsed"); else wrap.classList.add("detail-collapsed");
     if (it) {
+      applyTreeWidth();
       const next=itemNode(it,false,true,true);
       for (const card of elements(next).filter(e => e.classList.contains("card"))) {
         const old=retained.get(card.id), id=card.id.slice(2);
         if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
       }
       [...next.children].forEach(child => pane.appendChild(child));
-    } else pane.appendChild(el("p","empty","点左边的条目标题，在这里看正文"));
+    }
     pane.scrollTop=top;
     detailDirty=false;
   }
@@ -2200,8 +2224,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const box=get("group-"+i); if (!box) return;
       const filters=[...box.children].find(e => e.classList.contains("grp-filters")); if (filters) filters.replaceWith(filterRow(g.name));
       const head=box.children[0] as HTMLElement | undefined; if (!head) return;
-      const next=el("h2","group-head",inline(g.name || "其他")), summary=crossSummary(g.name);
-      if (summary) { const button=el("button","xdeps",esc(summary)); button.type="button"; button.title="只看跨项目依赖"; button.addEventListener("click",() => setDepFilter(g.name,"cross")); next.appendChild(button); }
+      const next=el("h2","group-head",inline(g.name || "其他"));
       head.replaceWith(next);
     });
     const order=stops().map(s => s.id);
@@ -2224,7 +2247,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail");
   let drag: {pointer:number;x:number;width:number} | null = null;
   function applyTreeWidth() {
-    // The grid may overflow a phone; both columns retain their useful minimums.
+    // Desktop columns retain their useful minimums; narrow-screen CSS lets both columns shrink to fit.
     const maximum=Math.max(300,Math.floor(wrap.getBoundingClientRect().width-8-380));
     const width=Math.round(Math.max(300,Math.min(maximum,treeWidth ?? (wrap.getBoundingClientRect().width-8)/2.3)));
     wrap.style.setProperty("--tree-width",width+"px");
@@ -2241,7 +2264,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     divider.releasePointerCapture(drag.pointer); drag=null;
   }
   divider.addEventListener("pointerdown",ev => {
-    if (drag || ev.button !== 0) return;
+    if (divider.hidden || drag || ev.button !== 0) return;
     ev.preventDefault();
     drag={pointer:ev.pointerId,x:ev.clientX,width:applyTreeWidth()!}; divider.setPointerCapture(ev.pointerId);
   });
@@ -2258,17 +2281,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   get("to-top").addEventListener("click", () => glideTo(0));
 
-  get<HTMLButtonElement>("send-all").addEventListener("click", async () => {
+  // Sends every draft, or only those a card or comment picks once its pending writes have settled.
+  async function sendDrafts(pick?: () => string[]) {
     if (sending) return; sending = true; sendMessage = ""; renderSend();
     try {
       const drafts=[...[...optimistic.values()].map(o => o.promise!), ...pendingEdits.values()];
       if ((await Promise.all(drafts)).some(ok => !ok)) return;
-      const result = await api<{sent: Array<{project: string}>}>("/api/send", {});
+      const ids = pick?.();
+      if (ids && !ids.length) return;
+      const result = await api<{sent: Array<{project: string}>}>("/api/send", ids ? {ids} : {});
       const counts = new Map<string,number>();
       result.sent.forEach(n => counts.set(n.project, (counts.get(n.project) || 0) + 1));
       sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([project,n]) => project + "×" + n).join(" · ");
     } catch(e) { showError(e); } finally { sending = false; renderSend(); }
-  });
+  }
+  get<HTMLButtonElement>("send-all").addEventListener("click", () => sendDrafts());
 
   const DISCONNECTED = "已和看板服务器断开，正在重连…";
   const WRITE_TIMEOUT = "看板服务器没有响应，请刷新页面后核对操作结果。";

@@ -91,6 +91,8 @@ code skips this section.
   and carry out cards on 总管's own items.
 - A new request: make sure its project triages it.
 - A blocking card: send a phone push.
+- A check event (an item newly flagged 无人推进 or 需核对): tell the item's
+  project session, or ask the owner to restart one.
 
 ### Every ten minutes
 
@@ -106,8 +108,9 @@ code skips this section.
 
 ### Stalled items
 
-The board flags a leaf item in progress that has not changed for two hours
-of active time. A moment is active when some session wrote to the board in
+The board flags a work item with its own doing plan step that has not
+changed for one hour of active time; progress derived only from owned items
+is flagged on those items, without a separate ancestor clock. A moment is active when some session wrote to the board in
 the 30 minutes before it, so a usage pause, Claude Code being closed or a
 network outage stops every item's clock together, 30 minutes after the last
 write. A stalled item's card offers: start a session for it,

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, Item, Note } from "./model.ts";
-import { rules } from "./rules.ts";
+import { rules, checkLabel } from "./rules.ts";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,8 +17,8 @@ import { NotFoundError } from "./owner-ops.ts";
 import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer }): http.Server {
-  const { store, ownerOps } = deps;
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number }): http.Server {
+  const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; mcp: McpServer }>();
   const connections = new Set<{ socket: WebSocket; session: string; alive: boolean }>();
   const streams = new Set<ServerResponse>();
@@ -33,13 +33,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
   }
-  async function body(req: IncomingMessage): Promise<unknown> {
+  async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
     let data = "";
     req.setEncoding("utf8");
     for await (const chunk of req) {
       data += chunk.toString();
       if (data.length > 1024 * 1024) throw new OpError("Request body exceeds 1 MiB");
     }
+    if (empty !== undefined && !data.trim()) return empty;
     try { return JSON.parse(data); } catch { throw new OpError("Invalid JSON body"); }
   }
   function args<T>(value: unknown): T {
@@ -101,7 +102,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, await (Object.hasOwn(input, "id") ? ownerOps.editDraft(args(input)) : ownerOps.setDraft(args(input)))); return;
       }
       if (path === "/api/send") {
-        const result = await ownerOps.send();
+        const result = await ownerOps.send(args(await body(req, {})));
         json(res, 200, result); return;
       }
       if (path === "/api/notice-read") { json(res, 200, await ownerOps.readNotice(args(await body(req)))); return; }
@@ -134,8 +135,24 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     const data = JSON.stringify(event);
     for (const connection of connections) if ((connection.session === "*" || event.project === connection.session) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
   }
+  // The (item, check text) pairs flagged now; a pair absent from it that appears emits one "check" event.
+  // Seeded at start without emitting, so a restart does not announce every standing check.
+  let flagged = new Set<string>();
+  function scanChecks(announce: boolean) {
+    const s = store.snapshot(), r = rules(s, now()), next = new Set<string>();
+    for (const id of Object.keys(s.items)) {
+      if (!r.isOpenWork(id)) continue;
+      for (const c of r.checks(id)) {
+        const key = JSON.stringify([id, c.text]);
+        next.add(key);
+        if (announce && !flagged.has(key)) wake({event:"check",item:id,project:r.projectOf(id),title:s.items[id]!.title,label:checkLabel(c),text:c.text});
+      }
+    }
+    flagged = next;
+  }
+  scanChecks(false);
   const off = store.onChange(change => {
-    const s = store.snapshot(), r = rules(s);
+    const s = store.snapshot(), r = rules(s, now());
     for (const doc of change.changed) {
       if (doc.kind === "item" && doc.before === null && (doc.after as Item | null)?.request) {
         const it = doc.after as Item;
@@ -155,6 +172,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item)});
       }
     }
+    scanChecks(true);
     const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: s.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
     for (const stream of streams) stream.write(data);
   });
@@ -166,10 +184,13 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
   }, 25_000);
   heartbeat.unref();
+  // Checks also appear with active time alone (无人推进), so re-evaluate on a timer.
+  const checker = setInterval(() => scanChecks(true), deps.checkIntervalMs ?? 60_000);
+  checker.unref();
   // Close long-lived transports before http.close waits for their sockets.
   const close = server.close.bind(server);
   server.close = callback => {
-    clearInterval(heartbeat); off();
+    clearInterval(heartbeat); clearInterval(checker); off();
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
     for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);

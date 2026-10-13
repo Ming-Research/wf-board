@@ -215,8 +215,8 @@ log:
   (section 10); every project follows the priority rule of
   [Item plans](#item-plans).
 - **Stalled work.** A work item in progress that has at least one `doing`
-  step of its own is flagged after at least two hours of active time without
-  a change to itself: `进行中但 2 小时（活跃时间）没有动静`. An item that is in
+  step of its own is flagged after at least one hour of active time without
+  a change to itself: `进行中但 1 小时（活跃时间）没有动静`. An item that is in
   progress only through an owned item has no own clock; that item carries the
   flag. Each board content write starts a
   30-minute active interval; overlapping intervals count only once, and the
@@ -302,9 +302,9 @@ log:
   cards and that card's comments, with documents the page does not place last,
   oldest first. Inside a changed item it visits each new place in turn (a
   changed status, title or body block, a new or changed plan or target row, an
-  added link); a new item is one stop at its start. After `r`, `n` goes on below
+  added link); a new item is one stop at its start. After `m`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
-  `r` reads the whole item holding the selection, however selected: its own
+  `m` reads the whole item holding the selection, however selected: its own
   changes, its cards and the comments on both, but not its sub-items; a card
   no item holds is read with its comments. 全部已阅 moves the cursor to the
   head after confirmation. Expanded items and cards mark changes in their own
@@ -320,9 +320,9 @@ log:
   coloured either.
   New items and cards carry no per-block marks; added plan and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
-  own carries a blue line beside its whole body, marking exactly what `r` on it
+  own carries a blue line beside its whole body, marking exactly what `m` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. The tree shows only
+  and carries no line, since `m` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
   selected item's body and comments appear in the detail column, with a short blue line beside its headline.
   The 新 chip counts what is new inside. Added or changed plan rows and target rows, new notes
@@ -348,7 +348,7 @@ log:
   then scrolls after rendering. Baselines for unrelated collapsed items or
   explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
   Deleted documents have no body to render but remain countable stops that
-  `n` can visit and `r` can read.
+  `n` can visit and `m` can read.
   This replaces the 478 per-item read
   records and their snapshots. A history step groups consecutive commits by the same
   author on the same item, so quick step updates read as one change, and
@@ -900,8 +900,11 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes and reads to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-The page always has two columns: there is no single-column layout, and
-viewport width never changes it. It uses the full window with compact tree
+The page shows two columns while an item is selected. With no selected item,
+the right column and divider collapse and the tree uses the full width.
+Selecting an item opens its detail again at the last dragged column width;
+there is no layout toggle, and viewport width never changes whether detail is open.
+It uses the full window with compact tree
 margins and equal, smaller detail side padding.
 The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
@@ -934,19 +937,24 @@ accessibility labels retain their full meaning, and a purple or red chip leads
 to the first such wait. The purple differs from the light-purple 卡住 status
 styling, which is unchanged.
 Every 新 chip shows only its number, including detail headlines and cards.
-The existing ☰ menu help keeps its shortcut sentence and explains
+The existing ☰ menu help states which shortcuts require a selection and explains
 only the blue new-content number, the purple and red wait numbers and
 right-side status-colored leaf counts alongside its keyboard actions.
 
 A card's header tag is a purple 阻塞 (tooltip: its `blocks` text) for a
 blocking card and a red 决策卡 otherwise; an item's ask row carries 阻塞.
 
-The summary has no row labels except 未读. Row 1: purple 阻塞 N ›
-(blocking waits, asks included), red 决策卡 M › (waiting cards without
-`blocks`), blue 新 ›, 评论回复; each hidden at 0. Under it, the 等你 panel
-and the 要你知道 list. Row 2, labelled 未读: 进展, 其他, 清除筛选 (only
-while a filter is on) and 全部已阅. Row 3: 全部折叠, 展开第一层 and the status
-legend. The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
+The summary groups four concerns into separate rows. The unread row has no visible label.
+Row 1: purple 阻塞 N › (blocking waits, asks included) and red 决策卡 M ›
+(waiting cards without `blocks`), each hidden at 0, followed by the existing
+等你 panel. Row 2: the 要你知道 list, absent when no notice is unread.
+Row 3: blue 新 N ›, a thin vertical divider using the theme's rule color,
+then 进展, 其他 and 评论回复, each hidden at 0 unless selected, then 清除筛选
+(only while a filter is on) and 全部已阅. Controls wrap as width requires.
+The divider is decorative and appears only between 新 and following controls.
+Progress means plan-row and target changes; logs do not count as new.
+Row 4: 全部折叠, 展开第一层, the status legend and the per-project links.
+The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
 
 The 等你 panel sits under row 1 and shows only while a blocking wait exists:
 one row per blocking card or ask with a purple dot, the project, the `blocks`
@@ -955,7 +963,7 @@ then by how long it has waited (card creation time; an ask's item update
 time). A click jumps like the `/` search and remembers the place for Back. A
 line 另有 M 张决策卡不挡工作 follows when M > 0.
 
-The 要你知道 list sits under the panel and shows the unread notices, newest
+The 要你知道 list occupies its own row after the waits and shows the unread notices, newest
 first, with time, author, text and a link to the item; 已读 marks one read
 (`/api/notice-read`, with `{id}` or `{all: true}`; the owner's own marking
 is not news). With none unread the list is absent. Notices take part in the
@@ -966,16 +974,20 @@ top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
 or scroll margins for a bar. The existing send-box top button remains.
 
 A vertical divider resizes the left column with pointer dragging. Its width is saved per viewer in browser
-localStorage. Both columns retain useful minimum widths: 300 CSS pixels for
-the tree and 380 for detail. The page may overflow narrower viewports.
+localStorage. At desktop widths, the tree retains a minimum width of 300 CSS
+pixels and detail 380. In viewports of 704 CSS pixels or less, both columns
+shrink equally to fit without horizontal page scrolling; header controls and
+project links wrap, and long notice text breaks within its row.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
 属于 line, 目标, 计划和进展, the comment entry and comment list, head text
 and data, 被依赖, collapsed 日志, ask, open cards, shown ruled cards, checks
-and refs. 被依赖 leaves out cancelled items. With no selection the column says
-“点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
+and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
+the tree highlight and the detail selection and collapses the right column.
+Clicks on controls or the divider and drags that select text preserve selection.
+All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
 the existing item, log, card and note selection keys and actions; a plan
 row is selectable as a dependency row was (`row:<item>@<row id>`), and
@@ -983,9 +995,11 @@ comments on a selected row go to the item without an anchor.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
-Enter on a focused head selects its item; j/k move focus. Actions use the
-current selection, falling back to the selected item or the top visible tree
-row.
+Enter on a focused head selects its item; j/k move focus without opening detail.
+Reading requires a current selection or a selected detail item;
+with neither, it reads nothing. Comment and explain actions fall
+back to the selected detail item or the top visible tree row. After clearing
+selection, j/k followed by Enter or an unread/wait jump opens detail again.
 
 `n`, `N` and 新 chips select the stop's item and open its detail. When its
 tree node is visible, they unfold its ancestors and bring that row into view;
@@ -995,7 +1009,7 @@ navigation behavior in the separate decisions section. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
 
-`r` acts on the item holding the current selection: the item for `it:` and
+`m` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
 The same selection works after the 下一条 walk through the waits, a click, `n`, a 新
 chip or following a dependency. It reads each of that item's documents' displayed
@@ -1145,11 +1159,28 @@ mark a note handled. It stays `sent` until a project agent replies with
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
 
+`/api/send` also takes `{ids:[...]}` to send only those drafts, with the same
+effects and wake events as the batch send for each; an id that is unknown or
+not a draft refuses the whole request and sends nothing. The page uses it for
+the "发送" button after a decision card (enabled once the card has a choice
+draft, sending that card's drafts) and under a saved draft comment; the send
+box still sends every draft.
+
 A blocking wait produces `{event:"blocking", kind:"card"|"ask", key, item,
 project, text}` (a card event also carries `question`): when a card is created
 open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
 set or changed. A card without `blocks` produces none, so the coordinator can
 push a phone notification for blocking waits only.
+
+A check produces `{event:"check", item, project, title, label, text}` when
+an open item gains it: `label` uses the check's own label, such as 无人推进
+or 待重写, and defaults to 需核对 when none is specified; `text` is the
+check's explanation. The server keeps the
+set of (item, check text) pairs flagged and emits only pairs not in the
+previous set, after each committed change and on a one-minute timer, since
+stalled work appears with active time alone. A pair that disappears and
+returns emits again. The set is seeded at start without emitting, so a
+restart announces nothing.
 
 A newly created request also produces one event:
 `{event:"request", item, title, project, by}`. The store's committed

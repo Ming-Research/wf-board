@@ -279,10 +279,10 @@ test("owner reading state does not hide plan checks or change the data head", as
 test("MCP re-evaluates active time without a new commit and exposes record creation and updates", async t => {
   const { store, op } = await board(t);
   const start = Date.parse("2026-10-11T03:00:00Z");
-  let clock = start + 2 * 60 * 60 * 1000 - 1;
-  const server = createMcpServer({ store, ops: op, now: () => new Date(clock).toISOString() });
-  const client = new Client({ name: "Active time test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
-  await server.connect(st); await client.connect(ct);
+  let clock = start + 60 * 60 * 1000 - 1;
+  const server = createMcpServer({store, ops: op, now: () => new Date(clock).toISOString()});
+  const client = new Client({name: "Test agent", version: "1"});
+  const [st, ct] = InMemoryTransport.createLinkedPair(); await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
   for (const name of ["create_item", "update_item"]) assert.ok(tools.find(tool => tool.name === name)!.inputSchema.properties!.record);
@@ -293,7 +293,7 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   ];
   s.items.a!.updated = new Date(start).toISOString();
   s.decisions = {}; s.notes = {};
-  s.activity = { writes: Array.from({ length: 4 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
+  s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
   store.snapshot = () => structuredClone(s);
   const context = async () => {
     const result = await client.callTool({ name: "context", arguments: { id: "a" } });
