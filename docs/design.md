@@ -443,6 +443,9 @@ plan's frontier.
 #### Status
 
 A work item's status is derived from its plan; only cancellation is stored.
+Cancelling or reopening never changes plan rows, including acceptance states,
+dates and prerequisites. The converter's initial `todo` acceptance for an old
+cancelled item is a conversion mapping, not a reset performed by cancellation.
 
 1. `cancelled` when the item stores `status: cancelled` (set by `set_status`
    with the reason). Cancelling is refused while an owned row's target is

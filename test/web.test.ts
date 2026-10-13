@@ -3183,7 +3183,11 @@ test("acceptance scenarios keep step glyphs and tags in a parallel group before 
   assert.deepEqual(plan.querySelectorAll(".plan-row.accept .tag").map(row=>row.innerHTML),["验收","验收","验收","验收"]);
   assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"2/5","each acceptance counts like a step and a dropped scenario is excluded");
   assert.equal(planRow(p,"child","merge").querySelector(".g")!.innerHTML,"○");
-  assert.equal(rowOf(p).querySelector(".st")!.innerHTML,"WIP","unfinished scenarios and delivery do not become done early");
+  const statusGlyph=rowOf(p).querySelector(".item-head .sg");
+  assert.ok(statusGlyph,"the merged tree head shows status with a glyph");
+  assert.equal(statusGlyph.innerHTML,"●","unfinished scenarios and delivery do not become done early");
+  assert.ok(statusGlyph.classList.contains("wip"),"the glyph retains the derived status class");
+  assert.equal(statusGlyph.title,"WIP","the glyph names its status on hover");
 });
 
 test("acceptance tags do not add a divider or extra spacing above ordinary plan rows", async () => {

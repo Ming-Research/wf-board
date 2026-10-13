@@ -496,6 +496,10 @@ test("acceptance may precede merge and an item finishes only after every row res
   const plan = store.snapshot().items.a!.plan;
   assert.deepEqual(plan.map(row => row.id), ["accept", "merge"]);
   assert.ok("doneAt" in plan[0]!); assert.equal(plan[0]!.doneAt, later);
+  assert.ok(rules(store.snapshot()).askPending("a"));
+  assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "the fixture's unanswered owner ask still blocks its merge work");
+  await op.clearAsk({ author, id: "a", log: "Owner approved; merge can proceed" });
+  assert.equal(rules(store.snapshot()).askPending("a"), false);
   assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
   await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge into main", state: "done" } });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
@@ -515,12 +519,23 @@ test("multiple acceptance scenarios retain ordinary waits and insert new rows be
   assert.ok("text" in scenario); assert.equal(scenario.waits, "CI"); assert.equal(scenario.since, later);
   await op.setPlan({ author, id: "a", row: { id: "scenario-b", accept: true, text: "Scenario B checked", state: "done", after: ["work"] } });
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["work", "prepare", "scenario-a", "scenario-b", "release"]);
+  const beforeCancel = store.snapshot().items.a!.plan;
+  await op.setStatus({ author, id: "a", status: "cancelled", log: "Pause delivery while retaining the completed checks" });
+  assert.deepEqual(store.snapshot().items.a!.plan, beforeCancel, "cancellation preserves every row, acceptance states, dates, waits and after edges included");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "cancelled");
+  await op.setStatus({ author, id: "a", status: "open", log: "Resume delivery with the same checks" });
+  assert.deepEqual(store.snapshot().items.a!.plan, beforeCancel, "reopening also leaves completed and doing acceptance scenarios unchanged");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "wip", "the doing acceptance scenario still supplies progress after reopening");
 });
 
 test("acceptance done writes follow ordinary step rules rather than requiring all other rows resolved", async t => {
   const { store, op } = await board(t);
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "todo", after: [] } });
   await op.setPlan({ author, id: "a", row: { id: "accept", accept: true, text: "Observed check passes", state: "done" } });
+  assert.ok(rules(store.snapshot()).askPending("a"));
+  assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "writing acceptance done does not bypass the fixture's owner ask");
+  await op.clearAsk({ author, id: "a", log: "Owner approved; independent work can proceed" });
+  assert.equal(rules(store.snapshot()).askPending("a"), false);
   assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
   const work = store.snapshot().items.a!.plan.find(row => row.id === "work")!;
   assert.ok("state" in work); assert.equal(work.state, "todo");
