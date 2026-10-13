@@ -767,7 +767,7 @@ The detail column of a selected item reads, top to bottom:
 1. the head row: status, priority, title, ratio, chips (unchanged); the left
    tree already shows the owner, so the detail has no ownership line;
 2. 目标, the target-number table (unchanged), when the item has targets;
-3. 计划和进展, the plan, with this item's own cards unfolded under their rows;
+3. 计划和进展, the plan, with the cards it names unfolded under their rows;
 4. the head (问题 / 为什么 / 做法) and the `data` line;
 5. 被依赖: the items holding a shared row for this item (the owner is
    already on line 1, so it is not repeated);
@@ -802,16 +802,21 @@ follow the existing tokens with no new colours:
 - **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
   link, on one line; there is no owner or project line under it.
 - **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
-  show today) and the question. In the plan of the card's own item, clicking
-  the question unfolds the whole card right under the row (background,
+  show today) and the question. In any item's plan, whichever item holds the
+  card, clicking the question unfolds the whole card right under the row and
+  keeps the shown item selected (background,
   options and their choice buttons, confidence, the ruling when ruled, its
   comment list and comment button) and selects it, so `c` and `m` act on it;
   a second click folds it. It starts folded, and each card's fold is
-  remembered in browser localStorage like other folds. A card shown this way
-  is not drawn again in the card list at the end of the body, so it exists
+  remembered in browser localStorage like other folds, so it is the same card
+  with the same choices, comments and unread state wherever it unfolds. Only
+  the shown item's body is drawn, and a card its own item's plan names is not
+  drawn again in that item's card list at the end of the body, so it exists
   once on the page. Any route to the card (the 等你 row, `n`/`N`, a reference
-  or the item's 决策 buttons) opens its item and unfolds it there. In another
-  item's plan the question stays a link to the card in its own item.
+  or the item's 决策 buttons) unfolds it under the shown item's row when that
+  item's plan names it, and otherwise opens the card's own item and unfolds
+  it there. A card whose own item no longer exists stays a link to the card
+  list.
 - **Acceptance row.** Placed where its check happens, labelled 验收 in a
   small tag, full text (it may wrap), with the same glyphs as a step
   (○ ● ✓ ✗). It has no extra separator or spacing; the tag identifies it.
