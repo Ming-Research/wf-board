@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, boardTags } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -86,7 +86,7 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
     if (!tag) throw new OpError(`tags ${name}: not in the tag vocabulary; ${allowedTags(s, project)}`);
     if (!tagApplies(tag, project)) throw new OpError(`tags ${name}: applies only to ${tag.projects!.join(", ")}, not ${project}; ${allowedTags(s, project)}`);
   }
-  if (!given.length && required && boardTags(s.board).some(t => tagApplies(t, project))) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
+  if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
 function only总管(author: string): void {
