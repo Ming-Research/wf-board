@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
+import { Key, Item, ItemStepInput, ItemStepsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
 import type { Dep, Link, Option, Priority, Snapshot, Status } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules } from "./rules.ts";
+import { rules, stampItemStep } from "./rules.ts";
 import { describeChanges } from "./query.ts";
 
 export class OpError extends Error {}
@@ -19,6 +19,7 @@ export interface Ops {
   closeNote(a: { author: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; record?: boolean; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; parentOwnWork?: { key: string; title: string }; links?: Link[]; data?: string; group?: string; order?: number; children?: Array<{ id: string; why: string }> } & Source): Promise<Result>;
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
+  setSteps(a: { author: string; id: string; steps?: ItemStepInput[]; step?: ItemStepInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; record?: boolean; parentOwnWork?: { key: string; title: string }; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; parent?: string; parentWhy?: string; parentOwnWork?: { key: string; title: string }; priority?: Priority } & Source): Promise<Result>;
@@ -66,8 +67,9 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 interface Work { id: string; kind: Put["kind"] | "board"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
-/** A leaf with no work of its own: still todo, and no log entry beyond the one create_request writes when it creates the item. */
+/** A leaf with no work of its own: still todo, no steps, and only its optional create_request log. */
 const noOwnWork = (it: Item): boolean => (it.status ?? "todo") === "todo" &&
+  !it.steps?.length &&
   (!it.log.length || it.log.length === 1 && it.log[0]!.at === it.created && it.log[0]!.text.startsWith(`${it.log[0]!.by} 提出：`));
 /** The document this operation already wrote for an item, else the snapshot's. */
 function docOf(s: Snapshot, puts: Put[], id: string, field = "id"): Item {
@@ -381,6 +383,26 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", message: `create_item ${a.key}`, puts };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    setSteps: a => edit(a, "set_steps", (it, _s, at) => {
+      if ([a.steps, a.step, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_steps: provide exactly one of steps, step or remove");
+      const previous = it.steps ?? [];
+      let steps: Item["steps"];
+      if (a.remove !== undefined) {
+        const id = parse(StepId, a.remove);
+        if (!previous.some(step => step.id === id)) throw new OpError(`remove ${id}: choose an existing step id`);
+        steps = previous.filter(step => step.id !== id);
+      } else if (a.steps !== undefined) {
+        const inputs = parse(ItemStepsInput, a.steps);
+        const byId = new Map(previous.map(step => [step.id, step]));
+        steps = inputs.map(input => stampItemStep(input, byId.get(input.id), at));
+      } else {
+        const input = parse(ItemStepInput, a.step), i = previous.findIndex(step => step.id === input.id);
+        steps = previous.slice();
+        const updated = stampItemStep(input, previous[i], at);
+        if (i < 0) steps.push(updated); else steps[i] = updated;
+      }
+      return { ...it, steps, updated: at };
+    }),
     updateItem: a => run(a, async (s, at) => {
       const it = ownedItem(s, a.id, a.author);
       await revision("item", a.id, a.rev, it);

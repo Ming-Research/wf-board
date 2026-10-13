@@ -319,3 +319,46 @@ test("records are labeled separately in query rows and absent from status queues
   const flagged = q.list(s, r, {hasChecks: true}).find(v => v.id === "a");
   assert.ok(flagged?.checks.some(c => c.text.includes("活跃时间")));
 });
+
+
+test("context and brief expose compact steps without expanding ordinary rows and search includes step text and waits", async t => {
+  const { store, op } = await board(t);
+  await op.setSteps({ author, id: "a", steps: [
+    { id: "compile", text: "Step evidence Whitefoot#777", state: "done" },
+    { id: "review", text: "Step review", state: "doing", waits: "Review committee" },
+    { id: "drop", text: "Old proposal", state: "dropped", reason: "Alternative selected" },
+  ] });
+  const s = store.snapshot(), r = rules(s, Date.parse("2026-10-13T02:03:04Z"));
+  const context = q.context(s, r, "a");
+  assert.ok("steps" in context);
+  assert.deepEqual(context.steps, ["✓ Step evidence Whitefoot#777 (10-11)", "● Step review — 2 天，等 Review committee", "✗ Old proposal — Alternative selected"]);
+  const brief = q.brief(s, r, author);
+  assert.deepEqual(brief.todo.find(item => item.id === "a")!.steps, context.steps);
+  assert.equal(Object.hasOwn(q.row(s, r, "item", "a"), "steps"), false, "ordinary lists remain compact");
+  assert.ok(q.search(s, r, "Review committee").some(hit => hit.id === "a" && hit.field === "step.review"));
+  assert.ok(q.search(s, r, "Alternative selected").some(hit => hit.id === "a" && hit.field === "step.drop"));
+  assert.ok(q.prs(s, r, "Whitefoot", 777).qualified.some(hit => hit.id === "a"));
+  assert.equal(q.describeChanges({}, { steps: [] }, "item"), "metadata changed");
+  assert.equal(q.describeChanges({ steps: s.items.a!.steps }, { steps: s.items.a!.steps!.slice().reverse() }, "item"), "steps changed");
+});
+
+
+test("brief progress includes record steps and active parent steps without duplicating queues or flooding closed and todo work", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "queue-record", title: "Queue", group: author, priority: "P1", record: true });
+  await op.createItem({ author, key: "archived-record", title: "Archived queue", group: author, priority: "P1", record: true });
+  for (const id of ["queue-record", "archived-record", "a", "area"]) await op.setSteps({ author, id, step: { id: "own", text: "Own current progress", state: "todo" } });
+  const s = structuredClone(store.snapshot());
+  // Remove fixture checks and owner waits to observe the extra progress section itself.
+  s.decisions = {}; s.notes = {};
+  for (const item of Object.values(s.items)) { item.head = "**完成条件**：验证通过"; item.log = []; item.updated = later; delete item.ask; }
+  s.items.a!.status = "wip"; s.items.b!.status = "todo"; s.items.b!.deps = [];
+  s.owner.archived["archived-record"] = later;
+  s.items["done-with-steps"] = { ...s.items.other!, group: author, status: "done", steps: [{ id: "old", text: "Finished", state: "done", doneAt: later }] };
+  s.items["todo-with-steps"] = { ...s.items.other!, group: author, status: "todo", steps: [{ id: "pending", text: "Future", state: "todo" }] };
+  const r = rules(s, Date.parse(later)), brief = q.brief(s, r, author);
+  assert.ok(brief.wip.some(item => item.id === "a" && item.steps?.[0] === "○ Own current progress"));
+  assert.deepEqual(brief.progress.map(item => item.id).sort(), ["area", "queue-record"]);
+  assert.deepEqual(brief.progress.find(item => item.id === "queue-record")!.steps, ["○ Own current progress"]);
+  assert.ok(!brief.progress.some(item => ["a", "done-with-steps", "todo-with-steps", "archived-record"].includes(item.id)));
+});

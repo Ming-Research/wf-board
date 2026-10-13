@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Decision, Item, Note } from "../src/model.ts";
+import { Decision, Item, ItemStep, ItemStepInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules } from "../src/rules.ts";
+import { rules, changedItemSteps, stepsChanged } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 // Items state a completion condition unless a case is about a head without one.
@@ -522,4 +522,58 @@ test("current notice and note write times contribute active windows across proje
   s.notices = {};
   for (let i = 0; i < 6; i++) s.notes["note" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
   assert.equal(hasStalled(s), true);
+});
+
+
+test("step rules render markers, elapsed whole days and done ratio excluding dropped steps", () => {
+  const steps = [
+    { id: "done", text: "Checks pass #341", state: "done" as const, doneAt: T0 },
+    { id: "doing", text: "Review complete", state: "doing" as const, since: T0, waits: "Owner" },
+    { id: "todo", text: "Merged", state: "todo" as const },
+    { id: "dropped", text: "Old approach", state: "dropped" as const, droppedAt: T1, reason: "Replaced" },
+  ];
+  const s = snapshot({ item: { steps }, record: { record: true, steps }, empty: {}, onlyDropped: { steps: [steps[3]!] } });
+  const r = rules(s, Date.parse(T2));
+  assert.deepEqual(r.stepsRatio("item"), { done: 1, total: 3 });
+  assert.deepEqual(r.stepsRatio("record"), { done: 1, total: 3 });
+  assert.deepEqual(r.stepsRatio("empty"), { done: 0, total: 0 });
+  assert.deepEqual(r.stepsRatio("onlyDropped"), { done: 0, total: 0 });
+  assert.equal(r.statusOf("item"), "todo", "steps do not derive work status");
+  assert.equal(r.statusOf("record"), undefined);
+  assert.deepEqual(steps.map(r.stepLine), ["✓ Checks pass #341 (10-10)", "● Review complete — 2 天，等 Owner", "○ Merged", "✗ Old approach — Replaced"]);
+  assert.equal(rules(s, Date.parse(T1) - 1).stepDays(steps[1]!), 0, "whole-day boundary");
+  assert.equal(rules(s, Date.parse(T1)).stepDays(steps[1]!), 1);
+  assert.equal(rules(s, Date.parse(T0) - 1).stepDays(steps[1]!), 0, "future since clamps to zero");
+  assert.equal(r.stepDays(steps[2]!), 0);
+});
+
+test("stored step schemas require state dates and dropped reasons but old items omit steps", () => {
+  assert.equal(Object.hasOwn(Item.parse({ title: "Old", updated: T0, rev: 1 }), "steps"), false);
+  const spaced = { id: "spaced", text: "  Exact step text  ", state: "dropped" as const, reason: "  Exact reason  ", waits: "  Exact wait  ", droppedAt: T0 };
+  assert.deepEqual(ItemStep.parse(spaced), spaced, "schema reads preserve prose exactly");
+  for (const [state, date] of [["done", "doneAt"], ["doing", "since"], ["dropped", "droppedAt"]] as const) {
+    const input = { id: "x", text: "Result", state, ...(state === "dropped" ? { reason: "No longer needed" } : {}) };
+    assert.equal(ItemStepInput.safeParse(input).success, true);
+    assert.equal(ItemStep.safeParse(input).success, false);
+    assert.equal(ItemStep.safeParse({ ...input, [date]: T0 }).success, true);
+    assert.equal(ItemStepInput.safeParse({ ...input, [date]: T0 }).success, false, "callers cannot set server dates");
+  }
+  assert.equal(ItemStepInput.safeParse({ id: "x", text: "Result", state: "dropped", reason: " " }).success, false);
+  assert.equal(Item.safeParse({ title: "Bad", updated: T0, rev: 1, steps: [{ id: "same", text: "A", state: "todo" }, { id: "same", text: "B", state: "todo" }] }).success, false);
+});
+
+test("step freshness compares full values by stable id and separates reorder or removal from changed lines", () => {
+  const a = { id: "a", text: "A", state: "doing" as const, since: T0 };
+  const b = { id: "b", text: "B", state: "done" as const, doneAt: T1 };
+  assert.deepEqual(changedItemSteps(undefined, [a, b]), [a, b]);
+  assert.deepEqual(changedItemSteps([a, b], [b, a]), []);
+  assert.equal(stepsChanged([a, b], [b, a]), true);
+  assert.deepEqual(changedItemSteps([a, b], [b]), []);
+  assert.equal(stepsChanged([a, b], [b]), true);
+  assert.equal(stepsChanged(undefined, []), false);
+  assert.equal(stepsChanged([a, b], [{ ...a }, { ...b }]), false);
+  for (const changed of [{ ...a, text: "Revised A" }, { ...a, waits: "CI" }, { ...a, since: T1 }, { ...a, doneAt: T1 }, { ...a, reason: "Changed context" }]) {
+    assert.deepEqual(changedItemSteps([a, b], [changed, b]), [changed]);
+    assert.equal(stepsChanged([a, b], [changed, b]), true);
+  }
 });

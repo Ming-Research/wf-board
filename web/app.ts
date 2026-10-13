@@ -1,4 +1,4 @@
-import { rules, draftEditable, noteTextProblem } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemSteps } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -26,7 +26,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function applyReadMarks() {
     steps = serverSteps.flatMap(step => {
-      const docs = step.docs.filter(doc => !pendingReadCovers(doc.kind + ":" + doc.id, step));
+      const docs = step.docs.filter(doc => docKinds(doc).length > 0 && !pendingReadCovers(doc.kind + ":" + doc.id, step));
       return docs.length ? [{ ...step, docs }] : [];
     });
     invalidate();
@@ -236,12 +236,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function newReplies(key: string) { return notesOf(key).filter(n => noteFresh(n).reply); }
   function newNotes(key: string) { return notesOf(key).filter(n => noteFresh(n).created); }
   // How many new things a document holds (server-counted; derived from the summary for a step without counts).
-  function piecesOf(doc: Step["docs"][number]): {log:number;reply:number;other:number} {
-    if (doc.pieces) return doc.pieces;
+  function piecesOf(doc: Step["docs"][number]): {progress:number;reply:number;other:number} {
+    if (doc.pieces) return { progress: doc.pieces.progress ?? 0, reply: doc.pieces.reply, other: doc.pieces.other };
     const k = legacyKinds(doc);
-    return { log: k.includes("log") ? Number(/\+(\d+) log/.exec(doc.summary)?.[1] ?? 1) : 0, reply: k.includes("reply") ? 1 : 0, other: k.includes("other") ? 1 : 0 };
+    return { progress: k.includes("progress") ? 1 : 0, reply: k.includes("reply") ? 1 : 0, other: k.includes("other") ? 1 : 0 };
   }
-  function docKinds(doc: Step["docs"][number]): string[] { const p = piecesOf(doc); return (["log","reply","other"] as const).filter(k => p[k] > 0); }
+  function docKinds(doc: Step["docs"][number]): string[] { const p = piecesOf(doc); return (["progress","reply","other"] as const).filter(k => p[k] > 0); }
   // The pieces of a stop the kind filter keeps: what the 新 counts add up.
   // 新 counts items: an item with any unread change in itself, its cards or their comments is one, however many changes
   // it holds. A change no item holds (a card without an item, a deleted document) is one on its own.
@@ -252,11 +252,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const changes = doc.summary.split(", ");
     const reply = changes.includes("new reply") || changes.includes("reply changed");
     for (const change of changes) {
-      if (/^(\+\d+ log|log changed)$/.test(change)) kinds.add("log");
+      if (/^(\+\d+ log|log changed)$/.test(change)) continue;
+      else if (change === "steps changed") kinds.add("progress");
       else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
       else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
     }
-    return kinds.size ? [...kinds] : ["other"];
+    return [...kinds];
   }
   // The item and card keys ("it:<item>", "q:<card>") whose new content a stop is part of: an item holds its own changes, its
   // cards' and the comments on either; a card holds its own changes and its comments.
@@ -370,10 +371,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function blockingStop(st: {id:string}) { return st.id.startsWith("ask-") || derived.cardBlocking(st.id.slice(2)); }
   // Unread steps stay in commit order, independent of tree and filter order.
   // Which kinds of new things the 新 walk and counts include, picked like the project filters: replies to the owner's
-  // notes (reply), new log entries (log) and every other change (other); none picked means all of them.
-  const FRESH_KINDS: Array<[string,string,string]> = [["reply", "评论回复", "只看对你评论的新回复"], ["log", "进展", "只看新的进展记录"], ["other", "其他", "只看正文、标题、状态等其他改动"]];
+  // notes (reply), item step changes (progress) and every other change (other); none picked means all of them.
+  const FRESH_KINDS: Array<[string,string,string]> = [["reply", "评论回复", "只看对你评论的新回复"], ["progress", "进展", "只看步骤改动"], ["other", "其他", "只看正文、标题、状态等其他改动"]];
   let freshSel: string[] = [];
-  try { freshSel = (JSON.parse(localStorage.getItem("board-fresh-sel") || "[]") || []).filter((k: string) => FRESH_KINDS.some(f => f[0] === k)); } catch (e) {}
+  try { freshSel = (JSON.parse(localStorage.getItem("board-fresh-sel") || "[]") || []).map((k: string) => k === "log" ? "progress" : k).filter((k: string) => FRESH_KINDS.some(f => f[0] === k)); } catch (e) {}
   function fon(kind: string) { return !freshSel.length || freshSel.includes(kind); }
   function setFreshSel(sel: string[]) {
     freshSel = sel.length === FRESH_KINDS.length ? [] : sel;
@@ -410,7 +411,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const key = d.kind + ":" + d.id, seen = merged.get(key);
       if (seen) {
         const a = piecesOf(seen.doc), b = piecesOf(d);
-        seen.doc = { ...d, summary: seen.doc.summary + ", " + d.summary, pieces: { log: a.log + b.log, reply: a.reply + b.reply, other: a.other + b.other } };
+        seen.doc = { ...d, summary: seen.doc.summary + ", " + d.summary, pieces: { progress: a.progress + b.progress, reply: a.reply + b.reply, other: a.other + b.other } };
         seen.kinds = docKinds(seen.doc); seen.step = step.id;
         return;
       }
@@ -438,11 +439,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshIndex().position.has(st.key));
   }
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
-  // The new places inside a changed item, top to bottom: a changed status, title or body block, a new log entry, an added
+  // The new places inside a changed item, top to bottom: a changed status, title or body block, a new or changed step, an added
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
   function freshMarks(box: HTMLElement, id: string) {
     if (unreadBefore<Item>("item", id) === null) return [];
-    return [...box.querySelectorAll<HTMLElement>(".chg-add, .log-entry.fresh, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
+    return [...box.querySelectorAll<HTMLElement>(".chg-add, .item-step.newbar, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
   }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
@@ -574,7 +575,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const overlay = { covered: new Set(serverSteps.slice(0, serverSteps.findIndex(step => step.id === latest.id) + 1).map(step => step.id)), saving: true };
     pendingReads.set(doc, overlay);
     freshNavigation++;
-    for (const id of Object.keys(logShown)) if (bodyShown(id)) logHold[id] = true;
     applyReadMarks(); renderNow(...scope);
     try {
       await api("/api/read", { doc, through: latest.id });
@@ -595,7 +595,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   async function readThrough(step: string) {
     if (!steps.some(s => s.id === step)) return false;
     freshNavigation++;
-    try { for (const id of Object.keys(logShown)) if (bodyShown(id)) logHold[id] = true; await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
+    try { await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
   // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
@@ -786,7 +786,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
     { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
-    { key: "c", label: "评论选中的内容（条目、卡片、某条进展或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
+    { key: "c", label: "评论选中的内容（条目、卡片、某条日志或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
     { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目；在已归档条目之内则取消上级的归档）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
     { key: "Backspace", show: "Backspace 或 [", label: "跟着依赖跳转后返回", run: () => { goBack(); return true; } },
@@ -1306,7 +1306,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Approvals and choices show on their buttons; the comment list holds comments, explain requests, and any approval or choice a session replied to.
   function listed(n: ViewNote) { return (!ANSWER[n.kind] && n.kind !== "choice") || !!n.reply; }
   function anchorLabel(a: NonNullable<Note["anchor"]>) {
-    if (a.kind === "log") return "进展 " + day(a.at);
+    if (a.kind === "log") return "日志 " + day(a.at);
     const n = state.notes.find(x => x.id === a.id);
     return n ? "回复（" + day(n.repliedAt || n.at) + "）" : "一条回复";
   }
@@ -1576,37 +1576,38 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return box;
   }
 
-  // The progress log: newest at the bottom; new entries and the two before them show, earlier ones fold.
+  function stepsSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
+    if (!it.steps?.length) return null;
+    const changed = new Set(before === undefined ? [] : changedItemSteps(before?.steps, it.steps).map(step => step.id));
+    const box = el("div", "item-steps");
+    box.appendChild(el("div", "log-head", "进展"));
+    for (const step of it.steps) {
+      const row = el("div", "item-step" + (fon("progress") && changed.has(step.id) ? " newbar" : ""), linkTerms(inline(derived.stepLine(step)),terms));
+      row.id = "step-" + it.id + "-" + step.id;
+      box.appendChild(row);
+    }
+    return box;
+  }
+
+  // Logs retain the full history and comment anchors, but never mark unread progress.
   let logOpen: Record<string, boolean> = {};
-  // Per open item, the first log entry shown, and whether a read the owner just made holds it there; both clear when the item folds.
-  const logShown: Record<string, number> = {}, logHold: Record<string,boolean> = {};
-  function logEntry(e: LogEntry, fresh: boolean, terms: TermLinks) {
-    const row = el("div", "log-entry" + (fresh ? " fresh" : ""));
+  function logEntry(e: LogEntry, terms: TermLinks) {
+    const row = el("div", "log-entry");
     row.appendChild(el("div", "log-meta", esc(day(e.at)) + (e.by ? " · " + esc(e.by) : "")));
     row.appendChild(el("div", "rich", linkTerms(blocks(e.text),terms)));
     return row;
   }
   function logSection(it: ViewItem, terms: TermLinks) {
-    const all = logOf(it);
-    if (!all.length) return null;
-    const unread = unreadLogs(it);
-    const firstNew = all.findIndex(e => unread.includes(e));
-    // Marking the item read does not fold the entries that were new while it stays open; they fold the next time it opens.
-    const fold = Math.max(0, Math.min(firstNew < 0 ? all.length : firstNew, all.length) - 2);
-    const start = logOpen[it.id] ? 0 : logHold[it.id] && logShown[it.id] != null ? Math.min(fold, logShown[it.id]!) : fold;
-    logShown[it.id] = start;
+    const all = logOf(it), open = !!logOpen[it.id];
     const box = el("div", "log");
-    box.appendChild(el("div", "log-head", "进展"));
-    if (start > 0) {
-      const more = el("button", "notes-toggle", "▸ 更早的 " + start + " 条");
-      more.type = "button";
-      more.addEventListener("click", () => { logOpen[it.id] = true; renderNow("item:"+it.id); });
-      box.appendChild(more);
-    }
-    all.slice(start).forEach((e, j) => {
-      const i = start + j;
-      const isNew = fon("log") && unread.includes(e);
-      const row = logEntry(e, isNew, terms);
+    const toggle = el("button", "notes-toggle log-toggle", (open ? "▾ " : "▸ ") + "日志");
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(open));
+    toggle.addEventListener("click", () => { logOpen[it.id] = !open; renderNow("item:"+it.id); });
+    box.appendChild(toggle);
+    if (!open) return box;
+    if (!all.length) box.appendChild(el("div", "sub", "暂无日志"));
+    all.forEach((e, i) => {
+      const row = logEntry(e, terms);
       row.id = "log-" + it.id + "-" + i;
       row.dataset.sel = "log:" + it.id + "@" + e.at;
       if (current === row.dataset.sel) row.classList.add("cur");
@@ -1663,7 +1664,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const li = el("li");
     // Filters open sub-item paths; the body renders only as the selected item's detail.
     const open = isOpen(it), bodyOpen = detail;
-    if (!bodyOpen && !bodyShown(it.id)) { delete logShown[it.id]; delete logHold[it.id]; }
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
     const st = statusOf(it) ?? "record";
@@ -1687,6 +1687,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    if (it.steps?.length) {
+      const ratio = derived.stepsRatio(it.id);
+      head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
+    }
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
@@ -1772,9 +1776,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         });
         body.appendChild(dl);
       }
-      const lg = logSection(it, terms);
-      if (lg) body.appendChild(lg);
-      // The owner's request and the decision cards come after the log, whose last entry usually leads to them.
+      const progress = stepsSection(it, before, terms);
+      if (progress) body.appendChild(progress);
+      body.appendChild(logSection(it, terms));
+      // The owner's request and decision cards follow its progress and optional log history.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);
       cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
       ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
@@ -1989,7 +1994,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),deps,waiters]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),deps,waiters,it.steps?.map(step => derived.stepLine(step))]);
       const current={signature,archived:inArchive(it),cancelled:isCancelled(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;
@@ -2322,16 +2327,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     pendingDiffs.set(key,request);
     return request;
   }
-  function unreadLogs(it: ViewItem) {
-    const before = unreadBefore<Item>("item",it.id);
-    if (before === undefined) return [];
-    const previous = (before?.log || []).slice();
-    return it.log.filter(e => {
-      const old = previous.findIndex(entry => entry.at === e.at && entry.by === e.by && entry.text === e.text);
-      if (old < 0) return true;
-      previous.splice(old,1); return false;
-    });
-  }
   function sameValue(a: unknown, b: unknown): boolean {
     if (a === b) return true;
     if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
@@ -2535,7 +2530,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       scheduleRender(...scope); queueUnread(active,controller.signal,next);
     });
   }
-  // Active time can cross the stalled threshold without another board write.
+  // Active time and doing-step day counts can advance without another board write.
   setInterval(() => { rulePresentationDirty = true; scheduleRender("header"); }, 60_000);
   void connect();
 

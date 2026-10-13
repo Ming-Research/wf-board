@@ -3,7 +3,7 @@
 // priority comes from dependents, and a parent listing its own cancelled sub-item
 // is not flagged. The verbatim test oracle preserves the old rules independently
 // of this implementation.
-import type { Item, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Item, ItemStep, ItemStepInput, Note, Priority, Snapshot, Status } from "./model.ts";
 import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
 
 /** Only an unsent note can still be edited or deleted by its author. */
@@ -11,6 +11,26 @@ export function draftEditable(note: Pick<Note, "state"> | undefined): boolean { 
 /** Shared text validity for owner note creation and draft edits. */
 export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | undefined {
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
+}
+
+const STEP_FIELDS = ["id", "text", "state", "waits", "reason", "doneAt", "since", "droppedAt"] as const;
+function sameStep(a: ItemStep, b: ItemStep): boolean { return STEP_FIELDS.every(field => a[field] === b[field]); }
+/** Current added or changed lines; moving an unchanged line does not highlight it. */
+export function changedItemSteps(before: readonly ItemStep[] = [], after: readonly ItemStep[] = []): ItemStep[] {
+  const previous = new Map(before.map(step => [step.id, step]));
+  return after.filter(step => { const old = previous.get(step.id); return !old || !sameStep(old, step); });
+}
+/** Order and removals are progress changes too, even without a surviving changed line. */
+export function stepsChanged(before: readonly ItemStep[] = [], after: readonly ItemStep[] = []): boolean {
+  return before.length !== after.length || before.some((step, i) => !sameStep(step, after[i]!));
+}
+/** Retain earlier transition dates, stamp only entry into the current state. */
+export function stampItemStep(input: ItemStepInput, previous: ItemStep | undefined, at: string): ItemStep {
+  const step: ItemStep = { ...input };
+  for (const field of ["doneAt", "since", "droppedAt"] as const) if (previous?.[field] !== undefined) step[field] = previous[field];
+  const date = input.state === "done" ? "doneAt" : input.state === "doing" ? "since" : input.state === "dropped" ? "droppedAt" : undefined;
+  if (date && (previous?.state !== input.state || !step[date])) step[date] = at;
+  return step;
 }
 
 export interface Check {
@@ -69,6 +89,9 @@ export interface Rules {
   inArchive(id: string): boolean;
   onCycle(id: string): boolean;
   checks(id: string): Check[];
+  stepDays(step: ItemStep): number;
+  stepsRatio(id: string): { done: number; total: number };
+  stepLine(step: ItemStep): string;
   compareSiblings(a: string, b: string): number;
 }
 
@@ -87,6 +110,17 @@ export const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
 export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
+  function stepDays(step: ItemStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
+  function stepsRatio(id: string): { done: number; total: number } {
+    const steps = (s.items[id]?.steps ?? []).filter(step => step.state !== "dropped");
+    return { done: steps.filter(step => step.state === "done").length, total: steps.length };
+  }
+  function stepLine(step: ItemStep): string {
+    if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
+    if (step.state === "doing") return `● ${step.text} — ${stepDays(step)} 天${step.waits ? `，等 ${step.waits}` : ""}`;
+    if (step.state === "dropped") return `✗ ${step.text} — ${step.reason}`;
+    return `○ ${step.text}`;
+  }
   const memo = new Map<string, Map<string, unknown>>();
   function cached<T>(name: string, key: string, make: () => T): T {
     let values = memo.get(name);
@@ -339,6 +373,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   return {
+    stepDays, stepsRatio, stepLine,
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),

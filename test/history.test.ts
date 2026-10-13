@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, later } from "./helpers.ts";
 import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
 import type { Step } from "../src/history.ts";
@@ -12,18 +12,18 @@ import { Store } from "../src/store.ts";
 
 test("cursor range, single-document grouping, author boundaries and endpoint diff", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  const a = await op.appendLog({ author, id: "a", text: "first new entry" });
-  const b = await op.appendLog({ author, id: "a", text: "second new entry" });
-  const c = await op.appendLog({ author, id: "b", text: "different document" });
+  const a = await op.setSteps({ author, id: "a", step: { id: "first", state: "todo", text: "first new entry" } });
+  const b = await op.setSteps({ author, id: "a", step: { id: "second", state: "todo", text: "second new entry" } });
+  const c = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "different document" } });
   const own = ownerOps(store);
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
-  const d = await op.appendLog({ author, id: "b", text: "after owner" });
+  const d = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "after owner" } });
   // Store history also retains authors from before project identity replaced sessions.
   const previous = store.snapshot().items.b!;
-  const e = await store.commit({ author: "other", message: "Historical session append", puts: [{ kind: "item", id: "b", expectRev: previous.rev, doc: { ...previous, updated: later, log: [...previous.log, { by: "other", at: later, text: "other author" }] } }] });
+  const e = await store.commit({ author: "other", message: "Historical session title change", puts: [{ kind: "item", id: "b", expectRev: previous.rev, doc: { ...previous, updated: later, title: "other author" } }] });
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit, b.commit], [c.commit], [d.commit], [e.commit]]);
-  assert.equal(steps[0]!.id, b.commit); assert.equal(steps[0]!.docs[0]!.summary, "+2 log");
+  assert.equal(steps[0]!.id, b.commit); assert.equal(steps[0]!.docs[0]!.summary, "steps changed");
   assert.equal(steps[0]!.author, author); assert.ok(Number.isFinite(Date.parse(steps[0]!.at)));
   const diff = await stepDiff(store, steps[0]!, "item", "a");
   assert.deepEqual(diff.before, await store.show("item", "a", cursor));
@@ -38,7 +38,7 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
 test("multi-document writes are separate steps and deletion keeps its before document", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   await op.createItem({ author, key: "child", parent: "a", parentWhy: "needs child", title: "new child", parentOwnWork: { key: "a-own", title: "a own work" } });
-  await op.appendLog({ author, id: "a", text: "following write" });
+  await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "following write" } });
   const note = store.snapshot().notes["note-1"]!;
   const deleted = await store.commit({ author, message: "delete synthetic note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
   const steps = await unreadSteps(store, cursor);
@@ -49,22 +49,22 @@ test("multi-document writes are separate steps and deletion keeps its before doc
 
 test("commits that change no item, card or note are not steps", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  const a = await op.appendLog({ author, id: "a", text: "before settings" });
+  const a = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "before settings" } });
   await store.commit({ author, message: "retitle board", board: { ...store.snapshot().board, title: "Renamed board" } });
   store.setOwner({ archived: { other: later } });
   await store.flushOwner(author);
-  const b = await op.appendLog({ author, id: "a", text: "after settings" });
+  const b = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "after settings" } });
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit], [b.commit]]);
 });
 
 test("unread steps are reused until HEAD or the cursor moves", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.appendLog({ author, id: "a", text: "one" });
+  await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "one" } });
   const first = unreadSteps(store, cursor);
   assert.equal(unreadSteps(store, cursor), first, "same HEAD and cursor reuse the computation");
   await first;
-  await op.appendLog({ author, id: "b", text: "two" });
+  await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "two" } });
   const moved = await unreadSteps(store, cursor);
   assert.equal(moved.length, (await first).length + 1, "a new commit is seen");
   assert.notEqual(unreadSteps(store, undefined), unreadSteps(store, cursor));
@@ -73,17 +73,17 @@ test("unread steps are reused until HEAD or the cursor moves", async t => {
 
 test("a new commit reads only the documents of the step it creates or extends", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.appendLog({ author, id: "a", text: "one" });
-  await op.appendLog({ author, id: "b", text: "two" });
+  await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "one" } });
+  await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "two" } });
   await unreadSteps(store, cursor);
   const shown: string[] = [];
   const show = store.show.bind(store);
   t.mock.method(store, "show", (kind: Parameters<typeof store.show>[0], id: string, at: string) => { shown.push(kind + ":" + id); return show(kind, id, at); });
-  await op.appendLog({ author, id: "a", text: "three" });
+  await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "three" } });
   const steps = await unreadSteps(store, cursor);
   assert.equal(steps.length, 3);
   assert.deepEqual([...new Set(shown)], ["item:a"], "earlier steps come from the cache: " + shown.join(" "));
-  assert.equal(steps[0]!.docs[0]!.pieces.log, 1, "cached steps keep their counts");
+  assert.equal(steps[0]!.docs[0]!.pieces.progress, 1, "cached steps keep their counts");
 });
 
 test("a status that became derived and changes the owner cannot see are not unread", async t => {
@@ -95,23 +95,67 @@ test("a status that became derived and changes the owner cannot see are not unre
   assert.equal(steps.length, 1, "the time-only commit is not a step");
   const parent = steps[0]!.docs.find(d => d.id === "a")!;
   assert.doesNotMatch(parent.summary, /status|priority/);
-  assert.match(parent.summary, /\+1 log/);
+  assert.match(parent.summary, /deps changed/);
+  assert.doesNotMatch(parent.summary, /log/);
 });
 
-test("pieces count each new log entry, each new reply and one other change, as the old page counted", () => {
-  const item = (log: Array<{ at: string; text: string }>, head = "h") => ({ title: "t", head, log, updated: later, deps: [], links: [], rev: 1 });
+test("owner pieces count step changes, replies and heads, while every kind of log edit is invisible", () => {
+  const item = (log: Array<{ at: string; text: string; by?: string }>, head = "h", steps: Array<{id: string; text: string; state: "todo"}> = []) => ({ title: "t", head, steps, log, updated: later, deps: [], links: [], rev: 1 });
   const e = (n: number) => ({ at: `2026-10-11T0${n}:00:00Z`, text: `entry ${n}` });
-  assert.deepEqual(piecesOf(null, item([e(1), e(2), e(3)]), "item", "new item"), { log: 3, reply: 0, other: 0 }, "a new item counts through its entries");
-  assert.deepEqual(piecesOf(null, item([]), "item", "new item"), { log: 0, reply: 0, other: 1 });
-  assert.deepEqual(piecesOf(item([e(1)]), item([e(1), e(2), e(3)], "changed"), "item", "head changed, +2 log"), { log: 2, reply: 0, other: 1 });
-  assert.deepEqual(piecesOf(item([e(1)]), item([e(1)]), "item", "metadata changed"), { log: 0, reply: 0, other: 0 });
-  assert.deepEqual(piecesOf({}, {}, "note", "state changed, new reply"), { log: 0, reply: 1, other: 0 });
-  assert.deepEqual(piecesOf({}, {}, "note", "state changed"), { log: 0, reply: 0, other: 0 });
-  assert.deepEqual(piecesOf(null, {}, "decision", "new card"), { log: 0, reply: 0, other: 1 });
-  assert.deepEqual(piecesOf(item([e(1), e(2)]), item([e(1)]), "item", "log changed"), { log: 0, reply: 0, other: 1 }, "a removed entry is a change");
-  assert.deepEqual(piecesOf(item([{ ...e(1), by: "A" } as never]), item([{ ...e(1), by: "B" } as never]), "item", "log changed").other, 1, "an entry's author rewritten in place is a change");
-  assert.deepEqual(piecesOf({}, {}, "note", "text changed"), { log: 0, reply: 0, other: 1 }, "an edited note is a change");
-  assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), { log: 0, reply: 0, other: 1 }, "a cleared reply is a change");
+  const step = (id: string, text = id) => ({id, text, state: "todo" as const});
+  const zero = {progress: 0, reply: 0, other: 0};
+  assert.deepEqual(piecesOf(null, item([e(1), e(2), e(3)]), "item", "new item"), { ...zero, other: 1 }, "a new item counts once regardless of logs");
+  assert.deepEqual(piecesOf(item([e(1)]), item([e(1), e(2), e(3)], "changed"), "item", "head changed, +2 log"), { ...zero, other: 1 });
+  assert.deepEqual(piecesOf(item([e(1)]), item([e(1)]), "item", "metadata changed"), zero);
+  for (const logs of [[e(1), e(2)], [], [{...e(1), text: "head changed, steps changed"}], [{...e(1), by: "another author"}]]) {
+    const before = item([e(1)]), after = item(logs);
+    assert.deepEqual(piecesOf(before, after, "item", describeChanges(before, after, "item")), zero, "append, removal, rewrite and author-only edits stay invisible");
+  }
+  assert.deepEqual(piecesOf(item([]), item([], "h", [step("a"), step("b")]), "item", "steps changed"), {...zero, progress: 2});
+  assert.deepEqual(piecesOf(item([], "h", [step("a"), step("b")]), item([], "h", [step("b"), step("a")]), "item", "steps changed"), {...zero, progress: 1}, "reordering is still a progress change");
+  assert.deepEqual(piecesOf(item([], "h", [step("a"), step("b")]), item([], "h", [step("b")]), "item", "steps changed"), {...zero, progress: 1}, "removal is still a progress change");
+  assert.deepEqual(piecesOf(item([], "h", [step("a"), step("b")]), item([], "h", [step("a", "updated"), step("b")]), "item", "steps changed"), {...zero, progress: 1}, "an update counts only its stable id");
+  assert.deepEqual(piecesOf(null, item([], "h", [step("a")]), "item", "new item"), {...zero, progress: 1, other: 1});
+  assert.deepEqual(piecesOf({}, {}, "note", "state changed, new reply"), {...zero, reply: 1});
+  assert.deepEqual(piecesOf({}, {}, "note", "state changed"), zero);
+  assert.deepEqual(piecesOf(null, {}, "decision", "new card"), {...zero, other: 1});
+  assert.deepEqual(piecesOf({}, {}, "note", "text changed"), {...zero, other: 1});
+  assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), {...zero, other: 1});
+});
+
+test("log-only writes never become unread stops or extend a progress stop across a read mark", async t => {
+  const {store, op} = await board(t), cursor = store.snapshot().head;
+  const leadingLog = await op.appendLog({author, id: "a", text: "Internal detail before progress"});
+  assert.deepEqual(await unreadSteps(store, cursor), []);
+  const first = await op.setSteps({author, id: "a", step: {id: "work", text: "First result", state: "todo"}});
+  const original = await unreadSteps(store, cursor);
+  assert.equal(original[0]!.id, first.commit);
+  assert.equal(original[0]!.parent, leadingLog.commit, "the before state is just before the visible write");
+  const trailingLog = await op.appendLog({author, id: "a", text: "Internal detail after progress"});
+  assert.deepEqual(await unreadSteps(store, cursor), original, "a later log cannot change the stop id, pieces or baseline");
+  const marks = {"item:a": first.commit};
+  assert.deepEqual(await unreadSteps(store, cursor, marks), [], "reading progress also leaves later logs with nothing to read");
+  const second = await op.setSteps({author, id: "a", step: {id: "work", text: "Second result", state: "todo"}});
+  const changed = await unreadSteps(store, cursor, marks);
+  assert.deepEqual(changed.map(step => step.commits), [[second.commit]]);
+  assert.equal(changed[0]!.parent, trailingLog.commit);
+  assert.deepEqual(changed[0]!.docs[0]!.pieces, {progress: 1, reply: 0, other: 0});
+  const item = store.snapshot().items.a!;
+  await store.commit({author, message: "Rewrite internal logs", puts: [{kind: "item", id: "a", expectRev: item.rev, doc: {...item, log: []}}]});
+  assert.deepEqual(await unreadSteps(store, cursor, marks), changed, "removing logs is invisible too");
+  const finalMarks = {"item:a": second.commit};
+  assert.deepEqual(await unreadSteps(store, cursor, finalMarks), []);
+  const removed = await op.setSteps({author, id: "a", remove: "work"});
+  assert.deepEqual((await unreadSteps(store, cursor, finalMarks)).map(step => [step.id, step.docs[0]!.pieces]), [[removed.commit, {progress: 1, reply: 0, other: 0}]], "removing progress is still a visible list change");
+});
+
+test("a mixed head and log write reports only the head as owner news", async t => {
+  const {store, op} = await board(t), cursor = store.snapshot().head;
+  await op.updateItem({author, id: "a", rev: store.snapshot().items.a!.rev, head: "Visible revised head", reason: "Internal reason"});
+  const steps = await unreadSteps(store, cursor);
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0]!.docs[0]!.summary, "head changed");
+  assert.deepEqual(steps[0]!.docs[0]!.pieces, {progress: 0, reply: 0, other: 1});
 });
 
 test("a record-only change is unread even when both versions have no stored status", async t => {
@@ -124,7 +168,7 @@ test("a record-only change is unread even when both versions have no stored stat
   const steps = await unreadSteps(store, cursor);
   assert.equal(steps.length, 1, "the record label changing to a work status is visible");
   assert.equal(steps[0]!.docs[0]!.summary, "changed to work item");
-  assert.deepEqual(steps[0]!.docs[0]!.pieces, { log: 0, reply: 0, other: 1 });
+  assert.deepEqual(steps[0]!.docs[0]!.pieces, { progress: 0, reply: 0, other: 1 });
   const diff = await stepDiff(store, steps[0]!, "item", "record");
   assert.equal((diff.before as { record: boolean; status?: string }).record, true);
   assert.equal((diff.after as { record: boolean; status?: string }).record, false);
@@ -135,8 +179,8 @@ test("a record-only change is unread even when both versions have no stored stat
 
 test("document read marks exclude only marked documents and disappear from stop counts", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  const first = await op.appendLog({ author, id: "a", text: "earlier unread item" });
-  const second = await op.appendLog({ author, id: "b", text: "selected later item" });
+  const first = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "earlier unread item" } });
+  const second = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "selected later item" } });
   const unmarked = await unreadSteps(store, cursor);
   const marked = await unreadSteps(store, cursor, { "item:b": second.commit });
   assert.deepEqual(marked.map(s => s.id), [first.commit], "the later document is read without reading the earlier item");
@@ -148,20 +192,20 @@ test("document read marks exclude only marked documents and disappear from stop 
 
 test("a marked document's later same-author change starts a fresh baseline", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  const first = await op.appendLog({ author, id: "a", text: "already read" });
-  const second = await op.appendLog({ author, id: "a", text: "new after the mark" });
+  const first = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "already read" } });
+  const second = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "new after the mark" } });
   const steps = await unreadSteps(store, cursor, { "item:a": first.commit });
   assert.deepEqual(steps[0]!.commits, [second.commit], "a mark splits consecutive changes at the read boundary");
   assert.equal(steps[0]!.parent, first.commit);
-  assert.equal(steps[0]!.docs[0]!.pieces.log, 1, "the read log entry does not return in the count");
-  assert.equal(steps[0]!.docs[0]!.summary, "+1 log");
+  assert.equal(steps[0]!.docs[0]!.pieces.progress, 1, "the read step version does not return in the count");
+  assert.equal(steps[0]!.docs[0]!.summary, "steps changed");
 });
 
 test("unread history scans stay constant as valid document marks accumulate", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   const marks: Record<string, string> = {};
-  for (const id of ["a", "b", "area"]) marks[`item:${id}`] = (await op.appendLog({ author, id, text: `read ${id}` })).commit;
-  const latest = await op.appendLog({ author, id: "a", text: "unread after marks" });
+  for (const id of ["a", "b", "area"]) marks[`item:${id}`] = (await op.setSteps({ author, id, step: {id: "progress", state: "todo", text: `read ${id}`} })).commit;
+  const latest = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "unread after marks" } });
   const log = store.log.bind(store);
   let scans = 0;
   t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0]) => { scans++; return log(options); });
@@ -173,9 +217,38 @@ test("unread history scans stay constant as valid document marks accumulate", as
   assert.equal(scans, 0, "more valid marks over the same range reuse it: adding marks adds no history scan");
 });
 
-// The unread list as the server computed it before it kept the history incrementally: one `git log` over the cursor's
-// range, ancestry asked of git, and every document change read from git again. The incremental computation must give
-// exactly this, errors included.
+// A from-scratch reference: one git log over the cursor range, ancestry asked of git, and
+// every document read anew. Visibility follows the owner-approved steps/log rule independently
+// of production caches and step-comparison helpers. Results and errors must match.
+function referenceSummary(before: unknown, after: unknown, kind: Parameters<typeof piecesOf>[2]) {
+  const copy = (doc: unknown) => {
+    if (kind !== "item" || doc === null) return doc;
+    const result = { ...doc as Record<string, unknown> };
+    delete result.log;
+    return result;
+  };
+  return describeChanges(copy(before), copy(after), kind);
+}
+// The reference counts fields directly rather than using the production pieces function.
+function referencePieces(before: unknown, after: unknown, kind: Parameters<typeof piecesOf>[2]): Step["docs"][number]["pieces"] {
+  const summary = referenceSummary(before, after, kind), zero = {progress: 0, reply: 0, other: 0};
+  if (kind === "decision") return {...zero, other: Number(summary !== "metadata changed")};
+  if (kind === "note") {
+    const parts = summary === "metadata changed" ? [] : summary.split(", ");
+    return {...zero, reply: Number(parts.includes("new reply") || parts.includes("reply changed")), other: Number(before === null || after === null || parts.some(part => !["new reply", "reply changed", "state changed", "sentAt changed"].includes(part)))};
+  }
+  const old = before as {steps?: Array<{id: string}>} | null, next = after as {steps?: Array<{id: string}>} | null;
+  const previous = old?.steps ?? [], current = next?.steps ?? [];
+  let count = 0;
+  for (const step of current) if (!isDeepStrictEqual(step, previous.find(other => other.id === step.id))) count++;
+  if (!isDeepStrictEqual(previous, current)) count = Math.max(1, count);
+  const rest = (doc: unknown) => {
+    if (doc === null) return null;
+    const result = {...doc as Record<string, unknown>}; delete result.log; delete result.steps;
+    return result;
+  };
+  return {...zero, progress: count, other: Number(describeChanges(rest(before), rest(after), "item") !== "metadata changed")};
+}
 async function fromScratch(store: Store, cursor: string | undefined, readMarks: Record<string, string>, head: string): Promise<Step[]> {
   if (cursor && !(await store.inHistory(cursor, head))) throw new Error(`Read cursor ${cursor} is not in board history`);
   const commits = (await store.log({ since: cursor, at: head })).reverse();
@@ -194,11 +267,18 @@ async function fromScratch(store: Store, cursor: string | undefined, readMarks: 
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];
       const kind = ({ items: "item", decisions: "decision", notes: "note" } as const)[m[1] as "items" | "decisions" | "notes"];
-      return [{ kind, id: m[2]!, summary: "", pieces: { log: 0, reply: 0, other: 0 } }];
+      return [{ kind, id: m[2]!, summary: "", pieces: { progress: 0, reply: 0, other: 0 } }];
     });
     if (!docs.length) { previous = undefined; continue; }
     const single = docs.length === 1 && commit.files.every(f => f === "state/owner.yaml" || /^(items|decisions|notes)\//.test(f));
-    const unreadDocs = docs.filter(doc => position > (markPositions.get(`${doc.kind}:${doc.id}`) ?? -1));
+    const unreadDocs: Step["docs"] = [];
+    for (const doc of docs) {
+      if (position <= (markPositions.get(`${doc.kind}:${doc.id}`) ?? -1)) continue;
+      const old = commit.parents[0] ? await store.show(doc.kind, doc.id, commit.parents[0]) : null;
+      const next = await store.show(doc.kind, doc.id, commit.commit);
+      const pieces = referencePieces(old, next, doc.kind);
+      if (Object.values(pieces).some(count => count > 0)) unreadDocs.push(doc);
+    }
     if (!unreadDocs.length) { previous = undefined; continue; }
     if (single && previous?.docs.length === 1 && previous.author === commit.author && previous.docs[0]!.kind === docs[0]!.kind && previous.docs[0]!.id === docs[0]!.id) {
       previous.commits.push(commit.commit); previous.id = commit.commit; previous.at = commit.at;
@@ -210,20 +290,20 @@ async function fromScratch(store: Store, cursor: string | undefined, readMarks: 
   }
   for (const step of steps) for (const doc of step.docs) {
     const before = step.parent ? await store.show(doc.kind, doc.id, step.parent) : null, after = await store.show(doc.kind, doc.id, step.id);
-    doc.summary = describeChanges(before, after, doc.kind);
-    doc.pieces = piecesOf(before, after, doc.kind, doc.summary);
+    doc.summary = referenceSummary(before, after, doc.kind);
+    doc.pieces = referencePieces(before, after, doc.kind);
   }
-  for (const step of steps) step.docs = step.docs.filter(doc => doc.pieces.log + doc.pieces.reply + doc.pieces.other > 0);
+  for (const step of steps) step.docs = step.docs.filter(doc => doc.pieces.progress + doc.pieces.reply + doc.pieces.other > 0);
   return steps.filter(step => step.docs.length);
 }
 const outcome = (steps: Promise<Step[]>) => steps.then(value => ({ value }), (error: Error) => ({ error: error.message }));
 
 test("the incremental unread list equals the from-scratch computation through writes, reads and concurrent writes", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later), seed = store.snapshot().head;
-  // A log entry from any session, as history from before project ownership holds.
+  // A visible title change from any session, as history from before project ownership holds.
   const write = (by: string, id: string, text: string) => {
     const it = store.snapshot().items[id]!;
-    return store.commit({ author: by, message: `log ${id}`, puts: [{ kind: "item", id, expectRev: it.rev, doc: { ...it, log: [...it.log, { at: later, by, text }] } }] });
+    return store.commit({ author: by, message: `title ${id}`, puts: [{ kind: "item", id, expectRev: it.rev, doc: { ...it, title: text } }] });
   };
   const heads = [seed];
   async function same(label: string) {
@@ -239,13 +319,13 @@ test("the incremental unread list equals the from-scratch computation through wr
   }
   await own.read({ through: seed });
   await same("cursor at the seed");
-  const a1 = await op.appendLog({ author, id: "a", text: "one" });
-  await op.appendLog({ author, id: "a", text: "two: same author and document, one step" });
-  await same("coalesced appends");
+  const a1 = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "one" } });
+  await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "two: same author and document, one step" } });
+  await same("coalesced step writes");
   await write("Firn", "a", "another author on the same document");
   await store.commit({ author, message: "retitle board", board: { ...store.snapshot().board, title: "Renamed board" } });
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
-  await op.appendLog({ author, id: "b", text: "after the owner" });
+  await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "after the owner" } });
   await same("authors, board settings and owner actions break steps");
   const multi = await op.createItem({ author, key: "child", parent: "a", parentWhy: "split", title: "child", parentOwnWork: { key: "a-own", title: "a own" } });
   const note = store.snapshot().notes["note-1"]!;
@@ -258,10 +338,10 @@ test("the incremental unread list equals the from-scratch computation through wr
   await own.read({ doc: "item:b" });
   await same("a read without a bound takes the document's latest step");
   // Reads and other sessions' writes at once, landing in whatever order they do.
-  await Promise.all([own.read({ doc: "item:a" }), write("Firn", "other", "concurrent"), op.appendLog({ author, id: "b", text: "concurrent too" }), own.read({ doc: "item:child" })]);
+  await Promise.all([own.read({ doc: "item:a" }), write("Firn", "other", "concurrent"), op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "concurrent too" } }), own.read({ doc: "item:child" })]);
   await same("reads interleaved with concurrent writes");
-  const b1 = await op.appendLog({ author, id: "b", text: "first half" });
-  await op.appendLog({ author, id: "b", text: "second half" });
+  const b1 = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "first half" } });
+  await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "second half" } });
   await same("a new coalesced step");
   // A write that lands while a read describes the later half of the step it splits.
   const show = store.show.bind(store);
@@ -283,7 +363,7 @@ test("the incremental unread list equals the from-scratch computation through wr
 test("a merged history the cached run cannot hold is read from git and gives the same unread list", async t => {
   const { store, op, dir } = await board(t), seed = store.snapshot().head;
   const linear = [seed];
-  for (const id of ["a", "b", "a"]) linear.push((await op.appendLog({ author, id, text: `entry on ${id}` })).commit);
+  for (const [index, id] of ["a", "b", "a"].entries()) linear.push((await op.setSteps({ author, id, step: {id: "progress", state: "todo", text: `result ${index} on ${id}`} })).commit);
   const pairs = async (s: Store, commits: string[], label: string) => {
     for (const head of commits) for (const since of [undefined, ...commits]) {
       assert.deepEqual(await commitsSince(s, since, head), (await s.log({ since, at: head })).reverse(), `${label}: ${since}..${head}`);
@@ -299,7 +379,7 @@ test("a merged history the cached run cannot hold is read from git and gives the
   const merged = (await git("git", ["commit-tree", headTree, "-p", linear.at(-1)!, "-p", sibling, "-m", "merge witness"], { cwd: dir, env })).stdout.trim();
   await git("git", ["update-ref", "HEAD", merged], { cwd: dir });
   const reopened = await Store.open(dir);
-  const top = (await ops(reopened, () => later).appendLog({ author, id: "b", text: "after the merge" })).commit;
+  const top = (await ops(reopened, () => later).setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "after the merge" } })).commit;
   const all = [...linear, sibling, merged, top];
   await pairs(reopened, all, "merged");
   for (const cursor of [undefined, ...all]) {

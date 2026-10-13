@@ -60,9 +60,9 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.equal((await api("/api/archive", { id: "a", on: true })).status, 200); assert.ok(store.snapshot().owner.archived.a);
   assert.equal((await api("/api/read", { through: completed.commit })).status, 200);
   assert.equal((await api("/api/unread")).data.steps.length, 0);
-  const log = await op.appendLog({ author, id: "b", text: "unread after read" });
-  const steps = (await api("/api/unread")).data.steps; assert.equal(steps[0].id, log.commit);
-  const diff = await api(`/api/step?id=${log.commit}&kind=item&doc=b`); assert.match(diff.data.diff, /unread after read/);
+  const progress = await op.setSteps({ author, id: "b", step: { id: "progress", state: "todo", text: "unread after read" } });
+  const steps = (await api("/api/unread")).data.steps; assert.equal(steps[0].id, progress.commit);
+  const diff = await api(`/api/step?id=${progress.commit}&kind=item&doc=b`); assert.match(diff.data.diff, /unread after read/);
   assert.equal((await api("/api/step?id=missing&kind=item&doc=b")).status, 404);
   assert.equal((await api("/api/read", { through: "f".repeat(40) })).status, 400);
 });
@@ -252,7 +252,7 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
     return response;
   }
   await api("/api/read", {through: store.snapshot().head});
-  const a = await op.appendLog({author, id: "a", text: "earlier unread"});
+  const a = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "earlier unread" } });
   const card = store.snapshot().decisions.choice!;
   const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, background: "new background"}}]});
   assert.equal((await api("/api/read", {doc: "decision:choice", through: b.commit})).status, 200);

@@ -26,6 +26,31 @@ export const LogEntry = z.object({
 });
 export type LogEntry = z.infer<typeof LogEntry>;
 
+/** Stable within an item's ordered steps, independent of a step's position. */
+export const StepId = Key.max(40);
+export const STEP_STATES = ["done", "doing", "todo", "dropped"] as const;
+const StepText = z.string().min(1).refine(text => !!text.trim(), "Provide nonempty text after trimming");
+/** Callers describe a step; transition dates belong to the server. */
+export const ItemStepInput = z.object({
+  id: StepId,
+  text: StepText,
+  state: z.enum(STEP_STATES),
+  waits: StepText.optional(),
+  reason: StepText.optional(),
+}).strict().refine(step => step.state !== "dropped" || !!step.reason, { message: "A dropped step needs a reason", path: ["reason"] });
+export type ItemStepInput = z.infer<typeof ItemStepInput>;
+export const ItemStep = ItemStepInput.safeExtend({
+  doneAt: Time.optional(),
+  since: Time.optional(),
+  droppedAt: Time.optional(),
+}).refine(step => step.state !== "done" || !!step.doneAt, { message: "A done step needs doneAt", path: ["doneAt"] })
+  .refine(step => step.state !== "doing" || !!step.since, { message: "A doing step needs since", path: ["since"] })
+  .refine(step => step.state !== "dropped" || !!step.droppedAt, { message: "A dropped step needs droppedAt", path: ["droppedAt"] });
+export type ItemStep = z.infer<typeof ItemStep>;
+const uniqueStepIds = (steps: readonly { id: string }[]): boolean => new Set(steps.map(step => step.id)).size === steps.length;
+export const ItemStepsInput = z.array(ItemStepInput).refine(uniqueStepIds, "Step ids must be unique");
+export const ItemSteps = z.array(ItemStep).refine(uniqueStepIds, "Step ids must be unique");
+
 /** A dependency names an item or a decision card, with one sentence on what the dependent item needs from it. */
 export const Dep = z.union([
   z.object({ id: Key, why: z.string() }).strict(),
@@ -62,6 +87,8 @@ export const Item = z.object({
   priority: Priority.optional(),
   head: z.string().optional(),
   log: z.array(LogEntry).default([]),
+  /** Parts of this item's own work, in display order; never imply its status. */
+  steps: ItemSteps.optional(),
   /** One line of key numbers. */
   data: z.string().min(1).optional(),
   deps: z.array(Dep).default([]),
