@@ -54,3 +54,20 @@ test("# starts a reference query unless it is glued to a word before it", () => 
   assert.equal(refQuery("#a #b", 5)?.start, 3, "the nearest # before the caret is the one that counts");
   assert.equal(refQuery("#abc", 0), null, "the caret before the # is not in a query");
 });
+
+test("a number query puts the item or card holding that number first, then title matches", () => {
+  const numbered = [
+    { kind: "item" as const, key: "a", title: "跑 812 个脚本", num: 3 },
+    { kind: "card" as const, key: "q", title: "选哪个方案？", num: 812 },
+    { kind: "item" as const, key: "b", title: "没有编号的条目" },
+    { kind: "item" as const, key: "c", title: "第 81 项", num: 81 },
+  ];
+  assert.deepEqual(findTargets(numbered, "812").map(t => t.key), ["q", "a"], "the exact number on top, a title containing the digits after it");
+  assert.deepEqual(findTargets(numbered, "#812").map(t => t.key), ["q"], "the / search also takes #812");
+  assert.deepEqual(findTargets(numbered, " 81 ").map(t => t.key), ["c", "a"], "a number matches exactly, not as a prefix of 812");
+  assert.deepEqual(findTargets(numbered, "3").map(t => t.key), ["a"]);
+  assert.deepEqual(findTargets(numbered, "9999").map(t => t.key), [], "an unissued number finds nothing");
+  assert.deepEqual(findTargets(numbered, "0812").map(t => t.key), [], "a leading zero is not a number reference");
+  assert.deepEqual(findTargets(numbered, "方案").map(t => t.key), ["q"], "other queries keep the title search");
+  assert.deepEqual(refQuery("见 #812", 6), { start: 2, query: "812" }, "the # popup hands the digits to findTargets");
+});

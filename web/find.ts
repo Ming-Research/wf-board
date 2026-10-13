@@ -1,5 +1,6 @@
 // Finding items and decision cards by title, and the reference tokens a comment holds, as plain functions so tests can
 // check them without a page. The "/" search and the "#" popup in a comment share findTargets.
+import { numRef } from "../src/model.ts";
 
 /** An item or a decision card the owner can search for or refer to. */
 export interface Target {
@@ -7,12 +8,19 @@ export interface Target {
   key: string;
   /** The title as plain text: an item's title, or a card's question. */
   title: string;
+  /** The permanent short number, when the document has one. */
+  num?: number;
 }
 
-/** The targets whose title contains the query, ignoring case; an empty query matches them all. Input order is kept. */
-export function findTargets<T extends Pick<Target, "title">>(targets: readonly T[], query: string): T[] {
+/** The targets whose title contains the query, ignoring case; an empty query matches them all. Input order is kept.
+ * A number query ("812" or "#812") puts the item or card holding that short number first, then the title matches. */
+export function findTargets<T extends Pick<Target, "title" | "num">>(targets: readonly T[], query: string): T[] {
   const q = query.trim().toLowerCase();
-  return q ? targets.filter(t => t.title.toLowerCase().includes(q)) : targets.slice();
+  if (!q) return targets.slice();
+  const titled = targets.filter(t => t.title.toLowerCase().includes(q)), num = numRef(q);
+  if (num === undefined) return titled;
+  const exact = targets.filter(t => t.num === num);
+  return [...exact, ...titled.filter(t => !exact.includes(t))];
 }
 
 // A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.

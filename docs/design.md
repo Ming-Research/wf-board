@@ -111,6 +111,7 @@ agent reading with Grep or Read when the server is down.
 ```
 wf-board-data/
   board.yaml              title, eyebrow, goal, projects
+  numbers.yaml            the short-number counter: next: <the number the next item or card gets>
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
@@ -174,6 +175,29 @@ log:
   queue retries against the latest item while preserving unrelated concurrent writes.
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
+- **Short numbers.** Every item and every decision card carries `num`, a
+  permanent positive integer, so the owner can name it as `#812` instead of
+  searching by title. Items and cards share one sequence, so a number names
+  one document. Notes have none. The owner decided this on 2026-10-13. Keys
+  stay the identity everywhere: plan rows, `item` fields, note targets and
+  `[[it:key]]`/`[[q:key]]` tokens use keys; a number is only a display and
+  lookup alias. Only the store issues numbers, inside its single write queue:
+  a put that creates an item or card receives the next number, and
+  `numbers.yaml` (`next`) advances in the same commit, so two documents can
+  never receive one number and a failed commit issues none. An update keeps
+  the stored number; a write that names a different number, or a number on a
+  document that has none, is refused. A deleted document's number is never
+  reused. On start the store refuses (never repairs) a board where two
+  documents share a number, where `next` is not above every issued number, or
+  where documents hold numbers without `numbers.yaml`. The field is optional
+  in the schema only for data written before numbers existed: on its first
+  start the store numbers every unnumbered item and card once, oldest first by
+  `created` (cards `at`; `updated` when neither exists), ties broken by key,
+  in one commit `Number existing items and cards` that changes only `num` and
+  the revision. That commit is bookkeeping: it is not an unread change for the
+  owner, adds no active time and resets no stalled clock, and `num` is never a
+  reported field change. Board text keeps naming things by what they are, not
+  by number.
 - **Item plan.** Every item carries one ordered `plan`, its 计划和进展: its own
   steps, the items it owns, the items and cards of others it waits for,
   acceptance steps where the checks happen, and delivery rows after them. The plan replaces the former `steps`, `deps` and
@@ -311,8 +335,9 @@ log:
   its own. An item's head shows one 新 chip counting the items with something
   new in its subtree, itself included; a card shows no chip of its own unless
   no item holds it. The header total and the kind buttons count the same way.
-  `n` walks page order, top to bottom: an item, its comments, then each of its
-  cards and that card's comments, with documents the page does not place last,
+  `n` walks page order, top to bottom: an item, each card its plan unfolds
+  (in plan order) with that card's comments, the item's comments, then each of
+  its other cards and that card's comments, with documents the page does not place last,
   oldest first. Inside a changed item it visits each new place in turn (a
   changed status, title or body block, a new or changed plan or target row, an
   added link); a new item is one stop at its start. After `m`, `n` goes on below
@@ -724,13 +749,17 @@ The detail column of a selected item reads, top to bottom:
 1. the head row: status, priority, title, ratio, chips (unchanged), and under
    it one line 属于「owner title」 (a link), or 顶层 · 项目名 for a top item;
 2. 目标, the target-number table (unchanged), when the item has targets;
-3. 计划和进展, the plan;
-4. the item's comment entry and comment list (see Comments below);
-5. the head (问题 / 为什么 / 做法) and the `data` line;
-6. 被依赖: the items holding a shared row for this item (the owner is
+3. 计划和进展, the plan, with this item's own cards unfolded under their rows;
+4. the head (问题 / 为什么 / 做法) and the `data` line;
+5. 被依赖: the items holding a shared row for this item (the owner is
    already on line 1, so it is not repeated);
+6. the item's comment entry and comment list (see Comments below);
 7. 日志, folded as today;
-8. the ask, open cards, shown ruled cards, checks and references, as today.
+8. the ask, the open and shown ruled cards its plan does not name, checks and
+   references.
+
+The owner set this order on 2026-10-13: progress first, then the stable head,
+then the comments on it, then history.
 
 The plan's look, row by row. One line per row, a 16-pixel gutter on the left
 carries the row's glyph in its state colour, the same colours as the status
@@ -755,7 +784,16 @@ follow the existing tokens with no new colours:
 - **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
   link, on one line; there is no owner or project line under it.
 - **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
-  show today) and the question, linking to the card.
+  show today) and the question. In the plan of the card's own item, clicking
+  the question unfolds the whole card right under the row (background,
+  options and their choice buttons, confidence, the ruling when ruled, its
+  comment list and comment button) and selects it, so `c` and `m` act on it;
+  a second click folds it. It starts folded, and each card's fold is
+  remembered in browser localStorage like other folds. A card shown this way
+  is not drawn again in the card list at the end of the body, so it exists
+  once on the page. Any route to the card (the 等你 row, `n`/`N`, a reference
+  or the item's 决策 buttons) opens its item and unfolds it there. In another
+  item's plan the question stays a link to the card in its own item.
 - **Acceptance row.** Placed where its check happens, labelled 验收 in a
   small tag, full text (it may wrap), with the same glyphs as a step
   (○ ● ✓ ✗). It has no extra separator or spacing; the tag identifies it.
@@ -838,9 +876,8 @@ was; leaf counts count owned descendants that own no work items, by status.
 
 The owner comments on the whole item, not on plan rows. The page puts the
 item's comment entry, a visible 评论这个条目 button that opens the existing
-composer, and the item's comment list directly under the plan. Today the only
-entry is the `c` key, comments render at the end of the detail column, and a
-comment may carry an anchor: a log entry (`{kind: log, at}`) or another note
+composer, and the item's comment list after the head and 被依赖, before the
+log. The `c` key remains an entry too, and a comment may carry an anchor: a log entry (`{kind: log, at}`) or another note
 (`{kind: note, id}`); a selected dependency row (`dep:<item>@<target>`)
 already comments on the item without an anchor. Plan rows follow that: they
 are selectable for navigation, `c` on a row comments on the item, and no new
@@ -888,7 +925,10 @@ overturn it.
 ## 6. MCP tools
 
 Every tool returns compact text built for an agent's context: ids, titles,
-status and the relevant lines, never whole files unless asked. Writes take
+status and the relevant lines, never whole files unless asked. An item or
+card row ends with its short number (`· #812`), and JSON rows carry `num`;
+`context` and `graph` accept `#812` or `812` as well as a key, an exact key
+winning over a number. Writes take
 `author`, the name of the project the session works for, selected from
 `projects` by matching `repo` to its repository's GitHub remote. The
 coordinator writes as `总管`. Several sessions may share a project and
@@ -973,7 +1013,7 @@ narrows completed items by age. Every plan row stays visible regardless of
 these filters. A plan reference, search result or unread stop opens a hidden
 item's detail without changing the filters. Closed items' unread changes,
 including card and reply changes, still reach 新 and the navigation stops.
-Paused work remains visible by default, with a grey `◌ PAUSE` status chip,
+Paused work remains visible by default, with a grey `◌ <number>` status chip,
 its own 暂停 filter and a separate paused leaf count. Plan item rows use only
 the grey `◌` glyph, distinct from waiting `⏸`. The detail head of open work
 offers 暂停 with a small inline reason field, or 恢复 for its own marker.
@@ -982,6 +1022,12 @@ resuming a child cannot clear that ancestor. Closed work with an inactive
 own marker offers only 恢复, so the owner can also release open descendants
 under a record without asking an agent to clear the marker. Records have
 no pause control.
+An item's status chip shows its short number (`812`) rather than a status
+word: the chip's background and text colour carry the status, and its tooltip
+names it (TODO, WIP, BLOCK, DONE, DROP, ◌ PAUSE, 记录). Every item status chip
+does this alike: tree rows, the detail header, dependency rows and search
+rows. An item not yet numbered shows the status word. A decision card's header
+shows its number before the question.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
@@ -1052,9 +1098,9 @@ project links wrap, and long notice text breaks within its row.
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
-属于 line, 目标, 计划和进展, the comment entry and comment list, head text
-and data, 被依赖, collapsed 日志, ask, open cards, shown ruled cards, checks
-and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
+属于 line, 目标, 计划和进展 with its unfolded cards, head text and data,
+被依赖, the comment entry and comment list, collapsed 日志, ask, the open and
+shown ruled cards the plan does not name, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
 the tree highlight and the detail selection and collapses the right column.
 Clicks on controls or the divider and drags that select text preserve selection.
 All change marks, fresh lines, notes and
@@ -1095,7 +1141,8 @@ the server's read result to separate its later unread changes.
 
 In a comment, typing `#` opens a small popup of the items and decision cards
 whose title contains the text typed after it (ignoring case; up to eight
-shown). Up and down choose, Enter or a click writes a reference token over
+shown). When the text is a number, the item or card holding that number
+comes first, then titles containing those digits. Up and down choose, Enter or a click writes a reference token over
 `#…`, and Esc closes only the popup. A `#` glued to a word before it, as in
 `Repo#341`, starts nothing. The token is `[[it:<key>]]` for an item and
 `[[q:<key>]]` for a decision card: the prefix is there because an item and a
@@ -1114,7 +1161,8 @@ page renders again.
 
 `/` anywhere except while typing in a text field opens a search box over every
 item and decision card by title, matched as in the popup (ignoring case,
-substring, any language), done and cancelled ones included. A row shows the
+substring, any language; `812` or `#812` puts that number's item or card
+first), done and cancelled ones included. A row shows the
 status, the title, the project and the owner item (a card's holding item). Up
 and down choose, Enter or a click goes there as for a reference, and Esc or a
 click outside closes it.

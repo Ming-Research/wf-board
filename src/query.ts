@@ -1,19 +1,30 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
-import { STATUSES } from "./model.ts";
+import { STATUSES, numRef } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; plan?: string[]; targets?: string[] }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
 export interface Hit extends Row { field: string; time?: string; snippet: string; more?: number }
-function requireId(s: Snapshot, id: string): Kind {
-  if (Object.hasOwn(s.items, id)) return "item";
-  if (Object.hasOwn(s.decisions, id)) return "card";
+/** An exact key first, then a short-number reference ("#812" or "812") to the item or card holding that number. */
+export function resolveId(s: Snapshot, id: string): { kind: "item" | "card"; id: string } | undefined {
+  if (Object.hasOwn(s.items, id)) return { kind: "item", id };
+  if (Object.hasOwn(s.decisions, id)) return { kind: "card", id };
+  const num = numRef(id);
+  if (num === undefined) return undefined;
+  const item = Object.keys(s.items).find(key => s.items[key]!.num === num);
+  if (item !== undefined) return { kind: "item", id: item };
+  const card = Object.keys(s.decisions).find(key => s.decisions[key]!.num === num);
+  return card === undefined ? undefined : { kind: "card", id: card };
+}
+function requireId(s: Snapshot, id: string): { kind: "item" | "card"; id: string } {
+  const found = resolveId(s, id);
+  if (found) return found;
   throw new Error(`Unknown id ${id}; use search or list to find an item or card`);
 }
 function noteItem(s: Snapshot, n: Note | undefined): string { if (!n) return ""; return n.target.startsWith("it:") ? n.target.slice(3) : s.decisions[n.target.slice(2)]?.item ?? ""; }
@@ -23,7 +34,8 @@ function itemId(s: Snapshot, kind: Kind, id: string): string {
 export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const owner = itemId(s, kind, id), areaId = r.lineOf(owner);
   const card = kind === "card" ? s.decisions[id] : kind === "note" && s.notes[id]?.target.startsWith("q:") ? s.decisions[s.notes[id]!.target.slice(2)] : undefined;
-  return { kind, id, title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
+  const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
+  return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
     ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
@@ -148,8 +160,8 @@ export function planLines(s: Snapshot, r: Rules, id: string, fold = false): stri
   }
   return lines;
 }
-export function context(s: Snapshot, r: Rules, id: string, options: { log?: number | "all" } = {}) {
-  const kind = requireId(s, id);
+export function context(s: Snapshot, r: Rules, ref: string, options: { log?: number | "all" } = {}) {
+  const { kind, id } = requireId(s, ref);
   if (kind === "card") {
     const card = s.decisions[id]!;
     return { kind, id, card, item: row(s, r, "item", card.item), notes: relevantNotes(s, [`q:${id}`]) };
@@ -164,13 +176,13 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
       const card = s.decisions[key]!;
-      return card.status === "open" ? { key, ...card } : { key, status: card.status, question: card.question, ruling: card.ruling, ruledAt: card.ruledAt };
+      return card.status === "open" ? { key, ...card } : { key, ...(card.num === undefined ? {} : { num: card.num }), status: card.status, question: card.question, ruling: card.ruling, ruledAt: card.ruledAt };
     }), notes: relevantNotes(s, [`it:${id}`, ...cardIds.map(c => `q:${c}`)], 5), checks: r.checks(id), links: it.links, prs: references(documentText(s, "item", id), knownRepos(s)) };
 }
 
-export interface GraphNode { kind: "item" | "card"; id: string; title: string; status: string | undefined; record?: boolean; own?: boolean; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
-export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "up" | "down" | "both"; depth?: number }) {
-  const rootKind = requireId(s, id) as "item" | "card", depth = options.depth ?? 3;
+export interface GraphNode { kind: "item" | "card"; id: string; num?: number; title: string; status: string | undefined; record?: boolean; own?: boolean; open: boolean; cycle: boolean; blockedChain: boolean; truncated: boolean; next: GraphNode[] }
+export function graph(s: Snapshot, r: Rules, ref: string, options: { direction: "up" | "down" | "both"; depth?: number }) {
+  const { kind: rootKind, id } = requireId(s, ref), depth = options.depth ?? 3;
   function walk(kind: "item" | "card", key: string, direction: "up" | "down", remaining: number, path: Set<string>, own?: boolean, blockedAncestor = false): GraphNode {
     const token = `${kind}:${key}`, cycle = path.has(token), d = dependency(s, r, kind, key);
     const open = kind === "item" ? r.isOpenWork(key) : s.decisions[key]?.status === "open";
@@ -178,7 +190,7 @@ export function graph(s: Snapshot, r: Rules, id: string, options: { direction: "
     const nextPath = new Set([...path, token]);
     const onBlockedChain = open && (blockedAncestor || d.status === "blocked");
     const next = cycle || remaining <= 0 ? [] : edges.map(e => walk(e.kind, e.id, direction, remaining - 1, nextPath, e.own, onBlockedChain));
-    return { kind, id: key, title: d.title, status: d.status, ...(own === undefined ? {} : { own }), open, cycle,
+    return { kind, id: key, ...("num" in d && d.num !== undefined ? { num: d.num } : {}), title: d.title, status: d.status, ...(own === undefined ? {} : { own }), open, cycle,
       blockedChain: open && (onBlockedChain || next.some(n => n.open && n.blockedChain)), truncated: !cycle && remaining <= 0 && edges.length > 0, next };
   }
   return { id, ...(options.direction !== "down" ? { up: walk(rootKind, id, "up", depth, new Set()) } : {}), ...(options.direction !== "up" ? { down: walk(rootKind, id, "down", depth, new Set()) } : {}) };
@@ -206,12 +218,13 @@ function requestRow(s: Snapshot, r: Rules, id: string) {
   const it = s.items[id]!, request = it.request!;
   const prefix = `${request.by} 提出：`;
   const first = it.log[0]?.text ?? "";
-  return { id, title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
+  return { id, ...(it.num === undefined ? {} : { num: it.num }), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
   return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
     project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
+const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
@@ -225,8 +238,8 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
-    checks: ids.map(id => ({ id, title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
-    cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
+    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
+    cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
     wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
     todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
@@ -235,7 +248,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
   const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
-    .map(id => ({ id, title: s.items[id]!.title, ...progressLines(id) }));
+    .map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */
@@ -295,7 +308,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   if (after === null) return `deleted ${kind === "decision" ? "card" : kind}`;
   const a = before as Record<string, unknown>, b = after as Record<string, unknown>, changes: string[] = [];
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    if (["rev", "updated"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
+    // A short number is issued once and never changes; numbering existing documents is not news.
+    if (["rev", "updated", "num"].includes(key) || isDeepStrictEqual(a[key], b[key])) continue;
     if (key === "plan") {
       if (planChanged(a.plan as PlanRow[] | undefined, b.plan as PlanRow[] | undefined)) changes.push("plan changed");
     } else if (key === "targets") {

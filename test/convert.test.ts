@@ -247,10 +247,15 @@ test("importExport writes the read state, then one commit per changed document i
   assert.equal(currentCommit, later.at(-1)!.commit);
   assert.equal(store.snapshot().owner.cursor, asReadCommit);
   assert.equal(Object.hasOwn(store.snapshot().owner, "archived"), false, "plan conversion drops the retired archive state");
-  assert.deepEqual(await store.show("item", "old", asReadCommit), expected.asRead.items.old);
-  assert.deepEqual(await store.show("item", "old", currentCommit), { ...expected.current.items.old, rev: 2 });
+  // The store numbers each imported document as it creates it; the conversion itself issues none.
+  const unnumbered = (doc: unknown) => { const { num: _num, ...rest } = doc as { num?: number }; return rest; };
+  const final = store.snapshot(), numbers = [...Object.values(final.items), ...Object.values(final.decisions)].map(doc => doc.num);
+  assert.ok(numbers.every(n => n !== undefined) && new Set(numbers).size === numbers.length, "every imported item and card holds its own number");
+  assert.ok(final.items.new!.num! > final.items.old!.num!, "a document created after the read state is numbered after it");
+  assert.deepEqual(unnumbered(await store.show("item", "old", asReadCommit)), expected.asRead.items.old);
+  assert.deepEqual(unnumbered(await store.show("item", "old", currentCommit)), { ...expected.current.items.old, rev: 2 });
   assert.equal(await store.show("item", "new", asReadCommit), null);
-  assert.deepEqual(await store.show("item", "new", currentCommit), expected.current.items.new);
+  assert.deepEqual(unnumbered(await store.show("item", "new", currentCommit)), expected.current.items.new);
   assert.match(await store.diff("item", "old", asReadCommit, currentCommit), /New #12/);
   assert.equal(store.snapshot().notes.reply!.rev, 2);
   assert.equal(store.snapshot().decisions.card!.rev, 1);

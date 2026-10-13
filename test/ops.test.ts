@@ -75,7 +75,7 @@ test("each operation records its effects, author and single atomic commit", asyn
     assert.deepEqual((await Store.open(dir)).snapshot(),after,"all atomic effects survive reopen");
   }
   const itemCommit = (call: () => Promise<Result>, message: string, files=["items/new.yaml"]) => committed(call,message,files,"item","new");
-  await itemCommit(() => op.createItem({ author, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml"]);
+  await itemCommit(() => op.createItem({ author, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml","numbers.yaml"]);
   assert.deepEqual(store.snapshot().items.area!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
   const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"todo");
   assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"accept",accept:true,text:"New result passes",state:"todo"}]);
@@ -108,8 +108,8 @@ test("each operation records its effects, author and single atomic commit", asyn
   const moved=store.snapshot(); assert.equal(rules(moved).parentOf("new"),"other"); assert.ok(!moved.items.area!.plan.some(row=>row.id === "new"));
   assert.deepEqual(moved.items.other!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
   assert.match(moved.items.area!.log.at(-1)!.text,/Revised title.*其他项目/); assert.match(moved.items.other!.log.at(-1)!.text,/Revised title/); assert.match(moved.items.new!.log.at(-1)!.text,/解释器工作.*其他项目/);
-  const cardCommit=(call: () => Promise<Result>,message:string,key="new-card")=>committed(call,message,["decisions/"+key+".yaml"],"decision",key);
-  await cardCommit(() => op.writeCard({author,key:"new-card",item:"new",question:"Choose?",background:"Evidence",options:[{key:"A",text:"A",recommended:true}],confidence:{score:3,reason:"Exploratory"}}),"write_card new-card");
+  const cardCommit=(call: () => Promise<Result>,message:string,key="new-card",extra:string[]=[])=>committed(call,message,["decisions/"+key+".yaml",...extra],"decision",key);
+  await cardCommit(() => op.writeCard({author,key:"new-card",item:"new",question:"Choose?",background:"Evidence",options:[{key:"A",text:"A",recommended:true}],confidence:{score:3,reason:"Exploratory"}}),"write_card new-card","new-card",["numbers.yaml"]);
   const originalAt=store.snapshot().decisions["new-card"]!.at;
   await cardCommit(() => op.writeCard({author,key:"new-card",rev:1,item:"new",question:"Choose revised?",background:"More evidence",options:[{key:"B",text:"B"}]}),"write_card new-card");
   assert.equal(store.snapshot().decisions["new-card"]!.at,originalAt);
@@ -595,7 +595,7 @@ test("creation adoption, requests and triage use plans and commit all structural
   await op.createItem({ author, key: "parent", title: "Combined", group: author, accept: "Both accepted", priority: "P0", children: ["a", "b"] });
   const s = store.snapshot(); assert.equal(rules(s).parentOf("a"), "parent"); assert.equal(rules(s).parentOf("b"), "parent");
   assert.deepEqual(s.items.parent!.plan!.map(row => row.id), ["a", "b", "accept"]);
-  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/parent.yaml"]);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/parent.yaml", "numbers.yaml"], "the issued number's counter enters the creating commit");
   await op.createRequest({ author, project: "Firn", key: "request", title: "Witness", head: "Minimal program", accept: "Program passes", why: "Required for completion", from: "parent", after: [] });
   assert.equal(rules(store.snapshot()).priorityOf("request"), "P0");
   assert.match(store.snapshot().items.request!.log[0]!.text, /Required for completion/);

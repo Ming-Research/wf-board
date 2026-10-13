@@ -1875,7 +1875,7 @@ async function dependencyReadContract(transform?: PageOptions["transform"]) {
   const p=await page(s,[...unread("item","area"),...unread("decision","q",later)],null,undefined,{transform});
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
   await wideCaret(p).click(); await p.flush();
-  await rowOf(p).querySelector(".item-head")!.click(); await planRow(p,"child","q").querySelector(".plan-link")!.click(); await p.flush();
+  await rowOf(p).querySelector(".item-head")!.click(); await planRow(p,"child","q").querySelector(".cardtoggle")!.click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
   p.key("m"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
@@ -3201,7 +3201,7 @@ test("a sent transition closes a draft editor and a late save cannot restore the
   assert.equal(noteButton(p, "d", "编辑"), undefined);
 });
 
-test("plan steps show all states, elapsed days and acceptance; comments precede prose and logs start collapsed", async () => {
+test("plan steps show all states, elapsed days and acceptance; prose precedes comments and logs start collapsed", async () => {
   const s=nativeSnapshot(); s.items.child!.head="Stable head";
   s.items.child!.plan=planWork([planStep("done","Deliver parser #42","done",{doneAt:"2026-10-06T12:00:00Z"}),planStep("doing","Validate replies","doing",{since:"2026-10-06T12:00:00Z",waits:"CI"}),planStep("todo","Publish evidence"),planStep("drop","Old approach","dropped",{reason:"Superseded"})]); s.items.child!.log=[{at,text:"Detailed investigation"}];
   const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
@@ -3209,7 +3209,8 @@ test("plan steps show all states, elapsed days and acceptance; comments precede 
   assert.match(markup(planRow(p,"child","done")),/Deliver parser #42 · 10-06/); assert.match(markup(planRow(p,"child","doing")),/Validate replies · 6 天 · 等 CI/); assert.match(markup(planRow(p,"child","drop")),/Old approach · Superseded/);
   assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/4"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
   const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), comments=body.children.findIndex(e=>e.className === "item-comments"), prose=body.children.findIndex(e=>e.className === "rich"), logs=body.children.findIndex(e=>e.className === "log");
-  assert.ok(progress>=0 && comments === progress+1 && prose === comments+1 && logs>prose);
+  // Owner, 2026-10-13: plan, then the head, then the item's comments, then the log.
+  assert.ok(progress>=0 && prose === progress+1 && comments === prose+1 && logs === comments+1);
   assert.equal(item(p).querySelector(".log-toggle")!.attributes["aria-expanded"],"false"); assert.equal(item(p).querySelectorAll(".log-entry").length,0);
   await button(p,"▸ 日志").click(); assert.equal(item(p).querySelectorAll(".log-entry").length,1); assert.match(markup(item(p)),/Detailed investigation/);
   await expand(p,"area"); assert.ok(item(p,"area").querySelector(".plan")); assert.equal(item(p,"area").querySelector(".log-toggle")!.attributes["aria-expanded"],"false");
@@ -3331,7 +3332,8 @@ test("the native plan mockup shows glyphs, parallel groups, glyph-only item stat
   const owned=planRow(p,"area","child");
   assert.equal(owned.querySelector(".plan-sub"),null,"an owned item row has no activity line under it");
   assert.equal(owned.querySelector(".st"),null,"the row glyph carries the item's status, so no status chip");
-  assert.equal(planRow(p,"area","q").querySelector(".plan-link")!.dataset.ref,"q:q");
+  // The card's own item unfolds it inline from its plan row rather than linking away.
+  assert.equal(planRow(p,"area","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"false");
   // The 待重写 tag on an owned row is the target's own: a provisional parent does not mark a rewritten child.
   assert.ok(!planRow(p,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
   s.items.child!.provisional=true;
@@ -3531,4 +3533,82 @@ test("a cancelled item shows no check tags, in the tree or on plan rows", async 
   s.items.child!.provisional=true;
   const q=await page(s,[]); await expand(q,"area");
   assert.ok(planRow(q,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"),"an open owned row keeps it");
+});
+
+test("numbered items show their number in the status chip, cards show theirs, and / finds by number", async () => {
+  const s=snapshot(); s.decisions.q={...card(),num:812} as Decision;
+  Object.assign(s.items.area!,{num:7}); Object.assign(s.items.child!,{num:8});
+  const p=await page(s,[]); await expand(p);
+  const chip=rowOf(p,"child").querySelector(".item-head .st")!;
+  assert.equal(chip.innerHTML,"8","the tree row's chip shows the number instead of the status word");
+  assert.ok(chip.classList.contains("wip"),"the chip's colour class still carries the status");
+  assert.equal(chip.title,"WIP","the status word stays discoverable as the tooltip");
+  const detail=item(p,"child").querySelector(".item-head .st")!;
+  assert.equal(detail.innerHTML,"8"); assert.equal(detail.title,"WIP","the detail header's chip matches the tree row");
+  const c=p.all().find(e=>e.id === "q-q")!, num=descendants(c).find(e=>e.classList.contains("cardnum"))!;
+  assert.equal(num.innerHTML,"812","the card header shows its number");
+  const h=num.parentElement!; assert.ok(h.children.indexOf(num) < h.children.findIndex(e=>e.innerHTML === card().question),"the number comes before the question");
+  p.key("/");
+  const input=p.document.getElementById("search-input")!; input.value="812"; await input.handlers.get("input")![0]!({});
+  const rows=p.all().filter(e=>e.classList.contains("searchrow"));
+  assert.ok(rows.length >= 1 && rows[0]!.innerHTML.includes(card().question),"a number query lists the card holding it first");
+  input.value="8"; await input.handlers.get("input")![0]!({});
+  const first=p.all().find(e=>e.classList.contains("searchrow"))!;
+  assert.match(first.innerHTML,/<span class="st wip" title="WIP">8<\/span>.*Child/,"the item found by number shows its numbered chip");
+  p.key("Escape",input);
+  s.items.area!.paused={reason:"停",at};
+  const paused=await page(s,[]);
+  assert.equal(rowOf(paused,"area").querySelector(".item-head .st")!.innerHTML,"◌ 7","a paused item keeps the pause mark beside its number");
+});
+
+test("a card its item's plan names unfolds inline under its row, once, and navigation unfolds it", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card(); s.decisions.loose={...card(),question:"Not in the plan"};
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  s.items.area!.plan=[...s.items.area!.plan.slice(0,-1),cardRow("q"),s.items.area!.plan.at(-1)!];
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  const cards=()=>p.all().filter(e=>e.id === "q-q");
+  assert.equal(cards().length,0,"collapsed by default, and not repeated in the card list at the bottom");
+  assert.ok(p.all().some(e=>e.id === "q-loose"),"a card the plan does not name keeps its place at the bottom");
+  const toggle=planRow(p,"child","q").querySelector(".cardtoggle")!;
+  await toggle.click(); await p.flush();
+  assert.equal(cards().length,1,"one card element, so ids stay unique");
+  const row=planRow(p,"child","q"), parent=row.parentElement!;
+  assert.equal(parent.children[parent.children.indexOf(row)+1],cards()[0],"the card sits right under its plan row");
+  assert.match(markup(cards()[0]!),/渲染正文/); assert.match(markup(cards()[0]!),/中文正文/,"options and background are shown inline");
+  assert.equal(planRow(p,"child","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+  assert.equal(JSON.parse(storage.get("board-inline-cards")!).q,true,"the unfolded state is remembered");
+  p.key("c"); await settle();
+  assert.ok(p.all().some(e=>e.id === "ed-q_q"),"c on the unfolded, selected card comments on that card");
+  const reloaded=await page(s,[],null,undefined,{storage}); await expand(reloaded);
+  assert.equal(reloaded.all().filter(e=>e.id === "q-q").length,1,"a reload keeps it unfolded");
+  await planRow(p,"child","q").querySelector(".cardtoggle")!.click(); await p.flush();
+  assert.equal(cards().length,0,"a second click folds it again");
+  // Another item's plan row for the card stays a link to the card's own item.
+  await expand(p,"area");
+  const link=planRow(p,"area","q").querySelector(".plan-link")!;
+  assert.equal(link.dataset.ref,"q:q"); assert.equal(planRow(p,"area","q").querySelector(".cardtoggle"),null);
+  // Following a link to the card opens its item and unfolds it inline under the plan row.
+  storage.delete("board-inline-cards");
+  const q=await page(s,[],null,undefined,{storage}); await expand(q,"area");
+  await planRow(q,"area","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await q.flush();
+  const shown=q.all().filter(e=>e.id === "q-q");
+  assert.equal(shown.length,1);
+  const target=planRow(q,"child","q"), host=target.parentElement!;
+  assert.equal(host.children[host.children.indexOf(target)+1],shown[0],"navigation unfolds the card under its row");
+});
+
+test("n visits an item, then the cards its plan unfolds, then its comments, then its other cards", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card(); s.decisions.loose={...card(),question:"Not in the plan"};
+  s.items.child!.plan=planWork([cardRow("q")]);
+  s.notes.n={target:"it:child",kind:"comment",text:"Owner comment",at,state:"sent",rev:1};
+  const p=await page(s,[...unread("decision","loose","1".repeat(40)),...unread("note","n","2".repeat(40)),...unread("decision","q","3".repeat(40)),...unread("item","child","4".repeat(40))]);
+  const visited: string[]=[];
+  for (let i=0;i<4;i++) {
+    p.key("n"); await p.flush();
+    const cur=p.all().find(e=>e.className.split(" ").includes("cur") && (e.id.startsWith("q-") || e.id.startsWith("note-") || e.id.startsWith("detail-it-")))!;
+    visited.push(cur.id);
+  }
+  assert.deepEqual(visited,["detail-it-child","q-q","note-n","q-loose"]);
+  assert.ok(planRow(p,"child","q").parentElement!.children.some(e=>e.id === "q-q"),"n unfolded the planned card under its row");
 });
