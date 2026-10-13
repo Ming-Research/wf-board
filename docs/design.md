@@ -237,7 +237,17 @@ log:
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
   touch both items; later notes on deleted cards retain their last known
-  item. No extra data file is stored. Content commits touching board metadata,
+  item. No extra board data file is stored. A disposable marker in git metadata
+  records the checked HEAD and first pause commit (or that none existed).
+  Unchanged history needs no pickaxe; fast-forwards scan only new commits.
+  Missing, corrupt or rewound cache state triggers one historical scan, so
+  clones and resumed items retain restart correctness. Historical pause reads
+  extract only project, record, pause and owned-target metadata rather than
+  validating against today's write schema. Unreadable blobs are logged and
+  skipped; unknown fields and malformed plan entries do not prevent startup.
+  Live pause indexing uses the same tolerant projection, since conversion
+  transactions include legacy before-documents and records with omitted plans.
+  Content commits touching board metadata,
   items, cards, notes, notices or glossaries count; commits containing only
   owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
@@ -499,9 +509,17 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. Converting work with its own pause marker to a record is refused
-until the owner or coordinator clears it, so a project agent cannot erase
-the owner's pause through a mode change.
+pause. Any non-coordinator write that changes an item from effectively paused
+to not paused is refused, naming its pause source and requiring the owner or
+`总管` to resume it. This includes moves out of a paused chain, removal of
+ownership rows, inherited-pause record conversion, completion and cancellation;
+unwritten descendants are checked too. Clearing an inactive explicit marker
+also requires that authority. Moving work into a paused chain is allowed.
+`总管` may perform these changes across projects through plan, ownership,
+record and status operations or a card ruling; project ownership and the
+other plan-validity rules still apply to ordinary project authors.
+Coordinator removal of an owned row may release paused work directly;
+ordinary removal of an open owned row still requires moving or cancelling it.
 
 #### Ownership, the tree, roots and top items
 
@@ -626,10 +644,13 @@ checks:
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 无人推进 (stalled, above) | no |
-| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of an owned or shared row held by open, not-paused work) | no |
+| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check.
+An owner linked only by its owned row does not raise 暂停冲突: its row
+already waits on the owner and may make the parent blocked. Shared needs
+still raise the check on the paused target.
 
 Removed: 上级条目不存在, 上级没有把它列在依赖里, 正文没写完成条件, and the
 three manual-status checks listed under Status.
@@ -903,6 +924,12 @@ done rows (including owned records) and `✗ M 项已放弃` for dropped steps
 and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
+
+The coordinator pause-administration exception under Status applies to
+`set_plan`, `update_item`, `move_item`, `set_status` and `rule_card`; it does
+not grant unrelated tools cross-project authority. In the table below,
+project ownership and the normal restriction on removing open owned rows
+have that exception for coordinator-directed changes to paused work.
 
 | Tool | Does | Checks |
 |---|---|---|

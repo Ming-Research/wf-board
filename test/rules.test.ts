@@ -196,7 +196,15 @@ test("closed rows win over explicit pause and paused child rows wait for the own
   assert.equal(r.statusOf("done"), "done"); assert.equal(r.statusOf("cancelled"), "cancelled");
   assert.equal(r.isPaused("done"), false); assert.equal(r.isPaused("cancelled"), false);
   assert.deepEqual(r.planRows("parent").map(row => [row.state, row.ready, row.glyph]), [["waiting", true, "◌"], ["open", false, "○"]]);
-  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 parent 在等它", target: { kind: "item", id: "parent" } }]);
+  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [], "ownership alone waits without a pause conflict");
+});
+
+test("a paused child conflicts with shared dependents but not its unpaused owner", () => {
+  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: {}, dependent: { priority: "P0", plan: workPlan([shared("child")]) } });
+  s.items.child!.paused = { reason: "Owner paused this part", at: T1 };
+  const r = rules(s);
+  assert.equal(r.statusOf("parent"), "blocked", "the owning row still waits for the owner's resumption");
+  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 dependent 在等它", target: { kind: "item", id: "dependent" } }], "the shared dependent retains its conflict even when the target is owned");
 });
 
 test("paused roots retain their priority and rootness but propagate none to owned or shared work", () => {

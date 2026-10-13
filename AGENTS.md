@@ -155,7 +155,9 @@ that priority. The queue record itself passes none.
 - Native Ubuntu, P-cores CPUs 0-15 as hyperthread pairs, fixed at 5.0 GHz
   with the performance governor. Timed jobs pin to P-cores with `taskset`
   and skip CPU 0 unless a run needs all eight physical P-cores, which the
-  result then states. Firn: server on 2,4, clients on 6-15.
+  result then states. Firn: servers on P-cores, load clients on all 16
+  E-cores (CPUs 16-31) for every competitor alike; a cell whose clients
+  average over 90% busy is marked client-limited (owner, 2026-10-12).
 - ssh (`ssh -i ~/.ssh/id_ed25519.whitefoot-vm -o IdentitiesOnly=yes
   mbbill@192.168.0.62`) only for host setup the owner asked for in chat;
   tell the owner before any reboot. Four data disks are block-read-only by
