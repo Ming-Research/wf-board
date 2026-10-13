@@ -1587,13 +1587,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         main.appendChild(el("span", "st " + st, STATUS[st] || st));
         main.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none"), pr || "P?"));
         const link = ref("item", stored.item, target?.title || stored.item); link.classList.add("item-title"); main.appendChild(link);
-        const meta = el("span", "plan-meta");
         if (stored.own && target) {
-          const childRatio = derived.planRatio(stored.item);
+          const meta = el("span", "plan-meta"), childRatio = derived.planRatio(stored.item);
           if (childRatio.total) meta.appendChild(el("span", "steps-ratio", childRatio.done + "/" + childRatio.total));
           if (target.provisional) meta.appendChild(el("span", "checktag", "待重写"));
+          if (childRatio.total || target.provisional) main.appendChild(meta);
         }
-        if (meta.childNodes.length) main.appendChild(meta);
         if (stored.own) {
           const activity = target ? nextActivity(stored.item) : [];
           if (activity.length) {
