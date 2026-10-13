@@ -734,6 +734,15 @@ test("unrelated collapsed baseline failure does not suppress target navigation",
   p.key("n"); await settle(); assert.equal(p.scrolls.length,1);
 });
 
+test("n reaches a child while a baseline for its ancestor's unread note is still pending", async () => {
+  const s=snapshot(), hold=deferred<unknown>();
+  s.notes.above={target:"it:area",kind:"comment",text:"New ancestor comment",at,state:"sent",rev:1};
+  const p=await page(s,[...unread("item","child"),...unread("note","above","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "above" ? hold.promise : endpoints(s,params,null),undefined,{geometry:geom,detailGeometry:geom});
+  p.key("n"); await settle();
+  assert.ok(detailItem(p,"child"),"the child is selected and shown without waiting for the ancestor note's baseline");
+  hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=above"),null)); await settle();
+});
+
 async function questionContract(tail:string, transform?:PageOptions["transform"]) {
   const s=snapshot(), before={...card(),question:"Common\n\nOld question"+tail}; s.decisions.q={...card(),question:"Common\n\nNew question"+tail};
   const p=await page(s,unread("decision","q"),before,undefined,{transform}); await expand(p);
@@ -1113,15 +1122,17 @@ test("scoped note changes refresh ask controls card reference counts and the nex
 
 test("card closure and a filtered item update preserve unrelated card identities", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q=card(); s.decisions.other={...card(),question:"Other"};
+  s.board.projects.push({name:"Elsewhere"}); s.items.far={...s.items.child!,title:"Far",parent:undefined,group:"Elsewhere"}; 
   const p=await page(s,[],null,undefined,{frames}); await expand(p);
   const other=p.all().find(e=>e.id === "q-other")!; assert.ok(other);
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...card(),status:"cancelled"}}]); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-other") === other,"closing a card preserves its peer");
   await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
-  const sameProject=p.all().find(e=>e.id === "q-other")!;
-  assert.ok(sameProject);
+  const sameProject=p.all().find(e=>e.id === "q-other")!, farRow=p.all().find(e=>e.id === "it-far")!;
+  assert.ok(sameProject && farRow);
   p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Filtered prose update"}}]); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-other") === sameProject,"filtered prose preserves same-project peer card");
+  assert.ok(p.all().find(e=>e.id === "it-far") === farRow,"a filter in one project cannot rebuild another project's tree row");
 });
 
 test("frame fallback works without requestAnimationFrame and smooth jump follows changes during its glide", async t => {
@@ -2021,7 +2032,7 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
     assert.ok(loose.className.includes("cur")); assert.ok(!p.roots.get("item-detail")!.contains(loose),"a loose card stays in the decisions section");
     assert.ok(p.scrollY>1000,"a loose card scrolls the list");
     assert.ok(p.roots.get("page-left")!.scrollTop>1000,"the list is the left pane");
-    assert.equal(p.windowScrollY,0,"the window never scrolls in wide mode");
+    assert.equal(p.windowScrollY,0,"the window never scrolls");
   });
 });
 
@@ -2431,6 +2442,22 @@ test("/ opens a search over every item and card by title, done and cancelled one
   p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
   p.key("Escape", input()); assert.equal(box(), null, "Esc closes it");
   p.key("/"); assert.ok(box()); p.press(1, 1, false); assert.equal(box(), null, "a press outside closes it");
+});
+
+test("a search jump remembers where the reader was, so Back returns, as after a reference click", async () => {
+  const p = await page(linked(), []); await expand(p);
+  const input = () => p.document.getElementById("search-input")!, rows = () => p.all().filter(e => classes(e).includes("searchrow"));
+  const type = async (text: string) => { input().value = text; await input().handlers.get("input")![0]!({}); };
+  assert.ok(detailItem(p, "child"));
+  p.key("/"); await type("alpha"); p.key("Enter", input()); await p.flush();
+  assert.ok(detailItem(p, "shipped"), "the search jumped away");
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "the 返回 button shows after a search jump");
+  p.key("Backspace"); await p.flush();
+  assert.ok(detailItem(p, "child"), "Back returns to the item the reader left");
+  p.key("/"); await type("alpha"); await rows()[0]!.click(); await p.flush();
+  assert.ok(detailItem(p, "shipped"));
+  p.key("Backspace"); await p.flush();
+  assert.ok(detailItem(p, "child"), "Back also returns from a clicked search row");
 });
 
 test("search: arrows and Enter jump to the item with its ancestors unfolded, even a cancelled one; a click jumps too", async () => {

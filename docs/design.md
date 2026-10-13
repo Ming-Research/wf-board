@@ -449,7 +449,8 @@ exists shows the target's current title as a link; a click selects that item
 in the detail column, and Back returns, as with a dependency link. A token
 whose target is gone shows its key struck through. Tokens inside code spans or
 fenced code stay as typed. When a target's title changes, or a target appears
-or goes, and any document refers to it, the page renders again.
+or goes, and any item, decision card, note or the board goal refers to it, the
+page renders again.
 
 `/` anywhere except while typing in a text field opens a search box over every
 item and decision card by title, matched as in the popup (ignoring case,

@@ -1072,6 +1072,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       get size() { return rows.length; },
     };
   }
+  // A reference click and a search pick both remember where the reader was, so Back returns.
+  function jumpTo(kind: Target["kind"], key: string) { remember(); goTo(kind, key); renderBack(); }
   function goTo(kind: Target["kind"], key: string) { if (kind === "item") { if (snapshot.items[key]) reveal(key); } else followCard(key); }
   // A reference in a comment, log or reply selects its target like a dependency link: Back returns to where the reader was.
   document.addEventListener("click", ev => {
@@ -1079,7 +1081,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!link || ev.defaultPrevented) return;
     ev.preventDefault(); ev.stopPropagation();
     const ref = link.getAttribute("data-ref") ?? "";
-    remember(); goTo(ref.startsWith("it:") ? "item" : "card", ref.slice(ref.indexOf(":") + 1)); renderBack();
+    jumpTo(ref.startsWith("it:") ? "item" : "card", ref.slice(ref.indexOf(":") + 1));
   }, true);
   // "/" searches every item and decision card by title; up and down choose a row, Enter or a click goes there, Esc closes.
   let searchBox: HTMLElement | null = null;
@@ -1091,7 +1093,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const input = document.createElement("input");
     input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题"; input.setAttribute("aria-label", "搜索条目和决策卡的标题");
     box.appendChild(input); box.appendChild(list);
-    const found = targetList(list, t => { closeSearch(); goTo(t.kind, t.key); }, "searchrow");
+    const found = targetList(list, t => { closeSearch(); jumpTo(t.kind, t.key); }, "searchrow");
     const update = () => {
       const rows = findTargets(allTargets(), input.value);
       found.show(rows);
@@ -1102,7 +1104,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSearch(); }
       else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); found.move(ev.key === "ArrowDown" ? 1 : -1); }
-      else if (ev.key === "Enter" && found.current) { ev.preventDefault(); const t = found.current; closeSearch(); goTo(t.kind, t.key); }
+      else if (ev.key === "Enter" && found.current) { ev.preventDefault(); const t = found.current; closeSearch(); jumpTo(t.kind, t.key); }
     });
     document.body.appendChild(box); searchBox = box;
     update(); input.focus();
@@ -2315,6 +2317,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return cached("citedRefs", () => {
       const out = new Set<string>();
       for (const docs of [snapshot.items, snapshot.decisions, snapshot.notes]) for (const doc of Object.values(docs)) refsIn(JSON.stringify(doc)).forEach(k => out.add(k));
+      refsIn(JSON.stringify(snapshot.board)).forEach(k => out.add(k)); // the goal and project names render through inline() too
       return out;
     });
   }
