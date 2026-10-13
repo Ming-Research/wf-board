@@ -2271,7 +2271,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (overlay.on && (!pick || pick({target,kind}))) { sendingDrafts.add(key); targets.add(target); }
     }
     selected.forEach(id => sentNotes.add(id));
-    const paint = () => renderNow(...[...targets].map(target => "notes:"+target));
+    const paint = () => { renderNow(...[...targets].map(target => "notes:"+target)); renderSend(); };
     paint();
     let succeeded=false;
     try {

@@ -74,6 +74,8 @@ interface Work { moved?: string[]; id: string; kind: Put["kind"] | "board"; mess
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
  * Both graphs matter when rows or card/note targets are removed or replaced.
+ * Sound only while every check matched by `required` in `run` reads just the
+ * inputs compared here; widen this when such a check reads another field.
  */
 function requiredCheckItems(before: Snapshot, after: Snapshot, work: Work, oldRules: ReturnType<typeof rules>, newRules: ReturnType<typeof rules>): Set<string> {
   if (work.board) return new Set(Object.keys(after.items));
