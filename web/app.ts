@@ -1504,7 +1504,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       });
       unreadRow.appendChild(all);
     }
-    if (unreadRow.children.length) unreadRow.insertBefore(el("span", "sum-k", "未读"), unreadRow.firstChild);
+    if (fresh && unreadRow.children.length > 1) {
+      const divider = el("span", "sum-divider"); divider.setAttribute("aria-hidden", "true");
+      unreadRow.insertBefore(divider, unreadRow.children[1]!);
+    }
 
     const fold = sbtn("s-plain", "全部折叠", "折叠所有条目和评论", () => {
       // Folding everything also folds every comment list, including ones that new replies had opened.

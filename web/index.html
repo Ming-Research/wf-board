@@ -102,6 +102,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 /* Four concerns: owner waits, unread notices, unread navigation and filters, then tools, legend and project links. */
 .summary, .header-wait { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.sum-divider { flex: none; width: 1px; height: 1em; background: var(--rule); }
 .sbtn { font: inherit; font-size: 13px; line-height: 1.5; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sbtn:focus-visible { border-radius: 999px; }
 .sbtn.s-wait { background: var(--ask); border-color: var(--ask); color: var(--surface); font-weight: 600; }
@@ -316,7 +317,6 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .note .anchor { font-size: 12px; color: var(--muted); }
 .item.line > .item-row .item-title { font-size: 14.5px; }
 .tree.lines { margin-top: 8px; }
-.sum-k { font-size: 12px; color: var(--muted); min-width: 2.6em; letter-spacing: .04em; }
 .pendtag { font-size: 12px; padding: 0 7px; border-radius: 4px; border: 1px solid var(--fresh); color: var(--fresh); white-space: nowrap; }
 .keymenu { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 12px; z-index: 40; }
 .keymenu-btn { font: inherit; font-size: 18px; line-height: 1; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }

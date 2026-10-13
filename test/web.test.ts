@@ -2585,13 +2585,14 @@ test("top controls: waits, notices, unread navigation and filters, then tools an
   const docs=[{kind:"item",id:"child",summary:"head changed, steps changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
-  const labels=rows.map(r=>r.children[0]?.className === "sum-k" ? r.children[0]!.innerHTML : "");
   assert.deepEqual(rows.map(r=>r.id),["wait-row","notices","unread-row","tools-row"]);
   assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","noticepanel","sum-row","sum-row"]);
-  assert.deepEqual(labels,["","","未读",""]);
+  assert.ok(!summaryText(p).some(e=>e.innerHTML === "未读"),"the unread row has no visible label");
   assert.deepEqual(rows[0]!.children[0]!.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"]);
   assert.equal(rows[0]!.children[1]!.id,"wait-panel");
-  assert.deepEqual(rows[2]!.children.map(e=>e.innerHTML),["未读","新 1 ›","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation immediately precedes its filters in one flex row");
+  assert.deepEqual(rows[2]!.children.map(e=>e.innerHTML),["新 1 ›","","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation and its filters share one flex row, separated by a decorative line");
+  assert.equal(rows[2]!.children[1]!.className,"sum-divider");
+  assert.equal(rows[2]!.children[1]!.getAttribute("aria-hidden"),"true");
   assert.deepEqual(rows[3]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
   assert.equal(rows[3]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
   const nav=p.roots.get("nav")!, links=[...nav.children];
@@ -2602,6 +2603,13 @@ test("top controls: waits, notices, unread navigation and filters, then tools an
   assert.equal(nav.parentElement!.id,"tools-row");
   assert.deepEqual(nav.children,links,"header-only notice changes retain the existing project links");
   assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"],"no empty notice row remains after the last notice is read");
+});
+test("top controls: a filter with no matching new content keeps its controls without a dangling divider", async () => {
+  const docs=[{kind:"item",id:"child",summary:"head changed",pieces:{progress:0,reply:0,other:1}}];
+  const p=await page(snapshot(),[{id:stepId,commits:[stepId],author:"A",at,docs}],null,undefined,{storage:new Map([["board-fresh-sel",'["progress"]']])});
+  const row=p.document.getElementById("unread-row")!;
+  assert.deepEqual(row.children.map(e=>e.innerHTML),["进展 0","其他 1","清除筛选","全部已阅"]);
+  assert.ok(!row.children.some(e=>e.className === "sum-divider"),"without 新 there is no separator");
 });
 test("tree chips are numbers: purple counts blocking waits, red counts non-blocking cards, own and below, hidden at zero", async () => {
   const s=waitSnapshot(); s.decisions.plain!.item="child"; s.decisions.old!.item="child"; delete s.decisions.newer;
