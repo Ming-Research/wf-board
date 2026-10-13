@@ -491,13 +491,13 @@ test("stalled checks count the union of board-active windows, with an inclusive 
 
 test("each own document change resets a stalled leaf, including historical card or note revisions", () => {
   const changes: Array<(s: Snapshot) => void> = [
-    s => { s.items.quiet!.updated = timeAt(2); },
-    s => { s.items.quiet!.log.push({ at: timeAt(2), text: "Progress" }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2), rev: 1 }); },
-    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2), state: "sent", rev: 1 }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2), state: "done", rev: 1 }); },
-    s => { s.activity!.items.quiet = timeAt(2); },
-    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2), rev: 1 }); },
+    s => { s.items.quiet!.updated = timeAt(2.5); },
+    s => { s.items.quiet!.log.push({ at: timeAt(2.5), text: "Progress" }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2.5), rev: 1 }); },
+    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2.5), state: "sent", rev: 1 }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2.5), state: "done", rev: 1 }); },
+    s => { s.activity!.items.quiet = timeAt(2.5); },
+    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2.5), rev: 1 }); },
   ];
   for (const change of changes) {
     const s = activeBoard(); assert.equal(hasStalled(s), true);
