@@ -378,7 +378,7 @@ test("detail: removed dependency and link are not shown while changed priority s
   assert.ok(!all.some(e => e.tagName === "A" && e.innerHTML === "Old link"),"a removed link is not rendered");
   assert.ok(!markup(item(p)).includes("Old ask") && !markup(item(p)).includes("chg-del"),"the former ask is not rendered");
   assert.ok(all.some(e => e.className.includes("prio") && e.className.includes("chg-add") && e.innerHTML === "P1"));
-  assert.ok(all.some(e => e.className.includes("sg ") && e.className.includes("chg-add") && e.innerHTML === "●"));
+  assert.ok(all.some(e => e.className.includes("st ") && e.className.includes("chg-add") && e.innerHTML === "WIP"));
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
 });
 
@@ -1968,7 +1968,7 @@ test("plans keep cancelled owned rows and missing targets while backlinks omit o
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
   assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
-  for (const cls of ["sg","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
+  for (const cls of ["st","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
   assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex-wrap:\s*nowrap/);
@@ -2597,7 +2597,7 @@ test("typing # in a comment lists the matching items and cards; Enter inserts th
   assert.deepEqual(titles(), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "every item, done and cancelled ones too, and the card, in board order");
   await type("见 #ALPHA");
   assert.deepEqual(titles(), ["已交付 Alpha"], "matching ignores case");
-  assert.match(options()[0]!.innerHTML, /^<span class="sg done" title="DONE">✓<\/span>.*<span class="where">Project<\/span>$/, "a row names the status and the project");
+  assert.match(options()[0]!.innerHTML, /^<span class="st done">DONE<\/span>.*<span class="where">Project<\/span>$/, "a row names the status and the project");
   const prevented = p.key("Enter", ta);
   assert.equal(prevented, true, "Enter chooses instead of saving");
   assert.equal(ta.value, "见 [[it:shipped]]"); assert.equal(pop(), undefined, "choosing closes the popup");
@@ -2687,9 +2687,9 @@ test("/ opens a search over every item and card by title, done and cancelled one
   assert.equal(p.document.activeElement, input(), "the search field has the focus");
   assert.deepEqual(rows().map(rowTitle), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "an empty query lists everything");
   await type("alpha"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha"], "a done item is found");
-  assert.equal(rows()[0]!.innerHTML, '<span class="sg done" title="DONE">✓</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
-  await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="sg cancelled" title="DROP">✗</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
-  await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="sg wip" title="WIP">●</span><span class="t">Child</span><span class="where">Project › Parent</span>');
+  assert.equal(rows()[0]!.innerHTML, '<span class="st done">DONE</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
+  await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="st cancelled">DROP</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
+  await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="st wip">WIP</span><span class="t">Child</span><span class="where">Project › Parent</span>');
   await type("显示"); assert.match(rows()[0]!.innerHTML, /^<span class="asktag">决策卡<\/span><span class="t">如何显示？<\/span><span class="where">Project › Child<\/span>$/, "a card shows its state and the item holding it");
   await type("没有这样的标题"); assert.equal(rows().length, 0); assert.ok(markup(box()!).includes("没有匹配"));
   p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
@@ -3184,11 +3184,8 @@ test("acceptance scenarios keep step glyphs and tags in a parallel group before 
   assert.deepEqual(plan.querySelectorAll(".plan-row.accept .tag").map(row=>row.innerHTML),["验收","验收","验收","验收"]);
   assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"2/5","each acceptance counts like a step and a dropped scenario is excluded");
   assert.equal(planRow(p,"child","merge").querySelector(".g")!.innerHTML,"○");
-  const statusGlyph=rowOf(p).querySelector(".item-head .sg");
-  assert.ok(statusGlyph,"the merged tree head shows status with a glyph");
-  assert.equal(statusGlyph.innerHTML,"●","unfinished scenarios and delivery do not become done early");
-  assert.ok(statusGlyph.classList.contains("wip"),"the glyph retains the derived status class");
-  assert.equal(statusGlyph.title,"WIP","the glyph names its status on hover");
+  const status=rowOf(p).querySelector(".item-head .st")!;
+  assert.equal(status.innerHTML,"WIP","unfinished scenarios and delivery do not become done early");
 });
 
 test("acceptance tags do not add a divider or extra spacing above ordinary plan rows", async () => {
