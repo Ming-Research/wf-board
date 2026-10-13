@@ -752,7 +752,8 @@ test("pause replay reads only native items from the first pause onward and never
   await internals.loadActivity();
   assert.deepEqual(store.snapshot().activity!.pauses, { root: [{ start: pausedAt, end: resumeAt }] });
   assert.deepEqual(reads, [{ path: "items/root.yaml", commit: pauseCommit.commit }, { path: "items/root.yaml", commit: resumeCommit.commit }]);
-  assert.equal(reads.some(read => read.commit === beforePause), false);
+  // deepEqual above narrows `reads` to never[]; widen it back for the check.
+  assert.equal((reads as Array<{ path: string; commit: string }>).some(read => read.commit === beforePause), false);
 });
 
 test("a failed pause resume cannot alter historical intervals or published state", async t => {
