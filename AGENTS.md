@@ -58,7 +58,8 @@ matches what the artifact board offered.
 
 - Use `set_targets` for each goal's target value, current value and comparison baseline, updating the current value after measuring.
 - Use `set_plan` for ordered steps, owned and shared items, decision cards
-  and the last acceptance step. Status comes from the plan; `set_status`
+  and at least one acceptance step where the check happens, usually before
+  merge or release rows. Status comes from the plan; `set_status`
   only cancels or reopens an item. `move_item` changes the item's owner.
 - Records have no acceptance step and pass no priority. Open work owned by
   a record stores no priority, but derives the highest priority from open

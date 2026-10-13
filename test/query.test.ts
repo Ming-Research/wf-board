@@ -391,7 +391,31 @@ test("context warns about non-adjacent same-level rows without sorting them", as
   ]});
   const s=store.snapshot(),c=q.context(s,rules(s),"a"); assert.ok("plan" in c);
   assert.deepEqual(c.plan.slice(0,3).map(line=>line.split(" ")[2]),["first","second","parallel"]);
-  assert.equal(c.planWarnings.length,1); assert.match(c.planWarnings[0]!,/non-adjacent/);
+  assert.deepEqual(c.planWarnings,[
+    "level 0: non-adjacent parallel rows are shown in stored order",
+    "level 1: non-adjacent parallel rows are shown in stored order",
+  ], "the ordinary acceptance row follows Stored third at level 1");
+});
+
+test("context and brief retain multiple acceptance rows before delivery with ordinary parallel marks", async t => {
+  const { store } = await board(t), s = structuredClone(store.snapshot());
+  delete s.items.a!.ask;
+  s.items.a!.plan = [
+    { id: "compile", text: "Compile result", state: "done", doneAt: "2026-10-13T00:00:00Z" },
+    { id: "accept", text: "Check scenario one", state: "doing", since: "2026-10-13T00:00:00Z", accept: true, after: ["compile"] },
+    { id: "scenario", text: "Check scenario two", state: "todo", accept: true, after: ["compile"] },
+    { id: "merge", text: "Merge accepted work", state: "todo", after: ["accept", "scenario"] },
+  ];
+  const r = rules(s), context = q.context(s, r, "a");
+  assert.ok("plan" in context);
+  assert.deepEqual(context.plan.map(line => line.match(/^L\d (?:‖ )?[✓●○] \S+/)?.[0]), [
+    "L0 ✓ compile", "L1 ‖ ● accept", "L1 ‖ ○ scenario", "L2 ○ merge",
+  ]);
+  assert.equal(context.plan.filter(line => line.includes("[验收]")).length, 2);
+  const current = q.brief(s, r, author).wip.find(row => row.id === "a");
+  assert.ok(current);
+  assert.deepEqual(current.plan, ["✓ 1 项已完成", ...context.plan.slice(1)]);
+  assert.match(current.plan!.at(-1)!, /merge Merge accepted work/);
 });
 
 test("brief progress retains records and blocked work without repeating queues or adding closed/todo backlog", async t => {

@@ -39,8 +39,7 @@ export const PlanStepInput = z.object({
   reason: StepText.optional(),
   after: z.array(Key).optional(),
   accept: z.literal(true).optional(),
-}).strict().refine(step => step.state !== "dropped" || !!step.reason, { message: "A dropped step needs a reason", path: ["reason"] })
-  .refine(step => !step.accept || (step.after === undefined && step.waits === undefined), "An acceptance step takes neither after nor waits");
+}).strict().refine(step => step.state !== "dropped" || !!step.reason, { message: "A dropped step needs a reason", path: ["reason"] });
 export type PlanStepInput = z.infer<typeof PlanStepInput>;
 export const PlanStep = PlanStepInput.safeExtend({
   doneAt: Time.optional(),
@@ -67,16 +66,15 @@ export type PlanRow = z.infer<typeof PlanRow>;
 export function planRowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
 function validPlan(rows: readonly PlanRowInput[]): boolean {
   const earlier = new Set<string>();
-  for (const [i, row] of rows.entries()) {
+  for (const row of rows) {
     const id = planRowId(row);
     if (earlier.has(id) || row.after?.some(target => !earlier.has(target))) return false;
-    if ("accept" in row && row.accept && i !== rows.length - 1) return false;
     earlier.add(id);
   }
   return true;
 }
-export const PlanInput = z.array(PlanRowInput).refine(validPlan, "Plan ids must be unique, after must name earlier rows, and acceptance must be last");
-export const ItemPlan = z.array(PlanRow).refine(validPlan, "Plan ids must be unique, after must name earlier rows, and acceptance must be last");
+export const PlanInput = z.array(PlanRowInput).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
+export const ItemPlan = z.array(PlanRow).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
 
 /** One goal's latest numbers; measurement dates belong to the server. */
 export const ItemTargetInput = z.object({
@@ -131,7 +129,10 @@ export const Item = z.object({
   updated: Time,
   rev: z.number().int().positive(),
 }).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
-  .refine(it => it.plan.filter(row => "accept" in row && row.accept).length === (it.record ? 0 : 1), "A work item needs one last acceptance step; a record takes none");
+  .refine(it => {
+    const count = it.plan.filter(row => "accept" in row && row.accept).length;
+    return it.record ? count === 0 : count >= 1;
+  }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none");
 export type Item = z.infer<typeof Item>;
 
 export const Option = z.object({

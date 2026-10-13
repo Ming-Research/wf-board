@@ -25,7 +25,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     const preceding = new Map<string,OracleRowState>(), result:Array<{id:string;state:OracleRowState;ready:boolean}>=[];
     for(const row of snapshot.items[id]?.plan??[]){
       const state=rowState(row,trail);
-      const needs="text"in row&&row.accept?result.map(value=>value.id):row.after??result.slice(-1).map(value=>value.id);
+      const needs=row.after??result.slice(-1).map(value=>value.id);
       result.push({id:row.id,state,ready:state!=="resolved"&&needs.every(key=>preceding.get(key)==="resolved")});
       preceding.set(row.id,state);
     }

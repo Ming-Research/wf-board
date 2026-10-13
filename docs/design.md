@@ -35,8 +35,8 @@ notes).
    changed while they were away.
 3. Writes are hard to get wrong: the server stamps times, checks the board's
    rules (every row's target exists, every item is owned by at most
-   one plan row and never across projects, a plan ends with its acceptance
-   step, a cancelled item says why), and refuses a stale
+   one plan row and never across projects, a work plan has at least one
+   acceptance step, a cancelled item says why), and refuses a stale
    overwrite. Today these rules are prose in AGENTS.md that agents must
    remember, and the page only flags violations after the fact.
 4. Every change is kept with who made it and when, and nothing is lost.
@@ -176,8 +176,8 @@ log:
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
 - **Item plan.** Every item carries one ordered `plan`, its 计划和进展: its own
-  steps, the items it owns, the items and cards of others it waits for, and
-  last its acceptance step. The plan replaces the former `steps`, `deps` and
+  steps, the items it owns, the items and cards of others it waits for,
+  acceptance steps where the checks happen, and delivery rows after them. The plan replaces the former `steps`, `deps` and
   `parent` fields and the head's completion-condition section; the section
   [Item plans](#item-plans) below defines it.
 - **Item target numbers.** Optional ordered `targets` give one row per goal,
@@ -385,7 +385,7 @@ is one of four kinds:
 | owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
 | shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
 | card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
-| acceptance | `id`, `accept: true`, `text`, `state`, `reason?`, server dates | The last row: the number or check that decides completion. It is a step with the acceptance marker |
+| acceptance | `id`, `accept: true`, `text`, `state`, `reason?`, server dates | A number or check that decides completion, placed where that check happens. It is an ordinary step with the acceptance marker |
 
 - **Ids.** A step's or acceptance step's `id` is caller-chosen and follows the
   step-id pattern (letters, digits, `.`, `_`, `-`, at most 40). An item or card
@@ -402,15 +402,17 @@ is one of four kinds:
 - **After.** `after` lists ids of earlier rows that must be resolved before
   this row can proceed. Absent means after the previous row (the first row:
   after nothing); `after: []` means it can start at once. Only earlier rows
-  may be named, so the order relation cannot form a cycle. The acceptance step
-  takes no `after`: it always comes after every other row. Removing a row that
+  may be named, so the order relation cannot form a cycle. Acceptance uses
+  these same rules, including the previous-row default. Removing a row that
   a later row names in `after` is refused, naming the later rows.
-- **Acceptance.** A work item's plan ends with exactly one acceptance step.
-  The schema refuses a second one, an acceptance step that is not last, and an
-  acceptance step on a record. Its text is the former head section
-  完成条件: a check that decides completion, with numbers that agree with the
-  target numbers shown above the plan. Setting it `done` is refused while any
-  other row is unresolved, naming them.
+- **Acceptance.** A work item's plan has at least one acceptance step; several
+  are allowed, for example one per acceptance scenario. A record has none.
+  Place each where the check happens, normally before merge or release rows.
+  Its text is a completion check, with numbers agreeing with the target
+  numbers above the plan. Its `after`, `waits`, state and dates follow ordinary
+  step rules. Step state writes do not enforce readiness; acceptance has no
+  additional completion guard. An item is done only when every row, including
+  every acceptance and delivery row, is resolved.
 - **Dates.** The server stamps step and acceptance dates exactly as it stamped
   step dates: `doneAt`, `since` and `droppedAt` on entry into a state,
   preserved while the state stays, re-stamped on re-entry; callers never
@@ -435,8 +437,8 @@ what this item waits for, and the plan's own project must remove or replace
 the row. It shows the check 依赖的条目已取消 and keeps the item from completing.
 
 A row is ready when it is unresolved and every row it comes after is
-resolved; the acceptance step is ready when every other row is resolved. The
-ready rows are the plan's frontier.
+resolved, for ordinary and acceptance steps alike. The ready rows are the
+plan's frontier.
 
 #### Status
 
@@ -445,7 +447,7 @@ A work item's status is derived from its plan; only cancellation is stored.
 1. `cancelled` when the item stores `status: cancelled` (set by `set_status`
    with the reason). Cancelling is refused while an owned row's target is
    open, naming those items: each part gets its own reason first.
-2. `done` when every row is resolved, the acceptance step included.
+2. `done` when every row is resolved, every acceptance and delivery row included.
 3. `wip` when any row is in progress: a doing step, or an owned item in
    progress. A doing step with `waits` (CI, a run on the 14900K, something not
    on the board) is still in progress.
@@ -455,7 +457,7 @@ A work item's status is derived from its plan; only cancellation is stored.
 5. `todo` otherwise: some frontier row is a step or an owned item that can be
    started.
 
-So a parent is done only when its own steps and its acceptance step are done,
+So a parent is done only when its own steps, acceptance steps and delivery rows are resolved,
 not merely when its children are (owner decision 6), and an item is blocked
 exactly when everything that could move next waits on another item, another
 project or the owner. The previous rule called a parent blocked as soon as one
@@ -465,10 +467,10 @@ parents change this way in the board of 2026-10-13, reported by the
 conversion). The checks that existed only because status was set by hand go
 away: 卡住了，但没写在等什么, 可解除阻塞：等的都已完成 and 标为进行中，但还在等别的.
 
-Every work item has a plan of at least its acceptance step, so no work item
+Every work item has a plan with at least one acceptance step, so no work item
 has a stored `todo`, `wip`, `blocked` or `done` any more. An item with an
 empty plan (none exists after conversion; the schema allows it only on a
-record) shows the check 没有计划：至少要有验收步骤.
+record) shows the check 没有计划：至少要有一个验收步骤.
 
 #### Ownership, the tree, roots and top items
 
@@ -542,8 +544,8 @@ and card rows, and no acceptance step; it has no status, appears in no status
 queue, is never waiting or blocking for anyone, and passes no priority. It may
 own work items (the backlog, the 14900K queue's run items). A record can be
 owned, and an owned record row is always resolved and left out of the owner's
-counts. Setting `record: true` on a work item removes its acceptance step,
-logging the step's text; setting `record: false` requires `accept` text for
+counts. Setting `record: true` on a work item removes all its acceptance steps,
+logging every step's text; setting `record: false` requires `accept` text for
 the new acceptance step. A real change of mode in either direction appends a
 server-stamped log line saying the item became a record or a work item; a
 call that leaves the mode unchanged logs nothing. Records receive no
@@ -579,13 +581,12 @@ checks:
 | 被多个条目拥有 | yes |
 | 跨项目拥有 | yes |
 | 同项目有条目在等它，却没有条目拥有它 | yes |
-| 没有计划：至少要有验收步骤 | yes |
+| 没有计划：至少要有一个验收步骤 | yes |
 | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
 | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
 | 依赖的条目已取消 (shared row to a cancelled item) | no |
-| 验收已标完成，但还有行没完成 (an owned item reopened after acceptance) | no |
 | 拥有它的条目已关闭 | no |
-| 只差验收：其它行都已完成 (every row resolved except an acceptance step still todo or doing; the item stays open until a session checks and marks it) | no |
+| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 无人推进 (stalled, above) | no |
 
@@ -694,9 +695,9 @@ follow the existing tokens with no new colours:
   project name first, all on the row's second line.
 - **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
   show today) and the question, linking to the card.
-- **Acceptance row.** Always last, separated by a thin rule, labelled 验收 in
-  a small tag, full text (it may wrap), with the same glyphs as a step
-  (○ ● ✓); the tag and the rule set it apart, not a glyph of its own.
+- **Acceptance row.** Placed where its check happens, labelled 验收 in a
+  small tag, full text (it may wrap), with the same glyphs as a step
+  (○ ● ✓ ✗). It has no extra separator or spacing; the tag identifies it.
 - **Parallel groups.** Each row's level is 0 when it comes after nothing and
   otherwise one more than the highest level among the rows it comes after
   (default: the previous row). Walking the rows in stored order, a maximal run
@@ -704,19 +705,19 @@ follow the existing tokens with no new colours:
   a thin vertical bracket in the gutter and the label 可同时进行 above it. Rows
   in one level never depend on one another, so a group is always truly
   parallel; rows of one level that are not adjacent show separately, and
-  `context` warns about them (see open questions). The acceptance row is never
-  in a group.
+  `context` warns about them (see open questions). Acceptance rows join
+  parallel groups by the same level rule as other steps.
 - **Completed rows remain visible.** Every plan row is shown in stored order,
   including done and dropped rows; there is no resolved-row fold or saved
   fold choice. The ratio beside the heading is `done/total` over all rows
   except dropped steps, cancelled owned items and owned records, the
-  acceptance step included.
+  acceptance and delivery rows included.
 
 A mock-up at the detail column's minimum width (380 pixels), for an item in
 progress with completed and dropped parts:
 
 ```
- 计划和进展                                                   1/7
+ 计划和进展                                                   1/8
  ✓ 解析器能读配置 · 10-06
  ✗ 旧解析方案 · 已由新解析器替代
  ┌ 可同时进行
@@ -726,9 +727,9 @@ progress with completed and dropped parts:
  ⏸ [P0] Whitefoot 能读出对端地址
      Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」
  ○ 发布说明
- ─────────────────────────────────────────────────────────
  ○ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
          CI 上连跑 3 次全部通过
+ ○ 合并到主线并发布
  ─────────────────────────────────────────────────────────
  [评论这个条目]  评论 2 条，1 条有回复 ▸
 ```
@@ -738,7 +739,7 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
 
 ```html
 <section class="plan" aria-label="计划和进展">
-  <div class="log-head">计划和进展 <span class="steps-ratio">1/7</span></div>
+  <div class="log-head">计划和进展 <span class="steps-ratio">1/8</span></div>
   <div class="plan-row done"><span class="g">✓</span>解析器能读配置 · 10-06</div>
   <div class="plan-row dropped"><span class="g">✗</span>旧解析方案 · 已由新解析器替代</div>
   <div class="plan-group" role="group" aria-label="可同时进行">
@@ -754,6 +755,7 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
   <div class="plan-row todo"><span class="g">○</span>发布说明</div>
   <div class="plan-row accept todo"><span class="g">○</span><span class="tag">验收</span>
     四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，CI 上连跑 3 次全部通过</div>
+  <div class="plan-row todo"><span class="g">○</span>合并到主线并发布</div>
 </section>
 <style>
 .plan-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; padding: 2px 0; overflow-wrap: anywhere; }
@@ -764,7 +766,6 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
 .plan-sub { grid-column: 2; font-size: 12.5px; color: var(--muted); }
 .plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
-.plan-row.accept { border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 6px; }
 </style>
 ```
 
@@ -868,13 +869,13 @@ results, and `context` warns when rows of one level are not adjacent.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument |
-| `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the acceptance step), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; one acceptance step, last, done only when every other row is resolved; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument |
+| `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes the acceptance step and logs its text; `record: false` requires `accept` |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
+| `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
@@ -1547,7 +1548,8 @@ every old parent link is exactly one owned row and every owned row was a
 parent link; every old dependency is exactly one row of the same target or a
 reported duplicate, with all whys in the one log entry; ordinary steps keep
 exact ids, text, states, dates and sequence; heads lose only the acceptance
-section; all work has a final acceptance row and every nonempty converted
+section; every converted work plan has its one generated acceptance row last, and
+all nonempty converted
 plan is provisional. It independently derives status and priority from the
 converted plans and compares them with the current rules' output, checks
 that every difference appears in the report, and verifies every item, card,
@@ -1629,7 +1631,7 @@ pointers, not findings, and phase 2 settles each in passing:
 | same-project shared | every shared row within one project (166); the rewrite decides whether each target is a part of the plan, and then owns it, or a shared need |
 | record | the 3 records, which keep plans without acceptance steps |
 
-Every work item has an acceptance step from phase 1 on, so 没有计划：至少要有
+Every work item has an acceptance step from phase 1 on, so 没有计划：至少要有一个
 验收步骤 is empty from the first day and stays a refused write.
 
 ### Owner-wide rules to change
@@ -1651,18 +1653,19 @@ it.
    each changes." → "Each item has a plan and progress (计划和进展), a head and
    a progress log. The plan lists in order everything the item needs to be
    done: its own steps, the items it owns (its parts, drawn under it), the
-   items and decision cards of others it waits for, and last an acceptance
-   step stating the number or check that decides completion. A step is one
+   items and decision cards of others it waits for, acceptance steps placed
+   where the checks happen, each stating a number or check that decides
+   completion, and delivery rows such as merge or release. A step is one
    line naming what it delivers, marked done with its date, in progress with
    since when and what it waits on, not started, or dropped with the reason,
    and carrying its key number when it has one. A row may name the earlier
    rows it comes after; rows that need nothing from one another show as able
-   to proceed in parallel. Every item has a plan, at least its acceptance
-   step; keep it current as each row changes."
+   to proceed in parallel. Every work item has a plan with at least one
+   acceptance step; keep it current as each row changes."
 3. Progress: "The board computes a parent item's status from its sub-items,
    so set status only on items without sub-items and put a parent's own work
    in a sub-item." → "The board computes every item's status from its plan:
-   done when every row is done or dropped, the acceptance step included; in
+   done when every row is done or dropped, every acceptance and delivery row included; in
    progress when a step or an owned item is in progress; blocked when
    everything that could proceed next waits on another item, an open card or
    the owner; otherwise not started. Never set a status except to cancel an
@@ -1709,16 +1712,18 @@ it.
    "such as an acceptance step still to be written".
 9. Writing an item: "Reading the head alone, that reader can answer four
    questions: what happened, why it matters, what will be done, and how we
-   will know it is done." → "Reading the head and the acceptance step, that
+   will know it is done." → "Reading the head and the acceptance steps, that
    reader can answer four questions: …". "The head then has these sections,
    in this order; on the board they carry the Chinese headings the board's
    items use, and the board checks for the completion-condition heading:" →
    "The head then has these sections, in this order, under the Chinese
    headings the board's items use:". The bullet "**Completion condition**: a
    result that can be checked, such as a test that passes or a number
-   reached." moves out of the head: "**Acceptance step**, the last row of the
+   reached." moves out of the head: "**Acceptance step**, a row of the
    plan rather than a head section: a result that can be checked, such as a
-   test that passes or a number reached; it agrees with the target numbers."
+   test that passes or a number reached; it agrees with the target numbers.
+   A work item has at least one and may have one per acceptance scenario;
+   place each where its check happens, before the rows delivering the work."
    "The title, the approach and the completion condition describe the same
    thing" → "The title, the approach and the acceptance step describe the
    same thing". "A completion condition states a number or a check that

@@ -59,6 +59,8 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     if(headings.length===1&&!ambiguous&&!source.record){const start=headings[0]!;let end=lines.length;fenced=false;for(let i=start+1;i<lines.length;i++){const line=lines[i]!;if(/^\s*(```|~~~)/.test(line)){fenced=!fenced;continue;}if(!fenced&&(/^#{1,6}[ \t]+/.test(line)||/^\*\*[^*]+\*\*/.test(line)&&!lines[i-1]!.trim())){end=i;break;}}
       const inline=lines[start]!.startsWith("#")?"":lines[start]!.replace(/^\*\*[^*]+\*\*[：:]?[ \t]*/,"");const body=[inline,...lines.slice(start+1,end)].join("\n").trim();if(body){expectedText=body;expectedHead=[...lines.slice(0,start),...lines.slice(end)].join("\n");}}
     check(target.head===expectedHead,`${id}: head changed beyond acceptance section`);
+    // Phase one generates exactly one acceptance at the end. Live plans may
+    // move it or add scenarios; this verifies conversion output, not writes.
     const accepts=target.plan.filter(row=>"text"in row&&row.accept);
     check(accepts.length===(source.record?0:1),`${id}: acceptance count`);
     const acceptance=accepts[0];if(acceptance&&"text"in acceptance){const st=before.statusOf(id);const placeholder=st==="done"||st==="cancelled"?"（转换前已结束，当时没写完成条件）":"（转换时没找到完成条件，待补）";check(acceptance.text===(expectedText??placeholder),`${id}: acceptance text changed`);check(target.plan.at(-1)===acceptance,`${id}: acceptance not last`);check(acceptance.doneAt===(st==="done"?source.updated:undefined)&&acceptance.droppedAt===undefined&&acceptance.reason===undefined,`${id}: acceptance dates/reason changed`);check(acceptance.state===(st==="done"?"done":"todo"),`${id}: acceptance state changed`);}

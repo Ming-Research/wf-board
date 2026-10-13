@@ -239,8 +239,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
     const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
     for (const row of item(id)?.plan ?? []) {
-      const accept = "text" in row && row.accept;
-      const preceding = accept ? out : row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
+      const preceding = row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
       const derived = rowState(row, seen);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
@@ -259,9 +258,8 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     const rows = planRows(id), groups: Array<{ start: number; end: number; level: number }> = [];
     for (let start = 0; start < rows.length;) {
       const first = rows[start]!;
-      if ("text" in first.row && first.row.accept) { start++; continue; }
       let end = start + 1;
-      while (end < rows.length && rows[end]!.level === first.level && !("text" in rows[end]!.row && (rows[end]!.row as PlanStep).accept)) end++;
+      while (end < rows.length && rows[end]!.level === first.level) end++;
       if (end - start >= 2) groups.push({ start, end, level: first.level });
       start = end;
     }
@@ -429,13 +427,12 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
-      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有验收步骤" });
+      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
       if (!it.record) {
-        const accept = rows.find(({ row }) => "text" in row && row.accept), others = rows.filter(row => row !== accept);
-        if (accept && "text" in accept.row && accept.row.text === "（转换时没找到完成条件，待补）") out.push({ text: "验收步骤待补" });
-        if (accept && "text" in accept.row && accept.row.state === "done" && others.some(row => row.state !== "resolved")) out.push({ text: "验收已标完成，但还有行没完成" });
-        if (accept && "text" in accept.row && (accept.row.state === "todo" || accept.row.state === "doing") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
+        const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
+        if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
+        if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });

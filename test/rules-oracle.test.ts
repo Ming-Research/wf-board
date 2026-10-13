@@ -3,6 +3,7 @@ import test from "node:test";
 import { Item, Decision } from "../src/model.ts";
 import type { PlanRow, Snapshot, Status } from "../src/model.ts";
 import { rules } from "../src/rules.ts";
+import { derivePlanOracle } from "../src/plan-conversion-oracle.ts";
 
 const at = "2026-10-13T00:00:00Z";
 const acceptance = (state: "todo" | "done" = "todo"): PlanRow => ({ id: "accept", accept: true, text: "The independent check passes", state, ...(state === "done" ? { doneAt: at } : {}) });
@@ -46,7 +47,7 @@ test("independent row-state table covers normal, cancelled, record and missing t
   }
 });
 
-test("independent frontier examples distinguish sequential waits, parallel work and final acceptance", () => {
+test("independent frontier examples distinguish sequential waits, parallel work and acceptance", () => {
   const wait: PlanRow = { id: "target", item: "target", own: false, after: [] };
   const step: PlanRow = { id: "work", text: "Work", state: "todo" };
   const cases: Array<[PlanRow[], Status, boolean[]]> = [
@@ -57,4 +58,26 @@ test("independent frontier examples distinguish sequential waits, parallel work 
     [[{ ...step, state: "done", doneAt: at }, acceptance("done")], "done", [false, false]],
   ];
   for (const [plan, status, ready] of cases) { const r = rules(fixture(plan)); assert.equal(r.statusOf("subject"), status); assert.deepEqual(r.planRows("subject").map(row => row.ready), ready); }
+});
+
+test("production and independent oracle use ordinary acceptance prerequisites before delivery", () => {
+  const s = fixture([acceptance()]);
+  const wait: PlanRow = { id: "target", item: "target", own: false, after: [] };
+  const checked: PlanRow = { id: "checked", text: "Checked work", state: "done", doneAt: at, after: [] };
+  for (const after of [undefined, ["checked"], []]) {
+    // Raw assignment separates frontier semantics from schema acceptance.
+    s.items.subject!.plan = [wait, checked, { ...acceptance(), ...(after === undefined ? {} : { after }) }, { id: "merge", text: "Deliver work", state: "todo" }];
+    const expected = [true, false, true, false];
+    assert.deepEqual(rules(s).planRows("subject").map(row => row.ready), expected);
+    assert.deepEqual(derivePlanOracle(s).rows("subject").map(row => row.ready), expected);
+  }
+  s.items.subject!.plan = [checked, acceptance("done"), { id: "scenario", text: "Second acceptance scenario", accept: true, state: "todo" }, { id: "merge", text: "Deliver work", state: "todo" }];
+  assert.equal(rules(s).statusOf("subject"), "todo");
+  assert.equal(derivePlanOracle(s).statusOf("subject"), "todo");
+  s.items.subject!.plan[2] = { id: "scenario", text: "Second acceptance scenario", accept: true, state: "done", doneAt: at };
+  assert.equal(rules(s).statusOf("subject"), "todo");
+  assert.equal(derivePlanOracle(s).statusOf("subject"), "todo");
+  s.items.subject!.plan[3] = { id: "merge", text: "Deliver work", state: "done", doneAt: at };
+  assert.equal(rules(s).statusOf("subject"), "done");
+  assert.equal(derivePlanOracle(s).statusOf("subject"), "done");
 });
