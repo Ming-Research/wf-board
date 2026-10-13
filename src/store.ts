@@ -30,6 +30,24 @@ const collections = { item: "items", decision: "decisions", note: "notes", notic
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, notice: Key, glossary: GlossaryId };
 const run = promisify(execFile);
 
+// History grows for the lifetime of the daemon. Retain recent parsed documents,
+// but fewer much larger whole boards; normalization is needed at format
+// boundaries, not for every old commit.
+const historicalDocumentLimit = 4096;
+const comparedSnapshotLimit = 4;
+
+function cachedPromise<T>(cache: Map<string, Promise<T>>, key: string, limit: number, load: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const pending = load();
+  cache.set(key, pending);
+  // FIFO includes pending reads, so concurrent history requests cannot bypass
+  // the bound. An evicted read may finish, but cannot remove a newer retry.
+  while (cache.size > limit) cache.delete(cache.keys().next().value!);
+  void pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });
+  return pending;
+}
+
 export class ConflictError extends Error {
   readonly kind: DocKind;
   readonly id: string;
@@ -654,18 +672,12 @@ export class Store {
   private readonly historicalDocuments = new Map<string, Promise<unknown | null>>();
   private async readAt(path: string, commit: string): Promise<unknown | null> {
     const key = `${commit}:${path}`;
-    let hit = this.historicalDocuments.get(key);
-    if (!hit) {
-      hit = (async () => {
-        const blob = await this.blobs.read(key);
-        if (blob === null) return null;
-        try { return frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })); }
-        catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
-      })();
-      this.historicalDocuments.set(key, hit);
-      hit.catch(() => this.historicalDocuments.delete(key));
-    }
-    return hit;
+    return cachedPromise(this.historicalDocuments, key, historicalDocumentLimit, async () => {
+      const blob = await this.blobs.read(key);
+      if (blob === null) return null;
+      try { return frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })); }
+      catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
+    });
   }
 
   async show(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
@@ -689,27 +701,21 @@ export class Store {
   /** Normalized comparison only; show() and diff() retain raw historical evidence. */
   async comparisonSnapshot(commit: string): Promise<Snapshot> {
     const hash = await this.resolveCommit(commit);
-    let hit = this.compared.get(hash);
-    if (!hit) {
-      hit = (async () => {
-        const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
-        const raw: Record<string, unknown> = {};
-        for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
-        const loaded = parsePlanData(raw, hash);
-        if (!loaded.legacy) {
-          const source = loaded.snapshot as Snapshot;
-          const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
-          return {...source,owner:validated(OwnerState,owner,"state/owner.yaml")};
-        }
-        const migrationReport = await this.readAt("import/plan-conversion.yaml", this.state.head) as { at?: unknown; planConversionAt?:unknown } | null;
-        const timestamp=migrationReport?.planConversionAt??migrationReport?.at;
-        const at = typeof timestamp === "string" ? Legacy.Time.parse(timestamp) : this.comparisonAt;
-        return convertPlans(loaded.snapshot as Legacy.Snapshot, { at }).snapshot;
-      })();
-      this.compared.set(hash, hit);
-      hit.catch(() => this.compared.delete(hash));
-    }
-    return hit;
+    return cachedPromise(this.compared, hash, comparedSnapshotLimit, async () => {
+      const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
+      const raw: Record<string, unknown> = {};
+      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
+      const loaded = parsePlanData(raw, hash);
+      if (!loaded.legacy) {
+        const source = loaded.snapshot as Snapshot;
+        const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
+        return {...source,owner:validated(OwnerState,owner,"state/owner.yaml")};
+      }
+      const migrationReport = await this.readAt("import/plan-conversion.yaml", this.state.head) as { at?: unknown; planConversionAt?:unknown } | null;
+      const timestamp=migrationReport?.planConversionAt??migrationReport?.at;
+      const at = typeof timestamp === "string" ? Legacy.Time.parse(timestamp) : this.comparisonAt;
+      return convertPlans(loaded.snapshot as Legacy.Snapshot, { at }).snapshot;
+    });
   }
   async showCompared(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
     docPath(kind, id);

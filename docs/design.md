@@ -1404,7 +1404,14 @@ in one commit authored by `总管`, and refuses to start if the data has
 changed since the approved dry run (the dry run records the data commit it
 read). Unread history compares legacy commits directly and converts only
 endpoints spanning the schema change, caching historical documents and
-yielding between commits. Normalized page baselines use the same converter;
+yielding between commits. A legacy status, parent or dependency edit counts
+as an `other` change on the edited item, rather than normalized plan progress
+on its owner, preserving what the owner saw before plans.
+Parsed historical documents are cached up to 4096 entries and normalized
+whole-board snapshots up to 4 entries, evicting the oldest insertions so
+walking old history does not retain every parsed version indefinitely;
+whole-board snapshots have a smaller bound because each holds the full board.
+Normalized page baselines use the same converter;
 the conversion itself marks nothing new and is not a history step.
 `npm run convert:plans -- --data <copy> --dry-run --report <file>` writes the
 report outside the data directory and leaves the copy untouched. The report

@@ -364,7 +364,7 @@ test("context and brief show plan levels, parallel marks, acceptance and resolve
 });
 
 test("brief counts owned records as completed and cancelled owned items as dropped", async t => {
-  const { store } = await board(t), s = store.snapshot();
+  const { store } = await board(t), s = structuredClone(store.snapshot());
   s.items.queue = { ...s.items.other!, group: author, record: true, plan: [
     { id: "finished", text: "Finished work", state: "done", after: [] },
     { id: "abandoned", text: "Abandoned work", state: "dropped", reason: "Superseded", after: [] },

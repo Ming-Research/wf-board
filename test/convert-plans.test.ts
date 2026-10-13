@@ -57,11 +57,19 @@ test("manual wip does not promote old steps or fabricate new work",()=>{
 
 test("record-owned work receives shared open priority, but no priority from its record owner",()=>{
  const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"backlog"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.closed=item({parent:"root",group:undefined,status:"done",priority:"P2"});source.items.waiter=item({group:"Q",priority:"P0",steps:[{id:"prepare",text:"Prepare",state:"todo"}],deps:[{id:"work",why:"result"}]});
+ assert.equal(legacyRules(source).priorityOf("work"),"P0","the open legacy waiter already raises its dependency");
  const result=checked(source),r=rules(result.snapshot);assert.equal(r.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(r.isRoot("work"),false);assert.equal(r.priorityOf("closed"),"P2");
- const change=result.report.priorityChanges.find(change=>change.item==="work");assert.ok(change);assert.equal(change.cause,"shared plan dependents");assert.match(change.detail,/共用.*waiter.*P0/);assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
- const wronglySuppressed=structuredClone(result);wronglySuppressed.report.priorityChanges.find(change=>change.item==="work")!.new="";assert.ok(verifyPlans(source,wronglySuppressed).some(error=>error.includes("difference report")));
+ assert.ok(!result.report.priorityChanges.some(change=>change.item==="work"),"unchanged P0 must not be reported as a priority change");assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
  source.items.waiter=item({group:"Q",priority:"P0",status:"cancelled",deps:[{id:"work",why:"Result no longer needed"}]});
  const idle=checked(source);assert.equal(rules(idle.snapshot).priorityOf("work"),"");assert.equal(rules(idle.snapshot).isRoot("work"),false);assert.ok(idle.report.priorityChanges.some(change=>change.item==="work"&&change.cause==="moved into backlog"));
+});
+
+test("verifier checks record-owned priority when an unfinished legacy done waiter becomes open",()=>{
+ const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"Queue entry"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.waiter=item({group:"Q",priority:"P0",status:"done",steps:[{id:"prepare",text:"Unfinished preparation",state:"todo"}],deps:[{id:"work",why:"Result"}]});
+ const before=legacyRules(source);assert.equal(before.statusOf("waiter"),"done");assert.equal(before.priorityOf("work"),"P1","the legacy closed waiter passes no priority; its record owner passes P1");
+ const result=checked(source),after=rules(result.snapshot);assert.equal(after.statusOf("waiter"),"todo");assert.equal(after.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(after.isRoot("work"),false);
+ const change=result.report.priorityChanges.find(change=>change.item==="work");assert.ok(change);assert.equal(change.old,"P1");assert.equal(change.new,"P0");assert.equal(change.cause,"shared plan dependents");assert.match(change.detail,/共用.*waiter.*P0/);
+ const wronglySuppressed=structuredClone(result);wronglySuppressed.report.priorityChanges.find(change=>change.item==="work")!.new="";assert.ok(verifyPlans(source,wronglySuppressed).some(error=>error.includes("priority difference report")),"the independent oracle rejects suppressed shared priority on record-owned work");
 });
 
 test("conversion retains a root's stored seed when its old displayed priority was empty",()=>{
