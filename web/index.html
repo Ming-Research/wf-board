@@ -157,7 +157,6 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-main { grid-column: 2; min-width: 0; }
 .plan-meta { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-left: 8px; }
 .plan-text p { display: inline; }
-.plan-sub { grid-column: 2; font-size: 12.5px; color: var(--muted); }
 .plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
 .plan-row .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
@@ -175,8 +174,6 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-link:hover { color: var(--accent); text-decoration: underline; }
 .plan-row.done .plan-link, .plan-row.dropped .plan-link { color: var(--muted); }
 .plan-row.dropped .plan-link { text-decoration: line-through; }
-.plan-sub .plan-link { color: inherit; }
-.plan-row.item-line > .plan-sub { margin: 1px 0 0 2px; padding-left: 8px; border-left: 1px solid var(--rule); }
 .item-owner { color: var(--muted); font-size: 12.5px; }
 .item-comments { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .item-comments > .notes { padding-left: 0; flex: 1 1 100%; }
@@ -259,6 +256,12 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .st.done { color: var(--done); font-weight: 600; }
 .st.todo { color: var(--todo); font-weight: 600; }
 .st.cancelled { color: var(--muted); font-weight: 600; }
+.sg { display: inline-block; width: 1.2em; text-align: center; font-size: 13px; line-height: 1.6; }
+.sg.done { color: var(--done); }
+.sg.wip { color: var(--wip); }
+.sg.blocked { color: var(--block); }
+.sg.todo { color: var(--todo); }
+.sg.cancelled { color: var(--muted); }
 .st.blocked { color: var(--block); font-weight: 700; }
 .blocktag { font-size: 12px; font-weight: 600; background: var(--bar-block); color: #fff; padding: 0 6px; border-radius: 4px; }
 .prio { font-family: var(--font-mono); font-size: 12px; font-weight: 700; padding: 0 6px; border-radius: 4px; line-height: 1.7; color: #fff; }

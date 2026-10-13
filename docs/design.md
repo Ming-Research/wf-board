@@ -690,9 +690,7 @@ follow the existing tokens with no new colours:
   priority chip, its title as a link (click selects it, Back returns) and its
   own ratio `2/5`, on one line; there is no status chip and no second line.
 - **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
-  link, and the marker 「共用 · 归属在 <owner title>」 (or 「共用 · <project>
-  顶层」 for a top item) in muted text; a target in another project shows the
-  project name first, all on the row's second line.
+  link, on one line; there is no owner or project line under it.
 - **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
   show today) and the question, linking to the card.
 - **Acceptance row.** Placed where its check happens, labelled 验收 in a
@@ -725,7 +723,6 @@ progress with completed and dropped parts:
  │● [P0] Halo 的协程能挂起 2/5
  └○ 改写文档
  ⏸ [P0] Whitefoot 能读出对端地址
-     Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」
  ○ 发布说明
  ○ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
          CI 上连跑 3 次全部通过
@@ -750,8 +747,7 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
     <div class="plan-row todo"><span class="g">○</span>改写文档</div>
   </div>
   <div class="plan-row blocked shared"><span class="g">⏸</span><span class="prio p0">P0</span>
-    <a>Whitefoot 能读出对端地址</a>
-    <div class="plan-sub">Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」</div></div>
+    <a>Whitefoot 能读出对端地址</a></div>
   <div class="plan-row todo"><span class="g">○</span>发布说明</div>
   <div class="plan-row accept todo"><span class="g">○</span><span class="tag">验收</span>
     四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，CI 上连跑 3 次全部通过</div>
@@ -763,7 +759,6 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
 .plan-row.done > .g { color: var(--done); } .plan-row.wip > .g { color: var(--wip); }
 .plan-row.blocked > .g { color: var(--block); } .plan-row.todo > .g { color: var(--todo); }
 .plan-row.dropped { color: var(--muted); text-decoration: line-through; }
-.plan-sub { grid-column: 2; font-size: 12.5px; color: var(--muted); }
 .plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
 </style>
@@ -915,7 +910,9 @@ Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-Each tree row stays on one line: caret, status, priority, title, chips
+Each tree row stays on one line: caret, status glyph (✓ ● ○ ⏸ ✗ as on plan
+rows, with the status name as its tooltip; a record keeps its 记录 tag),
+priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work
 items counts, at the right of its row, its owned descendants that own no work

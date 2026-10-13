@@ -378,7 +378,7 @@ test("detail: removed dependency and link are not shown while changed priority s
   assert.ok(!all.some(e => e.tagName === "A" && e.innerHTML === "Old link"),"a removed link is not rendered");
   assert.ok(!markup(item(p)).includes("Old ask") && !markup(item(p)).includes("chg-del"),"the former ask is not rendered");
   assert.ok(all.some(e => e.className.includes("prio") && e.className.includes("chg-add") && e.innerHTML === "P1"));
-  assert.ok(all.some(e => e.className.includes("st ") && e.className.includes("chg-add") && e.innerHTML === "WIP"));
+  assert.ok(all.some(e => e.className.includes("sg ") && e.className.includes("chg-add") && e.innerHTML === "●"));
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
 });
 
@@ -620,13 +620,16 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after m, n continues below the read stop instead of starting over");
 });
 
-test("shared plan rows show their owner and cross-project origin", async () => {
+test("shared plan rows are one line: no owner or origin line under them", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other project"});
   s.items.sib={...s.items.child!,title:"Sibling",plan:planWork([planStep("work")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("sib")]);
   s.items.far={...s.items.child!,title:"Far area",group:"Other project",plan:planWork([planStep("work")])}; s.items.child!.plan=planWork([sharedRow("sib"),sharedRow("far")]);
   const p=await page(s,[]); await expand(p);
-  assert.match(markup(planRow(p,"child","sib").querySelector(".plan-sub")!),/共用 · 归属在「[^]*Parent/);
-  assert.match(markup(planRow(p,"child","far").querySelector(".plan-sub")!),/共用 · Other project 顶层/);
+  for (const id of ["sib","far"]) {
+    assert.equal(planRow(p,"child",id).querySelector(".plan-sub"),null,id+" has no second line");
+    assert.doesNotMatch(markup(planRow(p,"child",id)),/共用/);
+  }
+  assert.match(markup(planRow(p,"child","far")),/Far area/);
 });
 test("a project lists its own roots first, then a rule and the roots other projects depend on", async () => {
   const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
@@ -1964,7 +1967,7 @@ test("plans keep cancelled owned rows and missing targets while backlinks omit o
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
   assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
-  for (const cls of ["st","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
+  for (const cls of ["sg","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
   assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex-wrap:\s*nowrap/);
@@ -2593,7 +2596,7 @@ test("typing # in a comment lists the matching items and cards; Enter inserts th
   assert.deepEqual(titles(), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "every item, done and cancelled ones too, and the card, in board order");
   await type("见 #ALPHA");
   assert.deepEqual(titles(), ["已交付 Alpha"], "matching ignores case");
-  assert.match(options()[0]!.innerHTML, /^<span class="st done">DONE<\/span>.*<span class="where">Project<\/span>$/, "a row names the status and the project");
+  assert.match(options()[0]!.innerHTML, /^<span class="sg done" title="DONE">✓<\/span>.*<span class="where">Project<\/span>$/, "a row names the status and the project");
   const prevented = p.key("Enter", ta);
   assert.equal(prevented, true, "Enter chooses instead of saving");
   assert.equal(ta.value, "见 [[it:shipped]]"); assert.equal(pop(), undefined, "choosing closes the popup");
@@ -2683,9 +2686,9 @@ test("/ opens a search over every item and card by title, done and cancelled one
   assert.equal(p.document.activeElement, input(), "the search field has the focus");
   assert.deepEqual(rows().map(rowTitle), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "an empty query lists everything");
   await type("alpha"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha"], "a done item is found");
-  assert.equal(rows()[0]!.innerHTML, '<span class="st done">DONE</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
-  await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="st cancelled">DROP</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
-  await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="st wip">WIP</span><span class="t">Child</span><span class="where">Project › Parent</span>');
+  assert.equal(rows()[0]!.innerHTML, '<span class="sg done" title="DONE">✓</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
+  await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="sg cancelled" title="DROP">✗</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
+  await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="sg wip" title="WIP">●</span><span class="t">Child</span><span class="where">Project › Parent</span>');
   await type("显示"); assert.match(rows()[0]!.innerHTML, /^<span class="asktag">决策卡<\/span><span class="t">如何显示？<\/span><span class="where">Project › Child<\/span>$/, "a card shows its state and the item holding it");
   await type("没有这样的标题"); assert.equal(rows().length, 0); assert.ok(markup(box()!).includes("没有匹配"));
   p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
@@ -3149,7 +3152,6 @@ test("the native plan mockup shows glyphs, parallel groups, glyph-only item stat
   const owned=planRow(p,"area","child");
   assert.equal(owned.querySelector(".plan-sub"),null,"an owned item row has no activity line under it");
   assert.equal(owned.querySelector(".st"),null,"the row glyph carries the item's status, so no status chip");
-  assert.match(markup(planRow(p,"area","dependency").querySelector(".plan-sub")!),/Other · 共用 · 归属在「[^]*Other owner/);
   assert.equal(planRow(p,"area","q").querySelector(".plan-link")!.dataset.ref,"q:q");
   // The 待重写 tag on an owned row is the target's own: a provisional parent does not mark a rewritten child.
   assert.ok(!planRow(p,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
@@ -3191,7 +3193,7 @@ test("acceptance tags do not add a divider or extra spacing above ordinary plan 
   assert.match(html,/\.plan-row \.tag\s*\{[^}]*border:\s*1px solid var\(--rule\)/,"the 验收 tag remains visually distinct");
 });
 
-test("plan rows refresh when shared ownership or card blocking text changes", async () => {
+test("plan rows refresh when a shared target's title or card blocking text changes", async () => {
   const s=nativeSnapshot();
   s.board.projects.push({name:"Other"});
   s.items.host={...s.items.area!,group:"Other",title:"First owner",plan:planWork([ownedRow("dependency")])};
@@ -3200,16 +3202,11 @@ test("plan rows refresh when shared ownership or card blocking text changes", as
   s.decisions.q={...card(),question:"Direct card",item:"area"};
   s.items.area!.plan=planWork([ownedRow("child"),sharedRow("dependency"),cardRow("q")]);
   const p=await page(s,[]); await expand(p,"area");
-  assert.match(markup(planRow(p,"area","dependency")),/First owner/);
+  assert.match(markup(planRow(p,"area","dependency")),/Shared result/);
   assert.match(markup(planRow(p,"area","q")),/决策卡/);
-  await p.change("b".repeat(40),[
-    {kind:"item",id:"host",after:{...s.items.host!,plan:planWork([])}},
-    {kind:"item",id:"otherHost",after:{...s.items.otherHost!,plan:planWork([ownedRow("dependency")])}},
-  ]); await p.flush();
-  assert.match(markup(planRow(p,"area","dependency")),/Second owner/);
-  assert.doesNotMatch(markup(planRow(p,"area","dependency")),/First owner/);
-  await p.change("c".repeat(40),[{kind:"item",id:"otherHost",after:{...s.items.otherHost!,title:"Renamed owner",plan:planWork([ownedRow("dependency")])}}]); await p.flush();
-  assert.match(markup(planRow(p,"area","dependency")),/Renamed owner/);
+  await p.change("b".repeat(40),[{kind:"item",id:"dependency",after:{...s.items.dependency!,title:"Renamed result"}}]); await p.flush();
+  assert.match(markup(planRow(p,"area","dependency")),/Renamed result/);
+  assert.doesNotMatch(markup(planRow(p,"area","dependency")),/Shared result/);
   await p.change("f".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,blocks:"Release waits"}}]); await p.flush();
   assert.match(markup(planRow(p,"area","q")),/阻塞/);
   assert.match(markup(planRow(p,"area","q")),/<span class="waittag" title="Release waits">阻塞<\/span>/,"the exact blocking tag and its tooltip update together");
@@ -3336,11 +3333,12 @@ test("m is the mark-read key and the retired r key makes no write", async () => 
   assert.ok(markup(menu).includes("<kbd>m</kbd>")); assert.ok(!markup(menu).includes("<kbd>r</kbd>"));
 });
 
-test("project headings omit the retired cross-dependency summary while shared plan rows retain the project", async () => {
+test("project headings omit the retired cross-dependency summary and shared plan rows show only the target", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other"});
   s.items.far={...s.items.child!,group:"Other",title:"External result",plan:planWork([])};
   s.items.child!.plan=planWork([sharedRow("far")]);
   const p=await page(s,[]); await expand(p);
   assert.equal(p.all().filter(e=>e.classList.contains("xdeps")).length,0,"neither project heading displays the removed cross-dependency summary");
-  assert.match(markup(planRow(p,"child","far")),/Other[^]*External result|External result[^]*Other/,"the individual shared row still names its project's result");
+  assert.match(markup(planRow(p,"child","far")),/External result/,"the shared row names its target");
+  assert.doesNotMatch(markup(planRow(p,"child","far")),/Other/,"the owner asked for no project or owner line under a shared row");
 });
