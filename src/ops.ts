@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { Key, Item, Decision, Note, Board, Glossary, GlossaryId, Term } from "./model.ts";
+import { randomInt } from "node:crypto";
+import { Key, Item, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
 import type { Dep, Link, Option, Priority, Snapshot, Status } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -22,7 +23,8 @@ export interface Ops {
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; parent?: string; parentWhy?: string; parentOwnWork?: { key: string; title: string }; priority?: Priority } & Source): Promise<Result>;
   clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
-  writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string } }): Promise<Result>;
+  writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
+  postNotice(a: { author: string; text: string; item?: string }): Promise<Result>;
   ruleCard(a: { author: string; key: string; choice?: string; ruling: string }): Promise<Result>;
   replyNote(a: { author: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
   setTerm(a: { author: string; term: string; definition: string }): Promise<Result>;
@@ -141,6 +143,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         for (const put of work.puts) {
           if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
           else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
+          else if (put.kind === "notice") next.notices[put.id] = parse(Notice, put.doc);
           else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
           else next.notes[put.id] = parse(Note, put.doc);
         }
@@ -423,12 +426,22 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         await revision("decision", a.key, a.rev, previous);
         if (previous.status !== "open") throw new OpError("status: only an open card can be revised; create a new card");
       } else newKey(s, a.key);
-      const { author: _author, key: _key, rev: _rev, ...fields } = a;
-      const doc = parse(Decision, { ...previous, ...fields, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 });
+      const { author: _author, key: _key, rev: _rev, blocks, ...fields } = a;
+      // blocks: text sets it, null clears it, omitted keeps the revised card's.
+      const merged: Record<string, unknown> = { ...previous, ...fields, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 };
+      if (blocks === null) delete merged.blocks; else if (blocks !== undefined) merged.blocks = blocks;
+      const doc = parse(Decision, merged);
       if (doc.options.filter(o => o.recommended).length > 1) throw new OpError("options.recommended: recommend at most one option");
       if (new Set(doc.options.map(o => o.key)).size !== doc.options.length) throw new OpError("options.key: give each option a unique key");
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }] };
     }, a.rev !== undefined),
+    postNotice: a => run(a, (s, at) => {
+      if (a.item !== undefined) requireItem(s, a.item, "item");
+      let id: string;
+      do { id = Array.from({ length: 20 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(s.notices, id));
+      const doc = parse(Notice, { text: a.text, ...(a.item !== undefined ? { item: a.item } : {}), author: a.author, at, rev: 1 });
+      return { id, kind: "notice", message: `post_notice ${id}`, puts: [{ kind: "notice", id, doc, expectRev: null }] };
+    }),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
       ownedItem(s, card.item, a.author);

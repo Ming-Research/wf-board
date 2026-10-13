@@ -2,7 +2,7 @@ import { rules } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Notice, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -12,8 +12,9 @@ interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDeci
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP" };
+  const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: { archived: {} }, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: { archived: {} }, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
@@ -198,7 +199,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
   function waitsQ(d: ViewDecision) { return derived.cardWaiting(d.id); }
-  function needsOwner(it: ViewItem) { return derived.needsOwner(it.id); }
   const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it));
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
@@ -332,12 +332,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   const byOrder = (a: {order?:number}, b: {order?:number}) => (a.order || 0) - (b.order || 0);
   // For each item, how many waiting and new stops lie below it; recomputed once per render.
-  let below: {wait: Record<string,number>;fresh: Record<string,number>} = {wait:{},fresh:{}};
+  let below: {fresh: Record<string,number>} = {fresh:{}};
   function countBelow() {
     const byId = new Map(state.items.map(i => [i.id, i]));
     const tally = <T extends {item: string | null}>(list: T[], into: Record<string,number>, weight: (x: T) => number) => list.forEach(x => { const it = x.item && byId.get(x.item); if (it) ancestors(it).forEach(a => { into[a.id] = (into[a.id] || 0) + weight(x); }); });
-    below = { wait: {}, fresh: {} };
-    tally(stops(), below.wait, () => 1);
+    below = { fresh: {} };
     const freshItems = [...new Set(freshStops().map(st => st.item && snapshot.items[st.item] ? st.item : null).filter((id): id is string => !!id))];
     tally(freshItems.map(item => ({item})), below.fresh, () => 1);
   }
@@ -360,8 +359,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const out: Array<{id:string;item:string|null}> = [];
     boardOrder().forEach(i => { if (askPending(i)) out.push({ id: "ask-" + i.id, item: i.id }); cardsUnder(i).filter(waitsQ).forEach(d => out.push({ id: "q-" + d.id, item: i.id })); });
     state.decisions.filter(d => waitsQ(d) && !homeOf(d)).sort(byOrder).forEach(d => out.push({ id: "q-" + d.id, item: null }));
-    return out;
+    // Blocking waits come first, so 阻塞 and the arrow keys walk them before the decision cards that block nothing.
+    return [...out.filter(blockingStop), ...out.filter(st => !blockingStop(st))];
   }
+  // An ask always blocks; a card blocks when it names the work it stops (its blocks).
+  function blockingStop(st: {id:string}) { return st.id.startsWith("ask-") || derived.cardBlocking(st.id.slice(2)); }
   // Unread steps stay in commit order, independent of tree and filter order.
   // Which kinds of new things the 新 walk and counts include, picked like the project filters: replies to the owner's
   // notes (reply), new log entries (log) and every other change (other); none picked means all of them.
@@ -796,7 +798,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const list = el("div", "keymenu-list");
       list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>" +
         "蓝色数字是本条及子树有新内容的条目数。" +
-        "红色数字是下面等你处理的处数。" +
+        "紫色数字是本条及下面阻塞工作、等你处理的处数，红色数字是不挡工作的决策卡张数。" +
         "右侧状态色数字是子树未归档叶条目按状态分类的数量。"));
       ACTIONS.forEach(a => {
         const r = el("button", "keymenu-row", '<kbd>' + esc(a.show || a.key) + "</kbd><span>" + esc(a.label) + "</span>");
@@ -1015,7 +1017,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // its question as the title and, under it, why the depending item needs it, like an item row.
   function cardTag(id: string, d: Decision | undefined) {
     return !d ? '<span class="st cancelled">已删除</span>'
-      : derived.cardWaiting(id) ? '<span class="asktag">等你决定</span>'
+      : derived.cardBlocking(id) ? '<span class="waittag" title="' + esc(d.blocks) + '">阻塞</span>'
+      : derived.cardWaiting(id) ? '<span class="asktag">决策卡</span>'
       : d.status === "open" ? '<span class="st todo">未定</span>'
       : '<span class="st done">' + (d.ruling ? "已裁定" : "已结束") + "</span>";
   }
@@ -1398,12 +1401,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
     const sum = get("summary");
     sum.innerHTML = "";
-    // The controls sit in rows by kind: what waits for the owner and what is new, how the tree is folded, the
-    // dependency filters; each row is labelled, and the dependency row shows only when a filter has matches.
-    const acts = el("div", "sum-row"), view = el("div", "sum-row"), stats = el("div", "sum-stats");
+    // Three rows, then the quiet status counts beside the view buttons. Row 1: what needs the owner (阻塞, 决策卡, 新,
+    // 评论回复), with the 等你 panel and the 要你知道 list under it. Row 2 (未读): the other kinds of new things, the
+    // filter reset and 全部已阅. Row 3: fold buttons and the status legend.
+    const acts = el("div", "sum-row"), unreadRow = el("div", "sum-row"), view = el("div", "sum-row"), stats = el("div", "sum-stats");
     const sbtn = (cls: string, text: string, title: string, onClick: () => void) => { const b = el("button", "sbtn " + cls, text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", onClick); return b; };
-    const waiting = stops().length;
-    if (waiting) acts.appendChild(sbtn("s-wait", "等你处理 " + waiting + " ›", "从第一条开始", () => goStop(0)));
+    const blocking = stops().filter(blockingStop).length, plainCards = stops().length - blocking;
+    if (blocking) acts.appendChild(sbtn("s-block", "阻塞 " + blocking + " ›", "工作停着等你，从第一条开始", () => goStop(0)));
+    if (plainCards) acts.appendChild(sbtn("s-wait", "决策卡 " + plainCards + " ›", "不挡工作的决策卡，从第一张开始", () => goStop(blocking)));
     // Counts are items, as the chips count them; n visits each new place inside them.
     const fresh = countOf(freshStops());
     if (fresh) acts.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
@@ -1411,9 +1416,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const everyFresh = allFreshStops();
     FRESH_KINDS.forEach(([kind, label, title]) => {
       const n = countOf(everyFresh.filter(st => st.kinds.includes(kind))), on = freshSel.includes(kind);
-      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); acts.appendChild(b); }
+      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); (kind === "reply" ? acts : unreadRow).appendChild(b); }
     });
-    if (freshSel.length) acts.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
+    if (freshSel.length) unreadRow.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
     if (steps.length && connected) {
       // 全部已阅 asks once before it marks everything read, so a stray click costs nothing.
       const all = sbtn("s-read", "全部已阅", "把全部未读变化都标为已阅（包括筛选隐藏的变化）", () => {
@@ -1429,9 +1434,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         all.replaceWith(ask);
         no.focus();
       });
-      acts.appendChild(all);
+      unreadRow.appendChild(all);
     }
-    view.appendChild(el("span", "sum-k", "视图"));
+    if (unreadRow.children.length) unreadRow.insertBefore(el("span", "sum-k", "未读"), unreadRow.firstChild);
 
     const fold = sbtn("s-plain", "全部折叠", "折叠所有条目和评论", () => {
       // Folding everything also folds every comment list, including ones that new replies had opened.
@@ -1449,16 +1454,61 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       tops().forEach(t => { manual[t.id] = true; });
       saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
-    acts.insertBefore(el("span", "sum-k", "待看"), acts.firstChild);
 
     const n: Record<string,number> = { wip: 0, blocked: 0, todo: 0, done: 0, cancelled: 0 };
     state.items.forEach(i => { const st = statusOf(i); if (n[st] != null) n[st]++; });
     ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
       .filter(([k]) => (k !== "cancelled" && k !== "blocked") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
-    sum.appendChild(acts);
+    view.appendChild(stats);
+    if (acts.children.length) sum.appendChild(acts);
+    const panel = waitPanel(); if (panel) sum.appendChild(panel);
+    const known = noticePanel(); if (known) sum.appendChild(known);
+    if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
-    sum.appendChild(stats);
+  }
+  // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
+  function waitPanel() {
+    const rows = stops().filter(blockingStop).map(st => {
+      const card = st.id.startsWith("q-") ? snapshot.decisions[st.id.slice(2)] : undefined, it = st.item ? snapshot.items[st.item] : undefined;
+      const rank = st.item ? PRIORITY_RANK[derived.priorityOf(st.item)] ?? 3 : 3;
+      const since = card ? card.at ?? card.updated : it?.updated ?? "";
+      return { st, card, it, rank, since, text: card ? card.blocks || "" : it?.ask?.text || "", project: st.item ? groupOf(index().byId.get(st.item)!) : "", summary: card ? plain(firstLine(card.question)) : plain(it?.title) };
+    }).sort((a, b) => a.rank - b.rank || a.since.localeCompare(b.since) || a.st.id.localeCompare(b.st.id));
+    if (!rows.length) return null;
+    const box = el("div", "waitpanel"); box.id = "wait-panel";
+    rows.forEach(r => {
+      const short = r.summary.length > 40 ? r.summary.slice(0, 40) + "…" : r.summary;
+      const b = el("button", "waitrow", '<span class="waitdot"></span><span class="where">' + esc(r.project || "其他") + '</span><span class="t">' + inline(r.text) + '</span><span class="where">' + esc(short) + "</span>");
+      b.type = "button";
+      b.addEventListener("click", () => { if (r.card) jumpTo("card", r.st.id.slice(2)); else if (r.st.item) jumpTo("item", r.st.item); });
+      box.appendChild(b);
+    });
+    const plainCards = stops().filter(st => !blockingStop(st)).length;
+    if (plainCards) box.appendChild(el("div", "waitmore", "另有 " + plainCards + " 张决策卡不挡工作"));
+    return box;
+  }
+  // Unread notices, newest first; marking one read hides it, and the section is gone when none is left.
+  function noticePanel() {
+    const list = Object.entries(snapshot.notices ?? {}).filter(([, n]) => !n.read).sort((a, b) => b[1].at.localeCompare(a[1].at) || a[0].localeCompare(b[0]));
+    if (!list.length) return null;
+    const box = el("div", "noticepanel"); box.id = "notices";
+    box.appendChild(el("div", "notice-head", "要你知道 " + list.length));
+    list.forEach(([id, n]) => {
+      const row = el("div", "notice"), text = el("span", "notice-text", inline(n.text));
+      row.appendChild(el("span", "where", esc(day(n.at)) + " · " + esc(n.author)));
+      row.appendChild(text);
+      if (n.item && snapshot.items[n.item]) { const go = el("button", "sbtn s-plain notice-item", "条目"); go.type = "button"; go.title = plain(snapshot.items[n.item]!.title); go.addEventListener("click", () => jumpTo("item", n.item!)); row.appendChild(go); }
+      const read = el("button", "sbtn s-plain notice-read", "已读"); read.type = "button";
+      read.addEventListener("click", async () => {
+        if (!connected) { showDisconnected(); return; }
+        read.disabled = true;
+        try { await api("/api/notice-read", { id }); } catch (e) { read.disabled = false; showError(e); }
+      });
+      row.appendChild(read);
+      box.appendChild(row);
+    });
+    return box;
   }
 
   // The progress log: newest at the bottom; new entries and the two before them show, earlier ones fold.
@@ -1533,7 +1583,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (askPending(it)) {
         const a = el("div", "ask" + (before && !sameValue(before.ask,it.ask) ? " chg-add" : ""));
         a.id = "ask-" + it.id;
-        a.appendChild(el("span", null, '<span class="asktag">等你处理</span> ' + inline(it.ask?.text)));
+        a.appendChild(el("span", null, '<span class="waittag">阻塞</span> ' + inline(it.ask?.text)));
         if (/^https:\/\//.test(it.ask?.url || "")) { const go = el("a", "okbtn golink", "去处理 ↗"); go.href = it.ask!.url!; go.target = "_blank"; go.rel = "noopener"; a.appendChild(go); if (connected) a.appendChild(answerButton("done", "it:" + it.id, it.title, it.ask!.text)); }
         else if (it.ask?.chat) a.appendChild(el("span", "chatnote", "请在对话窗口里确认"));
         else if (connected) a.appendChild(answerButton("approve", "it:" + it.id, it.title, it.ask!.text));
@@ -1574,24 +1624,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
-    if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
     if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
     if (pc) head.appendChild(pc);
-    // A parent also counts what waits or is new below it, so a folded section shows where to look.
-    if (sub.length) {
-      const waitingBelow = below.wait[it.id] || 0;
-      if (waitingBelow) {
-        const wait=el("span", "asktag", String(waitingBelow));
-        wait.title="下面 " + waitingBelow + " 处等你处理"; wait.setAttribute("aria-label",wait.title); head.appendChild(wait);
-        // Like the blue number, the red one leads to the first place below that waits for the owner.
-        const first=stops().findIndex(st => !!st.item && (st.item === it.id || derived.ancestors(st.item).includes(it.id)));
-        if (first >= 0) {
-          wait.setAttribute("role","button"); wait.tabIndex=0;
-          const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goStop(first); };
-          wait.addEventListener("click",go); wait.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
-        }
+    // Numbers count the waits in the item and below it: purple blocks work, red blocks none. Each leads to its first place.
+    for (const [cls, count, label, wanted] of [["waittag", derived.blockingBelow(it.id), "处阻塞工作", true], ["asktag", derived.nonBlockingBelow(it.id), "张决策卡不挡工作", false]] as const) {
+      if (!count) continue;
+      const chip = el("span", cls, String(count));
+      chip.title = count + " " + label; chip.setAttribute("aria-label", chip.title); head.appendChild(chip);
+      const first = stops().findIndex(st => !!st.item && (st.item === it.id || derived.ancestors(st.item).includes(it.id)) && blockingStop(st) === wanted);
+      if (first >= 0) {
+        chip.setAttribute("role","button"); chip.tabIndex=0;
+        const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goStop(first); };
+        chip.addEventListener("click",go); chip.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
       }
     }
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
@@ -1768,7 +1814,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const top = el("div", "card-top");
     const h = el("h3");
     const closed = d.status !== "open";
-    if (waitsQ(d)) h.appendChild(el("span", "asktag", "等你决定"));
+    if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
+    else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
     if (closed) h.appendChild(el("span", "closedtag" + (before && before.status !== d.status ? " chg-add" : ""), d.ruling ? "已裁定" : "已结束"));
     if (proseBlocks(d.question).length > 1) {
       h.appendChild(el("span", "rich" + (before === null ? " chg-add" : ""),linkTerms(markedBlocks(before?.question,d.question),terms)));
@@ -2371,7 +2418,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const change = JSON.parse((event as MessageEvent).data) as {commit: string; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
       const relocated:string[]=[], retitled:string[]=[];
-      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
+      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},notices:{...snapshot.notices},glossaries:{...snapshot.glossaries}};
       rulePresentationDirty=true;
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
@@ -2401,10 +2448,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           scope.add("card:"+doc.id);
 
-        } else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
+        } else if (doc.kind === "notice") scope.add("header");
+        else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
         else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
+        else if (doc.kind === "notice") { if (doc.after === null) delete snapshot.notices[doc.id]; else snapshot.notices[doc.id] = doc.after as Notice; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });

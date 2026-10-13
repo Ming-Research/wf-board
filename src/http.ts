@@ -2,7 +2,7 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Item, Note } from "./model.ts";
+import type { Decision, Item, Note } from "./model.ts";
 import { rules } from "./rules.ts";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -102,6 +102,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, result); return;
       }
       if (path === "/api/archive") { ownerOps.archive(args(await body(req))); json(res, 200, { ok: true }); return; }
+      if (path === "/api/notice-read") { json(res, 200, await ownerOps.readNotice(args(await body(req)))); return; }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
     }
     if (method === "DELETE" && path.startsWith("/api/notes/")) { await ownerOps.deleteNote({ id: decodeURIComponent(path.slice(11)) }); json(res, 200, { ok: true }); return; }
@@ -137,6 +138,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       if (doc.kind === "item" && doc.before === null && (doc.after as Item | null)?.request) {
         const it = doc.after as Item;
         wake({event:"request",item:doc.id,title:it.title,project:r.projectOf(doc.id),by:it.request!.by});
+      }
+      if (doc.kind === "decision") {
+        const card = doc.after as Decision | null, was = doc.before as Decision | null;
+        if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake({event:"blocking",kind:"card",key:doc.id,item:card.item,project:r.projectOf(card.item),text:card.blocks,question:card.question});
+      }
+      if (doc.kind === "item") {
+        const it = doc.after as Item | null, was = doc.before as Item | null;
+        if (it?.ask && was?.ask?.text !== it.ask.text) wake({event:"blocking",kind:"ask",key:doc.id,item:doc.id,project:r.projectOf(doc.id),text:it.ask.text});
       }
       if (doc.kind === "note" && (doc.after as Note | null)?.state === "sent" && (doc.before as Note | null)?.state !== "sent") {
         const n = doc.after as Note, card = n.target.startsWith("q:") ? s.decisions[n.target.slice(2)] : undefined;

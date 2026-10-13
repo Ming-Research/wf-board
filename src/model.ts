@@ -88,6 +88,8 @@ export const Decision = z.object({
   options: z.array(Option).min(1),
   confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
   status: z.enum(DECISION_STATUSES),
+  /** One sentence naming the work that stops until the owner rules; present makes the card blocking (src/rules.ts cardBlocking). */
+  blocks: z.string().min(1).optional(),
   /** The chosen option's key, when the ruling picked one. */
   choice: z.string().min(1).optional(),
   ruling: z.string().min(1).optional(),
@@ -124,6 +126,21 @@ export const Note = z.object({
   rev: z.number().int().positive(),
 }).strict();
 export type Note = z.infer<typeof Note>;
+
+/** An important non-blocking change the owner should know, written by a session and marked read by the owner. */
+export const Notice = z.object({
+  /** One or two sentences; inline markdown and [[it:key]] references. */
+  text: z.string().min(1),
+  /** The related item. */
+  item: Key.optional(),
+  /** The writing project. */
+  author: z.string().min(1),
+  at: Time,
+  /** When the owner marked it read. */
+  read: Time.optional(),
+  rev: z.number().int().positive(),
+}).strict();
+export type Notice = z.infer<typeof Notice>;
 
 export const Project = z.object({
   name: z.string().min(1),
@@ -180,6 +197,7 @@ export interface Snapshot {
   items: Record<string, Item>;
   decisions: Record<string, Decision>;
   notes: Record<string, Note>;
+  notices: Record<string, Notice>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
   owner: OwnerState;

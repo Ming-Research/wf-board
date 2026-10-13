@@ -113,6 +113,7 @@ wf-board-data/
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
+  notices/<id>.yaml       one file per notice (a non-blocking change the owner should know)
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and archived items
   import/                 the original artifact export, kept as provenance
@@ -206,6 +207,24 @@ log:
   Among the 需核对 flags, an open item whose head lacks the
   completion-condition section shows 正文没写完成条件, and an open root without
   a stored priority shows 没有未完成的条目依赖它，却没写优先级.
+- **Blocking waits.** An owner wait either stops named work or does not. A
+  decision card may carry `blocks`, one sentence naming the work that is
+  stopped until the owner rules (for example `#398 合并停着`); a card with `blocks`
+  is blocking, one without is not, and sessions proceed on its recommendation.
+  An item's `ask` is always blocking. `src/rules.ts` derives the predicates:
+  `cardBlocking(card)` (waiting and carrying `blocks`), `ownerBlocking(item)`
+  (a pending ask or a blocking card), and per subtree `blockingBelow(item)`
+  (pending asks plus blocking cards) and `nonBlockingBelow(item)` (waiting
+  cards without `blocks`), the item included. `write_card` sets `blocks` on
+  create or revision; a revision omitting it keeps it and `null` clears it.
+  `context` and `brief` show it.
+- **Notices.** A notice is one stored document in `notices/<id>.yaml`:
+  `{text, item?, author, at, read?, rev}`. `text` is one or two sentences with
+  inline markdown and `[[it:key]]` references; `item` names a related item;
+  `read` is the time the owner marked it read. Any project posts one with
+  `post_notice`, for an important change that does not block (a blocking
+  matter goes on a card with `blocks`). Notices are not unread documents: they
+  neither count as 新 nor appear in `changes`.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -340,7 +359,8 @@ restructuring forms below (`create_item` with `children`, `move_item` without
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on leaves; blocked needs an open dep or an ask; cancelled and done need the log line |
 | `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents, preserving a destination leaf's own work in a new child; a destination leaf with no work of its own (todo, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; the source's last child requires its new leaf status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
-| `write_card(key, item, question, background, options, confidence)` | Adds or revises an open decision card | One recommended option at most; item exists |
+| `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
+| `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
@@ -372,7 +392,7 @@ calling it. Un-archiving is allowed for any item, so items archived while open
 can be restored, and `a` on an item inside an archived subtree un-archives its
 nearest archived ancestor rather than archiving the item.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
-new-content count, descendant owner-action count and leaf counts. Clicking the row selects the item and
+new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 Each tree row stays on one line: caret, status, priority, title, chips
@@ -383,13 +403,39 @@ a full-title tooltip. New-content and owner-action chips remain visible.
 The separate decisions section
 and send box remain available.
 
-In tree rows, the blue new-content chip and the red descendant
-owner-action chip show only their numbers. Their tooltips and accessibility
-labels retain their full meaning; the item’s own 等你处理 tag retains its words.
-Every 新 chip shows only its number, including detail headlines and cards.
-The existing ☰ menu help keeps its shortcut sentence and explains only the
-blue new-content number, red descendant owner-action number and right-side
-status-colored leaf counts alongside its keyboard actions.
+In tree rows, the blue new-content chip, the filled dark purple chip (blocking
+waits in the item and below it, asks included) and the filled dark red chip
+(waiting cards without `blocks`, in the item and below it) show only their
+numbers; a chip whose count is 0 is absent. Their tooltips and accessibility
+labels retain their full meaning, and a purple or red chip leads to the first
+such wait. The purple differs from the light-purple 卡住 status styling, which
+is unchanged. Every 新 chip shows only its number, including detail headlines
+and cards. The existing ☰ menu help keeps its shortcut sentence and explains
+only the blue new-content number, the purple and red wait numbers and
+right-side status-colored leaf counts alongside its keyboard actions.
+
+A card's header tag is a purple 阻塞 (tooltip: its `blocks` text) for a
+blocking card and a red 决策卡 otherwise; an item's ask row carries 阻塞.
+
+The summary has no row labels except 未读. Row 1: purple 阻塞 N ›
+(blocking waits, asks included), red 决策卡 M › (waiting cards without
+`blocks`), blue 新 ›, 评论回复; each hidden at 0. Under it, the 等你 panel
+and the 要你知道 list. Row 2, labelled 未读: 进展, 其他, 清除筛选 (only
+while a filter is on) and 全部已阅. Row 3: 全部折叠, 展开第一层 and the status
+legend. The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
+
+The 等你 panel sits under row 1 and shows only while a blocking wait exists:
+one row per blocking card or ask with a purple dot, the project, the `blocks`
+(or ask) text and the shortened card question, ordered by priority (P0 first)
+then by how long it has waited (card creation time; an ask's item update
+time). A click jumps like the `/` search and remembers the place for Back. A
+line 另有 M 张决策卡不挡工作 follows when M > 0.
+
+The 要你知道 list sits under the panel and shows the unread notices, newest
+first, with time, author, text and a link to the item; 已读 marks one read
+(`/api/notice-read`, with `{id}` or `{all: true}`; the owner's own marking
+is not news). With none unread the list is absent. Notices take part in the
+event stream like other documents.
 
 There is no sticky path bar. Navigation and visibility checks use the viewport
 top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
@@ -418,12 +464,12 @@ row.
 ancestors and bring its tree row into view, then scroll the right column to
 the exact fresh mark, card or note. A card held by no item keeps its existing
 navigation behavior in the separate decisions section. Dependency links,
-Backspace/`[` and the 等你处理 下一条 walk also select their target item and
+Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
 
 `r` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
-The same selection works after the 等你处理 下一条 walk, a click, `n`, a 新
+The same selection works after the 下一条 walk through the waits, a click, `n`, a 新
 chip or following a dependency. It reads each of that item's documents' displayed
 unread changes, including those hidden by freshness filters, through its
 latest unread step, without reading another document or a change arriving
@@ -528,6 +574,12 @@ mark a note handled. It stays `sent` until a project agent replies with
 `reply_note` or closes it with `close_note`. Closing stamps the handler and
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
+
+A blocking wait produces `{event:"blocking", kind:"card"|"ask", key, item,
+project, text}` (a card event also carries `question`): when a card is created
+open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
+set or changed. A card without `blocks` produces none, so the coordinator can
+push a phone notification for blocking waits only.
 
 A newly created request also produces one event:
 `{event:"request", item, title, project, by}`. The store's committed

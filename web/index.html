@@ -38,6 +38,8 @@
   --note-bg: #f6f8f7;
   --ask: #b3261e;
   --ask-soft: #fdeceb;
+  --blockwait: #5b2a9e;
+  --blockwait-soft: #f1eafc;
   --fresh: #2f7de1;
   --fresh-ink: #ffffff;
   --fresh-soft: #e3eefc;
@@ -51,7 +53,7 @@
     --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
     --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
-    --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18;
+    --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
     color-scheme: dark;
   }
@@ -60,7 +62,7 @@
   --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
   --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
-  --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18;
+  --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
   color-scheme: dark;
 }
@@ -82,7 +84,7 @@ body.wide .page-left > * { flex-shrink: 0; }
 body.wide #areas .item { padding-inline: 4px; }
 body.wide #areas .item-title { font-size: 13px; }
 body.wide #areas .item.line > .item-row .item-title { font-size: 13.5px; }
-body.wide #areas .st, body.wide #areas .prio, body.wide #areas .prio-was, body.wide #areas .counts .st, body.wide #areas .newtag, body.wide #areas .asktag, body.wide #areas .checktag, body.wide #areas .pendtag { font-size: 11px; }
+body.wide #areas .st, body.wide #areas .prio, body.wide #areas .prio-was, body.wide #areas .counts .st, body.wide #areas .newtag, body.wide #areas .asktag, body.wide #areas .waittag, body.wide #areas .checktag, body.wide #areas .pendtag { font-size: 11px; }
 body.wide #areas .item.selected { background: var(--cur); }
 /* Split tree rows: the arrow and the new-content line are centered on the row, the arrow sits close to the status chip,
    and the status and priority chips are smaller; every status chip keeps the width BLOCK needs. */
@@ -104,9 +106,21 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .sbtn { font: inherit; font-size: 13px; line-height: 1.5; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sbtn:focus-visible { border-radius: 999px; }
 .sbtn.s-wait { background: var(--ask); border-color: var(--ask); color: var(--surface); font-weight: 600; }
+.sbtn.s-block { background: var(--blockwait); border-color: var(--blockwait); color: var(--surface); font-weight: 600; }
 .sbtn.s-new { background: var(--fresh); border-color: var(--fresh); color: var(--fresh-ink); font-weight: 600; }
 .sbtn.s-read { border-color: var(--fresh); color: var(--fresh); }
 .sbtn.s-plain:hover, .sbtn.s-read:hover { border-color: var(--accent); color: var(--accent); }
+.waitpanel, .noticepanel { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+.waitpanel { background: var(--blockwait-soft); border-color: var(--blockwait); max-height: 40vh; overflow-y: auto; }
+.waitrow { font: inherit; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; text-align: left; background: none; border: 0; color: var(--ink); cursor: pointer; padding: 2px 0; }
+.waitrow .where { color: var(--muted); font-size: 12px; }
+.waitrow .t { font-weight: 600; }
+.waitdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blockwait); flex: none; }
+.waitmore { font-size: 12px; color: var(--muted); }
+.notice-head { font-weight: 600; }
+.notice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.notice .where { color: var(--muted); font-size: 12px; }
+.notice-text { flex: 1 1 12em; min-width: 0; }
 .sum-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sum-stats .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .sendbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; }
@@ -218,6 +232,7 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .newtag { font-size: 12px; font-family: var(--font-mono); background: var(--fresh); color: var(--fresh-ink); padding: 0 6px; border-radius: 4px; }
 .closedtag { font-size: 12px; font-weight: 600; border: 1px solid var(--rule); color: var(--muted); padding: 0 7px; border-radius: 4px; margin-right: 6px; }
 .ref.q.shown { border-color: var(--accent); }
+.waittag { font-size: 12px; font-weight: 600; background: var(--blockwait); color: var(--surface); padding: 0 7px; border-radius: 4px; }
 .asktag { font-size: 12px; font-weight: 600; background: var(--ask); color: var(--surface); padding: 0 7px; border-radius: 4px; }
 .body { display: flex; flex-direction: column; gap: 4px; padding-left: 1.6em; }
 /* Each part of an open item (被依赖, 正文, 依赖, 进展, request, cards, checks, links) sits under a rule; the numbers line belongs to the head. */
@@ -282,7 +297,7 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .group-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .xdeps { margin-left: auto; font: inherit; font-family: var(--font-body); font-size: 12.5px; font-weight: 500; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0; }
 .xdeps:hover { color: var(--accent); }
-.freshchip[role="button"], .asktag[role="button"] { cursor: pointer; }
+.freshchip[role="button"], .asktag[role="button"], .waittag[role="button"] { cursor: pointer; }
 .item.ctx > .item-row { opacity: .5; }
 .item-row .counts { flex: none; margin-left: auto; display: flex; gap: 6px; align-self: center; font-variant-numeric: tabular-nums; }
 .tree-row .counts { flex: 1 0 0; max-width: max-content; min-width: 0; overflow: hidden; }

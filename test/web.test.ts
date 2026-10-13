@@ -200,7 +200,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): Snapshot {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, glossaries: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -433,7 +433,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
     const p = await page(s, []), r = rules(s);
     await expand(p);
     // The waiting badge and approval action are rendered from the predicates.
-    assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "等你决定"), r.cardWaiting("q"));
+    assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "决策卡"), r.cardWaiting("q") && !r.cardBlocking("q"));
     assert.equal(p.all().some(e => e.id === "ask-child"), r.askPending("child"));
   }
 });
@@ -534,7 +534,7 @@ test("project page omits session assignments and shows inbox requests, including
   s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
   assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
-  assert.ok(p.all().some(e=>e.innerHTML==="等你处理 1 ›"));
+  assert.ok(p.all().some(e=>e.innerHTML==="阻塞 1 ›"));
   const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
   assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/);
   const tree=p.all().find(e=>e.id==="it-incoming"); assert.ok(tree); assert.ok(descendants(inbox).includes(tree));
@@ -769,7 +769,7 @@ function cssContract(html:string) {
   html=html.replace(/\/\*[\s\S]*?\*\//g, "");
   const themes=[html.match(/:root \{([^}]+)\}/)![1]!,...html.matchAll(/:root(?::not\(\[data-theme="light"\]\)|\[data-theme="dark"\]) \{([^}]+)\}/g)].map(v=>typeof v === "string" ? v : v[1]!);
   assert.equal(themes.length,3);
-  for (const theme of themes) for (const token of ["--fresh"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
+  for (const theme of themes) for (const token of ["--fresh","--blockwait","--blockwait-soft"]) assert.ok(new RegExp(token+":\\s*#[a-fA-F0-9]+").test(theme),"every theme defines "+token);
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
   // The owner never asked for a green background on new or changed text and does not want it: .chg-add only marks
@@ -780,12 +780,13 @@ function cssContract(html:string) {
   for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
+  for (const sel of [".waittag",".sbtn.s-block"]) assert.ok(has(sel,/background:\s*var\(--blockwait\)/),sel+" is the filled purple chip");
   for (const sel of [".item-head",".deprow",".ref",".optbtn",".notes-toggle"]) assert.ok(has(sel,/(?<!-)user-select:\s*text/) && has(sel,/-webkit-user-select:\s*text/),sel+" text is selectable");
 }
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
 test("CSS contract detects removed theme tokens mark declarations and blue selectors", async t => {
   const html=await readFile("web/index.html","utf8");
-  for (const token of ["--fresh"]) {
+  for (const token of ["--fresh","--blockwait","--blockwait-soft"]) {
     const declarations=[...html.matchAll(new RegExp(token+":\\s*#[a-fA-F0-9]+;","g"))];
     assert.equal(declarations.length,3);
     for (const [i,match] of declarations.entries()) await t.test(token+" theme "+i,()=> {
@@ -1194,7 +1195,7 @@ test("a dependency on a card shows the card's state and its why under the questi
   const p=await page(s,[]); await expand(p,"child");
   const rows=descendants(item(p,"child")).filter(e=>e.className.startsWith("deprow"));
   const row=(text:string)=>rows.find(e=>e.innerHTML.includes(text))!;
-  for (const [text,tag,why] of [["如何显示","asktag\">等你决定","Needs ruling"],["已定的问题","st done\">已裁定","Was ruled"],["gone","st cancelled\">已删除","Deleted card"]] as const) {
+  for (const [text,tag,why] of [["如何显示","asktag\">决策卡","Needs ruling"],["已定的问题","st done\">已裁定","Was ruled"],["gone","st cancelled\">已删除","Deleted card"]] as const) {
     const r=row(text); assert.ok(r,text);
     assert.ok(r.innerHTML.startsWith('<span class="'+tag),text+" starts with its state tag");
     assert.match(r.innerHTML,new RegExp('<span class="t">[^]*<span class="why">'+why+'</span></span>$'),text+" keeps its why under the question");
@@ -1598,26 +1599,27 @@ function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return rowO
 function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
 async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
 
-test("the red waiting number leads to the first place below that waits for the owner", async () => {
+test("the purple blocking number leads to the first place below that waits for the owner", async () => {
   const s=snapshot(); s.items.child!.ask={text:"Child ask"};
   const p=await page(s,[]);
-  const wait=wideHead(p).children.find(e=>e.className === "asktag")!;
+  const wait=wideHead(p).children.find(e=>e.className === "waittag")!;
   assert.equal(wait.innerHTML,"1"); assert.equal(wait.attributes["role"],"button");
   assert.ok(!detailItem(p,"child"),"nothing is selected before the click");
   await wait.click(); await p.flush();
   assert.ok(detailItem(p,"child"),"the click selects the waiting child and shows it in the detail");
 });
 
-test("tree new and descendant-wait chips show only numbers with full labels", async () => {
+test("tree new and blocking chips show only numbers with full labels", async () => {
   const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
   const p=await page(s,[...unread("item","area"),...unread("item","child","e".repeat(40))]);
   const head=wideHead(p), fresh=head.querySelector(".freshchip")!;
   assert.equal(fresh.innerHTML,"2","blue chip is the count alone");
   assert.match(fresh.title,/2 处新内容/); assert.equal(fresh.attributes["aria-label"],fresh.title);
-  const wait=head.children.find(e=>e.className === "asktag" && e.innerHTML !== "等你处理")!;
-  assert.equal(wait.innerHTML,"1","descendant red chip is the count alone");
-  assert.equal(wait.title,"下面 1 处等你处理"); assert.equal(wait.attributes["aria-label"],wait.title);
-  assert.ok(head.children.some(e=>e.className === "asktag" && e.innerHTML === "等你处理"),"the item's own request retains its words");
+  const wait=head.children.find(e=>e.className === "waittag")!;
+  assert.equal(wait.innerHTML,"2","purple chip counts the item's own ask and the ask below, as a number alone");
+  assert.equal(wait.title,"2 处阻塞工作"); assert.equal(wait.attributes["aria-label"],wait.title);
+  assert.ok(!head.children.some(e=>e.innerHTML === "等你处理"),"no wordy tag remains on the row");
+  assert.ok(!head.children.some(e=>e.className === "asktag"),"no red chip without a non-blocking card");
   await selectWide(p);
   assert.equal(detailItem(p)!.querySelector(".freshchip")!.innerHTML,"2","the detail headline's chip is the count alone too");
   assert.equal(detailItem(p)!.querySelector(".item-title")!.title,"","detail headings have no added hover tooltip");
@@ -1630,7 +1632,7 @@ test("existing menu help keeps its shortcut sentence and explains only the three
   const help=menu.querySelector(".keymenu-head")!.innerHTML;
   assert.match(help,/^快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>/,"the original shortcut sentence is retained");
   for (const mark of ["▸/▾","TODO","WIP","BLOCK","DONE","DROP","P0","P1","P2","蓝线","需核对","待发","状态条","选中底色","原标题","原写优先级","父条目"]) assert.ok(!help.includes(mark),"help omits unrequested explanation "+mark);
-  assert.match(help,/蓝色数字[^。]*新内容/); assert.match(help,/红色数字[^。]*下面[^。]*等你处理/);
+  assert.match(help,/蓝色数字[^。]*新内容/); assert.match(help,/紫色数字[^。]*阻塞[^。]*红色数字[^。]*决策卡/);
   assert.match(help,/右侧状态色数字[^。]*叶条目/);
   assert.equal(menu.querySelector(".keymenu-btn")!.innerHTML,"☰");
   const css=await readFile("web/index.html","utf8");
@@ -1785,7 +1787,7 @@ test("tree head structure and CSS keep badges chips title and counts on one line
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
   assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
-  for (const cls of ["st","prio","item-title","newtag","asktag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
+  for (const cls of ["st","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
   assert.match(css,/\.tree-row > \.item-head\s*\{[^}]*flex-wrap:\s*nowrap/);
@@ -2358,7 +2360,7 @@ test("typing # in a comment lists the matching items and cards; Enter inserts th
 test("# popup: Chinese search finds a card, arrows wrap, a click inserts, Esc closes only the popup", async () => {
   const { p, ta, type, pop, options, titles } = await composer();
   await type("#显示"); assert.deepEqual(titles(), ["如何显示？"]);
-  assert.match(options()[0]!.innerHTML, /asktag">等你决定<\/span>.*<span class="where">Project › Child<\/span>$/, "a card row shows its state and the item holding it");
+  assert.match(options()[0]!.innerHTML, /asktag">决策卡<\/span>.*<span class="where">Project › Child<\/span>$/, "a card row shows its state and the item holding it");
   p.key("Enter", ta); assert.equal(ta.value, "[[q:q]]", "a card token carries its own prefix");
   await type("#"); assert.ok(classes(options()[0]!).includes("sel"));
   p.key("ArrowDown", ta); assert.ok(classes(options()[1]!).includes("sel") && !classes(options()[0]!).includes("sel"));
@@ -2438,7 +2440,7 @@ test("/ opens a search over every item and card by title, done and cancelled one
   assert.equal(rows()[0]!.innerHTML, '<span class="st done">DONE</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
   await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="st cancelled">DROP</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
   await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="st wip">WIP</span><span class="t">Child</span><span class="where">Project › Parent</span>');
-  await type("显示"); assert.match(rows()[0]!.innerHTML, /^<span class="asktag">等你决定<\/span><span class="t">如何显示？<\/span><span class="where">Project › Child<\/span>$/, "a card shows its state and the item holding it");
+  await type("显示"); assert.match(rows()[0]!.innerHTML, /^<span class="asktag">决策卡<\/span><span class="t">如何显示？<\/span><span class="where">Project › Child<\/span>$/, "a card shows its state and the item holding it");
   await type("没有这样的标题"); assert.equal(rows().length, 0); assert.ok(markup(box()!).includes("没有匹配"));
   p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
   p.key("Escape", input()); assert.equal(box(), null, "Esc closes it");
@@ -2499,4 +2501,111 @@ test("the keyboard help lists the search key", async () => {
   assert.ok(p.all().some(e => e.className === "keymenu-row" && e.innerHTML.includes("<kbd>/</kbd>")), "the ☰ menu has a / row");
   await p.all().find(e => e.className === "keymenu-row" && e.innerHTML.includes("<kbd>/</kbd>"))!.click();
   assert.ok(p.document.getElementById("search"), "and its row opens the search");
+});
+
+// Owner waits: blocking (purple) and non-blocking (red), the 等你 panel and the 要你知道 list.
+function waitSnapshot(): Snapshot {
+  const s=snapshot();
+  s.items.hot={title:"Hot",group:"Project",priority:"P0",ask:{text:"Hot ask"},updated:"2026-10-02T00:00:00Z",rev:1,deps:[],links:[],log:[]};
+  s.decisions.old={...card(),question:"旧的问题",blocks:"#398 合并停着",at:"2026-10-01T00:00:00Z"};
+  s.decisions.newer={...card(),question:"较新的问题",blocks:"发布停着",at:"2026-10-03T00:00:00Z"};
+  s.decisions.plain={...card(),question:"不挡工作的问题"};
+  return s;
+}
+const summaryText=(p:Awaited<ReturnType<typeof page>>)=>descendants(p.roots.get("summary")!);
+test("top controls: purple 阻塞 and red 决策卡 counters lead their row, with no 待看 or 视图 label", async () => {
+  const p=await page(waitSnapshot(),[]), sum=p.roots.get("summary")!;
+  const row1=sum.children[0]!;
+  assert.deepEqual(row1.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"],"hot ask and two blocking cards; one plain card");
+  assert.equal(row1.children[0]!.className,"sbtn s-block"); assert.equal(row1.children[1]!.className,"sbtn s-wait");
+  const text=summaryText(p).map(e=>e.innerHTML+e.textContent).join("|");
+  assert.ok(!text.includes("待看") && !text.includes("视图") && !text.includes("等你处理"));
+  assert.ok(!sum.children.some(e=>e.className === "sum-row" && e.children[0]?.innerHTML === "待看"));
+  await button(p,"决策卡 1 ›").click(); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "q-plain")?.className.includes("cur"),"决策卡 starts at the first non-blocking card, after every blocking one");
+});
+test("top controls: 阻塞 steps to the first blocking wait and an empty kind shows no counter", async () => {
+  const s=snapshot(); s.decisions.plain={...card(),question:"不挡工作的问题"};
+  const p=await page(s,[]);
+  assert.ok(!p.all().some(e=>e.innerHTML.startsWith("阻塞 ")),"no blocking wait, no 阻塞 counter");
+  assert.ok(!p.all().some(e=>e.id === "wait-panel"),"no blocking wait, no panel");
+  assert.ok(p.all().some(e=>e.innerHTML === "决策卡 1 ›"));
+  const t=waitSnapshot(), q=await page(t,[]);
+  await button(q,"阻塞 3 ›").click(); await q.flush();
+  assert.ok(q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is the ask on the P0 item, which opens in the detail");
+});
+test("top controls: 未读 labels the second row with 进展, 其他 and 全部已阅; 评论回复 sits in the first row; the view row has no label", async () => {
+  const s=snapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
+  const docs=[{kind:"item",id:"child",summary:"+1 log",pieces:{log:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{log:0,reply:1,other:0}}];
+  const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
+  const rows=p.roots.get("summary")!.children;
+  const labels=rows.map(r=>r.children[0]?.className === "sum-k" ? r.children[0]!.innerHTML : "");
+  assert.deepEqual(rows.map(r=>r.className),["sum-row","sum-row","sum-row"]);
+  assert.deepEqual(labels,["","未读",""]);
+  assert.ok(rows[0]!.children.some(e=>e.innerHTML === "评论回复 1") && rows[0]!.children.some(e=>e.innerHTML.startsWith("新 ")));
+  assert.equal(rows[1]!.children.map(e=>e.innerHTML).filter(h=>/^(进展|其他)/.test(h)).length,2);
+  assert.ok(rows[1]!.children.some(e=>e.innerHTML === "全部已阅"));
+  assert.deepEqual(rows[2]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
+  assert.equal(rows[2]!.children.at(-1)!.className,"sum-stats","the status legend shares the view row");
+});
+test("tree chips are numbers: purple counts blocking waits, red counts non-blocking cards, own and below, hidden at zero", async () => {
+  const s=waitSnapshot(); s.decisions.plain!.item="child"; s.decisions.old!.item="child"; delete s.decisions.newer;
+  const p=await page(s,[]);
+  const area=wideHead(p,"area"), chips=(h:Element)=>h.children.filter(e=>e.className === "waittag" || e.className === "asktag").map(e=>[e.className,e.innerHTML,e.title]);
+  assert.deepEqual(chips(area),[["waittag","1","1 处阻塞工作"],["asktag","1","1 张决策卡不挡工作"]]);
+  await rowOf(p,"area").querySelector(".caret")!.click();
+  assert.deepEqual(chips(wideHead(p,"child")),[["waittag","1","1 处阻塞工作"],["asktag","1","1 张决策卡不挡工作"]]);
+  const hot=wideHead(p,"hot");
+  assert.deepEqual(chips(hot),[["waittag","1","1 处阻塞工作"]],"a zero count shows no chip");
+  assert.ok(!p.all().some(e=>e.innerHTML === "等你决定" || e.innerHTML === "等你处理"));
+});
+test("card header tag: 阻塞 with the blocks text as its tooltip for a blocking card, 决策卡 for the others", async () => {
+  const p=await page(waitSnapshot(),[]); await expand(p);
+  const tag=(id:string)=>descendants(p.all().find(e=>e.id === "q-"+id)!).find(e=>e.className === "waittag" || e.className === "asktag")!;
+  assert.equal(tag("old").className,"waittag"); assert.equal(tag("old").innerHTML,"阻塞"); assert.equal(tag("old").title,"#398 合并停着");
+  assert.equal(tag("plain").className,"asktag"); assert.equal(tag("plain").innerHTML,"决策卡");
+});
+test("等你 panel: blocking waits by priority then oldest, one row each, the plain-card line, and a click jumps and Back returns", async () => {
+  const p=await page(waitSnapshot(),[]), panel=p.all().find(e=>e.id === "wait-panel")!;
+  assert.ok(panel,"the panel shows with blocking waits");
+  const rows=panel.children.filter(e=>e.className === "waitrow");
+  assert.equal(rows.length,3);
+  assert.match(rows[0]!.innerHTML,/Hot ask/,"P0 first");
+  assert.match(rows[1]!.innerHTML,/#398 合并停着/,"then the older card"); assert.match(rows[2]!.innerHTML,/发布停着/);
+  assert.match(rows[1]!.innerHTML,/waitdot/); assert.match(rows[1]!.innerHTML,/Project/); assert.match(rows[1]!.innerHTML,/旧的问题/);
+  assert.equal(panel.children.at(-1)!.innerHTML,"另有 1 张决策卡不挡工作");
+  const summary=p.roots.get("summary")!;
+  assert.ok(summary.children.indexOf(panel) > summary.children.findIndex(e=>e.children.some(c=>c.innerHTML.startsWith("阻塞"))),"the panel sits under row 1");
+  await rows[1]!.click(); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "detail-it-child"),"the click selects the card's item");
+  const back=p.document.getElementById("backbtn")!; assert.equal(back.hidden,false,"the jump is remembered");
+  await back.click(); await p.flush();
+  assert.equal(p.document.getElementById("backbtn")!.hidden,true,"Back returns");
+});
+test("等你 panel is gone when the last blocking wait is answered", async () => {
+  const s=snapshot(); s.decisions.old={...card(),blocks:"停着"};
+  const p=await page(s,[]); assert.ok(p.all().some(e=>e.id === "wait-panel"));
+  s.decisions.old={...s.decisions.old!,status:"ruled",ruling:"A",choice:"A"};
+  await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
+  assert.ok(!p.all().some(e=>e.id === "wait-panel"));
+});
+test("要你知道 lists unread notices newest first, 已读 hides one through the API, and the section disappears when none is left", async () => {
+  const s=snapshot();
+  s.notices={n1:{text:"旧的 **通知**",author:"跨项目",at:"2026-10-01T00:00:00Z",rev:1},n2:{text:"新的，见 [[it:child]]",item:"child",author:"Firn",at:"2026-10-03T00:00:00Z",rev:1},n3:{text:"已读的",author:"Firn",at:"2026-10-02T00:00:00Z",read:at,rev:1}};
+  const p=await page(s,[],null,undefined,{response:(path)=> path === "/api/notice-read" ? {ok:true,status:200,json:async()=>({marked:[]})} : undefined});
+  const section=()=>p.all().find(e=>e.id === "notices");
+  assert.equal(section()!.children[0]!.innerHTML,"要你知道 2");
+  const rows=section()!.children.filter(e=>e.className === "notice");
+  assert.equal(rows.length,2); assert.match(markup(rows[0]!),/新的/); assert.match(markup(rows[0]!),/Firn/); assert.match(markup(rows[1]!),/旧的/);
+  assert.ok(!markup(section()!).includes("已读的"));
+  assert.ok(rows[0]!.children.some(e=>e.className.includes("notice-item")),"a notice with an item links to it");
+  assert.ok(p.roots.get("summary")!.children.indexOf(section()!) >= 1);
+  await rows[0]!.children.find(e=>e.className.includes("notice-read"))!.click();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/notice-read").map(c=>c.body),[{id:"n2"}]);
+  await p.change("f".repeat(40),[{kind:"notice",id:"n2",after:{...s.notices.n2!,read:at,rev:2}}]); await p.flush();
+  assert.equal(section()!.children[0]!.innerHTML,"要你知道 1"); assert.ok(!markup(section()!).includes("新的"));
+  await p.change("g".repeat(40),[{kind:"notice",id:"n1",after:{...s.notices.n1!,read:at,rev:2}}]); await p.flush();
+  assert.equal(section(),undefined,"all read, no section");
+  await p.change("h".repeat(40),[{kind:"notice",id:"n4",after:{text:"又一条",author:"Firn",at,rev:1}}]); await p.flush();
+  assert.match(section()!.children[0]!.innerHTML,/要你知道 1/);
 });

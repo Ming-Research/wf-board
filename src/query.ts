@@ -197,7 +197,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   return { project, inbox: r.inbox(project).map(id => requestRow(s,r,id)),
     notes: sentNotes(s,r).filter(n => n.project === project),
     checks: ids.map(id => ({ id, title: s.items[id]!.title, checks: r.checks(id) })).filter(it => it.checks.length),
-    cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question})),
+    cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     wip: leaves.filter(id => r.statusOf(id) === "wip").sort(r.compareSiblings).map(id => row(s,r,"item",id)),
     todo: leaves.filter(id => r.statusOf(id) === "todo").sort(r.compareSiblings).slice(0,10).map(id => row(s,r,"item",id)),
     outgoing: [...outgoing].map(id => ({...row(s,r,"item",id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
@@ -282,7 +282,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   if (headIndex === -1) throw new Error("snapshot head: not found in store history");
   const selected = new Set((await store.log({ since })).map(c => c.commit));
   const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "notice">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;
