@@ -122,7 +122,7 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   return result.data;
 }
 
-/** Fields that a data-repository migration commit removed from every document, by the document they sat in. Only
+/** Fields that a data-repository migration commit removed from every item or board project, by where they sat. Only
  * whole-board historical comparison omits them, so an old version holding them still normalizes: show() and diff()
  * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
  * strict. Dropped by "Drop area short names at the owner's request" (item short), "Drop item agents: responsibility

@@ -561,6 +561,7 @@ test("historical comparison omits only fields a migration retired; raw history k
   await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", rev: 2 }));
   const edited = await commit("P", "Edit while retired fields remain");
   // A field no migration retired is unknown content: comparison must refuse it rather than drop it.
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [{ ...project, agents: ["p-session"], unlisted: "kept" }] }));
   await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", unlisted: "kept", rev: 3 }));
   const unknown = await commit("Q", "Write an unknown field");
   await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [project] }));
@@ -585,7 +586,9 @@ test("historical comparison omits only fields a migration retired; raw history k
   assert.deepEqual(await store.show("item", "work", edited), { ...work, short: "W", agent: "p-session", head: "After", rev: 2 });
   assert.match(await store.diff("item", "work", edited, migrated), /^-short: W$/m);
 
-  await assert.rejects(store.comparisonSnapshot(unknown), /items\/work\.yaml: document: Unrecognized key: "unlisted"/);
+  const refused = await store.comparisonSnapshot(unknown).then(() => "", (error: Error) => error.message);
+  assert.match(refused, /^board\.yaml: projects\.0: Unrecognized key: "unlisted"$/m);
+  assert.match(refused, /^items\/work\.yaml: document: Unrecognized key: "unlisted"$/m);
   const current = store.snapshot().items.work!;
   await assert.rejects(store.commit({ author: "P", message: "Write a retired field", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, short: "W" } }] }),
     /Unrecognized key: "short"/);

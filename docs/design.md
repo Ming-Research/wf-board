@@ -1598,11 +1598,14 @@ ineffective and orphan entries; all other owner state is unchanged. The temporar
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
 Older versions can also hold fields that a later data-repository migration
-commit removed from every document: an item's area short name (`short`) and session
+commit removed from every item or project: an item's area short name (`short`) and session
 (`agent`), and a project's session names (`agents`). Normalizing a historical
 whole board omits exactly these named fields before the strict old-shape
 schema reads it, so the history and diffs of those versions stay readable;
-the diff text still shows them as written. Any other unknown field still
+the diff text still shows them as written. A change confined to one of
+these fields therefore shows in raw history, diffs and unread steps between
+old versions (which compare documents as written), but not in a summary
+built from normalized versions. Any other unknown field still
 refuses the old version instead of being dropped, and current reads and
 writes stay strict.
 
