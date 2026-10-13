@@ -45,7 +45,15 @@ export interface Rules {
   cardsOf(id: string): string[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
+  /** A waiting card that names the work stopped until the owner rules (its `blocks`). */
+  cardBlocking(key: string): boolean;
   needsOwner(id: string): boolean;
+  /** An owner action is pending (an ask, always blocking) or a card of the item is blocking. */
+  ownerBlocking(id: string): boolean;
+  /** Blocking waits in the item's subtree, the item included: pending asks plus blocking cards. */
+  blockingBelow(id: string): number;
+  /** Waiting cards without `blocks` in the item's subtree, the item included. */
+  nonBlockingBelow(id: string): number;
   isArchived(id: string): boolean;
   inArchive(id: string): boolean;
   onCycle(id: string): boolean;
@@ -168,6 +176,14 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   function cardWaiting(key: string): boolean {
     return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
   }
+  function cardBlocking(key: string): boolean { return cardWaiting(key) && !!index().decisions.get(key)?.blocks; }
+  function ownerBlocking(id: string): boolean { return askPending(id) || cardsOf(id).some(cardBlocking); }
+  function subtreeCount(id: string, own: (id: string) => number): number {
+    const seen = new Set<string>(), walk = (v: string): number => { if (seen.has(v)) return 0; seen.add(v); return own(v) + kids(v).reduce((n, k) => n + walk(k), 0); };
+    return walk(id);
+  }
+  const blockingOwn = (id: string): number => Number(askPending(id)) + cardsOf(id).filter(cardBlocking).length;
+  const nonBlockingOwn = (id: string): number => cardsOf(id).filter(k => cardWaiting(k) && !cardBlocking(k)).length;
   function needsOwner(id: string): boolean {
     return cached("needsOwner", id, () => askPending(id) || cardsOf(id).some(cardWaiting));
   }
@@ -268,7 +284,8 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, needsOwner, isArchived, inArchive, onCycle: id => cycles().has(id),
+    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), isArchived, inArchive, onCycle: id => cycles().has(id),
     checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };
