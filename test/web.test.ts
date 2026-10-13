@@ -3678,3 +3678,108 @@ test("a tag name is shown as text, not markup, in the chips and the filter butto
   assert.equal(chip.innerHTML, "&lt;b&gt;x&lt;/b&gt;");
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "&lt;b&gt;x&lt;/b&gt; 1"), "the filter button escapes the name");
 });
+
+test("writing a note on an unfolded inline card keeps it unfolded through save and send", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card();
+  s.items.child!.plan=planWork([planStep("work","Work"),{...cardRow("q"),id:"ask-owner"}]);
+  const storage=new Map<string,string>([["board-inline-cards",'{"q":true}'],["board-notes",'{"q:q":true}']]); // unfolded earlier and remembered; its plan row id differs from the card key
+  const p=await page(s,[],null,undefined,{storage,response:path=>path === "/api/notes" ? reply({id:"saved"}) : undefined}); await expand(p);
+  const cards=()=>p.all().filter(e=>e.id === "q-q");
+  assert.equal(cards().length,1,"unfolded");
+  await cards()[0]!.click(); await p.flush();
+  p.key("c"); await settle();
+  const editor=p.all().find(e=>e.id === "ed-q_q")!; assert.ok(editor,"the card's comment editor is open");
+  editor.value="Draft on the card";
+  await editor.parentElement!.querySelector(".save")!.click(); await p.flush(); await settle();
+  const draft={target:"q:q",kind:"comment" as const,text:"Draft on the card",at,state:"draft" as const,rev:1};
+  await p.change("c".repeat(40),[{kind:"note",id:"saved",after:draft},{kind:"item",id:"child",after:{...s.items.child!,rev:2}},{kind:"decision",id:"q",after:{...s.decisions.q!,rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"saving the draft keeps the card unfolded");
+  assert.equal(planRow(p,"child","ask-owner").querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+  assert.equal(JSON.parse(storage.get("board-inline-cards")!).q,true);
+  assert.match(markup(cards()[0]!),/Draft on the card/,"the draft note is visible on the card");
+  await cardSend(p).click(); await p.flush(); await settle();
+  await p.change("d".repeat(40),[{kind:"note",id:"saved",after:{...draft,state:"sent",rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"sending keeps the card unfolded");
+  assert.equal(planRow(p,"child","ask-owner").querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+});
+
+test("an item's purple number cycles only through the blocking cards it counts, also after an unrelated re-render", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.decisions.y1={...card(),item:"y",blocks:"Y work 1"}; s.decisions.y2={...card(),item:"y",blocks:"Y work 2"};
+  const p=await page(s,[]);
+  assert.equal(wideHead(p,"y").children.find(e=>e.className === "waittag")!.innerHTML,"2");
+  // A blocking card appears on an item that comes earlier on the board; only that item's row is repainted.
+  p.emit("b".repeat(40),[{kind:"decision",id:"x1",after:{...card(),item:"x",blocks:"X work"}}]); await p.flush();
+  assert.equal(wideHead(p,"x").children.find(e=>e.className === "waittag")!.innerHTML,"1");
+  const landed=new Set<string>();
+  for (let i=0;i<4;i++) {
+    await wideHead(p,"y").children.find(e=>e.className === "waittag")!.click(); await p.flush();
+    const cur=p.all().find(e=>e.id.startsWith("q-") && e.className.split(" ").includes("cur"));
+    assert.ok(cur,"a card is selected"); landed.add(cur!.id);
+    assert.ok(["q-y1","q-y2"].includes(cur!.id),"click "+(i+1)+" landed on "+cur!.id+", not on one of Y's own cards");
+  }
+  assert.deepEqual([...landed].sort(),["q-y1","q-y2"],"the clicks cycle through both of Y's cards");
+});
+
+test("an item's red number leads to the non-blocking cards it counts, also after an unrelated re-render", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.z={title:"Z",parent:"y",status:"wip",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.decisions.y1={...card(),item:"y"}; s.decisions.z1={...card(),item:"z"};
+  const p=await page(s,[]);
+  const red=()=>wideHead(p,"y").children.find(e=>e.className === "asktag")!;
+  assert.equal(red().innerHTML,"2","the collapsed child's card counts");
+  p.emit("b".repeat(40),[{kind:"decision",id:"x1",after:{...card(),item:"x"}}]); await p.flush();
+  const landed=new Set<string>();
+  for (let i=0;i<4;i++) {
+    await red().click(); await p.flush();
+    const cur=p.all().find(e=>e.id.startsWith("q-") && e.className.split(" ").includes("cur"));
+    assert.ok(cur && ["q-y1","q-z1"].includes(cur.id),"click "+(i+1)+" landed on "+cur?.id+", outside Y's subtree");
+    landed.add(cur!.id);
+  }
+  assert.deepEqual([...landed].sort(),["q-y1","q-z1"]);
+});
+
+test("a comment saved on an open card of a record item no plan names stays in view with its send button", async () => {
+  const s=nativeSnapshot();
+  s.items.queue={title:"Queue",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[],record:true,plan:[]} as never;
+  s.decisions.q={...card(),item:"queue",blocks:"perf measurements"};
+  s.notes.old={target:"q:q",kind:"comment",text:"Earlier comment",at,state:"sent",rev:1};
+  // The list was folded by hand earlier, as on the owner's board.
+  const storage=new Map<string,string>([["board-notes",'{"q:q":false}']]);
+  const p=await page(s,[],null,undefined,{storage,response:path=>path === "/api/notes" ? reply({id:"saved"}) : undefined}); await expand(p,"queue");
+  const cards=()=>p.all().filter(e=>e.id === "q-q");
+  assert.equal(cards().length,1,"the open card is shown");
+  assert.doesNotMatch(markup(cards()[0]!),/Earlier comment/,"the list starts folded");
+  await cards()[0]!.click(); await p.flush();
+  p.key("c"); await settle();
+  const editor=p.all().find(e=>e.id === "ed-q_q")!; assert.ok(editor,"the card's comment editor is open");
+  editor.value="Draft on the card";
+  await editor.parentElement!.querySelector(".save")!.click(); await p.flush(); await settle();
+  const draft={target:"q:q",kind:"comment" as const,text:"Draft on the card",at:"2026-10-11T01:02:04Z",state:"draft" as const,rev:1};
+  await p.change("c".repeat(40),[{kind:"note",id:"saved",after:draft},{kind:"item",id:"queue",after:{...(s.items.queue as object),rev:2} as never},{kind:"decision",id:"q",after:{...s.decisions.q!,rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"saving keeps the card");
+  assert.match(markup(cards()[0]!),/Draft on the card/,"the saved draft is visible without unfolding the comment list");
+  assert.ok(descendants(cards()[0]!).some(e=>e.className === "cardsend" && e.innerHTML === "发送"),"its send button is reachable");
+});
+
+test("an item's blue number leads to its own first new place after an unrelated item gains new content", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.z={title:"Z",parent:"y",status:"wip",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  const yStep=unread("item","z","7".repeat(40)), xStep=unread("item","x","8".repeat(40));
+  let steps=yStep;
+  const p=await page(s,yStep,null,undefined,{response:path=>path === "/api/unread" ? reply({steps}) : undefined});
+  const blue=()=>wideHead(p,"y").children.find(e=>e.className.includes("freshchip"))!;
+  assert.equal(blue().innerHTML,"1","Y shows the new content of its child");
+  // New unread content appears on X, which comes earlier on the board; Y's row is not repainted.
+  steps=[...xStep,...yStep];
+  p.emit("b".repeat(40),[{kind:"item",id:"x",after:{...s.items.x!,rev:2}}]); await p.flush(); await settle();
+  await blue().click(); await p.flush(); await settle();
+  const selected=p.all().find(e=>e.id.startsWith("detail-it-"));
+  assert.equal(selected?.id,"detail-it-z","the click lands on Y's new place (its child Z), not on X");
+});
