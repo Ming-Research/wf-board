@@ -11,9 +11,9 @@ const own = (item: string, after: string[] = []): PlanRow => ({ id: item, item, 
 const shared = (item: string, after: string[] = []): PlanRow => ({ id: item, item, own: false, after });
 const card = (key: string, after: string[] = []): PlanRow => ({ id: key, card: key, after });
 const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [...rows, accept(state)];
-function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}, archived: Record<string, string> = {}): Snapshot {
+function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), notices: {}, glossaries: {}, owner: { archived },
+    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), notices: {}, glossaries: {}, owner: {},
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
@@ -195,7 +195,7 @@ test("cycles terminate, identify only members, and receive priority only from ou
   const s = snapshot({ a: { priority: "P0", plan: workPlan([own("b")]) }, b: { priority: "P1", plan: workPlan([own("a")]) }, self: { plan: workPlan([shared("self")]) }, missing: { plan: workPlan([shared("gone")]) } });
   const r = rules(s);
   for (const id of ["a", "b", "self"]) { assert.equal(r.onCycle(id), true); assert.equal(r.priorityOf(id), ""); assert.equal(r.statusOf(id), "blocked"); }
-  assert.deepEqual(r.ancestors("a"), ["b"]); assert.equal(r.inArchive("a"), false); assert.equal(r.onCycle("missing"), false);
+  assert.deepEqual(r.ancestors("a"), ["b"]); assert.equal(r.onCycle("missing"), false);
   s.items.waiter = Item.parse({ title: "Waiter", group: "Default", priority: "P1", plan: workPlan([shared("a")]), updated: T0, rev: 1 });
   const reached = rules(s); assert.equal(reached.onCycle("waiter"), false); assert.equal(reached.priorityOf("a"), "P1"); assert.equal(reached.priorityOf("b"), "P1");
 });
@@ -219,14 +219,6 @@ test("inboxes omit records and closed requests and follow request dates", () => 
   const s = snapshot({ newer: { request: { by: "First", at: T2 } }, older: { request: { by: "First", at: T1 } }, closed: { request: { by: "First", at: T0 }, status: "cancelled" }, record: { request: { by: "First", at: T0 }, record: true }, other: { group: "First" } });
   const r = rules(s); assert.deepEqual(r.inbox("Default"), ["older", "newer"]); assert.equal(r.isRequest("record"), false); assert.equal(r.isRequest("closed"), false);
   assert.deepEqual(r.areas(), ["closed", "record", "other"]);
-});
-
-test("archives follow ownership, and updates, logs and replied item notes reopen their document", () => {
-  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: { updated: T2 }, log: { log: [{ at: T2, text: "New" }] }, reply: {}, equal: { updated: T1 }, noReply: {} }, {}, { reply: { target: "it:reply", reply: "Answer", repliedAt: T2 }, noReply: { target: "it:noReply", at: T2 } }, { parent: T1, log: T1, reply: T1, equal: T1, noReply: T1 });
-  const r = rules(s); assert.equal(r.isArchived("parent"), true); assert.equal(r.inArchive("child"), true); assert.equal(r.isArchived("child"), false);
-  for (const id of ["log", "reply"]) assert.equal(r.isArchived(id), false);
-  for (const id of ["equal", "noReply"]) assert.equal(r.isArchived(id), true);
-  assert.deepEqual(r.checks("child"), []);
 });
 
 test("derived arrays are defensive copies and snapshot changes require a new rules object", () => {

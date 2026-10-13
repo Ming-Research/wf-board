@@ -246,7 +246,7 @@ test("importExport writes the read state, then one commit per changed document i
   assert.deepEqual(times, [...times].sort(), "changed documents land oldest first");
   assert.equal(currentCommit, later.at(-1)!.commit);
   assert.equal(store.snapshot().owner.cursor, asReadCommit);
-  assert.deepEqual(store.snapshot().owner.archived, expected.owner.archived);
+  assert.equal(Object.hasOwn(store.snapshot().owner, "archived"), false, "plan conversion drops the retired archive state");
   assert.deepEqual(await store.show("item", "old", asReadCommit), expected.asRead.items.old);
   assert.deepEqual(await store.show("item", "old", currentCommit), { ...expected.current.items.old, rev: 2 });
   assert.equal(await store.show("item", "new", asReadCommit), null);

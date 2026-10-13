@@ -246,11 +246,10 @@ export type Board = z.infer<typeof Board>;
 export const ReadDocument = z.string().regex(/^(item|decision|note):[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);
 export const CommitId = z.string().regex(/^[0-9a-f]{40}$/);
 
-/** The reading cursor, exceptions read ahead of it, and archived items. */
+/** The reading cursor and exceptions read ahead of it. */
 export const OwnerState = z.object({
   cursor: CommitId.optional(),
   readMarks: z.record(ReadDocument, CommitId).optional(),
-  archived: z.record(Key, Time).default({}),
 }).strict();
 export type OwnerState = z.infer<typeof OwnerState>;
 

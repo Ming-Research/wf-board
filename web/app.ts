@@ -14,7 +14,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: { archived: {} }, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
@@ -186,15 +186,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function headOf(it: ViewItem) { return it.head || ""; }
   function logOf(it: ViewItem) { return it.log.slice().sort((a,b) => a.at.localeCompare(b.at)); }
   function latestOf(it: ViewItem) { return [it.updated, ...it.log.map(e => e.at), ...notesOf("it:" + it.id).filter(n => n.reply).map(n => n.repliedAt || n.sentAt || n.at)].sort().at(-1)!; }
-  function isArchived(it: ViewItem) { return derived.isArchived(it.id); }
-  function inArchive(it: ViewItem) { return derived.inArchive(it.id); }
-  function archivedPath(it: ViewItem) { return inArchive(it); }
   function statusOf(it: ViewItem) { return derived.statusOf(it.id); }
-  // A cancelled item's sub-items are all cancelled too, so its subtree hides with it, as an archived one's does.
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
-  function visible(it: ViewItem) { return !isArchived(it) && !isCancelled(it); }
+  function visible(it: ViewItem) { return !ended(it); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
@@ -208,7 +204,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
   function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).map(e => e.kind === "item" ? index().byId.get(e.id)! : index().byId.get(snapshot.decisions[e.id]!.item)!).filter(Boolean); }
-  function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w) && !inArchive(w)); }
+  function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w)); }
   function outDeps(it: ViewItem) { return openDeps(it).filter(d => !derived.ancestors(d.id).includes(it.id)); }
   function outWaiters(it: ViewItem) { return openWaiters(it).filter(w => !derived.ancestors(it.id).includes(w.id)); }
   function checksOf(it: ViewItem) { return derived.checks(it.id); }
@@ -268,20 +264,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
-  // Archived items take part only under 已归档, which shows each archived item with its subtree where it sits.
-  // Cancelled items likewise take part only under 取消.
+  // Completed and cancelled nodes show only under their status filters; their plan rows always show.
   let filters: Record<string, {status:string[];dep:string}> = {};
   try { filters = JSON.parse(localStorage.getItem("board-filters2") || "{}") || {}; } catch (e) {}
-  function groupFilter(g: string) { return filters[g || ""] || { status: [], dep: "" }; }
+  function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k))} : { status: [], dep: "" }; }
   const WEEK = 7 * 24 * 3600 * 1000;
   type Filter = [string,string,string,(it:ViewItem)=>boolean];
   const STATUS_FILTERS: Filter[] = [
     ["wip", "进行中", "进行中的条目", it => statusOf(it) === "wip"],
     ["blocked", "卡住", "卡住的条目", it => statusOf(it) === "blocked"],
     ["todo", "未开始", "还没开始的条目，包括部分完成但没人在做的", it => statusOf(it) === "todo"],
+    ["done", "完成", "所有完成的条目", it => statusOf(it) === "done"],
     ["done7", "7 天内完成", "最近 7 天完成的条目", it => statusOf(it) === "done" && Date.parse(latestOf(it)) > Date.now() - WEEK],
-    ["cancelled", "取消", "取消的条目", it => statusOf(it) === "cancelled"],
-    ["archived", "已归档", "归档的条目，各在原来的位置", it => inArchive(it)]
+    ["cancelled", "取消", "取消的条目", it => statusOf(it) === "cancelled"]
   ];
   const DEP_FILTERS: Filter[] = [
     ["chain", "阻塞链", "只看依赖下级以外的工作、被上级以外的条目依赖或卡住的条目", it => !ended(it) && (outDeps(it).length > 0 || outWaiters(it).length > 0 || (isLeaf(it) && statusOf(it) === "blocked"))],
@@ -290,12 +285,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   ];
   function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep; }
   function anyFiltering() { return Object.keys(filters).some(filtering); }
-  function showsArchived(g: string) { return groupFilter(g).status.includes("archived"); }
-  function showsCancelled(g: string) { return groupFilter(g).status.includes("cancelled"); }
   function matches(it: ViewItem) {
-    const f = groupFilter(groupOf(it)), arch = inArchive(it);
-    if (arch && !f.status.includes("archived")) return false;
-    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !arch && !isCancelled(it);
+    const f = groupFilter(groupOf(it));
+    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : visible(it);
     const d = DEP_FILTERS.find(x => x[0] === f.dep);
     return st && (!d || d[3](it));
   }
@@ -309,8 +301,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return { hit, anc, keep: new Set([...hit, ...anc]) };
     });
   }
-  function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && (key === "archived" ? isArchived(it) : !inArchive(it) && (key === "cancelled" || !isCancelled(it))) && f![3](it)).length; }
-  function passes(it: ViewItem) { return !filtering(groupOf(it)) || filterMatches().keep.has(it.id); }
+  function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && f![3](it)).length; }
+  function passes(it: ViewItem) { return filtering(groupOf(it)) ? filterMatches().keep.has(it.id) : visible(it); }
   function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
   function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key }; saveFilters(); }
@@ -342,12 +334,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     tally(freshItems.map(item => ({item})), below.fresh, () => 1);
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
-  function tops() { return derived.areas(id => visible(index().byId.get(id)!) || showsArchived(snapshot.items[id]?.group || "") || showsCancelled(snapshot.items[id]?.group || "")).map(id => index().byId.get(id)!); }
+  function tops() { return derived.areas(id => passes(index().byId.get(id)!)).map(id => index().byId.get(id)!); }
   function boardOrder() { return cached("boardOrder", boardOrderNow); }
   function boardOrderNow() {
     const out: ViewItem[] = [];
-    const walk = (list: ViewItem[]) => list.forEach(i => { out.push(i); walk(kids(i.id)); });
-    for (const g of projectGroups()) { walk(derived.inbox(g.name).map(id => index().byId.get(id)!)); walk(g.items); }
+    const walk = (list: ViewItem[]) => list.forEach(i => { out.push(i); walk(kids(i.id,true)); });
+    const roots=derived.areas().map(id => index().byId.get(id)!);
+    const groups=[...new Set([...snapshot.board.projects.map(g => g.name),...roots.map(groupOf)])];
+    for (const group of groups) {
+      walk(derived.inbox(group).map(id => index().byId.get(id)!));
+      const items=roots.filter(it => groupOf(it) === group);
+      walk([...items.filter(it => !neededElsewhere(it)),...items.filter(neededElsewhere)]);
+    }
     return out;
   }
   function homeOf(d: ViewDecision) { return index().byId.has(d.item) ? d.item : null; }
@@ -380,8 +378,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function toggleFresh(kind: string) { setFreshSel(freshSel.includes(kind) ? freshSel.filter(k => k !== kind) : freshSel.concat(kind)); }
   // Each document with unread changes is one stop, holding the pieces of every step that changed it, shown under its
   // own item or card. Stops follow the page from top to bottom: an item, then its comments, then each of its cards and
-  // that card's comments; what the page does not place comes last, in commit order. A change inside an archived item
-  // is hidden from this walk: archiving says the owner is done with it. A document read leaves it unread in history.
+  // that card's comments; what the page does not place comes last, in commit order. Closed items remain stops even
+  // while their tree nodes are hidden. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
   // The stops indexed once per data change, so n, the chips and the blue lines look a stop up instead of passing over
@@ -420,7 +418,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       merged.set(key, { key, step: step.id, doc: d, kinds: docKinds(d), sel: d.kind === "item" ? "it:" + d.id : d.kind === "decision" ? "q:" + d.id : "note:" + d.id, item, card, notes,
         at: [row, cardRank, d.kind === "note" ? 1 : 0, row === Number.MAX_SAFE_INTEGER ? k : 0] });
     }));
-    return [...merged.values()].filter(st => !(st.item && snapshot.items[st.item] && derived.inArchive(st.item))).sort((a, b) => compareAt(a.at, b.at));
+    return [...merged.values()].sort((a, b) => compareAt(a.at, b.at));
   }
 
   function noteElementId(id:string) { return "note-"+id.replace(/[^A-Za-z0-9_-]/g,"_"); }
@@ -448,9 +446,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     clearCurrent();
     const it=target.item && index().byId.get(target.item);
     if (it) {
-      if (inArchive(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["archived"]}; invalidate(); }
-      else if (isCancelled(it)) { const g=groupOf(it); filters[g]={...groupFilter(g),status:["cancelled"]}; invalidate(); }
-      else if (!passes(it)) clearFilters(groupOf(it));
+      if (!ended(it) && !passes(it)) clearFilters(groupOf(it));
       openPath(it.id);
       selectItem(it.id);
     }
@@ -498,7 +494,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     };
     const card = (id:string) => { if (!get("q-" + id)) return; add("decision",id); notes("q:" + id); };
     // Only the selected item's rendered body and its expanded comment list need baselines.
-    if (st.item && get("it-" + st.item) && bodyShown(st.item)) {
+    if (st.item && itemBox(st.item) && bodyShown(st.item)) {
       notes("it:" + st.item);
       add("item",st.item);
       derived.cardsOf(st.item).forEach(card);
@@ -617,7 +613,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
-  // r, c, e and a act on it, or on the item or card that holds it.
+  // r, c and e act on it, or on the item or card that holds it.
   let current: string | null = null;
   function effectiveSelection() { return current ?? (selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
@@ -723,15 +719,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (act && !connected) { showDisconnected(); return; }
     if (act && act.run()) ev.preventDefault();
   });
-  // The actions behind the shortcut keys; the menu (☰) lists them and runs them on a click as well.
-  // Each acts on the selected item or card while it is on screen, else on the one at the top of the screen.
-  function itemOfSelection() {
-    const selection=effectiveSelection();
-    if (!selection || current && !onScreen(boxOfKey(selection))) return null;
-    const key=containerOf(selection);
-    const id=key?.startsWith("it:") ? key.slice(3) : key?.startsWith("q:") ? snapshot.decisions[key.slice(2)]?.item : null;
-    return id ? index().byId.get(id) : null;
-  }
   // j and k move the selection to the next or previous item or card on the page, in screen order, without opening
   // anything; the page scrolls only as far as keeps the new selection in view. Enter shows the selected item's detail.
   function navBoxes() { return [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].filter(e => e.offsetParent !== null); }
@@ -784,7 +771,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
     { key: "c", label: "评论选中的内容（条目、卡片、某条日志或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
-    { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目；在已归档条目之内则取消上级的归档）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
     { key: "Backspace", show: "Backspace 或 [", label: "跟着依赖跳转后返回", run: () => { goBack(); return true; } },
     { key: "gg", show: "gg / G", label: "回到顶部 / 到底部", run: () => { glideTo(0); return true; } }
   ];
@@ -1107,7 +1093,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function crossSummary(g: string) {
     const out = new Map<string,number>(), inn = new Map<string,number>();
     state.items.forEach(w => {
-      if (ended(w) || inArchive(w)) return;
+      if (ended(w)) return;
       openDeps(w).forEach(d => {
         const gw = groupOf(w), gd = groupOf(d);
         if (gw === gd) return;
@@ -1274,14 +1260,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     });
     return b;
   }
-  // Archiving a done item hides it and its sub-items until new progress brings it back; doing it again restores it.
-  // On an item inside an archived subtree it restores the nearest archived ancestor, where the archive was made.
-  async function toggleArchive(it: ViewItem) {
-    const target = [it.id, ...derived.ancestors(it.id)].find(id => derived.isArchived(id));
-    if (!target && statusOf(it) !== "done" && statusOf(it) !== "cancelled") { showError(new Error("只有完成或取消的条目能归档")); return false; }
-    try { await api("/api/archive", { id: target || it.id, on: !target }); void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
-  }
-
   // Approvals and choices show on their buttons; the comment list holds comments, explain requests, and any approval or choice a session replied to.
   function listed(n: ViewNote) { return (!ANSWER[n.kind] && n.kind !== "choice") || !!n.reply; }
   function anchorLabel(a: NonNullable<Note["anchor"]>) {
@@ -1744,7 +1722,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
     return null;
   }
-  function itemNode(it: ViewItem, inArchive = false, headerOnly = false, boxOnly = false, detail = false) {
+  function itemNode(it: ViewItem, headerOnly = false, boxOnly = false, detail = false) {
     const retained=groupReuse?.items.get(it.id);
     if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly && !detail) return retained;
     const li = el("li");
@@ -1758,8 +1736,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (detail) box.dataset.sel = "it:"+it.id;
     if (!detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");
-    // Archived and cancelled sub-items stay where they are: hidden, unless the 已归档 or 取消 filter shows them.
-    const sub = kids(it.id, inArchive || showsArchived(groupOf(it)) || showsCancelled(groupOf(it))).filter(k => inArchive || passes(k));
+    const sub = kids(it.id,true).filter(passes);
     const ck = checksOf(it);
 
     const head = el("button", "item-head");
@@ -1778,7 +1755,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
     const stalledBelow = sub.length && !open ? derived.stalledBelow(it.id) : 0;
     if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 2 小时（活跃时间）没有动静";
-    const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
+    const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (below.fresh[it.id] || 0);
     if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
     if (pc) head.appendChild(pc);
@@ -1816,10 +1793,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
     });
     row.appendChild(head);
-    // A parent counts its leaves by status at the right of its row; archived and cancelled ones are left out.
+    // A parent counts its leaves by status at the right of its row; cancelled ones are left out.
     if ((index().children.get(it.id) || []).length) {
       const n: Record<string,number> = {};
-      leavesOf(it).filter(l => l !== it && !archivedPath(l) && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
+      leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       ["todo", "wip", "blocked", "done"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
@@ -1864,7 +1841,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     li.appendChild(box);
     if (open && sub.length && !boxOnly && !detail) {
       const ul = el("ul", "tree");
-      sub.forEach(k => ul.appendChild(itemNode(k, inArchive)));
+      sub.forEach(k => ul.appendChild(itemNode(k)));
       li.appendChild(ul);
     }
     if (derived.isRequest(it.id) && detail) {
@@ -2030,7 +2007,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let waitingOrder:string[]=[];
   const renderWaiters:Array<() => void>=[];
   let rulePresentationDirty=true;
-  let presentations=new Map<string,{signature:string;archived:boolean;cancelled:boolean;shown:boolean;request:boolean;group:string}>();
+  let presentations=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
     let finished=false, raf:number | undefined;
@@ -2052,7 +2029,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function presentationScopes(scope:Set<string>) {
     if (!rulePresentationDirty) return;
     rulePresentationDirty=false;
-    const next=new Map<string,{signature:string;archived:boolean;cancelled:boolean;shown:boolean;request:boolean;group:string}>();
+    const next=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
     for (const it of state.items) {
       const id=it.id;
       const label=(kind:string,key:string) => {
@@ -2063,11 +2040,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
       const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
-      const current={signature,archived:inArchive(it),cancelled:isCancelled(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
+      const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;
       if (previous.signature !== signature) scope.add("item:"+id);
-      if (previous.archived !== current.archived || previous.cancelled !== current.cancelled || previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
+      if (previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
     }
     presentations=next;
   }
@@ -2114,7 +2091,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     pane.innerHTML="";
     const it=selectedItem && index().byId.get(selectedItem);
     if (it) {
-      const next=itemNode(it,inArchive(it),false,true,true);
+      const next=itemNode(it,false,true,true);
       for (const card of elements(next).filter(e => e.classList.contains("card"))) {
         const old=retained.get(card.id), id=card.id.slice(2);
         if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
@@ -2145,7 +2122,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
           const it=index().byId.get(id), old=get("it-"+id); if (it && old && !scope.has("areas") && !scope.has("group:"+groupOf(it))) {
-            const next=itemNode(it,inArchive(it),false,kind !== "tree");
+            const next=itemNode(it,false,kind !== "tree");
             // A body update reuses cards whose own documents/notes did not change.
             for (const card of elements(old).filter(e => e.classList.contains("card"))) {
               const id=card.id.slice(2), replacement=elements(next).find(e => e.id === card.id);
@@ -2174,13 +2151,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       for (const id of heads) {
         const it=index().byId.get(id), old=get("it-"+id); if (!it) continue;
         if (old && !scope.has("areas") && !scope.has("group:"+groupOf(it))) {
-          const next=itemNode(it,inArchive(it),true).children[0] as HTMLElement;
+          const next=itemNode(it,true).children[0] as HTMLElement;
           old.children[0]!.replaceWith(next.children[0]!); old.className=next.className;
         }
         if (id === selectedItem && !detailPainted) {
           const detail=itemBox(id);
           if (detail) {
-            const head=itemNode(it,inArchive(it),true,true,true).children[0] as HTMLElement;
+            const head=itemNode(it,true,true,true).children[0] as HTMLElement;
             detail.children[0]!.replaceWith(head.children[0]!); detail.className=head.className;
           }
         }
@@ -2313,9 +2290,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (selectedItem && s.items[selectedItem]) {
         current="it:"+selectedItem;
         const it=index().byId.get(selectedItem)!;
-        if (inArchive(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["archived"]};
-        else if (isCancelled(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["cancelled"]};
-        else if (!passes(it)) clearFilters(groupOf(it));
+        if (!ended(it) && !passes(it)) clearFilters(groupOf(it));
         ancestors(it).forEach(p => { manual[p.id]=true; }); saveManual();
       }
     }

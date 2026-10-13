@@ -204,10 +204,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           }
         }
         const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有验收步骤)/;
-        const validationBefore = rules({ ...s, owner: { ...s.owner, archived: {} } }), validationAfter = rules({ ...next, owner: { ...next.owner, archived: {} } });
         for (const id of Object.keys(next.items)) {
-          const oldChecks = new Set(validationBefore.checks(id).map(c => JSON.stringify(c)));
-          for (const check of validationAfter.checks(id)) {
+          const oldChecks = new Set(beforeRules.checks(id).map(c => JSON.stringify(c)));
+          for (const check of afterRules.checks(id)) {
             if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}`);
           }
         }

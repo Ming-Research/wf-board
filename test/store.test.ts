@@ -35,7 +35,7 @@ test("YAML round trip preserves troublesome strings and schema key order", async
     if (i === 0) assert.match(text, /head: \|\n/);
     if (i === 7) assert.ok(text.includes("x".repeat(10000)));
   }
-  const owner = { archived: { null: at, "1e3": at, "2026-10-11": at, yes: at, no: at } };
+  const owner = { readMarks: Object.fromEntries(["null", "1e3", "2026-10-11", "yes", "no"].map(id => [`item:${id}`, store.snapshot().head])) };
   store.setOwner(owner);
   assert.deepEqual(parse(await readFile(join(dir, "state/owner.yaml"), "utf8"), { version: "1.2", schema: "core" }), owner);
   const reopened = await Store.open(dir);
@@ -109,7 +109,7 @@ test("validation aggregates invalid documents before touching files or git", asy
 test("git failure restores updates, deletions, creations and pending owner state", async t => {
   const { dir, store } = await setup(t);
   await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("delete", item())] });
-  store.setOwner({ cursor: store.snapshot().head, archived: { a: at } });
+  store.setOwner({ cursor: store.snapshot().head });
   const snapshot = store.snapshot();
   const original = await readFile(join(dir, "items/a.yaml"));
   await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -173,7 +173,7 @@ test("no-op keeps HEAD/revs and leaves pending owner for the next actual commit"
   const { dir, store } = await setup(t);
   await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
   const head = store.snapshot().head;
-  store.setOwner({ cursor: head, archived: { a: at } });
+  store.setOwner({ cursor: head });
   const result = await store.commit({ author: "a", message: "No-op", board: { title: "Board" }, puts: [put("a", { ...item(), rev: 900 }, 1)] });
   assert.equal(result.commit, head); assert.equal(result.revs.a, 1);
   assert.equal(await git(dir, "rev-parse", "HEAD"), head);
@@ -185,7 +185,7 @@ test("no-op keeps HEAD/revs and leaves pending owner for the next actual commit"
 
 test("owner state persists immediately, survives reopen, and flushes once at shutdown", async t => {
   const { dir, store } = await setup(t);
-  const state = { cursor: store.snapshot().head, archived: { a: at } };
+  const state = { cursor: store.snapshot().head };
   store.setOwner(state);
   assert.deepEqual(parse(await readFile(join(dir, "state/owner.yaml"), "utf8")), state);
   assert.equal((await store.log()).length, 1);
@@ -200,9 +200,9 @@ test("default owner state is staged on first persistence; absent optional fields
   const { dir, store } = await setup(t);
   let ownerBefore: unknown = "unset";
   store.onChange(c => { ownerBefore = c.changed.find(doc => doc.kind === "owner")?.before; });
-  store.setOwner({ archived: {} });
+  store.setOwner({});
   await store.commit({ author: "a", message: "First owner file", puts: [put("constructor", { ...item(), head: undefined }), put("toString", item())] });
-  assert.deepEqual(parse(await git(dir, "show", "HEAD:state/owner.yaml")), { archived: {} });
+  assert.deepEqual(parse(await git(dir, "show", "HEAD:state/owner.yaml")), {});
   assert.equal(ownerBefore, null);
   assert.equal(Object.hasOwn(store.snapshot().items.constructor!, "head"), false);
   assert.equal(store.snapshot().items["toString"]!.rev, 1);
@@ -239,12 +239,12 @@ async function pauseCommit(dir: string) {
 
 test("setOwner during a commit keeps the staged state and persists the newer state for the next commit", async t => {
   const { dir, store } = await setup(t);
-  const original = { cursor: store.snapshot().head, archived: { a: at } };
+  const original = { cursor: store.snapshot().head };
   store.setOwner(original);
   const hook = await pauseCommit(dir);
   const commit = store.commit({ author: "a", message: "Slow commit", puts: [put("a", item())] });
   await hook.ready();
-  const newer = { cursor: original.cursor, archived: { a: "2026-10-11T02:00:00Z" } };
+  const newer = { cursor: original.cursor, readMarks: { "item:a": original.cursor } };
   store.setOwner(newer);
   assert.deepEqual(store.snapshot().owner, newer);
   await hook.resume();
@@ -262,13 +262,13 @@ test("setOwner of defaults during the first commit still creates a pending owner
   const hook = await pauseCommit(dir);
   const commit = store.commit({ author: "a", message: "Slow first commit", puts: [put("a", item())] });
   await hook.ready();
-  store.setOwner({ archived: {} });
+  store.setOwner({});
   await hook.resume(); await commit;
-  assert.deepEqual(parse(await readFile(join(dir, "state/owner.yaml"), "utf8")), { archived: {} });
+  assert.deepEqual(parse(await readFile(join(dir, "state/owner.yaml"), "utf8")), {});
   await rm(join(dir, ".git/hooks/pre-commit"));
   const reopened = await Store.open(dir);
   assert.ok(await reopened.flushOwner("owner"));
-  assert.deepEqual(parse(await git(dir, "show", "HEAD:state/owner.yaml")), { archived: {} });
+  assert.deepEqual(parse(await git(dir, "show", "HEAD:state/owner.yaml")), {});
 });
 
 test("open reports every invalid file, including YAML syntax and filename errors", async t => {
@@ -527,7 +527,7 @@ test("activity retains every content revision and deletion across restart, but e
   assert.equal(beforeRead.items.b, history[0]!.at, "a later note deletion resets its deleted card's last owner");
   assert.equal(beforeRead.items.b, deleteNoteAt);
   assert.ok(Object.hasOwn(beforeRead.items, "constructor"), "legal prototype-named keys have own last-change entries");
-  store.setOwner({ archived: { constructor: at } });
+  store.setOwner({ readMarks: { "item:constructor": store.snapshot().head } });
   await store.flushOwner("owner");
   assert.deepEqual(store.snapshot().activity, beforeRead);
   const reopened = await Store.open(dir);

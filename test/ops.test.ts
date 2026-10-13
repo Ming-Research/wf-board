@@ -511,9 +511,8 @@ test("priority is only stored on roots and is removed atomically when a new plan
   assert.equal(rules(store.snapshot()).priorityOf("remote"), "P2");
 });
 
-test("archive visibility cannot bypass ownership, missing targets or cycles on writes", async t => {
+test("ownership, missing targets and cycles are refused without changing the snapshot", async t => {
   const { store, op } = await board(t);
-  store.setOwner({ ...store.snapshot().owner, archived: { area: "2999-01-01T00:00:00Z", other: "2999-01-01T00:00:00Z" } });
   const before = store.snapshot();
   await assert.rejects(op.setPlan({ author, id: "a", row: { item: "other", own: true } }), /跨项目拥有/);
   await assert.rejects(op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: true } }), /跨项目拥有|被多个条目拥有/);

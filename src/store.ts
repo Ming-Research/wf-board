@@ -11,9 +11,9 @@ import { z } from "zod";
 import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
-import { convertPlans, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
+import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
-import { verifyPlans } from "./verify-plans.ts";
+import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 
 export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
@@ -210,7 +210,7 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: { archived: {} }, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
       for (const sub of ["items", "decisions", "notes", "notices", "state"]) mkdirSync(join(dir, sub), { recursive: true });
@@ -220,17 +220,18 @@ export class Store {
     }
     if (entries.includes("board.yaml")) {
       const raw = await readPlanData(dir);
-      if (raw.legacy) {
+      if (raw.legacy || raw.hasArchives) {
         if (!opts.planConversionHead) throw new Error("Legacy item plans require an owner-approved dry run; set WF_BOARD_PLAN_CONVERSION_HEAD to its sourceHead");
         if (opts.planConversionHead !== raw.snapshot.head) throw new Error(`Approved plan conversion head ${opts.planConversionHead} differs from current ${raw.snapshot.head}`);
         const source = raw.snapshot as Legacy.Snapshot;
-        const result = convertPlans(source, { at: new Date().toISOString() });
-        result.report.errors.push(...verifyPlans(source, result));
+        const at = new Date().toISOString();
+        const result = raw.legacy ? convertPlans(source, {at}) : removeArchives(raw.snapshot as Snapshot,{at,planConversionAt:raw.planConversionAt});
+        result.report.errors.push(...(raw.legacy ? verifyPlans(source,result) : verifyArchiveRemoval(raw.snapshot as Snapshot,result,raw.planConversionAt)));
         updatePlanSummary(result.report,true);
         if (result.report.errors.length) throw new Error(`Plan conversion refused:\n${result.report.errors.join("\n")}`);
         const migration = new Store(dir, source as unknown as Snapshot);
         const committedOwner = await migration.readAt("state/owner.yaml", source.head);
-        migration.committedOwner = committedOwner === null ? {archived:{}} : validated(OwnerState, committedOwner, "state/owner.yaml");
+        migration.committedOwner = committedOwner === null ? {} : validated(Legacy.OwnerState, committedOwner, "state/owner.yaml");
         migration.ownerInHead = committedOwner !== null;
         migration.ownerFileExists = await stat(join(dir,"state/owner.yaml")).then(()=>true).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return false;throw error;});
         const originalOwner = structuredClone(source.owner), ownerPath = join(dir,"state/owner.yaml");
@@ -242,7 +243,7 @@ export class Store {
             planConversionReport: result.report });
         } catch(error) {
           // Ordinary commits save pending owner reads on rollback. A failed
-          // migration must additionally restore the original archive sidefile.
+          // migration must additionally restore the original owner sidefile.
           migration.state.owner = originalOwner;
           if(ownerBytes === undefined)rmSync(ownerPath,{force:true});else writeFileSync(ownerPath,ownerBytes);
           throw error;
@@ -277,7 +278,7 @@ export class Store {
         if (doc && key.success) (docs[collections[kind]] as Record<string, Doc>)[key.data] = doc;
       }
     }
-    let owner: OwnerState = { archived: {} };
+    let owner: OwnerState = {};
     let ownerFileExists = false;
     try {
       await stat(join(dir, "state/owner.yaml"));
@@ -292,7 +293,7 @@ export class Store {
     store.state.head = (await store.git(["rev-parse", "HEAD"])).trim();
     // Owner state can legitimately be newer than HEAD after a daemon restart.
     const persistedOwner = await store.readAt("state/owner.yaml", store.state.head);
-    store.committedOwner = persistedOwner === null ? { archived: {} } : validated(OwnerState, persistedOwner, "state/owner.yaml");
+    store.committedOwner = persistedOwner === null ? {} : validated(OwnerState, persistedOwner, "state/owner.yaml");
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
     await store.migrateCoordinator();
@@ -481,7 +482,7 @@ export class Store {
     if (invalid.length) throw new ValidationError(invalid);
     const ownerChanged = this.ownerPending();
     // Ordinary no-ops don't produce a commit just to save a pending cursor.
-    if (!changed.length && !(ownerOnly && ownerChanged)) return { commit: this.state.head, revs };
+    if (!changed.length && !(ownerOnly && ownerChanged) && !txn.planConversionReport) return { commit: this.state.head, revs };
     const ownerAtCommit = structuredClone(this.state.owner);
     if (ownerChanged) changed.push({ kind: "owner", id: "owner", before: this.ownerInHead ? this.committedOwner : null, after: ownerAtCommit });
     const paths = changed.map(c => c.kind === "board" ? "board.yaml" : c.kind === "owner" ? "state/owner.yaml" : docPath(c.kind, c.id));
@@ -667,9 +668,14 @@ export class Store {
         const raw: Record<string, unknown> = {};
         for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
         const loaded = parsePlanData(raw, hash);
-        if (!loaded.legacy) return loaded.snapshot as Snapshot;
-        const migrationReport = await this.readAt("import/plan-conversion.yaml", this.state.head) as { at?: unknown } | null;
-        const at = typeof migrationReport?.at === "string" ? Legacy.Time.parse(migrationReport.at) : this.comparisonAt;
+        if (!loaded.legacy) {
+          const source = loaded.snapshot as Snapshot;
+          const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
+          return {...source,owner:validated(OwnerState,owner,"state/owner.yaml")};
+        }
+        const migrationReport = await this.readAt("import/plan-conversion.yaml", this.state.head) as { at?: unknown; planConversionAt?:unknown } | null;
+        const timestamp=migrationReport?.planConversionAt??migrationReport?.at;
+        const at = typeof timestamp === "string" ? Legacy.Time.parse(timestamp) : this.comparisonAt;
         return convertPlans(loaded.snapshot as Legacy.Snapshot, { at }).snapshot;
       })();
       this.compared.set(hash, hit);
@@ -720,7 +726,7 @@ export class Store {
 }
 
 /** Transient reader for the CLI and startup migration; all data-file IO stays in Store. */
-export async function readPlanData(dir: string): Promise<{ legacy: boolean; snapshot: Legacy.Snapshot | Snapshot }> {
+export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
     try { raw[path] = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); }
@@ -736,6 +742,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; snap
     }
   }
   await load("state/owner.yaml",true);
+  await load("import/plan-conversion.yaml",true);
   let loaded: ReturnType<typeof parsePlanData> | undefined;
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
@@ -745,7 +752,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; snap
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; snapshot: Legacy.Snapshot | Snapshot } {
+function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
   const retiredItemShape = (doc: unknown): boolean => {
     if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
@@ -768,7 +775,9 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
     catch(error){if(error instanceof ValidationError){invalid.push(...error.invalid);return undefined;}throw error;}
   }
   const board=load(schema.Board,raw["board.yaml"],"board.yaml");
-  const owner=load(OwnerState,raw["state/owner.yaml"]??{archived:{}},"state/owner.yaml");
+  const rawOwner=raw["state/owner.yaml"]??{};
+  const hasArchives=!!rawOwner&&typeof rawOwner === "object"&&Object.hasOwn(rawOwner,"archived");
+  const owner=legacy||hasArchives?load(Legacy.OwnerState,rawOwner,"state/owner.yaml"):load(OwnerState,rawOwner,"state/owner.yaml");
   const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},notices:{},glossaries:{}};
   for(const [path,doc]of Object.entries(raw)){
     const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);if(!match)continue;
@@ -780,5 +789,9 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);
   const snapshot={board,...documents,owner,head} as Legacy.Snapshot|Snapshot;
-  return {legacy,snapshot};
+  const priorReport=raw["import/plan-conversion.yaml"] as {planConversionAt?:unknown;at?:unknown}|undefined;
+  const timestamp=priorReport?.planConversionAt??priorReport?.at;
+  const planConversionAt=timestamp===undefined?undefined:load(Legacy.Time,timestamp,"import/plan-conversion.yaml");
+  if(invalid.length)throw new ValidationError(invalid);
+  return {legacy,hasArchives,planConversionAt,snapshot};
 }

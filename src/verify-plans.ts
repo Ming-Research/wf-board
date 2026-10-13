@@ -1,10 +1,10 @@
 /** Independent preservation oracle. It never calls the converter or its extraction helper. */
 import { isDeepStrictEqual as equal } from "node:util";
-import { Item, Board } from "./model.ts";
+import { Item, Board, OwnerState } from "./model.ts";
 import type { Snapshot as LegacySnapshot } from "./legacy-model.ts";
 import { rules as oldRules } from "./legacy-rules.ts";
 import { rules as newRules } from "./rules.ts";
-import type { PlanRow, LogEntry } from "./model.ts";
+import type { PlanRow, LogEntry, Snapshot } from "./model.ts";
 import { derivePlanOracle } from "./plan-conversion-oracle.ts";
 import type { PlanConversion } from "./convert-plans.ts";
 
@@ -18,9 +18,10 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   for(const collection of ["decisions","notes","notices","glossaries"] as const)check(equal(old[collection],next[collection]),`${collection} changed`);
   check(equal({...old.board,projects:old.board.projects.map(({migrated:_m,...project})=>project)},next.board),"board changed beyond retired migration switch");
   check(Board.safeParse(next.board).success,"new board schema invalid");
-  const {archived:_oldArchives,...oldOwner}=old.owner,{archived:_newArchives,...newOwner}=next.owner;
-  check(equal(oldOwner,newOwner),"owner cursor/read marks changed");
-  const expectedArchives={...old.owner.archived}, expectedArchiveChanges: typeof result.report.archiveChanges=[];
+  const {archived:_oldArchives,...oldOwner}=old.owner;
+  check(equal(oldOwner,next.owner),"owner state changed beyond archive removal");
+  check(OwnerState.safeParse(next.owner).success,"new owner schema invalid");
+  check(result.report.counts.droppedArchives===Object.keys(old.owner.archived).length,"dropped archive count changed");
   const expectedStatusChanges: typeof result.report.statusChanges=[], expectedPriorityChanges: typeof result.report.priorityChanges=[];
   for(const [id,source] of Object.entries(old.items)) {
     const target=next.items[id];if(!target)continue;
@@ -29,12 +30,6 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     const targetFields=Object.fromEntries(Object.entries(target).filter(([key])=>!["plan","status","priority","head","group","log","provisional"].includes(key)));
     check(equal(sourceFields,targetFields),`${id}: preserved item fields changed`);
     check(target.group===before.groupOf(id),`${id}: project changed`);
-    check(before.isArchived(id)===after.archived(id)&&before.inArchive(id)===after.inArchive(id),`${id}: archive visibility changed`);
-    check(actual.isArchived(id)===after.archived(id)&&actual.inArchive(id)===after.inArchive(id),`${id}: archive rule disagreement`);
-    if(before.isArchived(id)&&!after.archived(id,old.owner)){
-      expectedArchives[id]=result.report.at;
-      expectedArchiveChanges.push({item:id,project:before.groupOf(id),title:source.title,oldArchiveAt:old.owner.archived[id]!,newArchiveAt:result.report.at,cause:"conversion logs",detail:"只推进原来有效的归档时间，使新增转换日志不改变归档可见性。"});
-    }
     check(equal(source.log,target.log.slice(0,source.log.length)),`${id}: original logs changed`);
     check(target.plan.length===0&&!source.record?false:!target.plan.length||target.provisional===true,`${id}: provisional mark missing`);
     const owns=target.plan.filter(row=>"item" in row&&row.own).map(row=>"item"in row?row.item:"").sort();
@@ -104,16 +99,14 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   check(equal(withoutDetail(expectedStatusChanges),withoutDetail(result.report.statusChanges)),"status difference report changed");
   check(equal(withoutDetail(expectedPriorityChanges),withoutDetail(result.report.priorityChanges)),"priority difference report changed");
   check(result.report.statusChanges.every(change=>!!change.detail.trim())&&result.report.priorityChanges.every(change=>!!change.detail.trim()),"difference cause detail missing");
-  check(equal(expectedArchives,next.owner.archived),"archive map changed beyond exact conversion adjustments");
-  check(equal(expectedArchiveChanges,result.report.archiveChanges),"archive adjustment report changed");
-  const causes: typeof result.report.byCause={status:{},priority:{},archive:{}};
-  for(const [key,changes]of [["status",expectedStatusChanges],["priority",expectedPriorityChanges],["archive",expectedArchiveChanges]]as const)for(const change of changes)causes[key][change.cause]=(causes[key][change.cause]??0)+1;
+  const causes: typeof result.report.byCause={status:{},priority:{}};
+  for(const [key,changes]of [["status",expectedStatusChanges],["priority",expectedPriorityChanges]]as const)for(const change of changes)causes[key][change.cause]=(causes[key][change.cause]??0)+1;
   check(equal(causes,result.report.byCause),"cause counts changed");
   check(equal(survey,result.report.survey),"survey counts changed");
   const projects: typeof result.report.byProject = {};
-  for(const id of Object.keys(old.items))projects[before.groupOf(id)]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0,archiveChanges:0};
+  for(const id of Object.keys(old.items))projects[before.groupOf(id)]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
   for(const [field,key]of [["findings","findings"],["rewritePointers","rewritePointers"]]as const)for(const finding of result.report[field]){check(!!old.items[finding.item]&&finding.project===before.groupOf(finding.item),`${field}: unknown item/project`);if(projects[finding.project])projects[finding.project]![key]++;}
-  for(const field of ["statusChanges","priorityChanges","archiveChanges"]as const)for(const change of result.report[field])if(projects[before.groupOf(change.item)])projects[before.groupOf(change.item)]![field]++;
+  for(const field of ["statusChanges","priorityChanges"]as const)for(const change of result.report[field])if(projects[before.groupOf(change.item)])projects[before.groupOf(change.item)]![field]++;
   check(equal(projects,result.report.byProject),"project report counts changed");
   check(result.report.counts.items===Object.keys(old.items).length,"report item count");
   check(result.report.counts.records===Object.values(old.items).filter(it=>it.record).length,"report record count");
@@ -122,5 +115,30 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   check(result.report.counts.oldLogs===Object.values(old.items).reduce((n,it)=>n+it.log.length,0)&&result.report.counts.newLogs===Object.values(next.items).reduce((n,it)=>n+it.log.length,0),"report log counts");
   check(result.report.counts.provisional===Object.values(next.items).filter(it=>it.provisional).length,"report provisional count");
   check(result.report.sourceHead===old.head,"source head changed");
+  check(result.report.planConversionAt===result.report.at,"plan conversion timestamp changed");
+  return errors;
+}
+
+/** Native-plan data may still have a retired owner archive field. */
+export function verifyArchiveRemoval(source: Snapshot, result: PlanConversion, planConversionAt?: string): string[] {
+  const errors:string[]=[], target=result.snapshot;
+  const check=(ok:boolean,message:string)=>{if(!ok)errors.push(message);};
+  const {archived={},...owner}=source.owner as Snapshot["owner"] & {archived?:Record<string,string>};
+  check(equal({...source,owner},target),"archive-only conversion changed content or other owner fields");
+  check(OwnerState.safeParse(target.owner).success,"retired archive field survives");
+  check(result.report.counts.droppedArchives===Object.keys(archived).length,"dropped archive count changed");
+  check(result.report.sourceHead===source.head,"source head changed");
+  check(result.report.planConversionAt===planConversionAt,"plan conversion provenance changed");
+  const c=result.report.counts;
+  check(c.items===Object.keys(source.items).length&&c.records===Object.values(source.items).filter(item=>item.record).length,"archive-only item counts changed");
+  check(c.decisions===Object.keys(source.decisions).length&&c.notes===Object.keys(source.notes).length,"archive-only card/note counts changed");
+  const logs=Object.values(source.items).reduce((n,item)=>n+item.log.length,0);
+  check(c.oldLogs===logs&&c.newLogs===logs&&c.targets===Object.values(source.items).reduce((n,item)=>n+(item.targets?.length??0),0),"archive-only log/target counts changed");
+  check(c.provisional===Object.values(source.items).filter(item=>item.provisional).length,"archive-only provisional count changed");
+  check(!result.report.statusChanges.length&&!result.report.priorityChanges.length&&!result.report.findings.length&&!result.report.rewritePointers.length,"archive-only conversion invented differences");
+  check(equal(result.report.byCause,{status:{},priority:{}})&&equal(result.report.survey,{}),"archive-only cause/survey counts changed");
+  const projects:typeof result.report.byProject={};
+  for(const item of Object.values(source.items))projects[item.group]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
+  check(equal(projects,result.report.byProject),"archive-only project counts changed");
   return errors;
 }

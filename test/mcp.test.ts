@@ -213,29 +213,22 @@ test("MCP request filing stores reason only in the log and triage attaches the r
   assert.equal(store.snapshot().items.request!.request, undefined); assert.ok(store.snapshot().items["firn-root"]!.plan!.some(row => "item" in row && row.item === "request" && row.own));
 });
 
-test("cached rules refresh when owner state changes without a new commit", async t => {
+test("owner reading state does not hide plan checks or change the data head", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op, now: () => later });
-  const client = new Client({ name: "Archive test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "Owner reading test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
-  const initial = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
-  assert.ok(initial.content);
-  // This mark supplies a current plan check independently of the retired
-  // manual-status checks. Progress updates keep provisional plans provisional.
   const b = store.snapshot().items.b!;
   await store.commit({ author: "Fixture", message: "Provisional plan witness", puts: [{ kind: "item", id: "b", expectRev: b.rev, doc: { ...b, provisional: true } }] });
   await op.setPlan({ author, id: "b", row: { id: "work", text: "Work alongside dependencies", state: "doing", after: [] } });
-  const unarchived = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
-  assert.match(JSON.stringify(unarchived.content), /b · WIP/);
-  assert.match(JSON.stringify(unarchived.content), /a · BLOCK/);
+  const before = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
+  assert.match(JSON.stringify(before.content), /b · WIP/);
+  assert.match(JSON.stringify(before.content), /a · BLOCK/);
   const head = store.snapshot().head;
-  // Archive inheritance follows the plan's owned rows; changing owner state
-  // alone must invalidate both the top item's and its children's view.
-  store.setOwner({ archived: { area: "2999-01-01T00:00:00Z" } });
+  store.setOwner({ cursor: head, readMarks: { "item:b": head } });
   assert.equal(store.snapshot().head, head);
-  const archived = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
-  assert.doesNotMatch(JSON.stringify(archived.content), /b · |a · |area · /);
-  assert.match(JSON.stringify(archived.content), /other · TODO/);
+  const after = await client.callTool({ name: "list", arguments: { filters: { hasChecks: true } } });
+  assert.deepEqual(after.content, before.content, "read markers cannot suppress checks");
 });
 
 test("MCP re-evaluates active time without a new commit and exposes record creation and updates", async t => {
