@@ -77,7 +77,7 @@ class Element {
 let bundle: Promise<string> | undefined;
 interface FakeResponse { ok:boolean; status:number; json: () => Promise<unknown> }
 interface PageOptions {
-  freshViewer?: boolean; storageUnavailable?: boolean; wide?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
+  storageUnavailable?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   notesOpen?: Record<string,boolean>; geometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   transform?: (code:string) => string;
   frames?: Frames;
@@ -89,21 +89,17 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const roots = new Map<string, Element>();
   for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
-  // Most legacy cases explicitly model the existing inline layout; fresh viewers exercise the production default.
-  if (!options.freshViewer && !storage.has("board-split")) storage.set("board-split", String(options.wide ?? false));
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
-  // The left list pane scrolls the list in wide mode, as the window does in narrow mode; its scroll events arrive
-  // after the scroll, as a browser's do.
+  // The left list pane scrolls the list; its scroll events arrive after the scroll, as a browser's do.
   const listPane=roots.get("page-left")!;
   listPane.geometry=()=>({top:0,bottom:1000,height:1000,left:0,width:900});
   Object.defineProperty(listPane,"scrollHeight",{get:()=>options.scrollHeight?.() ?? 10000});
+  Object.defineProperty(detail,"scrollHeight",{get:()=>options.scrollHeight?.() ?? 10000});
   const listMax=()=>(options.scrollHeight?.() ?? 10000)-1000;
-  let wide=options.wide ?? false;
-  const widthListeners: Array<(event:{matches:boolean})=>unknown> = [];
   const body = new Element("body"), wrap = new Element("div");
   const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
   const calls: Array<{path: string; body?: unknown}> = [];
-  const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [];
+  const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [], detailScrolls: number[] = [];
   const renders:unknown[]=[]; let scrollPosition=0, selected=false;
   const frame = options.frames?.request ?? ((fn:(now:number)=>void)=> { void setImmediate().then(()=>fn(performance.now())); return 1; });
   const windowListeners=new Map<string,Array<(event:unknown)=>unknown>>();
@@ -112,15 +108,16 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const programmaticScroll=()=> { void Promise.resolve().then(()=> { for(const fn of windowListeners.get("scroll") ?? []) fn({isTrusted:true}); }); };
   const paneScrolled=()=> { void Promise.resolve().then(()=> { for(const fn of listPane.handlers.get("scroll") ?? []) fn({isTrusted:true}); }); };
   listPane.scrollTo=(_x:number | {top?:number},y?:number)=> { const to=typeof _x === "object" ? _x.top ?? 0 : y ?? 0; scrolls.push(to); listPane.scrollTop=Math.max(0,Math.min(listMax(),to)); paneScrolled(); };
+  detail.scrollTo=(_x:number | {top?:number},y?:number)=> { const to=typeof _x === "object" ? _x.top ?? 0 : y ?? 0; detailScrolls.push(to); detail.scrollTop=Math.max(0,Math.min(detail.scrollHeight-detail.clientHeight,to)); };
   const document = {
     body, get activeElement() { return focused.current; }, documentElement: { get scrollHeight() { return options.scrollHeight?.() ?? 10000; } },
     getElementById: (id: string) => all().find(e => e.id === id) ?? null,
     createTextNode: (text:string) => { const e=new Element("#text"); e.textContent=text; return e; },
     createElement: (tag: string) => {
       const e = new Element(tag);
-      e.bubbleClick=!!options.wide;
+      e.bubbleClick=true;
       e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,stopPropagation() { go=false; },preventDefault() {}},true); return go; };
-      if (options.geometry || options.detailGeometry || options.wide) e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
+      e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
       return e;
     },
     querySelector: (selector: string) => selector === ".wrap" ? wrap : all().find(e => selector === '[data-sel="' + e.dataset.sel + '"]') ?? null,
@@ -140,7 +137,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
-    matchMedia: (query:string) => query.includes("prefers-reduced-motion") ? {matches:options.reducedMotion !== false} : {get matches() { return query === "(min-width: 800px)" && wide; }, addEventListener(_kind:string,fn:(event:{matches:boolean})=>unknown) { widthListeners.push(fn); }},
+    matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
@@ -190,12 +187,13 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   // A live update from the server, as the page's event stream delivers it.
   const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
-  return { roots, all, calls, document, wrap, change, emit, measurements, scrolls, sources, renders,flush, storage,
-    setWide:async(value:boolean)=> { wide=value; widthListeners.forEach(fn=>fn({matches:wide})); await flush(); },
-    // Where the list is scrolled: the left pane in wide mode, the window otherwise. `windowScrollY` is the window alone.
-    get scrollY() { return wide ? listPane.scrollTop : scrollPosition; },
+  return { roots, all, calls, document, wrap, change, emit, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
+    // Every scroll either pane was asked to make.
+    get scrollCount() { return scrolls.length + detailScrolls.length; },
+    // Where the list is scrolled: the left pane. `windowScrollY` is the window, which the page never scrolls.
+    get scrollY() { return listPane.scrollTop; },
     get windowScrollY() { return scrollPosition; },
-    user:(kind:string)=> { if (kind === "scroll") { if (wide) listPane.scrollTop+=100; else scrollPosition+=100; } dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
+    user:(kind:string)=> { if (kind === "scroll") listPane.scrollTop+=100; dispatch(kind,{isTrusted:true,target:new Element("div")}); for(const fn of windowListeners.get(kind) ?? []) fn({isTrusted:true,target:new Element("div")}); },
     key: (key: string,target:Element=new Element("div")) => { let prevented=false, stopped=false; const ev={key,isTrusted:true,target,preventDefault(){prevented=true;},stopPropagation(){stopped=true;}}; for (const fn of target?.handlers.get("keydown") ?? []) fn(ev); if (!stopped) dispatch("keydown",ev); return prevented; },
     // The reader presses the mouse at a point, leaving text selected or not when the button is released.
     press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
@@ -222,14 +220,19 @@ function card(): Decision {
 }
 const stepId = "d".repeat(40);
 function unread(kind = "item", doc = "child", id = stepId) { return [{id,commits:[id],author:"Session A",at,docs:[{kind,id:doc,summary:"synthetic change"}]}]; }
+// The page always shows the selected item's body in the detail column. expand unfolds the parent "area" and selects the
+// item, so its body, cards and comments are on the page.
 async function expand(p: Awaited<ReturnType<typeof page>>, id = "child") {
-  if (id !== "area") await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
-  await p.all().find(e => e.id === "it-" + id)!.children[0]!.children[0]!.click();
+  const caret = rowOf(p, "area").querySelector(".caret")!;
+  if (caret.attributes["aria-expanded"] !== "true" && !caret.disabled) await caret.click();
+  await rowOf(p, id).querySelector(".item-head")!.click();
   await setImmediate(); await setImmediate();
 }
-function item(p: Awaited<ReturnType<typeof page>>, id = "child") { return p.all().find(e => e.id === "it-" + id)!; }
+// An item's tree row, and the item as the reader sees it: its detail box when it is the selected item, else its row.
+function rowOf(p: Awaited<ReturnType<typeof page>>, id = "child") { return p.all().find(e => e.id === "it-" + id)!; }
+function item(p: Awaited<ReturnType<typeof page>>, id = "child") { return p.all().find(e => e.id === "detail-it-" + id) ?? rowOf(p, id); }
 
-test("inline added paragraph renders rich text without any unread box", async () => {
+test("detail: added paragraph renders rich text without any unread box", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"Unchanged"};
   s.items.child!.head = "Unchanged\n\n**Added** paragraph";
   const p = await page(s,unread(),before); await expand(p);
@@ -239,7 +242,7 @@ test("inline added paragraph renders rich text without any unread box", async ()
   assert.ok(!markup(item(p)).includes("次提交"));
 });
 
-test("inline removed paragraph is not shown and unchanged paragraphs carry no marks", async () => {
+test("detail: removed paragraph is not shown and unchanged paragraphs carry no marks", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"First\n\n- **Removed** paragraph\n\nLast"};
   s.items.child!.head = "First\n\nLast";
   const p = await page(s,unread(),before); await expand(p);
@@ -249,7 +252,7 @@ test("inline removed paragraph is not shown and unchanged paragraphs carry no ma
   assert.ok(!/class="chg-add"[^>]*><p>(First|Last)<\/p>/.test(body));
 });
 
-test("inline existing fenced code keeps blank lines and contiguous lists and tables remain rich blocks", async () => {
+test("detail: existing fenced code keeps blank lines and contiguous lists and tables remain rich blocks", async () => {
   const s = snapshot(), before = {...s.items.child!,head:"```\nold\n\ncode\n```\n\n- Keep\n- Old list\n\n| Header |\n| --- |\n| Old row |"};
   s.items.child!.head = "```\nnew\n\ncode\n```\n\n- Keep\n- New list\n\n| Header |\n| --- |\n| New row |";
   const p = await page(s,unread(),before); await expand(p);
@@ -260,7 +263,7 @@ test("inline existing fenced code keeps blank lines and contiguous lists and tab
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
 });
 
-test("inline changed title marks the new title and shows no former title", async () => {
+test("detail: changed title marks the new title and shows no former title", async () => {
   const s = snapshot(), before = {...s.items.child!,title:"Old title"}; s.items.child!.title = "New title";
   const p = await page(s,unread(),before); await expand(p);
   const head = descendants(item(p)).find(e => e.className === "item-head")!;
@@ -269,7 +272,7 @@ test("inline changed title marks the new title and shows no former title", async
   assert.ok(!markup(head).includes("Old title") && !head.children.some(e => e.tagName === "SMALL" || e.className.includes("title-was")),"the former title is not rendered");
 });
 
-test("inline removed dependency and link are not shown while changed priority status and ask are marked", async () => {
+test("detail: removed dependency and link are not shown while changed priority status and ask are marked", async () => {
   const s = snapshot(), before = {...s.items.child!,status:"todo",priority:"P2",ask:{text:"Old ask"},deps:[{id:"area",why:"Old reason"}],links:[{label:"Old link",url:"https://example.com/old"}]};
   s.items.child!.ask = {text:"New ask"};
   const p = await page(s,unread(),before); await expand(p);
@@ -282,7 +285,7 @@ test("inline removed dependency and link are not shown while changed priority st
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
 });
 
-test("inline removed link is not shown and an added non-HTTPS link has no active href", async () => {
+test("detail: removed link is not shown and an added non-HTTPS link has no active href", async () => {
   const s = snapshot(), before = {...s.items.child!,links:[{label:"Removed HTTP link",url:"http://example.com/old"}]};
   s.items.child!.links = [{label:"Added HTTP link",url:"http://example.com/new"}];
   const p = await page(s,unread(),before); await expand(p);
@@ -293,7 +296,7 @@ test("inline removed link is not shown and an added non-HTTPS link has no active
   assert.ok(!Object.hasOwn(row,"href"),"non-HTTPS links must not receive an active href");
 });
 
-test("inline cleared ask is not shown as removed text", async () => {
+test("detail: cleared ask is not shown as removed text", async () => {
   const s = snapshot(), before = {...s.items.child!,ask:{text:"Cleared ask"}}; delete s.items.child!.ask;
   const p = await page(s,unread(),before); await expand(p);
   assert.ok(!markup(item(p)).includes("Cleared ask") && !markup(item(p)).includes("chg-del"));
@@ -308,7 +311,7 @@ test("expanded unread marks disappear when r reads the selected item without an 
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Old body"));
 });
 
-test("inline baseline is first unread before and after is current snapshot rather than an intermediate step", async () => {
+test("detail: baseline is first unread before and after is current snapshot rather than an intermediate step", async () => {
   const s = snapshot(), first = "b".repeat(40), last = "c".repeat(40);
   s.items.child!.head = "Original\n\nCurrent";
   const p = await page(s,[...unread("item","child",first),...unread("item","child",last)],(params: URLSearchParams) => ({before:{...s.items.child!,head:params.get("id") === first ? "Original" : "Original\n\nIntermediate"},after:{...s.items.child!,head:"Original\n\nIntermediate"},diff:""}));
@@ -321,7 +324,7 @@ test("inline baseline is first unread before and after is current snapshot rathe
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Intermediate"));
 });
 
-test("inline new item marks only its title and keeps rich head and duplicate new log markings", async () => {
+test("detail: new item marks only its title and keeps rich head and duplicate new log markings", async () => {
   const s = snapshot(); s.items.child!.head = "**Goal**：Body\n\n- List\n\n```\n<unsafe>\n\ncode\n```";
   s.items.child!.log = [{at,text:"same"},{at,text:"same"}];
   const p = await page(s,unread(),null); await expand(p);
@@ -331,7 +334,7 @@ test("inline new item marks only its title and keeps rich head and duplicate new
   assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry") && e.className.includes("fresh")).length,2);
 });
 
-test("inline card marks current question background option and ruling and shows no removed option or former question", async () => {
+test("detail: card marks current question background option and ruling and shows no removed option or former question", async () => {
   const s = snapshot(), before = card();
   s.decisions.q = {...before,question:"Current question",background:"Old background\n\nNew background",status:"ruled",choice:"B",ruling:"**Current** ruling",options:[{key:"B",text:"New option",recommended:true}]};
   const p = await page(s,unread("decision","q"),{...before,background:"Old background"},{...before,ruling:"Intermediate ruling"}); await expand(p);
@@ -345,7 +348,7 @@ test("inline card marks current question background option and ruling and shows 
   assert.ok(!markup(c).includes("Intermediate ruling"));
 });
 
-test("inline new card marks its title only and retains unscored confidence", async () => {
+test("detail: new card marks its title only and retains unscored confidence", async () => {
   const s = snapshot(); s.decisions.q = {...card(),confidence:{reason:"Unscored evidence"}};
   const p = await page(s,unread("decision","q"),null); await expand(p);
   const c = p.all().find(e => e.id === "q-q")!;
@@ -354,7 +357,7 @@ test("inline new card marks its title only and retains unscored confidence", asy
   assert.match(markup(c), /Unscored evidence/);
 });
 
-test("inline note stops select the existing fresh reply row without duplicated thread", async () => {
+test("detail: note stops select the existing fresh reply row without duplicated thread", async () => {
   const s = snapshot(), before: Note = {target:"it:child",kind:"comment",text:"Owner question",at,state:"sent",rev:1};
   s.notes.n = {...before,state:"done",reply:"**Reply**：Answer",repliedAt:at};
   const p = await page(s,unread("note","n"),before); p.key("n"); await p.flush();
@@ -366,7 +369,7 @@ test("inline note stops select the existing fresh reply row without duplicated t
   assert.ok(!descendants(p.all().find(e => e.id === "note-n")!).some(e => e.className.includes("newbar")));
 });
 
-test("inline deleted document stops render no body but remain countable walkable and readable", async () => {
+test("detail: deleted document stops render no body but remain countable walkable and readable", async () => {
   for (const kind of ["item","decision"] as const) {
     const s = snapshot(); delete s.items.child; s.items.area!.deps = [];
     const p = await page(s,unread(kind,"gone"),kind === "item" ? {...snapshot().items.child!,head:"Deleted body"} : card(),null);
@@ -401,11 +404,11 @@ test("unread logs expand with preceding entries highlight duplicate appends and 
   assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,0);
 });
 
-test("a drag that leaves text selected in a row neither toggles nor follows it; a click still does", async () => {
+test("a drag that leaves text selected in a row neither folds nor follows it; a click still does", async () => {
   const s = snapshot(); s.items.area!.deps.push({ id: "far", why: "needs far" });
   s.items.far = { title: "Far area", group: "Other project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   const p = await page(s, []);
-  const head = () => p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!, open = () => p.all().some(e => e.id === "it-child");
+  const head = () => rowOf(p, "area").querySelector(".caret")!, open = () => p.all().some(e => e.id === "it-child");
   const before = open();
   p.press(10, 10, true); await head().click({ clientX: 120, clientY: 12 }); await p.flush();
   assert.equal(open(), before, "a drag ending in a selection leaves the item as it was");
@@ -413,13 +416,13 @@ test("a drag that leaves text selected in a row neither toggles nor follows it; 
   assert.notEqual(open(), before, "a moved press that selects nothing is a click");
   p.press(10, 10, true); await head().click({ clientX: 10, clientY: 10 }); await p.flush();
   assert.equal(open(), before, "a click in place toggles even while text elsewhere stays selected");
-  if (!open()) { p.press(0, 0, false); await head().click(); await p.flush(); }
-  const far = descendants(p.all().find(e => e.id === "it-area")!).find(e => e.className.startsWith("deprow") && e.innerHTML.includes("Far area"))!;
-  const scrolled = p.scrolls.length;
+  p.press(0, 0, false); await rowOf(p, "area").querySelector(".item-head")!.click(); await p.flush();
+  const far = descendants(item(p, "area")).find(e => e.className.startsWith("deprow") && e.innerHTML.includes("Far area"))!;
+  const scrolled = p.scrollCount;
   p.press(10, 10, true); await far.click({ clientX: 200, clientY: 10 }); await p.flush();
-  assert.equal(p.scrolls.length, scrolled, "a drag over a dependency row does not follow it");
+  assert.equal(p.scrollCount, scrolled, "a drag over a dependency row does not follow it");
   p.press(10, 10, false); await far.click({ clientX: 10, clientY: 10 }); await p.flush();
-  assert.ok(p.scrolls.length > scrolled, "a click on a dependency row follows it");
+  assert.ok(p.scrollCount > scrolled, "a click on a dependency row follows it");
 });
 
 test("R9 owner controls follow shared ask/card predicates through draft and sent answers", async () => {
@@ -428,8 +431,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
     s.notes.a = { target: "it:child", kind: "approve", text: "同意：Approve work", at, state, rev: 1 };
     s.notes.c = { target: "q:q", kind: "choice", choice: "B", text: "B", at, state, rev: 1 };
     const p = await page(s, []), r = rules(s);
-    await p.all().find(e => e.className === "item-head")!.click();
-    await p.all().filter(e => e.className === "item-head").at(-1)!.click();
+    await expand(p);
     // The waiting badge and approval action are rendered from the predicates.
     assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "等你决定"), r.cardWaiting("q"));
     assert.equal(p.all().some(e => e.id === "ask-child"), r.askPending("child"));
@@ -441,6 +443,7 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
   const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"+1 log"}]}]);
+  await wideCaret(p).click(); await p.flush();
   p.key("r"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
   // The page shows the parent above its child, so n reaches the parent first although the step lists the child first.
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
@@ -448,7 +451,7 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   assert.ok(!p.calls.some(c => c.path === "/api/read"));
   p.key("r"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
-  const areaChip=descendants(item(p,"area").children[0]!.children[0]!).filter(e=>e.className === "newtag freshchip");
+  const areaChip=descendants(item(p,"area").querySelector(".item-head")!).filter(e=>e.className === "newtag freshchip");
   assert.deepEqual(areaChip.map(e=>e.innerHTML),["1"],"the parent's one chip now counts only the sub-item");
   assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 1 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
@@ -457,27 +460,25 @@ test("n reaches items in page order, skips archived ones, and r reads the select
 });
 
 test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
-  // Elements sit at fixed page positions, one row apart in document order; the viewport moves over them.
-  const layout = () => { let view: {scrollY:number} | undefined; return { bind:(p:{scrollY:number}) => { view = p; }, geometry:(e:Element, all:() => Element[]) => {
+  // Elements of the detail column sit at fixed positions, one row apart in document order; the pane moves over them.
+  const geometry = (e:Element, all:() => Element[]) => {
     const y = e.className.split(" ").includes("item") ? 600 : 600 + all().indexOf(e) * 40;
-    return {top:y - (view?.scrollY ?? 0), height:e.className.split(" ").includes("item") ? 6000 : 20};
-  } }; };
+    return {top:y, height:e.className.split(" ").includes("item") ? 6000 : 20};
+  };
   const s = snapshot();
   s.items.child!.log = [{at, by:"Session A", text:"First new entry"}, {at:"2026-10-11T02:00:00Z", by:"Session A", text:"Second new entry"}];
-  const changedLayout = layout();
-  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", log:[]}, undefined, {geometry:changedLayout.geometry}); changedLayout.bind(p);
-  const before = p.scrolls.length;
+  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", log:[]}, undefined, {detailGeometry:geometry});
+  const before = p.detailScrolls.length;
   p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush();
-  const visits = p.scrolls.slice(before);
+  const visits = p.detailScrolls.slice(before);
   assert.ok(item(p).className.includes("cur"), "n stays inside the changed item");
   assert.equal(visits.length, 4);
   assert.ok(visits[0]! < visits[1]! && visits[1]! < visits[2]!, "a changed status and two new log entries, down the page: " + visits.join(", "));
   assert.equal(visits[3], visits[0], "after its last place, n goes on to the next stop, here the same item again");
-  const createdLayout = layout();
-  const created = await page(snapshot(), unread("item","child"), null, undefined, {geometry:createdLayout.geometry}); createdLayout.bind(created);
-  const start = created.scrolls.length;
+  const created = await page(snapshot(), unread("item","child"), null, undefined, {detailGeometry:geometry});
+  const start = created.detailScrolls.length;
   created.key("n"); await created.flush(); created.key("n"); await created.flush();
-  assert.equal(new Set(created.scrolls.slice(start)).size, 1, "a new item is one stop, at its start: " + created.scrolls.slice(start).join(", "));
+  assert.equal(new Set(created.detailScrolls.slice(start)).size, 1, "a new item is one stop, at its start: " + created.detailScrolls.slice(start).join(", "));
 });
 
 
@@ -487,6 +488,7 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   const doc = (id:string) => ({kind:"item" as const,id,summary:"+1 log",pieces:{log:1,reply:0,other:0}});
   // Commit order is plain, child, area, area again; the page order is area, its child, then plain.
   const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]},{id:c,commits:[c],author:"Session A",at,docs:[doc("area")]}]);
+  await wideCaret(p).click(); await p.flush();
   const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "新 3 ›"),"three items have something new");
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
@@ -503,9 +505,8 @@ test("a dependency row names its project only when the project differs from the 
   s.items.far = { title: "Far area", group: "Other project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.child!.deps = [{ id: "sib", why: "same area" }, { id: "far", why: "other area" }];
   const p = await page(s, []);
-  await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
-  await p.all().find(e => e.id === "it-child")!.children[0]!.children[0]!.click();
-  const rows = descendants(p.all().find(e => e.id === "it-child")!).filter(e => e.className.startsWith("deprow"));
+  await expand(p);
+  const rows = descendants(item(p)).filter(e => e.className.startsWith("deprow"));
   const same = rows.find(e => e.innerHTML.includes("Sibling"))!, far = rows.find(e => e.innerHTML.includes("Far area"))!;
   assert.ok(same && far);
   assert.ok(!same.innerHTML.includes('class="where"'), "a same-project dependency carries no label");
@@ -535,10 +536,10 @@ test("project page omits session assignments and shows inbox requests, including
   assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
   assert.ok(p.all().some(e=>e.innerHTML==="等你处理 1 ›"));
   const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
-  assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/); assert.match(markup(inbox),/Visitor/); assert.match(markup(inbox),/Need feature/);
-  const item=p.all().find(e=>e.id==="it-incoming"); assert.ok(item); assert.ok(descendants(inbox).includes(item));
-  await descendants(item).find(e=>e.className==="item-head")!.click();
-  assert.match(markup(p.all().find(e=>e.id==="it-incoming")!),/Request body/);
+  assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/);
+  const tree=p.all().find(e=>e.id==="it-incoming"); assert.ok(tree); assert.ok(descendants(inbox).includes(tree));
+  await descendants(tree).find(e=>e.className==="item-head")!.click();
+  assert.match(markup(p.all().find(e=>e.id==="detail-it-incoming")!),/Request body/);
   assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
 });
 
@@ -551,7 +552,7 @@ test("新 counts items: one per item however many changes, a parent adding the i
   const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
   assert.ok(buttons.includes("新 2 ›"), "two items have something new: " + buttons.join(" | "));
   assert.ok(buttons.includes("进展 2") && buttons.includes("其他 1"), "kind counts are items too");
-  await p.all().find(e => e.id === "it-area")!.children[0]!.children[0]!.click();
+  await wideCaret(p).click();
   const chip = (itemId: string) => descendants(p.all().find(e => e.id === "it-" + itemId)!.children[0]!).filter(e => e.className.includes("newtag")).map(e => e.innerHTML);
   assert.deepEqual(chip("child"), ["1"], "four changes in one item count once");
   assert.deepEqual(chip("area"), ["2"], "the parent shows one chip: itself and the item below it");
@@ -602,7 +603,7 @@ test("the blue line marks an item's own new content: new and changed items, not 
   const changed=await page(s,unread(),{...s.items.child!,head:"Before"}); await expand(changed);
   assert.ok(item(changed).className.split(" ").includes("fresh"),"a changed item shows 新 and so carries the bar");
   assert.ok(!item(changed,"area").className.split(" ").includes("fresh"),"a parent with only new content below carries no line, only its 新 chip");
-  assert.ok(descendants(item(changed,"area").children[0]!.children[0]!).some(e=>e.className === "newtag freshchip"),"that parent still counts the sub-item");
+  assert.ok(descendants(item(changed,"area").querySelector(".item-head")!).some(e=>e.className === "newtag freshchip"),"that parent still counts the sub-item");
   assert.ok(!item(changed,"plain").className.split(" ").includes("fresh"),"an item with nothing new carries no bar");
 });
 
@@ -665,39 +666,25 @@ test("n opens collapsed item and card comment lists then scrolls to the existing
   for (const target of ["it:child","q:q"]) {
     const s=snapshot(); if (target.startsWith("q:")) s.decisions.q=card();
     s.notes.n={target,kind:"comment",text:"New note",at,state:"sent",rev:1};
-    const p=await page(s,unread("note","n"),null,undefined,{notesOpen:{[target]:false},geometry:geom});
+    const p=await page(s,unread("note","n"),null,undefined,{notesOpen:{[target]:false},detailGeometry:geom});
     assert.ok(!p.all().some(e=>e.id === "note-n"));
     p.key("n"); await settle();
     assert.ok(p.all().find(e=>e.id === "note-n")!.className.includes("cur"));
-    assert.equal(p.measurements[0]!.id,"note-n");
-    assert.ok(p.scrolls.at(-1)! > 0,"scroll must use the note's nonzero geometry");
+    assert.ok(p.measurements.some(m=>m.id === "note-n" && m.top === 1700),"the note supplies the landing geometry");
+    assert.ok(p.detailScrolls.at(-1)! > 0,"scroll must use the note's nonzero geometry");
     assert.ok(p.calls.some(c=>c.path.startsWith("/api/step?") && c.path.includes("kind=note")),"scroll must wait for note rendering's baseline");
   }
-});
-
-test("n waits for an already pending ancestor mark request before measuring and scrolling to a note", async () => {
-  const s=snapshot(), hold=deferred<unknown>(); s.items.area!.head="Current ancestor";
-  s.notes.n={target:"it:child",kind:"comment",text:"Note below ancestor",at,state:"sent",rev:1};
-  const changes=[...unread("note","n"),...unread("item","area","e".repeat(40))];
-  const p=await page(s,changes,(params:URLSearchParams)=>params.get("doc") === "area" ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},geometry:(e,all)=>({top:e.id === "note-n" ? (all().some(v=>v.innerHTML.includes('class="chg-add"')) ? 2100 : 1200) : 600,height:e.id === "note-n" ? 100 : 2400})});
-  await expand(p,"area"); assert.ok(p.calls.some(c=>c.path.includes("doc=area")));
-  // The child is the last stop on the page, so N reaches it first.
-  p.key("N"); await settle();
-  assert.equal(p.scrolls.length,0,"scroll cannot precede the already pending ancestor request");
-  hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=area"),{...s.items.area!,head:"Earlier ancestor"})); await settle();
-  assert.equal(p.measurements[0]!.id,"note-n"); assert.equal(p.measurements[0]!.top,2100);
-  assert.equal(p.scrolls.length,1);
 });
 
 test("rapid n suppresses obsolete scrolling while delayed note baselines finish", async () => {
   const s=snapshot(), first=deferred<unknown>(), second=deferred<unknown>();
   s.notes.one={target:"it:child",kind:"comment",text:"First",at,state:"sent",rev:1}; s.notes.two={...s.notes.one,text:"Second"};
-  const p=await page(s,[...unread("note","one"),...unread("note","two","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "one" ? first.promise : second.promise,undefined,{notesOpen:{"it:child":false},geometry:geom});
+  const p=await page(s,[...unread("note","one"),...unread("note","two","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "one" ? first.promise : second.promise,undefined,{notesOpen:{"it:child":false},detailGeometry:geom});
   p.key("n"); p.key("n"); await settle();
-  assert.equal(p.scrolls.length,0,"both navigation requests must await rendered note baselines");
-  second.resolve(endpoints(s,new URLSearchParams("kind=note&doc=two"),null)); await settle(); assert.equal(p.scrolls.length,0,"another rendered pending baseline can still move the target");
+  assert.equal(p.scrollCount,0,"both navigation requests must await rendered note baselines");
+  second.resolve(endpoints(s,new URLSearchParams("kind=note&doc=two"),null)); await settle(); assert.equal(p.scrollCount,0,"another rendered pending baseline can still move the target");
   first.resolve(endpoints(s,new URLSearchParams("kind=note&doc=one"),null)); await settle();
-  assert.equal(p.scrolls.length,1); assert.equal(p.measurements[0]!.id,"note-two");
+  assert.equal(p.detailScrolls.length,1); assert.ok(p.measurements.some(m=>m.id === "note-two" && m.top === 1700));
   assert.ok(p.all().find(e=>e.id === "note-two")!.className.includes("cur"));
 });
 
@@ -705,15 +692,15 @@ test("rapid n suppresses obsolete scrolling while delayed note baselines finish"
 test("failed rendered baseline prevents scrolling and retries once on the next n", async () => {
   const s=snapshot(), hold=deferred<unknown>(); let attempts=0;
   s.notes.n={target:"it:child",kind:"comment",text:"New note",at,state:"sent",rev:1};
-  const p=await page(s,unread("note","n"),(params:URLSearchParams)=>++attempts === 1 ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},geometry:geom});
-  p.key("n"); await settle(); assert.equal(attempts,1); assert.equal(p.scrolls.length,0);
+  const p=await page(s,unread("note","n"),(params:URLSearchParams)=>++attempts === 1 ? hold.promise : endpoints(s,params,null),undefined,{notesOpen:{"it:child":false},detailGeometry:geom});
+  p.key("n"); await settle(); assert.equal(attempts,1); assert.equal(p.scrollCount,0);
   hold.reject(new Error("Synthetic baseline unavailable")); await settle();
-  assert.equal(p.scrolls.length,0,"failed baseline cannot provide a final layout for scrolling");
+  assert.equal(p.scrollCount,0,"failed baseline cannot provide a final layout for scrolling");
   assert.equal(attempts,1,"a failed navigation must not retry repeatedly during rendering");
   shownInHint(p,/Synthetic baseline unavailable/);
   p.key("n"); await settle();
   assert.equal(attempts,2,"next n retries the failed rendered baseline once");
-  assert.equal(p.scrolls.length,1); assert.equal(p.measurements[0]!.id,"note-n");
+  assert.equal(p.detailScrolls.length,1); assert.ok(p.measurements.some(m=>m.id === "note-n" && m.top === 1700));
 });
 
 
@@ -745,45 +732,6 @@ test("unrelated collapsed baseline failure does not suppress target navigation",
   const s=snapshot(); s.items.far={...s.items.area!,title:"Far",deps:[]};
   const p=await page(s,[...unread(),...unread("item","far","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "far" ? Promise.reject(new Error("Unrelated failure")) : endpoints(s,params,null),undefined,{geometry:geom});
   p.key("n"); await settle(); assert.equal(p.scrolls.length,1);
-});
-
-test("explicitly collapsed ancestor comments do not block child navigation on pending or failed note baselines", async t => {
-  for (const state of ["pending","failed"]) await t.test(state,async () => {
-    const s=snapshot(), hold=deferred<unknown>(); let attempts=0;
-    s.notes.hidden={target:"it:area",kind:"comment",text:"Hidden ancestor comment",at,state:"sent",rev:1};
-    const p=await page(s,[...unread(),...unread("note","hidden","e".repeat(40))],(params:URLSearchParams)=> {
-      if (params.get("doc") === "hidden") { attempts++; return hold.promise; }
-      return endpoints(s,params,null);
-    },undefined,{notesOpen:{"it:area":false},geometry:geom});
-    await expand(p,"area"); assert.equal(attempts,1,"rendering checks whether the hidden note is fresh");
-    assert.ok(!p.all().some(e=>e.id === "note-hidden"));
-    if (state === "failed") { hold.reject(new Error("Hidden ancestor note unavailable")); await settle(); }
-    // The child is the last stop on the page, so N reaches it first.
-    p.key("N"); await settle();
-    assert.equal(p.scrolls.length,1,"an explicitly hidden ancestor note cannot change target geometry");
-    assert.equal(p.measurements[0]!.id,"it-child");
-    assert.equal(attempts,1,"navigation does not retry hidden failed notes");
-    if (state === "pending") { hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=hidden"),null)); await settle(); }
-  });
-});
-
-test("a folded item hides its comments, new ones included, and navigation does not wait for them", async () => {
-  const s=snapshot(), hold=deferred<unknown>(); s.items.area!.head="Ancestor body stays folded";
-  s.notes.above={target:"it:area",kind:"comment",text:"New ancestor comment",at,state:"sent",rev:1};
-  const p=await page(s,[...unread(),...unread("note","above","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "above" ? hold.promise : endpoints(s,params,null),undefined,{geometry:e=>({top:e.id === "it-child" ? 1200 : 600,height:e.id === "it-child" ? 100 : 2400})});
-  const filter=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!; await filter.click();
-  assert.ok(p.all().some(e=>e.id === "it-child"),"filter opens the ancestor path");
-  assert.ok(!markup(item(p,"area")).includes("Ancestor body stays folded"));
-  assert.ok(!descendants(item(p,"area")).some(e=>e.className.includes("notes")),"a folded item shows no comment list");
-  assert.ok(item(p,"area").className.includes("fresh") && item(p,"area").children[0]!.querySelector(".freshchip")!.innerHTML === "2","its 新 chip and line still say it holds something new");
-  // The child is the last stop on the page, so N reaches it first.
-  p.key("N"); await settle();
-  assert.equal(p.scrolls.length,1,"navigation does not wait for comments a folded item hides");
-  assert.equal(p.measurements[0]!.id,"it-child"); assert.equal(p.measurements[0]!.top,1200);
-  hold.resolve(endpoints(s,new URLSearchParams("kind=note&doc=above"),null)); await settle();
-  assert.ok(!p.all().some(e=>e.id === "note-above"),"the new comment stays folded with its item");
-  p.key("N"); await settle();
-  assert.ok(p.all().some(e=>e.id === "note-above"),"n on the comment opens its item and shows it");
 });
 
 async function questionContract(tail:string, transform?:PageOptions["transform"]) {
@@ -822,7 +770,6 @@ function cssContract(html:string) {
   for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
-  assert.ok(has(".item.fresh > .body::before",/background:\s*var\(--fresh\)/),"an open item's line runs beside its body text");
   for (const sel of [".item-head",".deprow",".ref",".optbtn",".notes-toggle"]) assert.ok(has(sel,/(?<!-)user-select:\s*text/) && has(sel,/-webkit-user-select:\s*text/),sel+" text is selectable");
 }
 test("CSS mark tokens and every blue bar selector are wired in light and both dark themes", async () => { cssContract(await readFile("web/index.html","utf8")); });
@@ -856,14 +803,13 @@ test("scrolling over the detail pane never scrolls the list behind it", async ()
   assert.ok(rule,"the wide detail pane has its own rule");
   assert.match(rule![2]!,/overscroll-behavior:\s*contain/,"wheel and trackpad scrolls stop at the pane, even when it is too short to scroll");
 });
-test("wide mode makes the left list its own scroll container, so the document has no scrollbar", async () => {
+test("the left list is its own scroll container, so the document has no scrollbar", async () => {
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const rule=(selector:string) => rules.filter(r=>r[1]!.trim() === selector).map(r=>r[2]!).join(";");
   const list=rule("body.wide .page-left");
   assert.match(list,/overflow-y:\s*auto/,"the wide list scrolls on its own, with its scrollbar at the pane's right edge");
   assert.match(list,/overscroll-behavior:\s*contain/,"scrolling the list never chains to the document");
-  assert.doesNotMatch(rule(".page-left"),/overflow/,"the narrow single column is not a scroll container: the window scrolls");
   const body=rule("body.wide");
   assert.match(body,/overflow-y:\s*hidden/,"nothing makes the wide document scroll");
   assert.match(body,/height:\s*100dvh/,"the wide document is exactly one viewport tall");
@@ -875,16 +821,14 @@ function shortDetailLineContract(source:string) {
   const html=source.replace(/\/\*[\s\S]*?\*\//g,"");
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
-  assert.ok(has("body.wide #item-detail .item.fresh > .body::before",/content:\s*none/),"no long line down the detail body");
-  assert.ok(has("body.wide #item-detail .item.fresh > .body ~ .notes::before",/content:\s*none/),"nor down its comments");
+  assert.ok(!rules.some(r=>/\.item\.fresh > \.body/.test(r[1]!)),"no line runs down an item's body or its comments");
   assert.ok(has("body.wide #item-detail .item.fresh > .item-row::before",/background:\s*var\(--fresh\)/),"a short line beside the headline");
   const marker=rules.filter(r=>r[1]!.split(",").map(v=>v.trim()).includes("body.wide #item-detail .item.fresh > .item-row::before")).map(r=>r[2]!).join(";");
   assert.match(marker,/top:\s*3px/,"line begins inside the headline");
   assert.match(marker,/bottom:\s*3px/,"line ends inside the headline");
   assert.doesNotMatch(marker,/(?:^|;)\s*(?:min-|max-)?height\s*:/,"top and bottom alone bound the line to the headline");
-  assert.ok(has(".item.fresh > .body::before",/background:\s*var\(--fresh\)/),"the single-column body line is unchanged");
 }
-test("in the split view an item's new-content line is a short mark beside its headline, not a line down the body", async () => {
+test("an item's new-content line in the detail column is a short mark beside its headline, not a line down the body", async () => {
   shortDetailLineContract(await readFile("web/index.html","utf8"));
 });
 test("short detail line contract rejects a viewport-tall marker that the old background check accepted", async () => {
@@ -1115,16 +1059,17 @@ test("send waits for optimistic draft acknowledgement and refuses to send a fail
 
 test("card jump waits for target baseline then stays pinned through a later unrelated baseline and SSE until owner scroll", async () => {
   const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), later=deferred<unknown>(); s.decisions.q=card(); s.items.far={...s.items.area!,title:"Far",deps:[]}; let above=0, p!:Awaited<ReturnType<typeof page>>, fresh=unread("decision","q");
-  p=await page(s,fresh,(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : later.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,geometry:e=>({top: e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p); await item(p,"far").children[0]!.children[0]!.click(); await p.flush();
-  p.key("ArrowRight"); await p.flush(); assert.equal(p.scrolls.length,0,"target baseline must complete before landing");
+  p=await page(s,fresh,(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : later.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,detailGeometry:e=>({top: e.id === "q-q" ? 1800+above : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p); await p.flush();
+  const pane=p.roots.get("item-detail")!;
+  p.key("ArrowRight"); await p.flush(); assert.equal(p.scrollCount,0,"target baseline must complete before landing");
   hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); const landed=p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top;
   fresh=[...fresh,...unread("item","far","e".repeat(40))]; p.emit("a".repeat(40)); await p.flush();
   above=400; later.resolve({before:{...s.items.far!,head:"Removed"},after:s.items.far,diff:""}); await p.flush();
   assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,landed,"later unrelated baseline cannot move landed target");
-  above=800; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted above"}}]); await p.flush();
+  above=800; p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Inserted above"}}]); await p.flush();
   assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,landed,"SSE insertion cannot move landed target");
-  p.user("wheel"); p.user("scroll"); const released=p.scrollY; above=1000; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"More above"}}]); await p.flush();
-  assert.equal(p.scrollY,released,"owner scroll releases the pin");
+  p.user("wheel"); const released=pane.scrollTop; above=1000; p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"More above"}}]); await p.flush();
+  assert.equal(pane.scrollTop,released,"owner scroll releases the pin");
 });
 
 test("explain withdrawal removes its pending badge before fetch and restores it on failure", async () => {
@@ -1168,37 +1113,39 @@ test("scoped note changes refresh ask controls card reference counts and the nex
 
 test("card closure and a filtered item update preserve unrelated card identities", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q=card(); s.decisions.other={...card(),question:"Other"};
-  s.board.projects.push({name:"Elsewhere"}); s.items.far={...s.items.child!,title:"Far",parent:undefined,group:"Elsewhere"}; s.decisions.far={...card(),item:"far"};
-  const p=await page(s,[],null,undefined,{frames}); await expand(p); await item(p,"far").children[0]!.children[0]!.click();
-  const other=p.all().find(e=>e.id === "q-other")!, far=p.all().find(e=>e.id === "q-far")!; assert.ok(other && far);
+  const p=await page(s,[],null,undefined,{frames}); await expand(p);
+  const other=p.all().find(e=>e.id === "q-other")!; assert.ok(other);
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...card(),status:"cancelled"}}]); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-other") === other,"closing a card preserves its peer");
   await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
-  const farAfterFilter=p.all().find(e=>e.id === "q-far")!, sameProject=p.all().find(e=>e.id === "q-other")!;
-  assert.ok(sameProject && farAfterFilter);
+  const sameProject=p.all().find(e=>e.id === "q-other")!;
+  assert.ok(sameProject);
   p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Filtered prose update"}}]); await p.flush();
-  assert.ok(p.all().find(e=>e.id === "q-far") === farAfterFilter,"filter in one project cannot rebuild another project");
   assert.ok(p.all().find(e=>e.id === "q-other") === sameProject,"filtered prose preserves same-project peer card");
-  assert.ok(far);
 });
 
 test("frame fallback works without requestAnimationFrame and smooth jump follows changes during its glide", async t => {
   await t.test("no rAF",async()=> { const p=await page(snapshot(),[],null,undefined,{noFrames:true,clock:new FakeClock(),notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush(); const count=p.renders.length; p.emit("b".repeat(40),[{kind:"note",id:"n",after:{target:"it:area",kind:"comment",text:"Fallback note",at,state:"sent",rev:1}}]); assert.equal(p.renders.length,count,"timer fallback also defers to its frame"); await p.flush(); assert.match(markup(item(p,"area")),/Fallback note/); });
   await t.test("smooth glide",async()=> {
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>, above=0;
-    p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
-    p.key("ArrowRight"); frames.flush(50); await settle(); assert.equal(p.scrollY,0,"pending target baseline cannot start the glide");
-    hold.resolve({before:card(),after:card(),diff:""}); await settle(); frames.flush(0); await settle(); assert.ok(p.scrollY>0 && p.scrollY<1500,"glide is still moving toward the centered landing without the removed bar reservation");
-    above=500; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted during glide"}}]); await p.flush();
+    p=await page(s,unread("decision","q"),()=>hold.promise,undefined,{frames,reducedMotion:false,detailGeometry:e=>({top:e.id === "q-q" ? 1800+above : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
+    const pane=p.roots.get("item-detail")!;
+    p.key("ArrowRight"); frames.flush(50); await settle(); assert.equal(pane.scrollTop,0,"pending target baseline cannot start the glide");
+    hold.resolve({before:card(),after:card(),diff:""}); await settle(); frames.flush(0); await settle(); assert.ok(pane.scrollTop>0 && pane.scrollTop<1500,"glide is still moving toward the centered landing without the removed bar reservation");
+    above=500; p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Inserted during glide"}}]); await p.flush();
     assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,300,"without the removed bar reservation, the card lands at the viewport center");
-    for (const input of ["click","keydown","scroll"]) { p.key("ArrowRight"); await p.flush(); p.user(input); const position:number=p.scrollY; above+=200; p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Above "+above}}]); await p.flush(); assert.equal(p.scrollY,position,input+" releases pin"); }
+    for (const input of ["click","keydown","scroll"]) {
+      p.key("ArrowRight"); await p.flush();
+      if (input === "scroll") { pane.scrollTop+=100; for (const fn of pane.handlers.get("scroll") ?? []) fn({isTrusted:true}); } else p.user(input);
+      const position:number=pane.scrollTop; above+=200; p.emit("c".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Above "+above}}]); await p.flush(); assert.equal(pane.scrollTop,position,input+" releases pin");
+    }
   });
 });
 
 test("owner input cancels an unread jump still awaiting its baseline", async () => {
   const s=snapshot(), hold=deferred<unknown>(), frames=new Frames(), p=await page(s,unread(),()=>hold.promise,undefined,{frames});
   p.key("n"); await settle(); p.user("click"); hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=child"),null)); await p.flush();
-  assert.equal(p.scrolls.length,0); assert.ok(!item(p).className.includes("cur"));
+  assert.equal(p.scrollCount,0); assert.ok(!item(p).className.includes("cur"));
 });
 
 test("saving a comment preserves other card identity", async () => {
@@ -1249,11 +1196,12 @@ test("card and item rule changes refresh dependency consumers and transitive pri
   s.items.further={...s.items.child!,title:"Further",status:"todo",priority:"P2",deps:[]};
   s.items.waiter={...s.items.child!,parent:undefined,group:"Project",title:"Urgent waiter",status:"wip",priority:"P0",deps:[{id:"blocker",why:"Needs blocker"}]};
   s.items.area!.deps.push(...["blocker","further"].map(id=>({id,why:"Child"})));
-  const p=await page(s,[],null,undefined,{frames}); await expand(p,"blocker"); await item(p,"further").children[0]!.children[0]!.click(); await item(p,"child").children[0]!.children[0]!.click();
+  const p=await page(s,[],null,undefined,{frames}); await expand(p,"blocker"); await rowOf(p,"further").querySelector(".item-head")!.click(); await rowOf(p,"child").querySelector(".item-head")!.click();
   assert.match(markup(item(p,"further")),/P0/);
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,status:"ruled",ruling:"A"}},{kind:"item",id:"waiter",after:{...s.items.waiter!,status:"done"}}]); await p.flush();
   assert.match(markup(item(p,"child")),/可解除阻塞/,"ruling updates the blocked waiter check");
   assert.ok(!descendants(item(p,"further")).some(e=>e.className.split(" ").includes("prio") && e.innerHTML === "P0"),"closing urgent waiter releases transitive priority");
+  await rowOf(p,"blocker").querySelector(".item-head")!.click(); await p.flush();
   p.emit("c".repeat(40),[{kind:"item",id:"waiter",after:{...s.items.waiter!,deps:[]}}]); await p.flush();
   assert.ok(!markup(item(p,"blocker")).includes("Urgent waiter"),"removed dependency refreshes backlink row");
 });
@@ -1271,7 +1219,7 @@ test("older SSE notes cannot overwrite an acknowledged draft or resurrect its de
 
 test("reply unarchives an item into its visible project tree", async () => {
   const s=snapshot(), frames=new Frames(); s.owner.archived.child="2026-10-12T00:00:00Z";
-  const p=await page(s,[],null,undefined,{frames}); await expand(p,"area"); assert.ok(!p.all().some(e=>e.id === "it-child"));
+  const p=await page(s,[],null,undefined,{frames}); await expand(p,"area"); assert.ok(!p.all().some(e=>e.id === "it-child"),"the archived child is hidden although its parent is unfolded");
   p.emit("b".repeat(40),[{kind:"note",id:"reply",after:{target:"it:child",kind:"comment",text:"Question",reply:"Answered",at,state:"done",repliedAt:"2026-10-13T00:00:00Z",rev:1}}]); await p.flush();
   assert.ok(p.all().some(e=>e.id === "it-child"),"reply restores previously archived subtree");
 });
@@ -1280,14 +1228,15 @@ test("unread navigation waits for its scheduled frame before measuring", async (
   const s=snapshot(), frames=new Frames(), hold=deferred<unknown>();
   const p=await page(s,unread(),()=>hold.promise,undefined,{frames}); p.key("n"); await settle();
   hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=child"),null)); await settle();
-  assert.equal(p.scrolls.length,0,"baseline completion cannot flush DOM and scroll outside its frame"); await p.flush(); assert.ok(p.scrolls.length>0);
+  assert.equal(p.scrollCount,0,"baseline completion cannot flush DOM and scroll outside its frame"); await p.flush(); assert.ok(p.scrollCount>0);
 });
 
 test("card landing keeps the actual clamped viewport top across later renders", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>, above=0,height=10000;
-  p=await page(s,[],null,undefined,{frames,scrollHeight:()=>height,geometry:e=>({top:e.id === "q-q" ? 9800+above-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
-  p.key("ArrowRight"); await p.flush(); assert.equal(p.scrollY,9000); const top=p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top;
-  height=11000; above=200; p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Inserted above"}}]); await p.flush();
+  p=await page(s,[],null,undefined,{frames,scrollHeight:()=>height,detailGeometry:e=>({top:e.id === "q-q" ? 9800+above : 600,height:e.id === "q-q" ? 400 : 2400})}); await expand(p);
+  const pane=p.roots.get("item-detail")!;
+  p.key("ArrowRight"); await p.flush(); assert.equal(pane.scrollTop,9000); const top=p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top;
+  height=11000; above=200; p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Inserted above"}}]); await p.flush();
   assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,top,"clamped jump records where the target actually landed");
 });
 
@@ -1327,10 +1276,10 @@ test("draft deletion acknowledgement removes duplicates delivered after the clic
 
 test("structural child changes reconcile membership while reusing sibling cards", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.q=card(); s.items.other={...s.items.child!,title:"Other parent",parent:undefined,group:"Project"};
-  const p=await page(s,[],null,undefined,{frames}); await expand(p); await item(p,"other").children[0]!.children[0]!.click(); const q=p.all().find(e=>e.id === "q-q")!; assert.ok(q);
+  const p=await page(s,[],null,undefined,{frames}); await expand(p); const q=p.all().find(e=>e.id === "q-q")!; assert.ok(q);
   const added={...s.items.child!,title:"Added child"};
   p.emit("b".repeat(40),[{kind:"item",id:"added",after:added}]); await p.flush(); assert.ok(p.all().some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
-  p.emit("c".repeat(40),[{kind:"item",id:"added",after:{...added,parent:"other"}}]); await p.flush(); assert.ok(descendants(item(p,"other").parentElement!).some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
+  p.emit("c".repeat(40),[{kind:"item",id:"added",after:{...added,parent:"other"}}]); await p.flush(); await wideCaret(p,"other").click(); await p.flush(); assert.ok(descendants(rowOf(p,"other").parentElement!).some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
   p.emit("d".repeat(40),[{kind:"item",id:"added",after:null}]); await p.flush(); assert.ok(!p.all().some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
   p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,priority:"P0"}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"],"root order follows area order rather than priority");
@@ -1363,32 +1312,32 @@ test("scoped unread card membership inserts replies and removes read ended cards
 test("all card jump entry points await baselines before selecting and scrolling", async t => {
   // A card its item holds has no 新 chip of its own (it counts toward the item's), so the chip is no entry point here.
   for(const path of ["waiting key","previous key","reference","dependency","next button"]) await t.test(path,async()=> {
-    const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), ancestor=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
+    const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), other=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
     if(path === "dependency") s.items.area!.deps.push({card:"q",why:"Needs decision"});
     if(path === "next button") s.items.area!.ask={text:"Parent approval"};
-    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : ancestor.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p); await p.flush();
+    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : other.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p,path === "dependency" || path === "next button" ? "area" : "child"); await p.flush();
     if(path === "waiting key") p.key("ArrowRight");
     else if(path === "previous key") p.key("ArrowLeft");
     else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
     else if(path === "dependency") await p.all().find(e=>e.className === "deprow" && e.innerHTML.includes("如何显示"))!.click();
     else await button(p,"下一条（2/2）").click();
-    await p.flush(); assert.equal(p.scrolls.length,0,"no document jump may scroll with an unresolved target baseline");
+    await p.flush(); assert.equal(p.scrollCount,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
-    hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.equal(p.scrolls.length,0,"ancestor baseline also affects target height");
-    ancestor.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.ok(p.scrolls.length>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+    hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+    other.resolve({before:s.items.area,after:s.items.area,diff:""});
   });
 });
 
 test("a stalled animation frame still renders and finishes a smooth document jump within one second", async () => {
   const s=snapshot(), frames=new Frames(), clock=new FakeClock(); s.decisions.q=card(); let p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,[],null,undefined,{frames,clock,stalledFrames:true,reducedMotion:false,geometry:e=>({top:e.id === "q-q" ? 1800-(p?.scrollY ?? 0) : 600,height:e.id === "q-q" ? 400 : 2400})});
+  p=await page(s,[],null,undefined,{frames,clock,stalledFrames:true,reducedMotion:false,detailGeometry:e=>({top:e.id === "q-q" ? 1800 : 600,height:e.id === "q-q" ? 400 : 2400})});
   assert.ok(item(p,"area"),"watchdog must paint the initial snapshot while rAF is stalled");
   await expand(p); await p.flush(); const start=clock.now; p.key("ArrowRight");
   let landedAt:number | undefined;
   for(let i=0;i<8;i++) { clock.advance(100); await settle(); if (landedAt === undefined && p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top === 300) landedAt=clock.now-start; }
   assert.ok(landedAt !== undefined && landedAt <= 600,"render plus smooth glide finishes within its bounded timer schedule");
   assert.equal(p.all().find(e=>e.id === "q-q")!.getBoundingClientRect().top,300); assert.ok(clock.now-start<1000);
-  const count=p.renders.length, scrolls=p.scrolls.length; frames.flush(); await settle(); assert.equal(p.renders.length,count); assert.equal(p.scrolls.length,scrolls,"late rAF callbacks cannot run watchdog-completed work again");
+  const count=p.renders.length, scrolls=p.scrollCount; frames.flush(); await settle(); assert.equal(p.renders.length,count); assert.equal(p.scrollCount,scrolls,"late rAF callbacks cannot run watchdog-completed work again");
 });
 
 test("draft fetch and response-body stalls roll back at eight seconds and ignore late success", async t => {
@@ -1406,17 +1355,17 @@ test("draft fetch and response-body stalls roll back at eight seconds and ignore
 test("a fast baseline rejection is attempted once per jump and retries on the next jump", async () => {
   const s=snapshot(), frames=new Frames(); let attempts=0;
   const p=await page(s,unread(),(params:URLSearchParams)=> { attempts++; return attempts === 1 ? Promise.reject(new Error("Baseline refused")) : endpoints(s,params,null); },undefined,{frames});
-  p.key("n"); await settle(); await p.flush(); assert.equal(attempts,1); assert.equal(p.scrolls.length,0); p.key("n"); await p.flush(); assert.equal(attempts,2); assert.ok(p.scrolls.length>0);
+  p.key("n"); await settle(); await p.flush(); assert.equal(attempts,1); assert.equal(p.scrollCount,0); p.key("n"); await p.flush(); assert.equal(attempts,2); assert.ok(p.scrollCount>0);
 });
 
 test("document jump restores an already-open target hidden by filtering or archive", async t => {
   for (const hiding of ["filter","archive"]) await t.test(hiding,async()=> {
     const s=snapshot(), frames=new Frames(); s.items.child!.status="todo"; s.items.sibling={...s.items.child!,title:"Sibling",status:"wip",deps:[{id:"child",why:"Needs child"}]}; s.items.area!.deps.push({id:"sibling",why:"Sibling"});
-    const p=await page(s,[],null,undefined,{frames}); await expand(p); await item(p,"sibling").children[0]!.children[0]!.click();
+    const p=await page(s,[],null,undefined,{frames}); await expand(p); await rowOf(p,"sibling").querySelector(".item-head")!.click();
     if(hiding === "filter") await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
     else { p.emit("b".repeat(40),[{kind:"owner",id:"owner",after:{archived:{child:"2026-10-12T00:00:00Z"}}}]); await p.flush(); }
     assert.ok(!item(p)); const dep=descendants(item(p,"sibling")).find(e=>e.className === "deprow" && e.innerHTML.includes('class="t">Child<'))!; assert.ok(dep); await dep.click(); await p.flush();
-    assert.ok(item(p),"jump materializes the previously open target again"); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrolls.length>0);
+    assert.ok(item(p),"jump materializes the previously open target again"); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrollCount>0);
   });
 });
 
@@ -1468,17 +1417,17 @@ test("held unread and loose addition coalesce without suppressing hosted card me
 
 test("dependency Back reacquires selects and scrolls its row after an owner rerender", async () => {
   const s=snapshot(), frames=new Frames(), baseline=deferred<unknown>(); let fresh:unknown[]=[]; let p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,fresh,()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,geometry:e=>({top:(e.dataset.sel === "dep:area@child" ? 600 : e.id === "it-child" ? 1800 : 0)-(p?.scrollY ?? 0),height:e.dataset.sel === "dep:area@child" ? 80 : e.id === "it-child" ? 400 : 2400})});
+  p=await page(s,fresh,()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,detailGeometry:e=>({top:e.dataset.sel === "dep:area@child" ? 600 : 0,height:e.dataset.sel === "dep:area@child" ? 80 : 2400})});
   await expand(p,"area"); await p.flush();
   const from=p.all().find(e=>e.dataset.sel === "dep:area@child")!; assert.ok(from.matches("[data-sel]"),"capture click selects the actual dependency row");
   await from.click(); await p.flush(); assert.ok(item(p).className.includes("cur"));
   fresh=unread("item","area"); p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"New parent prose",rev:2}}]); await p.flush();
-  const replacement=p.all().find(e=>e.dataset.sel === "dep:area@child")!; assert.ok(replacement !== from);
-  const scrolls=p.scrolls.length; await button(p,"← 返回").click(); await p.flush(); assert.equal(p.scrolls.length,scrolls,"return waits for the enclosing item baseline");
+  const scrolls=p.scrollCount; await button(p,"← 返回").click(); await p.flush(); assert.equal(p.scrollCount,scrolls,"return waits for the enclosing item baseline");
   baseline.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush();
   const returned=p.all().find(e=>e.dataset.sel === "dep:area@child")!;
+  assert.ok(returned !== from,"the detail was rebuilt for the item the reader returned to");
   assert.ok(returned.className.includes("cur"),"Back selects the dependency row rather than its enclosing item");
-  assert.ok(!item(p,"area").className.includes("cur")); assert.ok(p.scrolls.length>scrolls);
+  assert.ok(!item(p,"area").className.includes("cur")); assert.ok(p.scrollCount>scrolls);
   assert.ok(returned.getBoundingClientRect().top >= 8 && returned.getBoundingClientRect().bottom <= 992,"the row lands in the viewport without space reserved for the removed bar");
   assert.ok(p.measurements.some(m=>m.id === returned.id && m.height === 80),"scroll geometry comes from the dependency row");
 });
@@ -1608,7 +1557,8 @@ async function dependencyReadContract(transform?: PageOptions["transform"]) {
   const s=snapshot(), later="e".repeat(40); s.decisions.q=card(); s.items.child!.deps=[{card:"q",why:"Needs decision"}];
   const p=await page(s,[...unread("item","area"),...unread("decision","q",later)],null,undefined,{transform});
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
-  await item(p).children[0]!.children[0]!.click(); await descendants(item(p)).find(e=>e.dataset.sel === "dep:child@q")!.click(); await p.flush();
+  await wideCaret(p).click(); await p.flush();
+  await rowOf(p).querySelector(".item-head")!.click(); await descendants(item(p)).find(e=>e.dataset.sel === "dep:child@q")!.click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
   p.key("r"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
@@ -1628,14 +1578,14 @@ test("r follows a dependency-selected card instead of the document previously sh
   assert.ok(mutated,"restoring the old shownFresh selection restriction must make the document read disappear");
 });
 
-function wideHead(p: Awaited<ReturnType<typeof page>>, id="area") { return item(p,id).querySelector(".item-head")!; }
-function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return item(p,id).querySelector(".caret")!; }
+function wideHead(p: Awaited<ReturnType<typeof page>>, id="area") { return rowOf(p,id).querySelector(".item-head")!; }
+function wideCaret(p: Awaited<ReturnType<typeof page>>, id="area") { return rowOf(p,id).querySelector(".caret")!; }
 function detailItem(p: Awaited<ReturnType<typeof page>>, id="area") { return p.document.getElementById("detail-it-"+id); }
 async function selectWide(p: Awaited<ReturnType<typeof page>>, id="area") { await wideHead(p,id).click(); await p.flush(); }
 
 test("the red waiting number leads to the first place below that waits for the owner", async () => {
   const s=snapshot(); s.items.child!.ask={text:"Child ask"};
-  const p=await page(s,[],null,undefined,{wide:true});
+  const p=await page(s,[]);
   const wait=wideHead(p).children.find(e=>e.className === "asktag")!;
   assert.equal(wait.innerHTML,"1"); assert.equal(wait.attributes["role"],"button");
   assert.ok(!detailItem(p,"child"),"nothing is selected before the click");
@@ -1643,29 +1593,24 @@ test("the red waiting number leads to the first place below that waits for the o
   assert.ok(detailItem(p,"child"),"the click selects the waiting child and shows it in the detail");
 });
 
-test("tree new and descendant-wait chips show only numbers with full labels", async t => {
-  for (const wide of [false,true]) await t.test(wide ? "split tree" : "inline tree",async()=> {
-    const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
-    const p=await page(s,[...unread("item","area"),...unread("item","child","e".repeat(40))],null,undefined,{wide});
-    const head=wideHead(p), fresh=head.querySelector(".freshchip")!;
-    if (!wide) assert.equal(head.querySelector(".item-title")!.title,"","single-column headings have no added hover tooltip");
-    assert.equal(fresh.innerHTML,"2","blue chip is the count alone");
-    assert.match(fresh.title,/2 处新内容/); assert.equal(fresh.attributes["aria-label"],fresh.title);
-    const wait=head.children.find(e=>e.className === "asktag" && e.innerHTML !== "等你处理")!;
-    assert.equal(wait.innerHTML,"1","descendant red chip is the count alone");
-    assert.equal(wait.title,"下面 1 处等你处理"); assert.equal(wait.attributes["aria-label"],wait.title);
-    assert.ok(head.children.some(e=>e.className === "asktag" && e.innerHTML === "等你处理"),"the item's own request retains its words");
-    if (wide) {
-      await selectWide(p);
-      assert.equal(detailItem(p)!.querySelector(".freshchip")!.innerHTML,"2","the detail headline's chip is the count alone too");
-      assert.equal(detailItem(p)!.querySelector(".item-title")!.title,"","detail headings have no added hover tooltip");
-    }
-  });
+test("tree new and descendant-wait chips show only numbers with full labels", async () => {
+  const s=snapshot(); s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"};
+  const p=await page(s,[...unread("item","area"),...unread("item","child","e".repeat(40))]);
+  const head=wideHead(p), fresh=head.querySelector(".freshchip")!;
+  assert.equal(fresh.innerHTML,"2","blue chip is the count alone");
+  assert.match(fresh.title,/2 处新内容/); assert.equal(fresh.attributes["aria-label"],fresh.title);
+  const wait=head.children.find(e=>e.className === "asktag" && e.innerHTML !== "等你处理")!;
+  assert.equal(wait.innerHTML,"1","descendant red chip is the count alone");
+  assert.equal(wait.title,"下面 1 处等你处理"); assert.equal(wait.attributes["aria-label"],wait.title);
+  assert.ok(head.children.some(e=>e.className === "asktag" && e.innerHTML === "等你处理"),"the item's own request retains its words");
+  await selectWide(p);
+  assert.equal(detailItem(p)!.querySelector(".freshchip")!.innerHTML,"2","the detail headline's chip is the count alone too");
+  assert.equal(detailItem(p)!.querySelector(".item-title")!.title,"","detail headings have no added hover tooltip");
 });
 
 // The owner limited the added help to the three numeric row marks.
 test("existing menu help keeps its shortcut sentence and explains only the three numeric row marks", async () => {
-  const p=await page(snapshot(),[],null,undefined,{wide:true}), menu=p.document.getElementById("keymenu")!;
+  const p=await page(snapshot(),[]), menu=p.document.getElementById("keymenu")!;
   assert.equal(menu.querySelectorAll(".keymenu-head").length,1,"help extends the existing description");
   const help=menu.querySelector(".keymenu-head")!.innerHTML;
   assert.match(help,/^快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>/,"the original shortcut sentence is retained");
@@ -1682,14 +1627,14 @@ test("sticky path bar and its code CSS and scroll reservations are absent", asyn
   assert.doesNotMatch(html,/id=["']crumbs["']/,"the sticky path bar has no DOM element");
   assert.doesNotMatch(html,/crumbbar|crumbrow|scroll-margin-top/,"the removed bar leaves no styles or scroll margin");
   assert.doesNotMatch(code,/crumb|scrollMarginTop|glideToEl/,"there is no path-bar builder or scroll-offset reader");
-  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  const p=await page(snapshot(),[]);
   assert.equal(p.document.getElementById("crumbs"),null);
   assert.ok(p.roots.get("to-top"),"the existing send-box top button remains");
 });
 
-test("single-column parent counts are numbers with status color and labels", async () => {
+test("parent counts are numbers with status color and labels", async () => {
   const s=snapshot(); s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
-  const p=await page(s,[]), counts=item(p,"area").querySelector(".counts")!;
+  const p=await page(s,[]), counts=rowOf(p,"area").querySelector(".counts")!;
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1"]);
   for (const [i,status] of ["todo","wip"].entries()) {
     const count=counts.children[i]!; assert.ok(count.classList.contains(status));
@@ -1698,43 +1643,8 @@ test("single-column parent counts are numbers with status color and labels", asy
   }
 });
 
-test("fresh viewers default to split even below the former breakpoint", async () => {
-  const p=await page(snapshot(),[],null,undefined,{freshViewer:true});
-  assert.ok(p.document.body.classList.contains("wide"),"split is on without a stored preference");
-  assert.equal(p.roots.get("item-detail")!.hidden,false);
-  assert.equal(p.document.getElementById("split-toggle")!.attributes["aria-pressed"],"true");
-  await p.setWide(true); await p.setWide(false);
-  assert.ok(p.document.body.classList.contains("wide"),"viewport changes never switch the owner's layout");
-});
-
-test("split toggle switches layouts and restores each viewer's choice", async () => {
-  const storage=new Map<string,string>(), s=snapshot(); s.items.area!.head="Shared body";
-  const p=await page(s,[],null,undefined,{freshViewer:true,storage});
-  await selectWide(p); // A selected item gives the old global Enter handler a head to open.
-  await p.document.getElementById("split-toggle")!.click(); await p.flush();
-  assert.ok(!p.document.body.classList.contains("wide"));
-  assert.equal(p.roots.get("item-detail")!.hidden,true);
-  assert.equal(storage.get("board-split"),"false");
-  const toggle=p.document.getElementById("split-toggle")!;
-  assert.equal(p.document.activeElement,toggle,"layout change retains focus on the replacement toggle");
-  const nativeEnter=async(target:Element) => { target.focus(); const prevented=p.key("Enter",target); if (!prevented) await target.click(); await p.flush(); return prevented; };
-  assert.equal(await nativeEnter(toggle),false,"toggle Enter keeps its native button activation instead of tree navigation");
-  assert.ok(p.document.body.classList.contains("wide"),"native Enter switches back to split");
-  assert.equal(await nativeEnter(p.document.getElementById("split-toggle")!),false);
-  assert.ok(!p.document.body.classList.contains("wide"),"native Enter switches back to single-column");
-  await wideHead(p).click(); await p.flush();
-  assert.match(markup(item(p,"area")),/Shared body/);
-  const reloaded=await page(s,[],null,undefined,{freshViewer:true,storage});
-  assert.ok(!reloaded.document.body.classList.contains("wide"),"off choice survives reload");
-  await reloaded.document.getElementById("split-toggle")!.click(); await reloaded.flush();
-  assert.ok(reloaded.document.body.classList.contains("wide"));
-  assert.equal(storage.get("board-split"),"true");
-  const restored=await page(s,[],null,undefined,{freshViewer:true,storage});
-  assert.ok(restored.document.body.classList.contains("wide"),"on choice survives reload");
-});
-
 test("split divider pointer drag clamps both columns and persists the width", async () => {
-  const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{wide:true,storage});
+  const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{storage});
   const divider=p.roots.get("split-divider")!;
   assert.equal(divider.hidden,false,"split exposes a divider");
   assert.equal(divider.attributes.role,"separator");
@@ -1748,7 +1658,7 @@ test("split divider pointer drag clamps both columns and persists the width", as
   assert.equal(parseFloat(p.wrap.style["--tree-width"]!),before+80);
   await divider.pointer("pointerup",{clientX:480});
   assert.equal(divider.capturedPointer,null);
-  const reloaded=await page(snapshot(),[],null,undefined,{wide:true,storage});
+  const reloaded=await page(snapshot(),[],null,undefined,{storage});
   assert.equal(reloaded.wrap.style["--tree-width"],p.wrap.style["--tree-width"],"width survives reload");
   await divider.pointer("pointerdown",{clientX:480});
   await divider.pointer("pointermove",{clientX:-1000});
@@ -1761,7 +1671,7 @@ test("split divider pointer drag clamps both columns and persists the width", as
 
 // Keyboard resizing was outside the requested pointer-drag behavior.
 test("split divider has no added keyboard resizing or focus styles", async () => {
-  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  const p=await page(snapshot(),[]);
   assert.equal(p.roots.get("split-divider")!.handlers.has("keydown"),false);
   const [code,html]=await Promise.all([readFile("web/app.ts","utf8"),readFile("web/index.html","utf8")]);
   assert.doesNotMatch(code,/divider\.tabIndex\s*=/);
@@ -1769,12 +1679,25 @@ test("split divider has no added keyboard resizing or focus styles", async () =>
   assert.doesNotMatch(html,/#split-divider[^}]*:focus-visible|id="split-divider"[^>]*tabindex/);
 });
 
-test("split preferences tolerate unavailable localStorage", async () => {
-  const p=await page(snapshot(),[],null,undefined,{freshViewer:true,storageUnavailable:true});
-  assert.ok(p.document.body.classList.contains("wide"));
-  await p.document.getElementById("split-toggle")!.click(); await p.flush();
-  assert.ok(!p.document.body.classList.contains("wide"));
-  await p.document.getElementById("split-toggle")!.click(); await p.flush();
+test("the page is always the split view: a fixed two-column body, a divider, no layout toggle and no stored layout choice", async () => {
+  const html=await readFile("web/index.html","utf8");
+  assert.match(html,/<body class="wide">/,"the two-column layout is on from the first paint");
+  assert.doesNotMatch(html,/split-toggle|id="split-divider"[^>]*hidden|id="item-detail"[^>]*hidden/);
+  const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{storage});
+  assert.equal(p.roots.get("item-detail")!.hidden,false); assert.equal(p.roots.get("split-divider")!.hidden,false);
+  assert.equal(p.document.getElementById("split-toggle"),null,"there is no 分屏 / 单栏 toggle");
+  assert.ok(!p.all().some(e=>e.innerHTML === "单栏" || e.innerHTML === "分屏"));
+  await selectWide(p); await p.flush();
+  assert.ok(detailItem(p),"a head click selects the item for the detail column");
+  assert.equal(rowOf(p,"area").querySelector(".body"),null,"the tree never holds a body");
+  assert.ok(![...storage.keys()].some(k=>k === "board-split"),"no layout choice is stored");
+  assert.ok(p.all().filter(e=>e.id.startsWith("it-")).every(e=>!e.querySelector(".body")),"no tree row holds a body");
+});
+
+test("the page tolerates unavailable localStorage", async () => {
+  const p=await page(snapshot(),[],null,undefined,{storageUnavailable:true});
+  assert.equal(p.roots.get("item-detail")!.hidden,false);
+  await selectWide(p); assert.ok(detailItem(p),"selecting still works without storage");
   await p.roots.get("split-divider")!.pointer("pointerdown",{clientX:400});
   await p.roots.get("split-divider")!.pointer("pointermove",{clientX:420});
   assert.ok(Number.isFinite(parseFloat(p.wrap.style["--tree-width"]!)));
@@ -1784,8 +1707,8 @@ test("parent leaf counts are number-only with a status label", async () => {
   const s=snapshot();
   s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
   s.items.block={...s.items.child!,title:"Blocked",status:"blocked"};
-  const p=await page(s,[],null,undefined,{wide:true});
-  const counts=item(p,"area").querySelector(".counts")!;
+  const p=await page(s,[]);
+  const counts=rowOf(p,"area").querySelector(".counts")!;
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1","1"]);
   for (const [i,label] of ["TODO","WIP","BLOCK"].entries()) {
     assert.equal(counts.children[i]!.title,"","status-count hover tooltips were removed at the owner's request");
@@ -1815,7 +1738,7 @@ test("the 取消 filter shows cancelled items where they sit", async () => {
   const button=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("取消 "))!;
   assert.equal(button.innerHTML,"取消 4","the status bar keeps counting cancelled items");
   await button.click(); await p.flush();
-  for (const id of ["gone","dropped","droppedKid"]) assert.ok(descendants(item(p,"area").parentElement!).includes(item(p,id)),id+" shows under its parent");
+  for (const id of ["gone","dropped","droppedKid"]) assert.ok(descendants(rowOf(p,"area").parentElement!).includes(rowOf(p,id)),id+" shows under its parent");
   assert.ok(item(p,"topGone"),"a cancelled top-level item shows too");
 });
 test("parent leaf counts leave out cancelled leaves", async () => {
@@ -1836,15 +1759,15 @@ test("dependency lists leave out cancelled items and removed rows but keep added
   assert.ok(!areaRows.includes("Gone") && !areaRows.includes("Dropped"),"cancelled dependencies leave the 依赖 list");
   assert.ok(areaRows.some(r=>r.includes("missing")),"a deleted dependency keeps its fallback row");
   assert.ok(!areaRows.includes("Old"),"a removed dependency on a cancelled item is not shown");
-  await item(p,"child").children[0]!.children[0]!.click(); await p.flush();
+  await item(p,"child").querySelector(".item-head")!.click(); await p.flush();
   const childRows=rows("child");
   assert.ok(childRows.includes("Parent"),"the parent leads the 被依赖 list");
   assert.ok(!childRows.includes("Gone"),"a cancelled dependent leaves the 被依赖 list");
 });
 test("tree head structure and CSS keep badges chips title and counts on one line", async () => {
   const s=snapshot(); s.items.area!.title="A very long parent title"; s.items.child!.ask={text:"Needs owner"};
-  const p=await page(s,unread("item","area"),null,undefined,{wide:true});
-  const row=item(p,"area").children[0]!, head=wideHead(p);
+  const p=await page(s,unread("item","area"));
+  const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
   assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
   for (const cls of ["st","prio","item-title","newtag","asktag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
@@ -1862,47 +1785,47 @@ test("tree head structure and CSS keep badges chips title and counts on one line
 
 test("wide head click selects detail without changing the sub-item fold", async () => {
   const s=snapshot(); s.items.area!.head="Parent detail";
-  const p=await page(s,[],null,undefined,{wide:true});
-  assert.ok(!item(p,"child"),"the parent initially folds its sub-items");
+  const p=await page(s,[]);
+  assert.ok(!rowOf(p,"child"),"the parent initially folds its sub-items");
   await selectWide(p);
-  assert.ok(!item(p,"child"),"selecting a head leaves sub-items folded");
-  assert.ok(item(p,"area").className.includes("cur"),"the selected tree row is highlighted");
+  assert.ok(!rowOf(p,"child"),"selecting a head leaves sub-items folded");
+  assert.ok(rowOf(p,"area").className.includes("cur"),"the selected tree row is highlighted");
   assert.match(markup(detailItem(p)!),/Parent detail/);
   await selectWide(p);
   assert.ok(detailItem(p),"clicking the selected head keeps its detail visible");
 });
 
 test("double-clicking a wide tree row folds its sub-items like the caret; a single click only selects", async () => {
-  const p=await page(snapshot(),[],null,undefined,{wide:true});
-  const dbl=async (id:string)=> { const row=item(p,id).children.find(e=>e.className.includes("tree-row"))!; for (const fn of row.handlers.get("dblclick") ?? []) await fn({target:row.children[1]}); await p.flush(); };
-  assert.ok(!item(p,"child"),"sub-items start folded");
+  const p=await page(snapshot(),[]);
+  const dbl=async (id:string)=> { const row=rowOf(p,id).children.find(e=>e.className.includes("tree-row"))!; for (const fn of row.handlers.get("dblclick") ?? []) await fn({target:row.children[1]}); await p.flush(); };
+  assert.ok(!rowOf(p,"child"),"sub-items start folded");
   await selectWide(p,"area");
-  assert.ok(!item(p,"child"),"a single click does not unfold");
+  assert.ok(!rowOf(p,"child"),"a single click does not unfold");
   await dbl("area");
-  assert.ok(item(p,"child"),"a double-click unfolds sub-items");
+  assert.ok(rowOf(p,"child"),"a double-click unfolds sub-items");
   await dbl("area");
-  assert.ok(!item(p,"child"),"a second double-click folds them again");
+  assert.ok(!rowOf(p,"child"),"a second double-click folds them again");
   await dbl("area");
-  assert.equal((item(p,"child").children.find(e=>e.className.includes("tree-row"))!.handlers.get("dblclick") ?? []).length,0,"a row without sub-items has no double-click action");
+  assert.equal((rowOf(p,"child").children.find(e=>e.className.includes("tree-row"))!.handlers.get("dblclick") ?? []).length,0,"a row without sub-items has no double-click action");
 });
 
 test("wide caret folds sub-items only and preserves the selected detail", async () => {
   const s=snapshot(); s.items.area!.head="Parent detail";
-  const p=await page(s,[],null,undefined,{wide:true});
+  const p=await page(s,[]);
   await wideCaret(p).click(); await p.flush();
-  assert.ok(item(p,"child"),"the caret unfolds sub-items");
-  assert.ok(!item(p,"area").querySelector(".body"),"unfolding never puts a body in the tree");
+  assert.ok(rowOf(p,"child"),"the caret unfolds sub-items");
+  assert.ok(!rowOf(p,"area").querySelector(".body"),"unfolding never puts a body in the tree");
   assert.ok(!detailItem(p),"a caret does not select an item");
   await selectWide(p,"child"); const selected=detailItem(p,"child");
   await wideCaret(p).click(); await p.flush();
-  assert.ok(!item(p,"child"),"the caret folds sub-items");
+  assert.ok(!rowOf(p,"child"),"the caret folds sub-items");
   assert.equal(detailItem(p,"child"),selected,"folding an ancestor leaves its selected child's detail alone");
 });
 
 test("wide detail owns the selected body cards comments and unique DOM ids", async () => {
   const s=snapshot(); s.items.child!.head="Selected body"; s.decisions.q=card();
   s.notes.n={target:"it:child",kind:"comment",text:"Selected comment",at,state:"sent",rev:1};
-  const p=await page(s,[],null,undefined,{wide:true,notesOpen:{"it:child":true}});
+  const p=await page(s,[],null,undefined,{notesOpen:{"it:child":true}});
   await wideCaret(p).click(); await p.flush(); await selectWide(p,"child");
   const d=detailItem(p,"child"); assert.ok(d,"selected item has a detail wrapper");
   assert.match(markup(d),/Selected body/); assert.match(markup(d),/如何显示/); assert.match(markup(d),/Selected comment/);
@@ -1914,10 +1837,10 @@ test("wide detail owns the selected body cards comments and unique DOM ids", asy
 
 test("wide n selects the stop's item and scrolls the right pane to its first fresh mark", async () => {
   const s=snapshot(), before={...s.items.child!,log:[]}; s.items.child!.log=[{at,text:"Fresh entry"}];
-  const p=await page(s,unread(),before,undefined,{wide:true,detailGeometry:e=>({top:e.className.includes("log-entry") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+  const p=await page(s,unread(),before,undefined,{detailGeometry:e=>({top:e.className.includes("log-entry") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
   p.key("n"); await p.flush();
   assert.ok(detailItem(p,"child"),"n selects the item in the detail pane");
-  assert.ok(item(p,"child").className.includes("cur"),"n unfolds ancestors and highlights the target tree row");
+  assert.ok(rowOf(p,"child").className.includes("cur"),"n unfolds ancestors and highlights the target tree row");
   assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"fresh mark navigation uses the independently scrolled pane");
   assert.ok(p.measurements.some(m=>m.id === "log-child-0" && m.top>1000),"the fresh log entry supplies the landing geometry");
   const landed=p.document.getElementById("log-child-0")!.getBoundingClientRect();
@@ -1927,31 +1850,31 @@ test("wide n selects the stop's item and scrolls the right pane to its first fre
 
 test("wide r on a selected detail log entry reads its item and leaves sub-items unread", async () => {
   const s=snapshot(); s.items.area!.log=[{at,text:"Parent fresh log"}];
-  const p=await page(s,[...unread("item","area"),...unread()],null,undefined,{wide:true});
+  const p=await page(s,[...unread("item","area"),...unread()]);
   await selectWide(p);
   const log=detailItem(p)?.querySelector(".log-entry"); assert.ok(log,"the log entry is in the selected detail");
   await log.click(); p.key("r"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}]);
   await wideCaret(p).click(); await p.flush();
-  assert.ok(item(p,"child").className.includes("fresh"),"r leaves the child's own new content unread");
+  assert.ok(rowOf(p,"child").className.includes("fresh"),"r leaves the child's own new content unread");
 });
 
 test("wide selected-item live update rerenders its detail and keeps the independent scroll", async () => {
   const s=snapshot(), frames=new Frames(); s.items.area!.head="Old detail";
-  const p=await page(s,[],null,undefined,{wide:true,frames}); await selectWide(p);
+  const p=await page(s,[],null,undefined,{frames}); await selectWide(p);
   const old=detailItem(p); assert.ok(old,"selected detail is rendered before the update");
   const pane=p.roots.get("item-detail")!; pane.scrollTop=425;
   p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"Updated detail"}}]); await p.flush();
   assert.notEqual(detailItem(p),old,"selected prose update replaces the detail body");
   assert.match(markup(detailItem(p)!),/Updated detail/); assert.equal(pane.scrollTop,425);
-  assert.equal(item(p,"area").querySelectorAll(".body").length,0);
+  assert.equal(rowOf(p,"area").querySelectorAll(".body").length,0);
 });
 
 test("wide unrelated-item live update preserves the selected detail DOM identity", async () => {
   const s=snapshot(), frames=new Frames();
   s.items.picked={title:"Independent selection",group:"Project",status:"wip",priority:"P1",head:"Selected detail",updated:at,rev:1,deps:[],links:[],log:[]};
   let fresh=unread("item","picked");
-  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,{...s.items[params.get("doc")!]!,head:"Earlier detail"}),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
+  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,{...s.items[params.get("doc")!]!,head:"Earlier detail"}),undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
   await selectWide(p,"picked");
   const old=detailItem(p,"picked"); assert.ok(old,"the already-unread selected detail is rendered before an unrelated update");
   assert.match(markup(old),/class="chg-add"[^>]*><p>Selected detail<\/p>/,"the loaded baseline marks the changed block");
@@ -1966,7 +1889,7 @@ test("wide unrelated-item live update preserves the selected detail DOM identity
 test("wide same-id unread parent changes reload the selected baseline and removed unread clears its marks", async () => {
   const s=snapshot(), frames=new Frames(); s.items.area!.head="Selected detail";
   let fresh=[{...unread("item","area")[0]!,parent:"a".repeat(40)}], before={...s.items.area!,head:"Original baseline"};
-  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,before),undefined,{wide:true,frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
+  const p=await page(s,fresh,(params:URLSearchParams)=>endpoints(s,params,before),undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined});
   await selectWide(p); const old=detailItem(p)!;
   assert.match(markup(old),/class="chg-add"[^>]*><p>Selected detail<\/p>/,"the first baseline marks the changed block");
   const baselines=p.calls.filter(c=>c.path.includes("kind=item&doc=area")).length;
@@ -1980,35 +1903,21 @@ test("wide same-id unread parent changes reload the selected baseline and remove
   assert.ok(!detailItem(p)!.className.includes("fresh")); assert.ok(!markup(detailItem(p)!).includes('class="chg-add"'));
 });
 
-test("split toggle restores inline bodies and single-column head toggling", async () => {
-  const s=snapshot(); s.items.area!.head="Parent detail";
-  const p=await page(s,[],null,undefined,{wide:true});
-  await wideCaret(p).click(); await p.flush(); await selectWide(p);
-  assert.ok(detailItem(p),"wide selection renders a detail");
-  // Width no longer controls the layout: exercise the explicit owner control instead.
-  await p.document.getElementById("split-toggle")!.click(); await p.flush();
-  assert.match(markup(item(p,"area")),/Parent detail/); assert.ok(item(p,"area").querySelector(".body"));
-  assert.ok(!detailItem(p),"narrow mode removes the separate detail item");
-  await wideHead(p).click(); await p.flush();
-  assert.equal(item(p,"area").querySelector(".body"),null,"a narrow head closes its inline body");
-  assert.ok(!item(p,"child"),"the narrow head closes sub-items with the body");
-});
-
 test("wide selected item survives reload through per-viewer localStorage", async () => {
   const storage=new Map<string,string>(), s=snapshot(); s.items.child!.head="Restored detail";
-  const first=await page(s,[],null,undefined,{wide:true,storage});
+  const first=await page(s,[],null,undefined,{storage});
   await wideCaret(first).click(); await first.flush(); await selectWide(first,"child");
-  const reloaded=await page(s,[],null,undefined,{wide:true,storage});
+  const reloaded=await page(s,[],null,undefined,{storage});
   const d=detailItem(reloaded,"child"); assert.ok(d,"a fresh page restores the last selected item");
-  assert.match(markup(d),/Restored detail/); assert.ok(item(reloaded,"child").className.includes("cur"));
+  assert.match(markup(d),/Restored detail/); assert.ok(rowOf(reloaded,"child").className.includes("cur"));
   const missing=snapshot(); delete missing.items.child;
-  const removed=await page(missing,[],null,undefined,{wide:true,storage});
+  const removed=await page(missing,[],null,undefined,{storage});
   assert.ok(!detailItem(removed,"child"),"a removed item cannot be restored");
   assert.match(markup(removed.roots.get("item-detail")!),/点左边/);
 });
 
 test("wide dependency follow and Backspace restore the prior dependency selection", async () => {
-  const p=await page(snapshot(),[],null,undefined,{wide:true}); await selectWide(p);
+  const p=await page(snapshot(),[]); await selectWide(p);
   const from=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
   assert.ok(from,"the source dependency is rendered in the detail pane");
   await from.click(); await p.flush(); assert.ok(detailItem(p,"child"),"following a dependency selects its target");
@@ -2016,14 +1925,14 @@ test("wide dependency follow and Backspace restore the prior dependency selectio
   const returned=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
   assert.ok(returned && returned !== from,"Back reacquires the dependency from the restored detail");
   assert.ok(returned.className.includes("cur"),"Back restores the exact dependency selection");
-  assert.ok(item(p,"area").className.includes("selected"),"the restored detail item remains highlighted in the tree");
+  assert.ok(rowOf(p,"area").className.includes("selected"),"the restored detail item remains highlighted in the tree");
 });
 
 test("wide scoped note and card updates preserve detail identity and independent scroll", async () => {
   const s=snapshot(); s.decisions.q={...card(),item:"area"}; s.items.area!.ask={text:"Approve parent"};
   let held: ReturnType<typeof deferred<FakeResponse>> | undefined;
   s.notes.n={target:"it:area",kind:"comment",text:"Old note",at,state:"sent",rev:1};
-  const p=await page(s,[],null,undefined,{wide:true,notesOpen:{"it:area":true},response:path=>path === "/api/draft" && held ? held.promise : undefined}); await selectWide(p);
+  const p=await page(s,[],null,undefined,{notesOpen:{"it:area":true},response:path=>path === "/api/draft" && held ? held.promise : undefined}); await selectWide(p);
   const d=detailItem(p), q=p.document.getElementById("q-q"); assert.ok(d,"the item detail exists before scoped updates"); assert.ok(q);
   const pane=p.roots.get("item-detail")!; pane.scrollTop=425;
   p.emit("b".repeat(40),[{kind:"note",id:"n",after:{...s.notes.n!,text:"Updated note",rev:2}}]); await p.flush();
@@ -2037,7 +1946,7 @@ test("wide scoped note and card updates preserve detail identity and independent
   pane.scrollTop=0; const currentCard=p.document.getElementById("q-q")!;
   await currentCard.click(); assert.ok(currentCard.className.includes("cur"),"clicking a right-pane card selects the card itself");
   p.key("j",currentCard); await p.flush();
-  assert.ok(item(p,"child").className.includes("cur"),"j from a detail card moves from its item's tree row");
+  assert.ok(rowOf(p,"child").className.includes("cur"),"j from a detail card moves from its item's tree row");
   assert.equal(detailItem(p),d,"moving focus from a card leaves the shown detail intact");
   await currentCard.click();
   p.key("c"); await p.flush();
@@ -2061,14 +1970,14 @@ test("wide scoped note and card updates preserve detail identity and independent
 });
 
 test("wide j and k move tree focus while Enter selects the focused head", async () => {
-  const p=await page(snapshot(),[],null,undefined,{wide:true});
+  const p=await page(snapshot(),[]);
   p.key("j"); await p.flush();
-  assert.ok(item(p,"area").className.includes("cur")); assert.ok(!detailItem(p),"j only moves focus");
+  assert.ok(rowOf(p,"area").className.includes("cur")); assert.ok(!detailItem(p),"j only moves focus");
   p.key("Enter"); await p.flush(); assert.ok(detailItem(p),"Enter selects the focused head's detail");
-  assert.ok(!item(p,"child"),"Enter does not change the sub-item fold");
+  assert.ok(!rowOf(p,"child"),"Enter does not change the sub-item fold");
   await wideCaret(p).click(); await p.flush(); const d=detailItem(p);
-  p.key("j"); await p.flush(); assert.ok(item(p,"child").className.includes("cur")); assert.equal(detailItem(p),d,"j does not open the next detail");
-  p.key("k"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
+  p.key("j"); await p.flush(); assert.ok(rowOf(p,"child").className.includes("cur")); assert.equal(detailItem(p),d,"j does not open the next detail");
+  p.key("k"); await p.flush(); assert.ok(rowOf(p,"area").className.includes("cur"));
   p.key("j"); p.key("Enter"); await p.flush(); assert.ok(detailItem(p,"child"));
   const nativeEnter=async(target:Element) => {
     target.focus(); const prevented=p.key("Enter",target);
@@ -2077,21 +1986,21 @@ test("wide j and k move tree focus while Enter selects the focused head", async 
   };
   const childDetail=detailItem(p,"child");
   assert.equal(await nativeEnter(wideCaret(p)),false,"Enter on the fold button keeps native activation");
-  assert.ok(!item(p,"child"),"the focused caret folds sub-items");
+  assert.ok(!rowOf(p,"child"),"the focused caret folds sub-items");
   assert.equal(detailItem(p,"child"),childDetail,"caret Enter preserves the selected detail");
-  await nativeEnter(wideCaret(p)); assert.ok(item(p,"child"));
+  await nativeEnter(wideCaret(p)); assert.ok(rowOf(p,"child"));
   await nativeEnter(wideHead(p)); assert.ok(detailItem(p),"Enter selects the actual focused head");
   await nativeEnter(wideHead(p,"child")); assert.ok(detailItem(p,"child"),"tabbing to a different head changes the Enter target");
   await selectWide(p); const stale=wideHead(p);
   p.key("j",stale); await p.flush();
   assert.equal(p.document.activeElement,wideHead(p,"child"),"j moves DOM focus away from the previously clicked head");
   await nativeEnter(p.document.activeElement!); assert.ok(detailItem(p,"child"),"Enter follows j's moved focus");
-  p.key("k",p.document.activeElement!); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
+  p.key("k",p.document.activeElement!); await p.flush(); assert.ok(rowOf(p,"area").className.includes("cur"));
   assert.equal(p.document.activeElement,wideHead(p),"k moves DOM focus back to the previous head");
   p.key("c",p.document.activeElement!); await p.flush();
   assert.ok(detailItem(p),"commenting on a focused row selects its detail");
   assert.ok(detailItem(p)!.querySelector("textarea"),"the focused item's comment editor opens in the right pane");
-  assert.equal(item(p,"area").querySelector("textarea"),null);
+  assert.equal(rowOf(p,"area").querySelector("textarea"),null);
 });
 
 test("wide n lands on card and note stops in the detail pane and keeps loose-card navigation", async t => {
@@ -2099,7 +2008,7 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
     const s=snapshot(); s.decisions.q=card(); s.decisions.loose={...card(),item:"missing",question:"Loose card"};
     s.notes.n={target:"it:child",kind:"comment",text:"Fresh comment",at,state:"sent",rev:1};
     const id=kind === "decision" ? "q" : "n", stop=kind === "decision" ? "q-q" : "note-n";
-    const p=await page(s,[...unread(kind,id),...unread("decision","loose","e".repeat(40))],null,undefined,{wide:true,notesOpen:{"it:child":false},geometry:e=>({top:e.id === "q-loose" ? 1800 : 50,height:100}),detailGeometry:e=>({top:e.id === stop ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+    const p=await page(s,[...unread(kind,id),...unread("decision","loose","e".repeat(40))],null,undefined,{notesOpen:{"it:child":false},geometry:e=>({top:e.id === "q-loose" ? 1800 : 50,height:100}),detailGeometry:e=>({top:e.id === stop ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
     p.key("n"); await p.flush(); assert.ok(detailItem(p,"child"),"the fresh stop opens its containing item's detail");
     assert.ok(detailItem(p,"child")!.contains(p.document.getElementById(stop)!));
     assert.ok(p.document.getElementById(stop)!.className.includes("cur"),"the exact card or note is selected");
@@ -2116,11 +2025,11 @@ test("wide n lands on card and note stops in the detail pane and keeps loose-car
 test("wide list navigation scrolls the left pane, never the window", async () => {
   const s=snapshot(); let p!:Awaited<ReturnType<typeof page>>;
   s.items.far={title:"Far",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
-  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:(e.id === "it-far" ? 1800 : 50)-p.scrollY,height:100})});
+  p=await page(s,[],null,undefined,{geometry:e=>({top:(e.id === "it-far" ? 1800 : 50)-p.scrollY,height:100})});
   const pane=p.roots.get("page-left")!;
   p.key("j"); await p.flush(); assert.equal(pane.scrollTop,0,"the first row is in view");
   p.key("j"); await p.flush();
-  assert.ok(item(p,"far").className.includes("cur"));
+  assert.ok(rowOf(p,"far").className.includes("cur"));
   assert.equal(pane.scrollTop,908,"j brings the row below the view to 8px above the bottom edge, in the pane");
   assert.equal(p.windowScrollY,0,"the window stays at the top");
   p.key("G"); await p.flush(); assert.equal(pane.scrollTop,9000); assert.equal(p.windowScrollY,0,"G goes to the bottom of the pane");
@@ -2133,7 +2042,7 @@ test("wide Back after following a dependency scrolls the list pane back to the i
   const s=snapshot(); let p!:Awaited<ReturnType<typeof page>>;
   s.items.far={title:"Far",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"far",why:"needs far"});
-  p=await page(s,[],null,undefined,{wide:true,geometry:e=>({top:(e.id === "it-far" ? 2500 : e.id === "it-area" ? 700 : -500)-p.scrollY,height:20})});
+  p=await page(s,[],null,undefined,{geometry:e=>({top:(e.id === "it-far" ? 2500 : e.id === "it-area" ? 700 : -500)-p.scrollY,height:20})});
   const pane=p.roots.get("page-left")!;
   await selectWide(p);
   const dep=p.all().find(e=>e.dataset.sel === "dep:area@far")!;
@@ -2141,14 +2050,14 @@ test("wide Back after following a dependency scrolls the list pane back to the i
   await dep.click(); await p.flush();
   assert.ok(pane.scrollTop>1000,"following the dependency scrolls the pane to its row");
   p.key("Backspace"); await p.flush();
-  const top=item(p,"area").getBoundingClientRect().top;
+  const top=rowOf(p,"area").getBoundingClientRect().top;
   assert.ok(top>=0 && top<1000,"Back brings the item the reader left into the pane's view"); assert.equal(p.windowScrollY,0);
 });
 
 test("wide landing in the list pins through updates until the reader scrolls the pane", async () => {
   const s=snapshot(), frames=new Frames(); s.decisions.loose={...card(),item:"missing",question:"Loose card"};
   let above=0, p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,unread("decision","loose"),null,undefined,{wide:true,frames,geometry:e=>({top:e.id === "q-loose" ? 1800+above-p.scrollY : 600,height:e.id === "q-loose" ? 400 : 2400})});
+  p=await page(s,unread("decision","loose"),null,undefined,{frames,geometry:e=>({top:e.id === "q-loose" ? 1800+above-p.scrollY : 600,height:e.id === "q-loose" ? 400 : 2400})});
   const pane=p.roots.get("page-left")!, top=() => p.all().find(e=>e.id === "q-loose")!.getBoundingClientRect().top;
   p.key("n"); await p.flush(); const landed=top();
   assert.ok(pane.scrollTop>1000,"the landing scrolls the pane"); assert.equal(p.windowScrollY,0);
@@ -2164,7 +2073,7 @@ test("wide blank clicks clear the current selection while actions fall back to t
     const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
     s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"}; if (action === "a") s.items.child!.status="done";
     s.items.other={title:"Following root",group:"Project",status:"todo",priority:"P2",ask:{text:"Other ask"},updated:at,rev:1,deps:[],links:[],log:[]};
-    const p=await page(s,fresh,null,undefined,{wide:true,geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100}),response:(path,input)=> {
+    const p=await page(s,fresh,null,undefined,{geometry:e=>({top:e.id === "it-area" ? 300 : e.id === "it-child" ? 450 : e.id === "it-other" ? 600 : 50,height:100}),response:(path,input)=> {
       if (path !== "/api/archive") return undefined;
       const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]=at; else delete s.owner.archived[id];
       return reply({ok:true});
@@ -2177,13 +2086,13 @@ test("wide blank clicks clear the current selection while actions fall back to t
     const prevented=p.key(action); await p.flush();
     if (action === "r") {
       assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:"e".repeat(40)}]);
-      assert.ok(item(p,"area").className.includes("fresh"),"fallback read leaves the parent's own unread content alone");
+      assert.ok(rowOf(p,"area").className.includes("fresh"),"fallback read leaves the parent's own unread content alone");
     } else if (action === "a") assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"child",on:true}]);
     else if (action === "c") { assert.ok(p.document.getElementById("ed-it_child")); assert.equal(p.document.getElementById("ed-it_area"),null); }
     else if (action === "e") assert.equal((p.calls.find(c=>c.path === "/api/draft")!.body as {target:string}).target,"it:child");
-    else if (action === "Enter") { assert.equal(prevented,true); assert.ok(item(p,"child").className.includes("cur"),"Enter selects the displayed item's head after a blank click"); }
+    else if (action === "Enter") { assert.equal(prevented,true); assert.ok(rowOf(p,"child").className.includes("cur"),"Enter selects the displayed item's head after a blank click"); }
     else if (action === "j" || action === "k") {
-      assert.ok(item(p,action === "j" ? "other" : "area").className.includes("cur"),"tree focus starts from the displayed item's row");
+      assert.ok(rowOf(p,action === "j" ? "other" : "area").className.includes("cur"),"tree focus starts from the displayed item's row");
       assert.equal(detailItem(p,"child"),displayed,"moving focus leaves the displayed detail intact");
     } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "other" : "area"),"owner-work navigation starts from the displayed item's ask");
     else assert.ok(detailItem(p,action === "n" ? "area" : "child"),"fresh navigation retains its global cursor and selects its stop");
@@ -2225,7 +2134,7 @@ test("a on an item inside an archived subtree un-archives the nearest archived a
   }});
   await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("已归档"))!.click(); await p.flush();
   await expand(p,"area"); assert.ok(item(p,"child"),"the archived subtree shows under 已归档");
-  await item(p,"child").children[0]!.children[0]!.click(); await p.flush();
+  await item(p,"child").querySelector(".item-head")!.click(); await p.flush();
   p.key("a"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:false}],"the child is not archived; its archived ancestor is restored");
   assert.equal(p.roots.get("server-banner")!.hidden,true);
@@ -2276,7 +2185,7 @@ test("glossary links: none inside code spans, code blocks or links, and the text
   const head = descendants(item(p)).find(e => e.className === "rich")!.innerHTML;
   assert.deepEqual(termLinks(head), [["否决线", anchor("Project", "否决线")]]);
   assert.match(head, /<p>最后 <a class="term"[^>]*>否决线<\/a>。<\/p>$/);
-  await item(p, "x").children[0]!.children[0]!.click(); await setImmediate();
+  await item(p, "x").querySelector(".item-head")!.click(); await setImmediate();
   const other = descendants(item(p, "x")).find(e => e.className === "rich")!.innerHTML;
   assert.deepEqual(termLinks(other), [["否决线", anchor("Other", "否决线")], ["孪生对照", anchor("Other", "孪生对照")]], "an item of Other links Other's 否决线");
   assert.match(other, /<\/a> &amp; <a /, "escaped text between terms stays intact");
@@ -2376,4 +2285,169 @@ test("glossary links follow a live glossary change", async () => {
   const link = termLink(p, "Project", "孪生对照"); p.roots.get("sendbox")!.appendChild(link);
   await link.click(); await p.flush();
   assert.ok(markup(popovers(p)[0]!).includes("定义"), "the popover reads the changed glossary");
+});
+
+// References with # and the / search: items and decision cards found by title.
+function linked(): Snapshot {
+  const s = snapshot(); s.decisions.q = card();
+  s.items.shipped = { title: "已交付 Alpha", group: "Project", status: "done", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.items.dropped = { title: "取消的 Beta", parent: "area", status: "cancelled", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  return s;
+}
+const classes = (e: Element) => e.className.split(" ");
+const rowTitle = (e: Element) => e.innerHTML.match(/class="t">([^<]*)</)![1]!;
+async function composer(snap: Snapshot = linked()) {
+  const p = await page(snap, [], null, undefined, { response: path => path === "/api/notes" ? reply({ id: "saved" }) : undefined });
+  await expand(p); p.key("c"); await p.flush();
+  const ta = p.all().find(e => e.id === "ed-it_child")!;
+  const type = async (text: string) => { ta.value = text; ta.setSelectionRange(text.length, text.length); await ta.handlers.get("input")![0]!({}); };
+  const pop = () => p.all().find(e => e.className === "refpop");
+  const options = () => pop() ? descendants(pop()!).filter(e => classes(e).includes("refopt")) : [];
+  return { p, ta, type, pop, options, titles: () => options().map(rowTitle) };
+}
+const noteCalls = (p: Awaited<ReturnType<typeof page>>) => p.calls.filter(c => c.path === "/api/notes");
+
+test("typing # in a comment lists the matching items and cards; Enter inserts the token and the note is saved with it", async () => {
+  const { p, ta, type, pop, options, titles } = await composer();
+  await type("见 #");
+  assert.deepEqual(titles(), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "every item, done and cancelled ones too, and the card, in board order");
+  await type("见 #ALPHA");
+  assert.deepEqual(titles(), ["已交付 Alpha"], "matching ignores case");
+  assert.match(options()[0]!.innerHTML, /^<span class="st done">DONE<\/span>.*<span class="where">Project<\/span>$/, "a row names the status and the project");
+  const prevented = p.key("Enter", ta);
+  assert.equal(prevented, true, "Enter chooses instead of saving");
+  assert.equal(ta.value, "见 [[it:shipped]]"); assert.equal(pop(), undefined, "choosing closes the popup");
+  assert.equal(noteCalls(p).length, 0, "choosing saved nothing");
+  p.key("Enter", ta); await settle();
+  assert.deepEqual(noteCalls(p).map(c => c.body), [{ target: "it:child", text: "见 [[it:shipped]]", kind: "comment" }], "the stored text keeps the key, not the title");
+});
+
+test("# popup: Chinese search finds a card, arrows wrap, a click inserts, Esc closes only the popup", async () => {
+  const { p, ta, type, pop, options, titles } = await composer();
+  await type("#显示"); assert.deepEqual(titles(), ["如何显示？"]);
+  assert.match(options()[0]!.innerHTML, /asktag">等你决定<\/span>.*<span class="where">Project › Child<\/span>$/, "a card row shows its state and the item holding it");
+  p.key("Enter", ta); assert.equal(ta.value, "[[q:q]]", "a card token carries its own prefix");
+  await type("#"); assert.ok(classes(options()[0]!).includes("sel"));
+  p.key("ArrowDown", ta); assert.ok(classes(options()[1]!).includes("sel") && !classes(options()[0]!).includes("sel"));
+  p.key("ArrowUp", ta); p.key("ArrowUp", ta); assert.ok(classes(options().at(-1)!).includes("sel"), "up from the first row wraps to the last");
+  p.key("Enter", ta); assert.equal(ta.value, "[[q:q]]");
+  await type("a #取消"); await options()[0]!.click();
+  assert.equal(ta.value, "a [[it:dropped]]", "a mouse click inserts too, over the #query only"); assert.equal(pop(), undefined);
+  await type("#"); assert.ok(pop());
+  assert.equal(p.key("Escape", ta), true); assert.equal(pop(), undefined, "Esc closes the popup");
+  assert.ok(p.all().some(e => e.id === "ed-it_child"), "the editor stays open after the first Esc");
+  p.key("Escape", ta); await p.flush();
+  assert.ok(!p.all().some(e => e.id === "ed-it_child"), "a second Esc cancels the comment as before");
+  assert.equal(noteCalls(p).length, 0);
+});
+
+test("a # glued to a word, or with no match, opens no popup and Enter still saves", async () => {
+  const { p, ta, type, pop } = await composer();
+  await type("see Whitefoot#341"); assert.equal(pop(), undefined, "Repo#341 is a pull request reference");
+  await type("#zzzz"); assert.equal(pop(), undefined, "no match, no popup");
+  p.key("Enter", ta); await settle();
+  assert.deepEqual(noteCalls(p).map(c => (c.body as { text: string }).text), ["#zzzz"], "the text is saved as typed");
+});
+
+test("a reference token renders the target's current title as a link and a missing target as its struck key, everywhere text renders", async () => {
+  const s = linked(); s.items.other = { title: "Other root", group: "Project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.notes.n = { target: "it:child", kind: "comment", text: "看 [[it:area]] 和 [[q:q]]，还有 [[it:gone]]、[[q:gone]] 与 `[[it:area]]`\n\n| 列 |\n| --- |\n| [[it:other]] |", at, state: "done", reply: "回复 [[it:area]]", repliedAt: at, rev: 1 };
+  s.items.child!.log = [{ at, by: "Project", text: "见 [[it:area]]" }]; s.items.child!.head = "头部 [[it:area]]";
+  const p = await page(s, [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  const area = '<a class="itemref" href="#" data-ref="it:area">Parent</a>';
+  const note = markup(p.all().find(e => e.id === "note-n")!);
+  assert.ok(note.includes("看 " + area), "the item link");
+  assert.ok(note.includes('<a class="itemref" href="#" data-ref="q:q">如何显示？</a>'), "the card link shows the card's question");
+  assert.ok(note.includes('<span class="itemref missing" title="没有这个条目：gone">gone</span>') && note.includes('<span class="itemref missing" title="没有这张决策卡：gone">gone</span>'), "a missing item or card shows its key");
+  assert.ok(note.includes("<code>[[it:area]]</code>"), "a code span keeps the token as typed");
+  assert.match(note, /<td><a class="itemref"[^>]*data-ref="it:other">Other root<\/a><\/td>/, "tables render the link in their cells");
+  assert.ok(note.includes("回复 " + area), "a reply renders it");
+  assert.ok(markup(p.all().find(e => e.className === "log-entry")!).includes("见 " + area), "a log entry renders it");
+  assert.ok(markup(item(p)).includes("头部 " + area), "so does an item's head");
+  // The title is read when the page renders, so a rename shows at once and a deleted target turns invalid.
+  await p.change("b".repeat(40), [{ kind: "item", id: "area", after: { ...s.items.area!, title: "Renamed parent" } }]); await p.flush();
+  assert.ok(markup(p.all().find(e => e.id === "note-n")!).includes('data-ref="it:area">Renamed parent</a>'), "a renamed item shows its current title");
+  await p.change("c".repeat(40), [{ kind: "item", id: "other", after: null }]); await p.flush();
+  assert.ok(markup(p.all().find(e => e.id === "note-n")!).includes('<span class="itemref missing" title="没有这个条目：other">other</span>'), "a deleted item turns invalid");
+  await p.change("d".repeat(40), [{ kind: "item", id: "other", after: s.items.other }]); await p.flush();
+  assert.ok(markup(p.all().find(e => e.id === "note-n")!).includes('data-ref="it:other">Other root</a>'), "and valid again when it returns");
+});
+
+test("clicking a reference selects its item with its ancestors unfolded, or its card, and Back returns", async () => {
+  const s = linked(); s.items.other = { title: "Other root", group: "Project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.items.otherKid = { title: "Other kid", parent: "other", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.notes.n = { target: "it:child", kind: "comment", text: "去 [[it:otherKid]] 或 [[q:q]]", at, state: "done", reply: "ok", repliedAt: at, rev: 1 };
+  const p = await page(s, [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  assert.ok(!p.all().some(e => e.id === "it-otherKid"), "the target is under a folded parent");
+  const ref = (key: string) => { const a = p.document.createElement("a"); a.className = "itemref"; a.setAttribute("data-ref", key); a.bubbleClick = true; p.roots.get("sendbox")!.appendChild(a); return a; };
+  await ref("it:otherKid").click(); await p.flush();
+  assert.ok(detailItem(p, "otherKid"), "the item is shown in the detail column");
+  assert.ok(rowOf(p, "otherKid").className.includes("selected"), "and selected in the tree, its parent unfolded");
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false);
+  p.key("Backspace"); await p.flush();
+  assert.ok(detailItem(p, "child"), "Back returns to the item the reader left");
+  await ref("q:q").click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "q-q")!.className.includes("cur"), "a card reference shows and selects the card");
+  await ref("it:gone").click(); await p.flush();
+  assert.ok(detailItem(p, "child"), "a reference to nothing goes nowhere");
+});
+
+test("/ opens a search over every item and card by title, done and cancelled ones included, and Esc closes it", async () => {
+  const p = await page(linked(), []);
+  const box = () => p.document.getElementById("search"), input = () => p.document.getElementById("search-input")!;
+  const rows = () => p.all().filter(e => classes(e).includes("searchrow"));
+  const type = async (text: string) => { input().value = text; await input().handlers.get("input")![0]!({}); };
+  assert.equal(box(), null);
+  assert.equal(p.key("/"), true); assert.ok(box(), "/ opens the box");
+  assert.equal(p.document.activeElement, input(), "the search field has the focus");
+  assert.deepEqual(rows().map(rowTitle), ["Parent", "Child", "已交付 Alpha", "取消的 Beta", "如何显示？"], "an empty query lists everything");
+  await type("alpha"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha"], "a done item is found");
+  assert.equal(rows()[0]!.innerHTML, '<span class="st done">DONE</span><span class="t">已交付 Alpha</span><span class="where">Project</span>', "a row shows status, title, project and no parent for a root");
+  await type("取消"); assert.equal(rows()[0]!.innerHTML, '<span class="st cancelled">DROP</span><span class="t">取消的 Beta</span><span class="where">Project › Parent</span>', "a cancelled item is found, with its parent's title");
+  await type("CHILD"); assert.equal(rows()[0]!.innerHTML, '<span class="st wip">WIP</span><span class="t">Child</span><span class="where">Project › Parent</span>');
+  await type("显示"); assert.match(rows()[0]!.innerHTML, /^<span class="asktag">等你决定<\/span><span class="t">如何显示？<\/span><span class="where">Project › Child<\/span>$/, "a card shows its state and the item holding it");
+  await type("没有这样的标题"); assert.equal(rows().length, 0); assert.ok(markup(box()!).includes("没有匹配"));
+  p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
+  p.key("Escape", input()); assert.equal(box(), null, "Esc closes it");
+  p.key("/"); assert.ok(box()); p.press(1, 1, false); assert.equal(box(), null, "a press outside closes it");
+});
+
+test("search: arrows and Enter jump to the item with its ancestors unfolded, even a cancelled one; a click jumps too", async () => {
+  const p = await page(linked(), []);
+  const input = () => p.document.getElementById("search-input")!, rows = () => p.all().filter(e => classes(e).includes("searchrow"));
+  const type = async (text: string) => { input().value = text; await input().handlers.get("input")![0]!({}); };
+  p.key("/"); assert.ok(classes(rows()[0]!).includes("sel"));
+  p.key("ArrowDown", input()); assert.ok(classes(rows()[1]!).includes("sel") && !classes(rows()[0]!).includes("sel"));
+  p.key("ArrowUp", input()); p.key("ArrowUp", input()); assert.ok(classes(rows().at(-1)!).includes("sel"), "up from the first row wraps to the last");
+  p.key("ArrowDown", input()); p.key("ArrowDown", input()); p.key("Enter", input()); await p.flush();
+  assert.equal(p.document.getElementById("search"), null, "jumping closes the box");
+  assert.ok(detailItem(p, "child"), "the second row, Child, is shown in the detail column");
+  assert.ok(rowOf(p, "child").className.includes("selected"), "its ancestors are unfolded and its row selected");
+  p.key("/"); await type("取消"); p.key("Enter", input()); await p.flush();
+  assert.ok(detailItem(p, "dropped"), "a cancelled item hidden from the tree is shown");
+  assert.ok(rowOf(p, "dropped").className.includes("selected"));
+  p.key("/"); await type("显示"); await rows()[0]!.click(); await p.flush();
+  assert.equal(p.document.getElementById("search"), null);
+  assert.ok(detailItem(p, "child") && p.all().find(e => e.id === "q-q")!.className.includes("cur"), "a card result shows its item and selects the card");
+  p.key("/"); await type("alpha"); p.key("Enter", input()); await p.flush();
+  assert.ok(detailItem(p, "shipped") && rowOf(p, "shipped").className.includes("selected"), "a done item is reachable");
+});
+
+test("/ is ignored while typing in a text field, a text area or editable content", async () => {
+  const p = await page(linked(), []);
+  const field = p.document.createElement("input"); field.type = "text";
+  const area = p.document.createElement("textarea");
+  const editable = p.document.createElement("div"); (editable as Element & { isContentEditable: boolean }).isContentEditable = true;
+  for (const target of [field, area, editable]) { assert.equal(p.key("/", target), false, target.tagName + " keeps the key"); assert.equal(p.document.getElementById("search"), null); }
+  const box = p.document.createElement("input"); box.type = "checkbox";
+  assert.equal(p.key("/", box), true, "a focused checkbox does not swallow it"); assert.ok(p.document.getElementById("search"));
+  p.key("Escape", p.document.getElementById("search-input")!);
+  assert.equal(p.key("/", p.document.createElement("button")), true, "nor does a button");
+});
+
+test("the keyboard help lists the search key", async () => {
+  const p = await page(snapshot(), []);
+  assert.ok(p.all().some(e => e.className === "keymenu-row" && e.innerHTML.includes("<kbd>/</kbd>")), "the ☰ menu has a / row");
+  await p.all().find(e => e.className === "keymenu-row" && e.innerHTML.includes("<kbd>/</kbd>"))!.click();
+  assert.ok(p.document.getElementById("search"), "and its row opens the search");
 });

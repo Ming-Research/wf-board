@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
-import { board, author } from "./helpers.ts";
+import { board, author, later } from "./helpers.ts";
+import { ownerOps } from "../src/owner-ops.ts";
 
 test("SDK client discovers exactly thirty described tools, reads/writes fresh state and receives tool errors", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
@@ -207,4 +208,17 @@ test("set_term, glossary, brief and delete_term work end to end, and an unconfig
   assert.equal(unknown.error, true); assert.match(unknown.text, /project Snowghost: choose a configured project/);
   assert.match((await call("delete_term", { author, term: "否决线" })).text, /^delete_term 否决线 · commit /);
   assert.equal((await call("glossary", { project: author })).text, "Whitefoot: no terms");
+});
+
+test("a reference token in an owner note reaches sessions as typed, with the key", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op }), own = ownerOps(store, () => later);
+  const client = new Client({ name: "Test agent", version: "1" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ type: string; text: string }>).filter(c => c.type === "text").map(c => c.text).join("\n");
+  const note = await own.createNote({ target: "it:a", kind: "comment", text: "compare with [[it:b]] and [[q:choice]]" });
+  assert.equal(store.snapshot().notes[note.id]!.text, "compare with [[it:b]] and [[q:choice]]", "the store keeps the token, not the title");
+  assert.match(text(await client.callTool({ name: "notes", arguments: { filters: {} } })), /compare with \[\[it:b\]\] and \[\[q:choice\]\]/);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /compare with \[\[it:b\]\] and \[\[q:choice\]\]/);
 });

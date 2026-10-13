@@ -265,21 +265,19 @@ log:
   status, priority and request rows, and added or changed dependency and link
   rows, are not coloured either.
   New items and cards carry no per-block marks. No green background is used
-  anywhere: the owner never asked for one. In single-column mode an item, and in
-  either layout a card, with unread changes of its own carries a blue line beside its whole body, marking exactly what `r` on it
+  anywhere: the owner never asked for one. A card with unread changes of its
+  own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
-  and carries no line, since `r` leaves sub-items alone. In single-column mode a
-  folded item shows its head row alone: its body, cards and comment list fold
-  together. In split mode the tree always shows only head rows, with a short
-  blue line for an item's own unread content; the selected item's body and
-  comments appear in the detail column, with a short blue line beside its headline. In both
-  layouts the 新 chip still counts what is new inside. New log entries, new notes and replies, and added dependency and link
+  and carries no line, since `r` leaves sub-items alone. The tree shows only
+  head rows, with a short blue line for an item's own unread content; the
+  selected item's body and comments appear in the detail column, with a short blue line beside its headline.
+  The 新 chip counts what is new inside. New log entries, new notes and replies, and added dependency and link
   rows use the same blue bar. A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
   diffs. Every document jump, including card references, waiting-stop arrows,
   unread chips, reveals the target and its comment list
-  (in the selected item's detail column in split mode),
+  (in the selected item's detail column),
   waits for the baselines affecting that target and its expanded containers,
   then scrolls after rendering. Baselines for unrelated collapsed items or
   explicitly collapsed ancestor comment lists neither delay nor cancel the jump.
@@ -360,11 +358,9 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-The header’s 视图 row has a 分屏 / 单栏 toggle that switches layouts immediately.
-Split mode is on by default; the owner’s choice is saved per viewer in
-browser localStorage, and unavailable storage does not prevent use. Viewport
-width never changes the choice. Split mode has two columns and uses the full
-window with compact tree margins and equal, smaller detail side padding.
+The page always has two columns: there is no single-column layout, and
+viewport width never changes it. It uses the full window with compact tree
+margins and equal, smaller detail side padding.
 The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
 The tree leaves out archived and cancelled items with their subtrees; a
@@ -378,15 +374,15 @@ Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, descendant owner-action count and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-Each split tree row stays on one line: caret, status, priority, title, chips
+Each tree row stays on one line: caret, status, priority, title, chips
 and counts. Parent leaf counts leave out archived and cancelled leaves and
-show numbers in their status color in both layouts, with status names in accessibility labels. In split mode they shrink and clip away
+show numbers in their status color, with status names in accessibility labels. They shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
 The separate decisions section
 and send box remain available.
 
-In tree rows in both layouts, the blue new-content chip and the red descendant
+In tree rows, the blue new-content chip and the red descendant
 owner-action chip show only their numbers. Their tooltips and accessibility
 labels retain their full meaning; the item’s own 等你处理 tag retains its words.
 Every 新 chip shows only its number, including detail headlines and cards.
@@ -400,29 +396,24 @@ or scroll margins for a bar. The existing send-box top button remains.
 
 A vertical divider resizes the left column with pointer dragging. Its width is saved per viewer in browser
 localStorage. Both columns retain useful minimum widths: 300 CSS pixels for
-the tree and 380 for detail. Split mode may overflow narrower viewports;
-the owner can turn it off for the phone’s single-column layout.
+the tree and 380 for detail. The page may overflow narrower viewports.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by 被依赖, head text, data, 依赖, log, ask, open cards, shown ruled cards,
 checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
-cancelled items, except a dependency row marked as added. The same detail builder renders
-this content inline in single-column mode. With no selection the column says
+cancelled items, except a dependency row marked as added. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
 the existing item, log, dependency, card and note selection keys and actions.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
-With split mode off, the page keeps inline bodies: a head click opens or
-folds both its body and sub-items.
-No global keyboard bindings change: Enter on a focused head selects its item in the
-split layout, and opens or folds it in the single-column layout; j/k move focus as
-before. Actions use the current selection in split mode, falling
-back to the selected item or the top visible tree row.
+Enter on a focused head selects its item; j/k move focus. Actions use the
+current selection, falling back to the selected item or the top visible tree
+row.
 
-In split mode, `n`, `N` and 新 chips select the stop's item, unfold its
+`n`, `N` and 新 chips select the stop's item, unfold its
 ancestors and bring its tree row into view, then scroll the right column to
 the exact fresh mark, card or note. A card held by no item keeps its existing
 navigation behavior in the separate decisions section. Dependency links,
@@ -443,6 +434,30 @@ same eight-second deadline and no automatic retry as other owner controls.
 If a later change joins a pending read's step, that combined step waits for
 the server's read result to separate its later unread changes.
 
+In a comment, typing `#` opens a small popup of the items and decision cards
+whose title contains the text typed after it (ignoring case; up to eight
+shown). Up and down choose, Enter or a click writes a reference token over
+`#…`, and Esc closes only the popup. A `#` glued to a word before it, as in
+`Repo#341`, starts nothing. The token is `[[it:<key>]]` for an item and
+`[[q:<key>]]` for a decision card: the prefix is there because an item and a
+card may share a key, and double square brackets begin no other markup in
+block text (a link needs `](`). The note keeps the token as typed, so a
+session reading it through the MCP tools sees the key. Wherever block text
+renders (heads, log entries, comments, replies, cards), a token whose target
+exists shows the target's current title as a link; a click selects that item
+(for a card, its item with the card shown), unfolds its ancestors and shows it
+in the detail column, and Back returns, as with a dependency link. A token
+whose target is gone shows its key struck through. Tokens inside code spans or
+fenced code stay as typed. When a target's title changes, or a target appears
+or goes, and any document refers to it, the page renders again.
+
+`/` anywhere except while typing in a text field opens a search box over every
+item and decision card by title, matched as in the popup (ignoring case,
+substring, any language), done and cancelled ones included. A row shows the
+status, the title, the project and the parent item (a card's holding item). Up
+and down choose, Enter or a click goes there as for a reference, and Esc or a
+click outside closes it.
+
 Choice, approve/done and explain controls show their pending state immediately,
 before sending the write, and restore the authoritative state with a visible
 error if it fails. `POST /api/draft` sets or clears a target's draft of that
@@ -462,7 +477,7 @@ stream cannot leave navigation waiting indefinitely. Changes arriving before
 that callback share one render. Note
 changes update their item or card, and an item or card change updates its
 affected subtree and summaries; unrelated cards keep their DOM elements.
-In split mode these same scoped render paths update the selected item's
+These same scoped render paths update the selected item's
 detail in place and preserve its scroll position. Unrelated changes do not
 rebuild the detail column.
 Scoped card updates also reconcile membership and order: an unread reply can

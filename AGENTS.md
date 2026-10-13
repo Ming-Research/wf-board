@@ -30,8 +30,9 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/http.ts`: page, page API, events and wake
   stream; `src/main.ts`: the daemon.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
-- `web/`: the owner's page (`index.html`, `app.ts`, and `fresh.ts`, the index
-  `n` walks, as plain functions tests call directly), bundled by esbuild.
+- `web/`: the owner's page (`index.html`, `app.ts`, `fresh.ts`, the index `n`
+  walks, and `find.ts`, title search and reference tokens, as plain functions
+  tests call directly), bundled by esbuild.
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
   never enters this repository.
 
