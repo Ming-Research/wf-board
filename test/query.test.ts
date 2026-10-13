@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { rules } from "../src/rules.ts";
 import * as q from "../src/query.ts";
 import { board, at, later, author } from "./helpers.ts";
+import type { PlanStepInput } from "../src/model.ts";
+const acceptance = (text = "验收通过"): PlanStepInput => ({ id: "accept", accept: true, text, state: "todo" });
 
 test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks snippets and filters", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
@@ -16,7 +18,7 @@ test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks 
   assert.equal(q.search(s, r, "中文", { limit: 2 }).length, 2);
   assert.deepEqual(q.search(s, r, "中文", { group: "Firn" }), []);
   assert.equal(q.search(s, r, "中文", { under: "a", kind: ["note"], since: later }).length, 1);
-  assert.deepEqual(q.search(s, r, "中文", { status: ["blocked"] }), []);
+  assert.deepEqual(q.search(s, r, "中文", { status: ["done"] }), []);
   assert.throws(() => q.search(s, r, " "), /query/);
   assert.throws(() => q.search(s, r, "中文", { under: "missing" }), /under/);
   const long = { ...s, items: { ...s.items, a: { ...s.items.a!, head: "前".repeat(90) + "中文" + "后".repeat(90) } } };
@@ -37,40 +39,35 @@ test("search finds target goal, target value, current value and distinctive comp
   }
 });
 
-test("context includes relationships, page order, open/ruled cards, replies, checks, links, PRs and bounded logs", async t => {
+test("context exposes the owner chain, compact plan, shared waiters, cards, replies, links and bounded logs", async t => {
   const { store, op } = await board(t);
-  const leaf = q.context(store.snapshot(), rules(store.snapshot()), "a");
-  // Neither a nor b is a root, so neither stores a priority; area (P1) is the only open root above them.
-  const waiter = q.context(store.snapshot(), rules(store.snapshot()), "b");
-  assert.ok("ancestors" in leaf && "ancestors" in waiter); assert.equal(leaf.migrated, true); assert.equal(leaf.raisedBy, null);
-  assert.equal(leaf.item.priority, undefined); assert.equal(leaf.priority, "P1"); assert.equal(waiter.item.priority, undefined); assert.equal(waiter.priority, "P1");
-  await op.createItem({ author, key: "child-low", parent: "a", parentWhy: "Low priority evidence", title: "Low", order: 0, parentOwnWork: { key: "a-own", title: "a own work" } });
-  await op.createItem({ author, key: "child-high", parent: "a", parentWhy: "High priority evidence", title: "High", order: 5 });
+  await op.createItem({ author, key: "child-low", owner: "a", title: "Low", accept: "Low accepted" });
+  await op.createItem({ author, key: "child-high", owner: "a", title: "High", accept: "High accepted" });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
-  assert.ok("children" in c);
+  assert.ok("plan" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
-  // a is not a root, so the split drops its ignored stored priority and the own-work sub-item takes none.
-  assert.equal(c.item.priority, undefined); assert.equal(s.items["a-own"]!.priority, undefined); assert.equal(c.priority, "P1");
-  assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, 3); // 7 seeded + the first-child entry
+  assert.equal(c.item.priority, undefined); assert.equal(c.priority, "P1");
   assert.deepEqual(c.ancestors.map(it => it.id), ["area"]);
-  assert.deepEqual(c.children.map(it => [it.id, it.priority]), [["child-low", "P1"], ["a-own", "P1"], ["child-high", "P1"]]); // inherited priority ties, so page order breaks the tie
-  assert.ok(c.deps.some(d => d.id === "child-high" && d.why === "High priority evidence"));
-  assert.deepEqual(c.dependents.map(d => [d.id, d.why]), [["area", "需要检查结果"], ["b", "需要检查"]]);
+  assert.ok(c.plan[0]!.includes("child-low") && c.plan[0]!.includes("[own]"));
+  assert.ok(c.plan[1]!.includes("child-high") && c.plan[1]!.includes("[own]"));
+  assert.ok(c.plan.at(-1)!.includes("◆") && c.plan.at(-1)!.includes("验收"));
+  assert.deepEqual(c.dependents.map(d => d.id), ["b"], "owner belongs in its chain, shared waiter is separate");
+  for (const removed of ["children", "deps", "steps", "migrated", "raisedBy"]) assert.equal(Object.hasOwn(c, removed), false);
   const open = c.cards.find(card => card.key === "choice")!;
-  assert.ok("background" in open); assert.equal(open.background, "中文背景 Whitefoot PR #341"); assert.equal(open.options.length, 2);
+  assert.ok("background" in open); assert.equal(open.background, "中文背景 Whitefoot PR #341");
   const ruled = c.cards.find(card => card.key === "ruled")!;
   assert.equal(ruled.ruling, "中文裁决"); assert.equal("background" in ruled, false);
   assert.equal(c.notes.length, 2); assert.equal(c.notes[0]!.reply, "中文回复");
   assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
-  assert.ok("earlierLogs" in all && "earlierLogs" in none); assert.equal(all.earlierLogs, 0); assert.equal(none.earlierLogs, 8);
+  assert.ok("earlierLogs" in all && "earlierLogs" in none);
+  assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, all.item.log.length - 5);
+  assert.equal(all.earlierLogs, 0); assert.equal(none.earlierLogs, all.item.log.length);
   const card = q.context(s, r, "choice"); assert.equal(card.kind, "card");
-  assert.equal(card.card!.confidence!.score, 4); assert.equal(card.item.title, "中文检查"); assert.equal(card.notes[0]!.id, "note-2");
+  assert.equal(card.card!.confidence!.score, 4); assert.equal(card.item.title, "中文检查");
   assert.throws(() => q.context(s, r, "missing"), /Unknown id/);
-  await op.setStatus({ author, id: "b", status: "wip", log: "Parallel work" });
-  const checked = q.context(store.snapshot(), rules(store.snapshot()), "b");
-  assert.ok("checks" in checked); assert.ok(checked.checks.some(c => c.text.includes("进行中")));
 });
+
 
 test("latest five context notes include notes on cards and item, not other targets", async t => {
   const { store } = await board(t);
@@ -79,39 +76,41 @@ test("latest five context notes include notes on cards and item, not other targe
   assert.deepEqual(c.notes.map(n => n.id), ["extra-4", "extra-3", "extra-2", "extra-1", "extra-0"]);
 });
 
-test("graph follows up/down item and card deps, marks cycles and open blocked chains, bounds depth", async t => {
-  const { store, op } = await board(t);
-  await op.updateItem({ author, id: "a", rev: 1, deps: [{ id: "b", why: "Cycle witness" }] });
+test("graph marks owned/shared edges, card states, cycles, blocked chains and depth limits", async t => {
+  const { store } = await board(t), before = store.snapshot();
+  await store.commit({ author, message: "Imported cycle witness", puts: [{ kind: "item", id: "a", expectRev: 1,
+    doc: { ...before.items.a!, plan: [{ id: "b", item: "b", own: false, after: [] }, acceptance()] } }] });
   const s = store.snapshot(), r = rules(s), g = q.graph(s, r, "a", { direction: "both", depth: 4 });
   const upB = g.up!.next.find(n => n.id === "b")!;
-  assert.equal(upB.why, "Cycle witness"); assert.equal(upB.status, "blocked"); assert.equal(g.up!.blockedChain, true);
+  assert.equal(upB.own, false); assert.equal(upB.status, "blocked"); assert.equal(g.up!.blockedChain, true);
   assert.equal(upB.next.find(n => n.id === "a")!.cycle, true);
   assert.equal(upB.next.find(n => n.id === "choice")!.kind, "card");
   assert.equal(upB.next.find(n => n.id === "choice")!.blockedChain, true);
-  const downB = g.down!.next.find(n => n.id === "b")!;
-  assert.equal(downB.why, "需要检查"); assert.equal(downB.next.find(n => n.id === "a")!.cycle, true);
+  assert.equal(g.down!.next.find(n => n.id === "area")!.own, true);
+  assert.equal(g.down!.next.find(n => n.id === "b")!.own, false);
   assert.equal(q.graph(s, r, "choice", { direction: "down" }).down!.next[0]!.id, "b");
-  assert.equal(q.graph(s, r, "b", { direction: "down" }).down!.next.find(n => n.id === "a")!.blockedChain, true);
   const limited = q.graph(s, r, "a", { direction: "up", depth: 0 });
   assert.equal(limited.up!.truncated, true); assert.deepEqual(limited.up!.next, []);
 });
 
-test("overview/list/notes honor derived statuses, priority from dependents, inheritance and each filter", async t => {
+
+test("overview/list/notes filter derived plan status, inherited priority, subtree and time", async t => {
   const { store, op } = await board(t);
-  await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
+  await op.clearAsk({author,id:"a",log:"Handled"});
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
-  assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []); // b's stored P0 is ignored: area depends on it
+  assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
   assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["a"]);
-  // The fixture's heads state no completion condition.
-  assert.deepEqual(q.list(s, r, { hasChecks: true }).map(it => [it.id, it.checks.map(c => c.text)]), ["area", "a", "b", "other"].map(id => [id, ["正文没写完成条件"]]));
+  assert.ok(q.list(s, r, { hasChecks: true }).some(it => it.id === "other" && it.checks.some(c => c.text.startsWith("只差验收"))));
   assert.equal(q.list(s, r, { group: "Firn", limit: 1 })[0]!.id, "other");
   assert.deepEqual(q.list(s, r, { updatedSince: "2999-01-01T00:00:00Z" }), []);
   assert.equal(q.notes(s, { state: ["sent"], kind: ["comment"], under: "area", since: at, limit: 1 })[0]!.id, "note-1");
   assert.deepEqual(q.notes(s, { under: "other" }), []);
 });
+
 
 test("PR index separates qualified text, links, cards, notes and bare refs, avoids number-prefix matches", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
@@ -127,16 +126,16 @@ test("PR index separates qualified text, links, cards, notes and bare refs, avoi
 
 test("changes summarizes net fields over commits, groups areas, and history/diff reproduce evidence", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
-  await op.setStatus({ author, id: "a", status: "wip", log: "Started" });
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author: "Firn", key: "new", parent: "other", parentWhy: "Evidence", title: "New witness", parentOwnWork: { key: "other-own", title: "other own work" } });
+  await op.createItem({ author: "Firn", key: "new", owner: "other", title: "New witness", accept: "Witness accepted" });
   await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;
   const item = whitefoot.documents.find(d => d.id === "a")!;
-  assert.equal(item.summary, "status todo→wip, head changed, +2 log");
-  assert.deepEqual(item.commits.map(c => c.message), ["set_status a wip", "update_item a"]);
+  assert.deepEqual(item.summary.split(", ").sort(), ["plan changed", "head changed", "+1 log"].sort());
+  assert.deepEqual(item.commits.map(c => c.message), ["set_plan a", "update_item a"]);
   assert.ok(item.commits.every(c => c.author === author && c.at.endsWith("Z")));
   assert.match(whitefoot.documents.find(d => d.id === "note-1")!.summary, /new reply/);
   assert.match(whitefoot.documents.find(d => d.id === "choice")!.summary, /status open→ruled/);
@@ -146,7 +145,7 @@ test("changes summarizes net fields over commits, groups areas, and history/diff
   assert.deepEqual(await q.changes(store, s, "2999-01-01T00:00:00Z"), []);
   assert.equal((await q.history(store, "item", "a", 1))[0]!.message, "update_item a");
   const diff = await q.diff(store, "item", "a", baseline, s.head);
-  assert.match(diff, /\+status: wip/); assert.match(diff, /\+head: New stable context/);
+  assert.match(diff, /\+.*state: doing/); assert.match(diff, /\+head: New stable context/);
   assert.equal(await q.diff(store, "item", "a", baseline, "2999-01-01T00:00:00Z"), diff);
   assert.equal(q.describeChanges({ log: [{ text: "original" }] }, { log: [{ text: "edited" }, { text: "new" }] }, "item"), "log changed");
   assert.equal(q.describeChanges({ head: "Text" }, {}, "item"), "head cleared");
@@ -165,7 +164,7 @@ test("changes stays anchored to its snapshot even if a later commit lands, and i
 
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
-  await op.createItem({ author, key: "temporary", parent: "area", parentWhy: "Temporary witness", title: "Temporary item" });
+  await op.createItem({ author, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
   await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", background: "Evidence", options: [{ key: "A", text: "A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
@@ -247,40 +246,45 @@ test("context names the responsible project without agents", async t => {
   }
 });
 
-test("project brief and projects include inbox, sent notes, checks, work and outgoing requests", async t => {
+test("brief queues own work and frontier steps, folds resolved rows and projects count all open items", async t => {
   const {store,op} = await board(t);
-  await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",priority:"P0",why:"Need help"});
-  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",why:"Need feature",from:"a"});
-  await op.setStatus({author,id:"a",status:"done",log:"Ready"});
-  await op.ruleCard({author,key:"choice",choice:"A",ruling:"Chosen"});
-  await store.commit({author:"Fixture",message:"Card note and work",puts:[
-    {kind:"note",id:"sent-card",expectRev:null,doc:{target:"q:choice",kind:"done",text:"Card handled?",state:"sent",at,sentAt:at}},
-    ...Array.from({length:12},(_,i)=>({kind:"item" as const,id:`todo-${i}`,expectRev:null,doc:{title:`Todo ${i}`,group:"Whitefoot",status:"todo",priority:i===11?"P0":"P2",updated:at}})),
-    {kind:"item",id:"working",expectRev:null,doc:{title:"Working",group:"Whitefoot",status:"wip",priority:"P1",updated:at}},
-  ]});
-  await op.writeCard({author,key:"open-card",item:"working",question:"Choose?",background:"Why",options:[{key:"A",text:"A"}]});
-  const s = store.snapshot(), r = rules(s);
-  const brief = q.brief(s,r,"Whitefoot");
-  assert.equal(Object.hasOwn(brief,"agents"),false);
+  await op.clearAsk({author,id:"a",log:"Handled"});
+  await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",accept:"Incoming accepted",priority:"P0",why:"Need help"});
+  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",why:"Need feature",from:"a"});
+  await op.setPlan({author,id:"a",row:{id:"doing",text:"Own current work",state:"doing",after:[]}});
+  await op.setPlan({author,id:"area",row:{id:"own",text:"Parent current work",state:"doing",after:[]}});
+  await op.createItem({author,key:"backlog",title:"Backlog",group:author,record:true});
+  await op.createItem({author,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
+  await op.setPlan({author,id:"parked",row:{id:"future",text:"Future work",state:"todo"}});
+  const s=store.snapshot(),r=rules(s),brief=q.brief(s,r,author);
   assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Firn",why:"Need help"}]);
-  assert.deepEqual(brief.notes.map(x=>x.id).sort(),["note-1","sent-card"]);
-  assert.equal(brief.notes.find(x=>x.id==="sent-card")!.title,"中文方案？");
-  assert.ok(brief.checks.some(x=>x.id==="b" && x.checks.some(c=>c.text.startsWith("可解除阻塞"))));
-  assert.deepEqual(brief.cards.map(x=>x.id),["open-card"]);
-  assert.deepEqual(brief.wip.map(x=>x.id),["working"]);
-  assert.equal(brief.todo.length,10); assert.equal(brief.todo[0]!.id,"todo-11");
+  assert.deepEqual(brief.wip.map(x=>x.id).sort(),["a","area"],"a parent with its own doing step is queued");
+  assert.ok(!brief.todo.some(x=>x.id==="parked"),"backlog is no commitment");
   assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"]);
-  const project = q.projects(s,r)[0]!;
-  assert.equal(project.repo,"Ming-Research/Whitefoot"); assert.equal(project.inbox,1); assert.equal(project.areas,14);
-  assert.deepEqual(project.openLeaves,{todo:12,wip:1,blocked:1});
+  assert.ok(brief.progress.some(x=>x.id==="backlog"),"even an empty record may be inspected");
+  const project=q.projects(s,r)[0]!;
+  assert.equal(project.inbox,1); assert.equal(project.openItems.wip,2); assert.equal(project.openItems.blocked,1);
+  assert.equal(Object.hasOwn(project,"migrated"),false); assert.equal(Object.hasOwn(project,"agents"),false);
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
-  assert.ok(q.list(s,r,{group:author}).every(x=>x.group===author));
+});
+
+test("brief excludes an ask-blocked frontier but retains ready parallel work beside a doing step", async t => {
+  const {store,op}=await board(t);
+  const blocked=store.snapshot();
+  assert.equal(rules(blocked).statusOf("a"),"blocked");
+  assert.ok(!q.brief(blocked,rules(blocked),author).todo.some(row=>row.id === "a"));
+  await op.clearAsk({author,id:"a",log:"Handled"});
+  await op.setPlan({author,id:"a",rows:[{id:"doing",text:"Current work",state:"doing",after:[]},{id:"ready",text:"Independent next work",state:"todo",after:[]},acceptance()]});
+  const running=store.snapshot(),r=rules(running);
+  assert.equal(r.statusOf("a"),"wip");
+  assert.ok(q.brief(running,r,author).todo.some(row=>row.id === "a"));
+  assert.ok(q.brief(running,r,author).wip.some(row=>row.id === "a"));
 });
 
 test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
   const {store,op} = await board(t);
-  await op.createRequest({author,project:"Firn",key:"old-request",title:"Old",head:"Detail",priority:"P1",why:"Need"});
-  await op.createRequest({author,project:"Firn",key:"handled-request",title:"Handled",head:"Detail",priority:"P1",why:"Need"});
+  await op.createRequest({author,project:"Firn",key:"old-request",title:"Old",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
+  await op.createRequest({author,project:"Firn",key:"handled-request",title:"Handled",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
   await op.triageRequest({author:"Firn",id:"handled-request",priority:"P2",log:"Taken as an area"});
   const s = structuredClone(store.snapshot());
   s.items["handled-request"]!.log[0]!.at=at;
@@ -316,14 +320,14 @@ test("project identity read shapes omit agents and outgoing requests use request
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", migrated: true, areas: 1, openLeaves: { todo: 1, wip: 0, blocked: 1 }, inbox: 0 }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3 }, inbox: 0 }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
   const { store, op } = await board(t);
   await op.createItem({ author, key: "record", group: author, title: "Queue", priority: "P1", record: true });
   const s = structuredClone(store.snapshot()), now = Date.parse("2026-10-11T06:00:00Z");
-  s.items.a!.status = "wip"; s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
+  s.items.a!.plan.unshift({id:"doing",text:"Own work",state:"doing",since:at}); s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
   s.activity = { writes: Array.from({length: 7}, (_, i) => new Date(now - i * 30 * 60 * 1000).toISOString()), items: {} };
   const r = rules(s, now), record = q.row(s, r, "item", "record");
   assert.equal(record.record, true); assert.equal(record.status, undefined);
@@ -334,91 +338,66 @@ test("records are labeled separately in query rows and absent from status queues
 });
 
 
-test("context and brief expose compact steps without expanding ordinary rows and search includes step text and waits", async t => {
+test("context and brief show plan levels, parallel marks, acceptance and resolved counts; search covers plan text", async t => {
   const { store, op } = await board(t);
-  await op.setSteps({ author, id: "a", steps: [
-    { id: "compile", text: "Step evidence Whitefoot#777", state: "done" },
-    { id: "review", text: "Step review", state: "doing", waits: "Review committee" },
+  await op.clearAsk({author,id:"a",log:"Handled"});
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "compile", text: "Step evidence Whitefoot#777", state: "done", after: [] },
+    { id: "review", text: "Step review", state: "doing", waits: "Review committee", after: [] },
     { id: "drop", text: "Old proposal", state: "dropped", reason: "Alternative selected" },
+    acceptance(),
   ] });
-  const s = store.snapshot(), r = rules(s, Date.parse("2026-10-13T02:03:04Z"));
-  const context = q.context(s, r, "a");
-  assert.ok("steps" in context);
-  assert.deepEqual(context.steps, ["✓ Step evidence Whitefoot#777 (10-11)", "● Step review — 2 天，等 Review committee", "✗ Old proposal — Alternative selected"]);
-  const brief = q.brief(s, r, author);
-  assert.deepEqual(brief.todo.find(item => item.id === "a")!.steps, context.steps);
-  assert.equal(Object.hasOwn(q.row(s, r, "item", "a"), "steps"), false, "ordinary lists remain compact");
-  assert.ok(q.search(s, r, "Review committee").some(hit => hit.id === "a" && hit.field === "step.review"));
-  assert.ok(q.search(s, r, "Alternative selected").some(hit => hit.id === "a" && hit.field === "step.drop"));
-  assert.ok(q.prs(s, r, "Whitefoot", 777).qualified.some(hit => hit.id === "a"));
-  assert.equal(q.describeChanges({}, { steps: [] }, "item"), "metadata changed");
-  assert.equal(q.describeChanges({ steps: s.items.a!.steps }, { steps: s.items.a!.steps!.slice().reverse() }, "item"), "steps changed");
+  const s=store.snapshot(),r=rules(s,Date.parse("2026-10-13T02:03:04Z")),context=q.context(s,r,"a");
+  assert.ok("plan" in context);
+  assert.match(context.plan[0]!,/^L0 ‖ ✓ compile /);
+  assert.match(context.plan[1]!,/^L0 ‖ ● review /); assert.match(context.plan[1]!,/2 天.*Review committee/);
+  assert.match(context.plan.at(-1)!,/◆ accept .*验收/);
+  const brief=q.brief(s,r,author),current=brief.wip.find(row=>row.id==="a")!;
+  assert.ok(current.plan!.some(line=>line.includes("2 项已完成")),"brief folds done and dropped rows into a count");
+  assert.equal(Object.hasOwn(q.row(s,r,"item","a"),"plan"),false,"ordinary list row remains compact");
+  assert.ok(q.search(s,r,"Review committee").some(hit=>hit.id==="a"&&hit.field==="plan.review"));
+  assert.ok(q.search(s,r,"Alternative selected").some(hit=>hit.id==="a"&&hit.field==="plan.drop"));
+  assert.ok(q.search(s,r,"验收通过").some(hit=>hit.id==="a"&&hit.field==="plan.accept"));
+  assert.ok(q.prs(s,r,"Whitefoot",777).qualified.some(hit=>hit.id==="a"));
+  assert.equal(q.describeChanges({plan:s.items.a!.plan},{plan:s.items.a!.plan.slice(0,-1)},"item"),"plan changed");
 });
 
-
-test("brief progress includes record steps and active parent steps without duplicating queues or flooding closed and todo work", async t => {
-  const { store, op } = await board(t);
-  await op.createItem({ author, key: "queue-record", title: "Queue", group: author, priority: "P1", record: true });
-  await op.createItem({ author, key: "archived-record", title: "Archived queue", group: author, priority: "P1", record: true });
-  for (const id of ["queue-record", "archived-record", "a", "area"]) await op.setSteps({ author, id, step: { id: "own", text: "Own current progress", state: "todo" } });
-  const s = structuredClone(store.snapshot());
-  // Remove fixture checks and owner waits to observe the extra progress section itself.
-  s.decisions = {}; s.notes = {};
-  for (const item of Object.values(s.items)) { item.head = "**完成条件**：验证通过"; item.log = []; item.updated = later; delete item.ask; }
-  s.items.a!.status = "wip"; s.items.b!.status = "todo"; s.items.b!.deps = [];
-  s.owner.archived["archived-record"] = later;
-  s.items["done-with-steps"] = { ...s.items.other!, group: author, status: "done", steps: [{ id: "old", text: "Finished", state: "done", doneAt: later }] };
-  s.items["todo-with-steps"] = { ...s.items.other!, group: author, status: "todo", steps: [{ id: "pending", text: "Future", state: "todo" }] };
-  const r = rules(s, Date.parse(later)), brief = q.brief(s, r, author);
-  assert.ok(brief.wip.some(item => item.id === "a" && item.steps?.[0] === "○ Own current progress"));
-  assert.deepEqual(brief.progress.map(item => item.id).sort(), ["area", "queue-record"]);
-  assert.deepEqual(brief.progress.find(item => item.id === "queue-record")!.steps, ["○ Own current progress"]);
-  assert.ok(!brief.progress.some(item => ["a", "done-with-steps", "todo-with-steps", "archived-record"].includes(item.id)));
+test("context warns about non-adjacent same-level rows without sorting them", async t => {
+  const {store,op}=await board(t);
+  await op.setPlan({author,id:"a",rows:[
+    {id:"first",text:"First",state:"todo",after:[]},
+    {id:"second",text:"Second",state:"todo"},
+    {id:"parallel",text:"Stored third",state:"todo",after:[]},acceptance(),
+  ]});
+  const s=store.snapshot(),c=q.context(s,rules(s),"a"); assert.ok("plan" in c);
+  assert.deepEqual(c.plan.slice(0,3).map(line=>line.split(" ")[2]),["first","second","parallel"]);
+  assert.equal(c.planWarnings.length,1); assert.match(c.planWarnings[0]!,/non-adjacent/);
 });
 
-
-test("context and brief compact target lines beside steps and retain target-free compatibility", async t => {
-  const { store, op } = await board(t);
-  const empty = q.context(store.snapshot(), rules(store.snapshot()), "a");
-  assert.ok("targets" in empty); assert.deepEqual(empty.targets, []);
-  assert.equal(Object.hasOwn(q.brief(store.snapshot(), rules(store.snapshot()), author).todo.find(item => item.id === "a")!, "targets"), false);
-  await op.setSteps({ author, id: "a", step: { id: "measure", text: "Measured style", state: "done" } });
-  await op.setTargets({ author, id: "a", targets: [
-    { id: "style", goal: "apollo11\n样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍\nChromium", baseline: "Chromium 同机同页" },
-    { id: "memory", goal: "Memory", target: "≤ 100 MB", current: "120 MB", baseline: "main" },
-  ] });
-  const s = store.snapshot(), r = rules(s), context = q.context(s, r, "a");
-  assert.ok("targets" in context);
-  assert.deepEqual(context.targets, [
-    "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-11",
-    "Memory: 120 MB (vs main) → ≤ 100 MB, 2026-10-11",
-  ]);
-  const entry = q.brief(s, r, author).todo.find(item => item.id === "a")!;
-  assert.deepEqual(entry.targets, context.targets); assert.deepEqual(entry.steps, context.steps);
-  assert.equal(Object.hasOwn(q.row(s, r, "item", "a"), "targets"), false, "ordinary rows remain compact");
-  assert.equal(q.describeChanges({}, { targets: [] }, "item"), "metadata changed");
-  assert.equal(q.describeChanges({ targets: [] }, {}, "item"), "metadata changed");
-  assert.equal(q.describeChanges({}, { targets: s.items.a!.targets }, "item"), "targets changed");
-  assert.equal(q.describeChanges({ targets: s.items.a!.targets }, { targets: s.items.a!.targets!.slice().reverse() }, "item"), "targets changed");
-  assert.equal(q.describeChanges({ targets: s.items.a!.targets }, { targets: [{ ...s.items.a!.targets![0]!, current: "4 倍 Chromium" }, s.items.a!.targets![1]!] }, "item"), "targets changed");
+test("brief progress retains records and blocked work without repeating queues or adding closed/todo backlog", async t => {
+  const {store,op}=await board(t);
+  await op.createItem({author,key:"record",title:"Reference",group:author,record:true});
+  await op.createItem({author,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
+  await op.setPlan({author,id:"closed",row:{...acceptance("Closed accepted"),state:"done"}});
+  const s=structuredClone(store.snapshot()); delete s.items.a!.ask;
+  s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {...acceptance(),id:"accept"}];
+  s.items.a!.plan=[{id:"ready",text:"Ready work",state:"todo"}, {...acceptance(),id:"accept"}];
+  const brief=q.brief(s,rules(s),author);
+  assert.ok(brief.todo.some(row=>row.id==="a"));
+  assert.ok(brief.progress.some(row=>row.id==="record"));
+  assert.ok(brief.progress.some(row=>row.id==="b"));
+  assert.ok(!brief.progress.some(row=>row.id==="closed"||row.id==="a"));
 });
 
-test("brief includes target-only records and active parents without duplicating shown rows or archived and closed work", async t => {
-  const { store, op } = await board(t);
-  await op.createItem({ author, key: "target-record", title: "Goals", group: author, priority: "P1", record: true });
-  await op.createItem({ author, key: "archived-targets", title: "Archived goals", group: author, priority: "P1", record: true });
-  const target = { id: "memory", goal: "Memory", target: "≤ 100 MB", current: "120 MB", baseline: "main" };
-  for (const id of ["target-record", "archived-targets", "a", "area", "b"]) await op.setTargets({ author, id, target });
-  const s = structuredClone(store.snapshot());
-  s.decisions = {}; s.notes = {};
-  for (const item of Object.values(s.items)) { item.head = "**完成条件**：验证通过"; item.log = []; item.updated = later; delete item.ask; }
-  s.items.a!.status = "wip"; s.items.b!.status = "todo"; s.items.b!.deps = [];
-  s.owner.archived["archived-targets"] = later;
-  s.items["done-targets"] = { ...s.items.other!, group: author, status: "done", targets: [{ ...target, date: later }] };
-  const brief = q.brief(s, rules(s, Date.parse(later)), author);
-  assert.ok(brief.wip.some(item => item.id === "a" && item.targets?.length === 1));
-  assert.ok(brief.todo.some(item => item.id === "b" && item.targets?.length === 1));
-  assert.deepEqual(brief.progress.map(item => item.id).sort(), ["area", "target-record"]);
-  assert.deepEqual(brief.progress.find(item => item.id === "target-record")!.targets, ["Memory: 120 MB (vs main) → ≤ 100 MB, 2026-10-11"]);
-  assert.ok(!brief.progress.some(item => ["a", "b", "done-targets", "archived-targets"].includes(item.id)));
+test("context and brief retain compact target lines beside plans", async t => {
+  const {store,op}=await board(t);
+  await op.clearAsk({author,id:"a",log:"Handled"});
+  const target={id:"style",goal:"apollo11\n样式计算耗时",target:"≤ 1 倍 Chromium",current:"12 倍\nChromium",baseline:"Chromium 同机同页"};
+  await op.setTargets({author,id:"a",targets:[target]});
+  const s=store.snapshot(),r=rules(s),c=q.context(s,r,"a"); assert.ok("targets" in c);
+  assert.deepEqual(c.targets,["apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-11"]);
+  assert.deepEqual(q.brief(s,r,author).todo.find(row=>row.id==="a")!.targets,c.targets);
+  assert.equal(q.describeChanges({}, {targets:[]},"item"),"metadata changed");
+  assert.equal(q.describeChanges({}, {targets:s.items.a!.targets},"item"),"targets changed");
+  assert.equal(q.describeChanges({targets:s.items.a!.targets},{targets:[{...s.items.a!.targets![0]!,current:"4 倍 Chromium"}]},"item"),"targets changed");
 });

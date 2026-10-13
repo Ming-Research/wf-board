@@ -7,6 +7,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node src/main.ts",
+    "convert:plans": "node src/convert-plans-cli.ts",
     "check": "tsc -p tsconfig.json",
     "test": "node --test 'test/**/*.test.ts'",
     "build:web": "esbuild web/app.ts --bundle --format=esm --target=es2022 --outfile=web/dist/app.js"

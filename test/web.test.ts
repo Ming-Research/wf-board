@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { rules } from "../src/rules.ts";
-import type { Snapshot, Decision, Note, ItemTarget } from "../src/model.ts";
+import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Status, Project } from "../src/model.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM and modeled geometry. No browser or listener
 // is needed: the harness checks controls, frame scheduling and synthetic layout/scrolling.
@@ -33,7 +33,7 @@ class Element {
   insertBefore(e: Element, before:Element|null=null) { e.parentElement?.removeChild(e); const i=before ? this.children.indexOf(before) : this.children.length; assert.ok(i>=0); this.children.splice(i,0,e); e.parentElement=this; return e; }
   replaceWith(e: Element) { const p = this.parentElement; if (!p) return; p.children[p.children.indexOf(this)] = e; e.parentElement = p; this.parentElement = null; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
-  getAttribute(name: string) { return this.attributes[name] ?? null; }
+  getAttribute(name: string) { return this.attributes[name] ?? (name.startsWith("data-") ? this.dataset[name.slice(5).replace(/-([a-z])/g, (_all, char: string) => char.toUpperCase())] : undefined) ?? null; }
   addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
   captureClick?:(at:{clientX:number;clientY:number})=>boolean;
   // A click at a point; a document capture listener that stops propagation keeps it from the element, as in a browser.
@@ -84,7 +84,20 @@ interface PageOptions {
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
   now?: () => number; clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
-async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
+async function page(fixture: PageInput, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
+  const snapshot = nativeFixture(fixture);
+  const nativeDocument = (value: unknown, id: string): unknown => {
+    if (!value || typeof value !== "object" || !("title" in value)) return value;
+    return nativeFixture({ ...fixture, items: { ...fixture.items, [id]: value as FixtureItem } } as PageInput).items[id];
+  };
+  const nativeWire = (path: string, value: unknown): unknown => {
+    if (path === "/api/snapshot" && value && typeof value === "object" && "items" in value && "board" in value) return nativeFixture(value as PageInput);
+    if (!path.startsWith("/api/step?") || !value || typeof value !== "object") return value;
+    const params = new URLSearchParams(path.split("?")[1]);
+    if (params.get("kind") !== "item") return value;
+    const doc = value as { before?: unknown; after?: unknown }, id = params.get("doc")!;
+    return { ...doc, before: nativeDocument(doc.before, id), after: nativeDocument(doc.after, id) };
+  };
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
   for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
@@ -138,7 +151,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     setInterval: (fn: () => void) => { intervals.push(fn); return intervals.length; },
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
-    document, HTMLElement: Element, EventSource, AbortController, console, CSS: { escape: (s: string) => s },
+    document, HTMLElement: Element, EventSource, AbortController, structuredClone, console, CSS: { escape: (s: string) => s },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
@@ -148,14 +161,21 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
       const input = init?.body ? JSON.parse(init.body) : undefined; calls.push({path,body:input});
       const intercepted = options.response?.(path,input,init ?? {});
-      if (intercepted !== undefined) return await intercepted;
+      if (intercepted !== undefined) {
+        const response = await intercepted;
+        return { ...response, json: async () => nativeWire(path, await response.json()) };
+      }
       let value: unknown;
-      if (path === "/api/snapshot") value = snapshot;
+      if (path === "/api/snapshot") value = nativeFixture(fixture);
       else if (path === "/api/unread") value = { steps: unread };
       else if (path.startsWith("/api/step?")) {
         const params = new URLSearchParams(path.split("?")[1]), id = params.get("doc")!;
         const collection = params.get("kind") === "item" ? snapshot.items : params.get("kind") === "decision" ? snapshot.decisions : snapshot.notes;
         value = typeof before === "function" ? await before(params) : { before, after: after === undefined ? collection[id] ?? null : after, diff: "+ synthetic changed text" };
+        if (params.get("kind") === "item" && value && typeof value === "object") {
+          const doc = value as { before?: unknown; after?: unknown };
+          value = { ...doc, before: nativeDocument(doc.before, id), after: nativeDocument(doc.after, id) };
+        }
       }
       else if (path === "/api/send") value = { sent: [{project: "Halo-wf"}, {project: "Halo-wf"}, {project: "Firn-wf"}] };
       else if (path === "/api/read") {
@@ -184,7 +204,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
         value={note:a.on ? {id,doc} : null,deleted,commit:"c".repeat(40)};
       }
       else throw new Error("Unexpected page request " + path);
-      return { ok: true, status: 200, json: async () => structuredClone(value) };
+      return { ok: true, status: 200, json: async () => structuredClone(nativeWire(path, value)) };
     },
   };
   const recorded=code.includes("function renderPage(scope)") ? code.replace("function renderPage(scope) {","function renderPage(scope) { recordRender(scope);") : code.replace("function renderAll() {","function renderAll() { recordRender('all');");
@@ -194,7 +214,10 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   const flush=async()=> { for (let i=0;i<4;i++) { if (!options.stalledFrames) options.frames?.flush(); else options.clock!.advance(100); if (options.noFrames) options.clock?.advance(0); if (options.noFrames) await new Promise(resolve=>setTimeout(resolve,0)); await setImmediate(); } };
   await flush();
   // A live update from the server, as the page's event stream delivers it.
-  const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed}) });
+  const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed: changed.map(value => {
+    const doc = value as {kind: string; id: string; after?: unknown};
+    return doc.kind === "item" ? {...doc, after: nativeDocument(doc.after, doc.id)} : doc;
+  })}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
     // Every scroll either pane was asked to make.
@@ -207,8 +230,61 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
     // The reader presses the mouse at a point, leaving text selected or not when the button is released.
     press: (clientX:number,clientY:number,select:boolean) => { selected=select; dispatch("mousedown",{isTrusted:true,target:new Element("div"),clientX,clientY}); } };
 }
+// Controls established before plans keep their synthetic setup vocabulary in
+// this test-only adapter. Product inputs, baselines and item events always use
+// native plans. Tests of plan behavior below construct native plans directly.
+type FixtureItem = Omit<Item, "group" | "status" | "plan"> & {
+  group?: string; status?: Status; plan?: PlanRow[]; parent?: string;
+  deps: Array<{id: string; why?: string} | {card: string; why?: string}>;
+  steps?: PlanStep[];
+};
+type PageFixture = Omit<Snapshot, "items" | "board"> & {
+  items: Record<string, FixtureItem>;
+  board: Omit<Snapshot["board"], "projects"> & {projects: Array<Project & {migrated?: boolean}>};
+};
+type PageInput = PageFixture | Snapshot;
+const planRowDomId = (item: string, row: string) => "plan-" + encodeURIComponent(JSON.stringify([item, row]));
+function nativeFixture(source: PageInput): Snapshot {
+  const groupOf = (id: string, seen = new Set<string>()): string => {
+    const it = source.items[id] as FixtureItem | undefined; if (!it || seen.has(id)) return ""; seen.add(id);
+    return it.group ?? (it.parent ? groupOf(it.parent, seen) : "");
+  };
+  const oldStatus = (id: string, seen = new Set<string>()): Status | undefined => {
+    const it=source.items[id] as FixtureItem | undefined; if (!it || it.record) return undefined; if (seen.has(id)) return "todo"; seen.add(id);
+    const children=Object.keys(source.items).filter(key=>(source.items[key] as FixtureItem).parent === id).map(key=>oldStatus(key,new Set(seen))).filter((s):s is Status=>s !== undefined);
+    if (!children.length) return it.status ?? "todo";
+    const live=children.filter(s=>s !== "cancelled");
+    return !live.length ? "cancelled" : live.includes("wip") ? "wip" : live.includes("blocked") ? "blocked" : live.every(s=>s === "done") ? "done" : "todo";
+  };
+  const items: Record<string, Item> = {};
+  for (const [id, value] of Object.entries(source.items)) {
+    const old = value as FixtureItem;
+    const {parent: _parent, deps = [], steps, status, ...fields}=old;
+    if (old.plan !== undefined) { items[id]={...fields, group: groupOf(id), plan: structuredClone(old.plan), ...(status === "cancelled" ? {status} : {})}; continue; }
+    const derived=oldStatus(id);
+    const refs: PlanRow[]=deps.map(row=>"card" in row ? {id:row.card,card:row.card,after:[]} : {id:row.id,item:row.id,own:(source.items[row.id] as FixtureItem | undefined)?.parent === id,after:[]});
+    for (const [child, it] of Object.entries(source.items)) if ((it as FixtureItem).parent === id && !refs.some(row=>"item" in row && row.item === child)) refs.push({id:child,item:child,own:true,after:[]});
+    const ownSteps=steps ?? (old.record ? [] : refs.some(row=>"item" in row && row.own) ? [] : [{id:"work",text:"Work",state: derived === "wip" ? "doing" as const : derived === "done" ? "done" as const : "todo" as const, ...(derived === "wip" ? {since:old.updated} : derived === "done" ? {doneAt:old.updated} : {}), after:[]}]);
+    const plan: PlanRow[]=[...refs,...ownSteps];
+    if (!old.record) plan.push({id:"accept",accept:true,text:"Checks pass",state:derived === "done" ? "done" : derived === "cancelled" ? "dropped" : "todo",...(derived === "done" ? {doneAt:old.updated} : derived === "cancelled" ? {droppedAt:old.updated,reason:"Cancelled fixture work"} : {})});
+    items[id]={...fields,group:groupOf(id),plan,...(derived === "cancelled" ? {status:"cancelled"} : {})};
+  }
+  return {...source,board:{...source.board,projects:source.board.projects.map(value=> { const {migrated:_migrated,...p}=value as Project & {migrated?:boolean}; return p; })},items};
+}
+function nativeSnapshot(): Snapshot { return nativeFixture(snapshot()); }
+function planStep(id: string, text=id, state: PlanStep["state"]="todo", fields: Partial<PlanStep>={}): PlanStep {
+  return {id,text,state,...(state === "done" ? {doneAt:at} : state === "doing" ? {since:at} : state === "dropped" ? {reason:"Replaced",droppedAt:at} : {}),...fields};
+}
+function planAcceptance(state: PlanStep["state"]="todo"): PlanStep { return planStep("accept","Checks pass",state,{accept:true}); }
+const planWork = (rows: PlanRow[], state: PlanStep["state"]="todo"): PlanRow[] => [...rows,planAcceptance(state)];
+const ownedRow = (item: string, after: string[]=[]): PlanRow => ({id:item,item,own:true,after});
+const sharedRow = (item: string, after: string[]=[]): PlanRow => ({id:item,item,own:false,after});
+const cardRow = (card: string, after: string[]=[]): PlanRow => ({id:card,card,after});
+function planRow(p: Awaited<ReturnType<typeof page>>, itemId: string, rowId: string): Element {
+  return p.document.getElementById(planRowDomId(itemId,rowId))!;
+}
 const at = "2026-10-11T01:02:03Z";
-function snapshot(): Snapshot {
+function snapshot(): PageFixture {
   return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: { archived: {} }, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
@@ -438,7 +514,7 @@ test("a drag that leaves text selected in a row neither folds nor follows it; a 
   p.press(10, 10, true); await head().click({ clientX: 10, clientY: 10 }); await p.flush();
   assert.equal(open(), before, "a click in place toggles even while text elsewhere stays selected");
   p.press(0, 0, false); await rowOf(p, "area").querySelector(".item-head")!.click(); await p.flush();
-  const far = descendants(item(p, "area")).find(e => e.className.startsWith("deprow") && e.innerHTML.includes("Far area"))!;
+  const far = planRow(p,"area","far").querySelector(".plan-link")!;
   const scrolled = p.scrollCount;
   p.press(10, 10, true); await far.click({ clientX: 200, clientY: 10 }); await p.flush();
   assert.equal(p.scrollCount, scrolled, "a drag over a dependency row does not follow it");
@@ -451,7 +527,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
     const s = snapshot(); s.items.child!.ask = { text: "Approve work" }; s.decisions.q = card();
     s.notes.a = { target: "it:child", kind: "approve", text: "同意：Approve work", at, state, rev: 1 };
     s.notes.c = { target: "q:q", kind: "choice", choice: "B", text: "B", at, state, rev: 1 };
-    const p = await page(s, []), r = rules(s);
+    const p = await page(s, []), r = rules(nativeFixture(s));
     await expand(p);
     // The waiting badge and approval action are rendered from the predicates.
     assert.equal(p.all().some(e => e.className === "asktag" && e.innerHTML === "决策卡"), r.cardWaiting("q") && !r.cardBlocking("q"));
@@ -486,9 +562,9 @@ test("inside a changed item n visits each new place in turn before the next item
     const y = e.className.split(" ").includes("item") ? 600 : 600 + all().indexOf(e) * 40;
     return {top:y, height:e.className.split(" ").includes("item") ? 6000 : 20};
   };
-  const s = snapshot();
-  s.items.child!.steps = [{id:"first",state:"todo",text:"First new step"},{id:"second",state:"todo",text:"Second new step"}];
-  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", steps:[]}, undefined, {detailGeometry:geometry});
+  const s = nativeSnapshot(), baseline={...s.items.child!,plan:planWork([])};
+  s.items.child!.plan = planWork([planStep("first","First new step","doing"),planStep("second","Second new step")]);
+  const p = await page(s, unread("item","child"), baseline, undefined, {detailGeometry:geometry});
   const before = p.detailScrolls.length;
   p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush();
   const visits = p.detailScrolls.slice(before);
@@ -519,21 +595,14 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after r, n continues below the read stop instead of starting over");
 });
 
-test("a dependency row names its project only when the project differs from the depending item's", async () => {
-  const s = snapshot();
-  s.items.sib = { title: "Sibling", parent: "area", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
-  s.items.area!.deps.push({ id: "sib", why: "needs sibling" });
-  s.items.far = { title: "Far area", group: "Other project", status: "todo", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
-  s.items.child!.deps = [{ id: "sib", why: "same area" }, { id: "far", why: "other area" }];
-  const p = await page(s, []);
-  await expand(p);
-  const rows = descendants(item(p)).filter(e => e.className.startsWith("deprow"));
-  const same = rows.find(e => e.innerHTML.includes("Sibling"))!, far = rows.find(e => e.innerHTML.includes("Far area"))!;
-  assert.ok(same && far);
-  assert.ok(!same.innerHTML.includes('class="where"'), "a same-project dependency carries no label");
-  assert.match(far.innerHTML, /<span class="where">Other project<\/span>/);
+test("shared plan rows show their owner and cross-project origin", async () => {
+  const s=nativeSnapshot(); s.board.projects.push({name:"Other project"});
+  s.items.sib={...s.items.child!,title:"Sibling",plan:planWork([planStep("work")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("sib")]);
+  s.items.far={...s.items.child!,title:"Far area",group:"Other project",plan:planWork([planStep("work")])}; s.items.child!.plan=planWork([sharedRow("sib"),sharedRow("far")]);
+  const p=await page(s,[]); await expand(p);
+  assert.match(markup(planRow(p,"child","sib").querySelector(".plan-sub")!),/共用 · 归属在「[^]*Parent/);
+  assert.match(markup(planRow(p,"child","far").querySelector(".plan-sub")!),/共用 · Other project 顶层/);
 });
-
 test("a project lists its own roots first, then a rule and the roots other projects depend on", async () => {
   const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
   s.items.own={title:"Own root",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
@@ -582,8 +651,8 @@ test("新 counts items: one per item however many changes, a parent adding the i
   s.items.child!.steps = [{id:"c1",text:"First child part",state:"todo"},{id:"c2",text:"Second child part",state:"todo"},{id:"c3",text:"Third child part",state:"todo"}];
   s.items.area!.steps = [{id:"a1",text:"First parent part",state:"todo"},{id:"a2",text:"Second parent part",state:"todo"}];
   const p = await page(s, [{ id, commits: [id], author: "Session A", at, docs: [
-    { kind: "item", id: "child", summary: "head changed, steps changed", pieces: { progress: 3, reply: 0, other: 1 } },
-    { kind: "item", id: "area", summary: "steps changed", pieces: { progress: 2, reply: 0, other: 0 } },
+    { kind: "item", id: "child", summary: "head changed, plan changed", pieces: { progress: 3, reply: 0, other: 1 } },
+    { kind: "item", id: "area", summary: "plan changed", pieces: { progress: 2, reply: 0, other: 0 } },
   ] }]);
   const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
   assert.ok(buttons.includes("新 2 ›"), "two items have something new: " + buttons.join(" | "));
@@ -623,7 +692,7 @@ test("a note being typed keeps its focus, text and caret across a live re-render
 function deferred<T>() { let resolve!: (value:T) => void; let reject!: (reason:Error) => void; const promise = new Promise<T>((yes,no) => { resolve=yes; reject=no; }); return {promise,resolve,reject}; }
 async function settle() { await setImmediate(); await setImmediate(); }
 function geom(e:Element) { return {top:e.id.startsWith("note-") ? 1700 : 600,height:e.id.startsWith("note-") ? 100 : 2400}; }
-function endpoints(s:Snapshot, p:URLSearchParams, before:unknown) { const id=p.get("doc")!, kind=p.get("kind"); return {before,after:kind === "item" ? s.items[id] : kind === "decision" ? s.decisions[id] : s.notes[id],diff:""}; }
+function endpoints(s:PageInput, p:URLSearchParams, before:unknown) { const id=p.get("doc")!, kind=p.get("kind"); return {before,after:kind === "item" ? s.items[id] : kind === "decision" ? s.decisions[id] : s.notes[id],diff:""}; }
 
 test("the blue line marks an item's own new content: new and changed items, not parents of new content or untouched items", async () => {
   const css = await readFile("web/index.html","utf8");
@@ -632,8 +701,8 @@ test("the blue line marks an item's own new content: new and changed items, not 
   const created=await page(s,unread(),null); await expand(created);
   assert.ok(item(created).className.split(" ").includes("fresh"));
   const rows=descendants(item(created));
-  const dep=rows.find(e=>e.className.includes("deprow") && markup(e).includes("Created dependency"))!, link=rows.find(e=>e.tagName === "A" && e.innerHTML === "Created link")!;
-  assert.ok(dep.className.split(" ").includes("fresh") && link.className.split(" ").includes("fresh"),"new item dependency and link rows also need blue bars");
+  const dep=rows.find(e=>e.className.includes("plan-row") && e.dataset.sel === "row:child@area")!, link=rows.find(e=>e.tagName === "A" && e.innerHTML === "Created link")!;
+  assert.ok(dep.className.split(" ").includes("newbar") && link.className.split(" ").includes("fresh"),"new item dependency and link rows also need blue bars");
   assert.ok(!dep.className.includes("chg-add") && !link.className.includes("chg-add"),"new item retains title-only green marks");
   s.items.plain={title:"Untouched",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   const changed=await page(s,unread(),{...s.items.child!,head:"Before"}); await expand(changed);
@@ -687,12 +756,12 @@ test("note bookkeeping changes do not mark an unchanged reply or open its collap
   assert.ok(!row.className.includes("newbar") && !row.children.some(e=>e.className.includes("newbar")));
 });
 
-test("added dependency and link rows retain green marks and also have blue bars", async () => {
+test("added plan rows and links keep their blue bars and navigation marks", async () => {
   const s=snapshot(), before={...s.items.child!,deps:[],links:[]};
   s.items.child!.deps=[{id:"area",why:"Added dependency"}]; s.items.child!.links=[{label:"Added link",url:"https://example.com/new"}];
   const p=await page(s,unread(),before); await expand(p);
-  const rows=descendants(item(p)), dep=rows.find(e=>e.className.includes("deprow") && markup(e).includes("Added dependency"))!, link=rows.find(e=>e.tagName === "A" && e.innerHTML === "Added link")!;
-  assert.ok(dep.className.includes("chg-add") && dep.className.split(" ").includes("fresh"));
+  const rows=descendants(item(p)), dep=rows.find(e=>e.className.includes("plan-row") && e.dataset.sel === "row:child@area")!, link=rows.find(e=>e.tagName === "A" && e.innerHTML === "Added link")!;
+  assert.ok(dep.className.split(" ").includes("newbar") && !dep.className.includes("chg-add"));
   assert.ok(link.className.includes("chg-add") && link.className.split(" ").includes("fresh"));
   const css=await readFile("web/index.html","utf8");
   assert.ok(/[^{}]*\.refs[^{}]*\.fresh[^{}]*\{[^}]*var\(--fresh\)/.test(css),"new link bar CSS must use the fresh token");
@@ -813,7 +882,7 @@ function cssContract(html:string) {
   assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
   // The owner does not want removed content shown, struck through in red or otherwise.
   assert.ok(!/chg-del|title-was/.test(html),"no red deleted-text styling");
-  for (const sel of [".item.fresh",".card.fresh",".item-step.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
+  for (const sel of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
   for (const sel of [".waittag",".sbtn.s-block"]) assert.ok(has(sel,/background:\s*var\(--blockwait\)/),sel+" is the filled purple chip");
@@ -833,7 +902,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
   await t.test("red deleted text comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-del { text-decoration: line-through; }\n</style>"))); });
   await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
-  for (const selector of [".item.fresh",".card.fresh",".item-step.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
+  for (const selector of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
@@ -1077,22 +1146,16 @@ test("note-only updates and unread baseline followups preserve unrelated card id
   assert.ok(p.all().some(e=>e.id === "note-reply"));
 });
 
-test("single item prose update preserves sibling card and status priority update reorders and refreshes counts", async () => {
-  const s=snapshot(), frames=new Frames(); s.items.sibling={...s.items.child!,title:"Sibling"}; s.items.area!.deps.push({id:"sibling",why:"Needs sibling"}); s.decisions.other={...card(),item:"sibling"};
-  // A root depending on child gives it P0; it sorts first until that dependency moves to sibling.
-  s.items.pusher={title:"Pusher",group:"Project",status:"todo",priority:"P0",updated:at,rev:1,deps:[{id:"child",why:"Needs child"}],links:[],log:[]};
-  const p=await page(s,[],null,undefined,{frames}); await expand(p,"sibling"); await p.flush();
-  const other=p.all().find(e=>e.id === "q-other")!;
-  p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Updated head",log:[{at,text:"Updated log"}]}}]); await p.flush();
-  assert.equal(p.all().find(e=>e.id === "q-other"),other);
-  assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-child","it-sibling"]);
-  p.emit("c".repeat(40),[{kind:"item",id:"pusher",after:{...s.items.pusher!,deps:[{id:"sibling",why:"Needs sibling"}]}}]); await p.flush();
-  assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-sibling","it-child"]);
-  p.emit("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,status:"done"}}]); await p.flush();
-  const doneCount=item(p,"area").querySelector(".counts .done")!;
-  assert.equal(doneCount.innerHTML,"1"); assert.equal(doneCount.attributes["aria-label"],"DONE 1");
+test("prose and priority updates preserve sibling cards and owned rows remain in plan order", async () => {
+  const s=nativeSnapshot(), frames=new Frames(); s.items.sibling={...s.items.child!,title:"Sibling"}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("sibling")]); s.decisions.other={...card(),item:"sibling"};
+  s.items.pusher={...s.items.area!,title:"Pusher",priority:"P0",plan:planWork([sharedRow("child")])};
+  const p=await page(s,[],null,undefined,{frames}); await expand(p,"sibling"); const other=p.document.getElementById("q-other")!;
+  p.emit("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,head:"Updated head"}}]); await p.flush(); assert.equal(p.document.getElementById("q-other"),other);
+  p.emit("c".repeat(40),[{kind:"item",id:"pusher",after:{...s.items.pusher!,plan:planWork([sharedRow("sibling")])}}]); await p.flush();
+  assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-child","it-sibling"],"owned order never follows changed priority");
+  p.emit("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,plan:planWork([],"done")}}]); await p.flush();
+  const doneCount=rowOf(p,"area").querySelector(".counts .done")!; assert.equal(doneCount.innerHTML,"1"); assert.equal(doneCount.attributes["aria-label"],"DONE 1");
 });
-
 test("send waits for optimistic draft acknowledgement and refuses to send a failed draft", async t => {
   for(const failed of [false,true]) await t.test(failed ? "failure" : "acknowledgement",async()=> {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card();
@@ -1225,36 +1288,33 @@ test("identical draft ACK cannot restart unread fetch already begun after its SS
   assert.equal(p.calls.filter(c=>c.path === "/api/unread").length-before,1); assert.ok(option(p,"A").className.includes("sel"));
 });
 
-test("a dependency on a card shows the card's state and its why under the question, like an item row", async () => {
-  const s=snapshot(); s.decisions.q={...card(),item:"area"}; s.decisions.r={...card(),question:"已定的问题",item:"area",status:"ruled",ruling:"A",choice:"A"};
-  s.items.child!.status="blocked"; s.items.child!.deps=[{card:"q",why:"Needs ruling"},{card:"r",why:"Was ruled"},{card:"gone",why:"Deleted card"}];
-  const p=await page(s,[]); await expand(p,"child");
-  const rows=descendants(item(p,"child")).filter(e=>e.className.startsWith("deprow"));
-  const row=(text:string)=>rows.find(e=>e.innerHTML.includes(text))!;
-  for (const [text,tag,why] of [["如何显示","asktag\">决策卡","Needs ruling"],["已定的问题","st done\">已裁定","Was ruled"],["gone","st cancelled\">已删除","Deleted card"]] as const) {
-    const r=row(text); assert.ok(r,text);
-    assert.ok(r.innerHTML.startsWith('<span class="'+tag),text+" starts with its state tag");
-    assert.match(r.innerHTML,new RegExp('<span class="t">[^]*<span class="why">'+why+'</span></span>$'),text+" keeps its why under the question");
-  }
+test("card plan rows show waiting and resolved glyphs, link their question and retain a missing-target fallback", async () => {
+  const s=nativeSnapshot(); s.decisions.q={...card(),item:"area"}; s.decisions.r={...card(),question:"已定的问题",item:"area",status:"ruled",ruling:"A"};
+  s.items.child!.plan=planWork([cardRow("q"),cardRow("r"),cardRow("gone")]);
+  const p=await page(s,[]); await expand(p);
+  assert.equal(planRow(p,"child","q").querySelector(".g")!.innerHTML,"⏸");
+  assert.equal(planRow(p,"child","r").querySelector(".g")!.innerHTML,"✓");
+  assert.equal(planRow(p,"child","gone").querySelector(".g")!.innerHTML,"⏸");
+  assert.match(markup(planRow(p,"child","q")),/如何显示/); assert.match(markup(planRow(p,"child","r")),/已定的问题/);
+  assert.equal(planRow(p,"child","q").querySelector(".plan-link")!.dataset.ref,"q:q");
+  assert.equal(planRow(p,"child","gone").querySelector(".plan-link")!.innerHTML,"gone");
+  assert.equal(item(p).querySelectorAll(".why").length,0,"plan rows have no why field");
 });
-
-test("card and item rule changes refresh dependency consumers and transitive priority", async () => {
-  const s=snapshot(), frames=new Frames(); s.decisions.q={...card(),item:"area"};
-  s.items.child!.status="blocked"; s.items.child!.deps=[{card:"q",why:"Needs ruling"}];
-  s.items.blocker={...s.items.child!,title:"Blocker",status:"todo",priority:"P2",deps:[{id:"further",why:"Needs further"}]};
-  s.items.further={...s.items.child!,title:"Further",status:"todo",priority:"P2",deps:[]};
-  s.items.waiter={...s.items.child!,parent:undefined,group:"Project",title:"Urgent waiter",status:"wip",priority:"P0",deps:[{id:"blocker",why:"Needs blocker"}]};
-  s.items.area!.deps.push(...["blocker","further"].map(id=>({id,why:"Child"})));
-  const p=await page(s,[],null,undefined,{frames}); await expand(p,"blocker"); await rowOf(p,"further").querySelector(".item-head")!.click(); await rowOf(p,"child").querySelector(".item-head")!.click();
-  assert.match(markup(item(p,"further")),/P0/);
-  p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,status:"ruled",ruling:"A"}},{kind:"item",id:"waiter",after:{...s.items.waiter!,status:"done"}}]); await p.flush();
-  assert.match(markup(item(p,"child")),/可解除阻塞/,"ruling updates the blocked waiter check");
-  assert.ok(!descendants(item(p,"further")).some(e=>e.className.split(" ").includes("prio") && e.innerHTML === "P0"),"closing urgent waiter releases transitive priority");
-  await rowOf(p,"blocker").querySelector(".item-head")!.click(); await p.flush();
-  p.emit("c".repeat(40),[{kind:"item",id:"waiter",after:{...s.items.waiter!,deps:[]}}]); await p.flush();
-  assert.ok(!markup(item(p,"blocker")).includes("Urgent waiter"),"removed dependency refreshes backlink row");
+test("card rulings and item progress refresh plan consumers and transitive priority", async () => {
+  const s=nativeSnapshot(), frames=new Frames(); s.decisions.q={...card(),item:"area"};
+  s.items.child!.plan=planWork([cardRow("q")]);
+  s.items.blocker={...s.items.child!,title:"Blocker",plan:planWork([sharedRow("further")])};
+  s.items.further={...s.items.child!,title:"Further",plan:planWork([planStep("work")])};
+  s.items.waiter={...s.items.child!,title:"Urgent waiter",priority:"P0",plan:planWork([sharedRow("blocker"),planStep("working","Working","doing",{after:[]})])};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("blocker"),ownedRow("further")]);
+  const p=await page(s,[],null,undefined,{frames}); await expand(p,"further"); assert.match(markup(item(p,"further")),/P0/);
+  await expand(p,"child"); assert.equal(planRow(p,"child","q").querySelector(".g")!.innerHTML,"⏸");
+  p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,status:"ruled",ruling:"A"}},{kind:"item",id:"waiter",after:{...s.items.waiter!,status:"cancelled"}}]); await p.flush();
+  assert.equal(planRow(p,"child","q").querySelector(".g")!.innerHTML,"✓");
+  assert.match(markup(item(p)),/只差验收/); assert.doesNotMatch(markup(item(p)),/可解除阻塞/);
+  await expand(p,"further"); assert.equal(item(p,"further").querySelector(".prio")!.innerHTML,"P1");
+  await expand(p,"blocker"); assert.ok(!markup(item(p,"blocker")).includes("Urgent waiter"),"cancelled work leaves backlinks and passes no priority");
 });
-
 test("older SSE notes cannot overwrite an acknowledged draft or resurrect its deleted predecessor", async t => {
   for (const retained of [true,false]) await t.test(retained ? "retained revision" : "deleted ids including unknown predecessor",async () => {
     const s=snapshot(), frames=new Frames(); s.decisions.q=card(); const old:Note={target:"q:q",kind:"choice",choice:"B",text:"Old",at,state:"draft",rev:1}; s.notes.old=old;
@@ -1326,17 +1386,19 @@ test("draft deletion acknowledgement removes duplicates delivered after the clic
   assert.equal(p.roots.get("send-all")!.textContent,"把 1 条发给 Claude"); assert.ok(option(p,"A").className.includes("sel"));
 });
 
-test("structural child changes reconcile membership while reusing sibling cards", async () => {
-  const s=snapshot(), frames=new Frames(); s.decisions.q=card(); s.items.other={...s.items.child!,title:"Other parent",parent:undefined,group:"Project"};
-  const p=await page(s,[],null,undefined,{frames}); await expand(p); const q=p.all().find(e=>e.id === "q-q")!; assert.ok(q);
-  const added={...s.items.child!,title:"Added child"};
-  p.emit("b".repeat(40),[{kind:"item",id:"added",after:added}]); await p.flush(); assert.ok(p.all().some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
-  p.emit("c".repeat(40),[{kind:"item",id:"added",after:{...added,parent:"other"}}]); await p.flush(); await wideCaret(p,"other").click(); await p.flush(); assert.ok(descendants(rowOf(p,"other").parentElement!).some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
-  p.emit("d".repeat(40),[{kind:"item",id:"added",after:null}]); await p.flush(); assert.ok(!p.all().some(e=>e.id === "it-added")); assert.ok(p.all().find(e=>e.id === "q-q") === q);
-  p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,priority:"P0"}}]); await p.flush();
-  assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"],"root order follows area order rather than priority");
+test("atomic owner-plan changes reconcile child membership while reusing sibling cards", async () => {
+  const s=nativeSnapshot(), frames=new Frames(); s.decisions.q=card(); s.items.other={...s.items.child!,title:"Other parent",plan:planWork([planStep("work")])};
+  const p=await page(s,[],null,undefined,{frames}); await expand(p); const q=p.document.getElementById("q-q")!;
+  const added={...s.items.child!,title:"Added child",plan:planWork([planStep("work")])};
+  p.emit("b".repeat(40),[{kind:"item",id:"added",after:added},{kind:"item",id:"area",after:{...s.items.area!,rev:2,plan:planWork([ownedRow("child"),ownedRow("added")])}}]); await p.flush();
+  assert.ok(p.document.getElementById("it-added")); assert.equal(p.document.getElementById("q-q"),q);
+  p.emit("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,rev:3}},{kind:"item",id:"other",after:{...s.items.other!,rev:2,plan:planWork([ownedRow("added")])}}]); await p.flush(); await wideCaret(p,"other").click(); await p.flush();
+  assert.ok(descendants(rowOf(p,"other").parentElement!).some(e=>e.id === "it-added")); assert.equal(p.document.getElementById("q-q"),q);
+  p.emit("d".repeat(40),[{kind:"item",id:"added",after:null},{kind:"item",id:"other",after:{...s.items.other!,rev:3}}]); await p.flush();
+  assert.equal(p.document.getElementById("it-added"),null); assert.equal(p.document.getElementById("q-q"),q);
+  p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,rev:4,priority:"P0"}}]); await p.flush();
+  assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"]);
 });
-
 test("finishing an inbox request moves it into the normal project tree", async () => {
   const s=snapshot(), frames=new Frames(); s.items.request={...s.items.child!,parent:undefined,group:"Project",request:{by:"Elsewhere",at}}; s.items.request2={...s.items.request!,title:"Later request",priority:"P2",request:{by:"Elsewhere",at:"2026-10-12T00:00:00Z"}};
   const p=await page(s,[],null,undefined,{frames}); assert.ok(item(p,"request").closest(".inbox"));
@@ -1371,7 +1433,7 @@ test("all card jump entry points await baselines before selecting and scrolling"
     if(path === "waiting key") p.key("ArrowRight");
     else if(path === "previous key") p.key("ArrowLeft");
     else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
-    else if(path === "dependency") await p.all().find(e=>e.className === "deprow" && e.innerHTML.includes("如何显示"))!.click();
+    else if(path === "dependency") await planRow(p,"area","q").querySelector(".plan-link")!.click();
     else await button(p,"下一条（2/2）").click();
     await p.flush(); assert.equal(p.scrollCount,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
@@ -1416,7 +1478,7 @@ test("document jump restores an already-open target hidden by filtering or archi
     const p=await page(s,[],null,undefined,{frames}); await expand(p); await rowOf(p,"sibling").querySelector(".item-head")!.click();
     if(hiding === "filter") await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("进行中 "))!.click();
     else { p.emit("b".repeat(40),[{kind:"owner",id:"owner",after:{archived:{child:"2026-10-12T00:00:00Z"}}}]); await p.flush(); }
-    assert.ok(!item(p)); const dep=descendants(item(p,"sibling")).find(e=>e.className === "deprow" && e.innerHTML.includes('class="t">Child<'))!; assert.ok(dep); await dep.click(); await p.flush();
+    assert.ok(!item(p)); const dep=planRow(p,"sibling","child").querySelector(".plan-link")!; assert.ok(dep); await (dep.querySelector(".plan-link") ?? dep).click(); await p.flush();
     assert.ok(item(p),"jump materializes the previously open target again"); assert.ok(item(p).className.includes("cur")); assert.ok(p.scrollCount>0);
   });
 });
@@ -1469,14 +1531,14 @@ test("held unread and loose addition coalesce without suppressing hosted card me
 
 test("dependency Back reacquires selects and scrolls its row after an owner rerender", async () => {
   const s=snapshot(), frames=new Frames(), baseline=deferred<unknown>(); let fresh:unknown[]=[]; let p!:Awaited<ReturnType<typeof page>>;
-  p=await page(s,fresh,()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,detailGeometry:e=>({top:e.dataset.sel === "dep:area@child" ? 600 : 0,height:e.dataset.sel === "dep:area@child" ? 80 : 2400})});
+  p=await page(s,fresh,()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" ? reply({steps:fresh}) : undefined,detailGeometry:e=>({top:e.dataset.sel === "row:area@child" ? 600 : 0,height:e.dataset.sel === "row:area@child" ? 80 : 2400})});
   await expand(p,"area"); await p.flush();
-  const from=p.all().find(e=>e.dataset.sel === "dep:area@child")!; assert.ok(from.matches("[data-sel]"),"capture click selects the actual dependency row");
-  await from.click(); await p.flush(); assert.ok(item(p).className.includes("cur"));
+  const from=p.all().find(e=>e.dataset.sel === "row:area@child")!; assert.ok(from.matches("[data-sel]"),"capture click selects the actual dependency row");
+  await from.querySelector(".plan-link")!.click(); await p.flush(); assert.ok(item(p).className.includes("cur"));
   fresh=unread("item","area"); p.emit("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,head:"New parent prose",rev:2}}]); await p.flush();
   const scrolls=p.scrollCount; await button(p,"← 返回").click(); await p.flush(); assert.equal(p.scrollCount,scrolls,"return waits for the enclosing item baseline");
   baseline.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush();
-  const returned=p.all().find(e=>e.dataset.sel === "dep:area@child")!;
+  const returned=p.all().find(e=>e.dataset.sel === "row:area@child")!;
   assert.ok(returned !== from,"the detail was rebuilt for the item the reader returned to");
   assert.ok(returned.className.includes("cur"),"Back selects the dependency row rather than its enclosing item");
   assert.ok(!item(p,"area").className.includes("cur")); assert.ok(p.scrollCount>scrolls);
@@ -1595,7 +1657,7 @@ test("pending document read hides a coalesced step until acknowledgement splits 
 
 test("r reads every selected document kind even when the fresh filter hides its latest step", async () => {
   const s=snapshot(), first="e".repeat(40), last="f".repeat(40); s.items.child!.steps=[{id:"progress",text:"Progress",state:"todo"}];
-  const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:1,reply:0,other:0}}]},...unread("item","child",last)];
+  const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"plan changed",pieces:{progress:1,reply:0,other:0}}]},...unread("item","child",last)];
   const p=await page(s,fresh); await expand(p); await button(p,"进展 1").click();
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"));
   p.key("r"); await p.flush();
@@ -1611,7 +1673,7 @@ async function dependencyReadContract(transform?: PageOptions["transform"]) {
   const p=await page(s,[...unread("item","area"),...unread("decision","q",later)],null,undefined,{transform});
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));
   await wideCaret(p).click(); await p.flush();
-  await rowOf(p).querySelector(".item-head")!.click(); await descendants(item(p)).find(e=>e.dataset.sel === "dep:child@q")!.click(); await p.flush();
+  await rowOf(p).querySelector(".item-head")!.click(); await planRow(p,"child","q").querySelector(".plan-link")!.click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
   p.key("r"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"decision:q",through:later}]);
@@ -1687,16 +1749,11 @@ test("sticky path bar and its code CSS and scroll reservations are absent", asyn
 });
 
 test("parent counts are numbers with status color and labels", async () => {
-  const s=snapshot(); s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
+  const s=nativeSnapshot(); s.items.todo={...s.items.child!,title:"Todo",plan:planWork([planStep("work")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("todo")]);
   const p=await page(s,[]), counts=rowOf(p,"area").querySelector(".counts")!;
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1"]);
-  for (const [i,status] of ["todo","wip"].entries()) {
-    const count=counts.children[i]!; assert.ok(count.classList.contains(status));
-    // Status labels remain accessible; the owner removed the added hover tooltip.
-    assert.equal(count.title,""); assert.equal(count.attributes["aria-label"],status.toUpperCase()+" 1");
-  }
+  for (const [i,status] of ["todo","wip"].entries()) { const count=counts.children[i]!; assert.ok(count.classList.contains(status)); assert.equal(count.title,""); assert.equal(count.attributes["aria-label"],status.toUpperCase()+" 1"); }
 });
-
 test("split divider pointer drag clamps both columns and persists the width", async () => {
   const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{storage});
   const divider=p.roots.get("split-divider")!;
@@ -1758,29 +1815,22 @@ test("the page tolerates unavailable localStorage", async () => {
 });
 
 test("parent leaf counts are number-only with a status label", async () => {
-  const s=snapshot();
-  s.items.todo={...s.items.child!,title:"Todo",status:"todo"};
-  s.items.block={...s.items.child!,title:"Blocked",status:"blocked"};
-  const p=await page(s,[]);
-  const counts=rowOf(p,"area").querySelector(".counts")!;
+  const s=nativeSnapshot(); s.items.todo={...s.items.child!,title:"Todo",plan:planWork([planStep("work")])}; s.decisions.wait=card(); s.items.block={...s.items.child!,title:"Blocked",plan:planWork([cardRow("wait")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("todo"),ownedRow("block")]);
+  const p=await page(s,[]), counts=rowOf(p,"area").querySelector(".counts")!;
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1","1","1"]);
-  for (const [i,label] of ["TODO","WIP","BLOCK"].entries()) {
-    assert.equal(counts.children[i]!.title,"","status-count hover tooltips were removed at the owner's request");
-    assert.equal(counts.children[i]!.attributes["aria-label"],label+" 1");
-  }
+  for (const [i,label] of ["TODO","WIP","BLOCK"].entries()) { assert.equal(counts.children[i]!.title,""); assert.equal(counts.children[i]!.attributes["aria-label"],label+" 1"); }
 });
-
-// A cancelled leaf, a parent cancelled through its only sub-item, and a cancelled top-level item beside the open child.
-function cancelledSnapshot() {
-  const s=snapshot();
-  s.items.gone={...s.items.child!,title:"Gone",status:"cancelled",deps:[{id:"child",why:"Gone needs child"}]};
-  s.items.dropped={...s.items.child!,title:"Dropped",status:undefined};
-  s.items.droppedKid={...s.items.child!,title:"Dropped kid",parent:"dropped",status:"cancelled"};
-  s.items.topGone={...s.items.area!,title:"Top gone",deps:[],status:"cancelled"};
-  s.items.area!.deps.push({id:"gone",why:"needs gone"},{id:"dropped",why:"needs dropped"});
-  s.items.dropped.deps=[{id:"droppedKid",why:"needs kid"}];
+// Cancellation is stored on each work item; owned cancelled rows remain in plans.
+function cancelledSnapshot(): Snapshot {
+  const s=nativeSnapshot();
+  s.items.gone={...s.items.child!,title:"Gone",status:"cancelled",plan:planWork([sharedRow("child")])};
+  s.items.dropped={...s.items.child!,title:"Dropped",status:"cancelled",plan:planWork([ownedRow("droppedKid")])};
+  s.items.droppedKid={...s.items.child!,title:"Dropped kid",status:"cancelled"};
+  s.items.topGone={...s.items.area!,title:"Top gone",status:"cancelled",plan:planWork([])};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("gone"),ownedRow("dropped")]);
   return s;
 }
+
 test("the tree leaves out cancelled items with their subtrees", async () => {
   const p=await page(cancelledSnapshot(),[]); await expand(p,"area");
   assert.ok(item(p,"child"),"the open sub-item stays");
@@ -1801,24 +1851,14 @@ test("parent leaf counts leave out cancelled leaves", async () => {
   assert.deepEqual(counts.children.map(e=>e.className),["st wip"]);
   assert.deepEqual(counts.children.map(e=>e.innerHTML),["1"]);
 });
-test("dependency lists leave out cancelled items and removed rows but keep added and deleted rows", async () => {
-  const s=cancelledSnapshot();
-  s.items.old={...s.items.child!,title:"Old",status:"cancelled"};
-  s.items.area!.deps.push({id:"missing",why:"needs missing"});
-  const before={...s.items.area!,deps:[...s.items.area!.deps,{id:"old",why:"needed old"}]};
+test("plans keep cancelled owned rows and missing targets while backlinks omit owners and cancelled waiters", async () => {
+  const s=cancelledSnapshot(); s.items.old={...s.items.child!,title:"Old",status:"cancelled"}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("gone"),ownedRow("dropped"),sharedRow("missing")]);
+  const before={...s.items.area!,plan:planWork([ownedRow("child"),ownedRow("gone"),ownedRow("dropped"),sharedRow("missing"),sharedRow("old")])};
   const p=await page(s,unread("item","area"),before); await expand(p,"area"); await p.flush();
-  const rows=(id:string) => descendants(item(p,id)).filter(e=>e.className.split(" ").includes("deprow")).map(e=>e.innerHTML.match(/class="t">([^<]*)</)?.[1] ?? e.innerHTML);
-  const areaRows=rows("area");
-  assert.ok(areaRows.includes("Child"),"an open dependency stays");
-  assert.ok(!areaRows.includes("Gone") && !areaRows.includes("Dropped"),"cancelled dependencies leave the 依赖 list");
-  assert.ok(areaRows.some(r=>r.includes("missing")),"a deleted dependency keeps its fallback row");
-  assert.ok(!areaRows.includes("Old"),"a removed dependency on a cancelled item is not shown");
-  await item(p,"child").querySelector(".item-head")!.click(); await p.flush();
-  const childRows=rows("child");
-  assert.ok(childRows.includes("Parent"),"the parent leads the 被依赖 list");
-  assert.ok(!childRows.includes("Gone"),"a cancelled dependent leaves the 被依赖 list");
-});
-test("tree head structure and CSS keep badges chips title and counts on one line", async () => {
+  assert.equal(planRow(p,"area","gone").querySelector(".g")!.innerHTML,"✗"); assert.ok(planRow(p,"area","dropped"));
+  assert.ok(planRow(p,"area","missing")); assert.equal(p.document.getElementById(planRowDomId("area","old")),null,"removed rows never render");
+  await expand(p,"child"); const backlinks=item(p).querySelector(".deplists"); assert.equal(backlinks,null,"owner is shown separately and the cancelled waiter is omitted"); assert.match(markup(item(p).querySelector(".item-owner")!),/Parent/);
+});test("tree head structure and CSS keep badges chips title and counts on one line", async () => {
   const s=snapshot(); s.items.area!.title="A very long parent title"; s.items.child!.ask={text:"Needs owner"};
   const p=await page(s,unread("item","area"));
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
@@ -1891,13 +1931,13 @@ test("wide detail owns the selected body cards comments and unique DOM ids", asy
 
 test("wide n selects the stop's item and scrolls the right pane to its first fresh mark", async () => {
   const s=snapshot(), before={...s.items.child!,steps:[]}; s.items.child!.steps=[{id:"fresh",state:"todo",text:"Fresh step"}];
-  const p=await page(s,unread(),before,undefined,{detailGeometry:e=>({top:e.className.includes("item-step") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+  const p=await page(s,unread(),before,undefined,{detailGeometry:e=>({top:e.className.includes("plan-row") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
   p.key("n"); await p.flush();
   assert.ok(detailItem(p,"child"),"n selects the item in the detail pane");
   assert.ok(rowOf(p,"child").className.includes("cur"),"n unfolds ancestors and highlights the target tree row");
   assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"fresh mark navigation uses the independently scrolled pane");
-  assert.ok(p.measurements.some(m=>m.id === "step-child-fresh" && m.top>1000),"the fresh step supplies the landing geometry");
-  const landed=p.document.getElementById("step-child-fresh")!.getBoundingClientRect();
+  assert.ok(p.measurements.some(m=>m.id === planRowDomId("child","fresh") && m.top>1000),"the fresh step supplies the landing geometry");
+  const landed=p.document.getElementById(planRowDomId("child","fresh"))!.getBoundingClientRect();
   assert.ok(landed.top>=0 && landed.bottom<=p.roots.get("item-detail")!.clientHeight,"the first fresh mark lands inside the right pane viewport");
   assert.ok(p.scrollY<1000,"the detail's distant mark does not scroll the tree to that offset");
 });
@@ -1973,11 +2013,11 @@ test("wide selected item survives reload through per-viewer localStorage", async
 
 test("wide dependency follow and Backspace restore the prior dependency selection", async () => {
   const p=await page(snapshot(),[]); await selectWide(p);
-  const from=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
+  const from=detailItem(p)?.querySelectorAll(".plan-row").find(e=>e.dataset.sel === "row:area@child");
   assert.ok(from,"the source dependency is rendered in the detail pane");
-  await from.click(); await p.flush(); assert.ok(detailItem(p,"child"),"following a dependency selects its target");
+  await from.querySelector(".plan-link")!.click(); await p.flush(); assert.ok(detailItem(p,"child"),"following a dependency selects its target");
   p.key("Backspace"); await p.flush();
-  const returned=detailItem(p)?.querySelectorAll(".deprow").find(e=>e.dataset.sel === "dep:area@child");
+  const returned=detailItem(p)?.querySelectorAll(".plan-row").find(e=>e.dataset.sel === "row:area@child");
   assert.ok(returned && returned !== from,"Back reacquires the dependency from the restored detail");
   assert.ok(returned.className.includes("cur"),"Back restores the exact dependency selection");
   assert.ok(rowOf(p,"area").className.includes("selected"),"the restored detail item remains highlighted in the tree");
@@ -2100,9 +2140,9 @@ test("wide Back after following a dependency scrolls the list pane back to the i
   p=await page(s,[],null,undefined,{geometry:e=>({top:(e.id === "it-far" ? 2500 : e.id === "it-area" ? 700 : -500)-p.scrollY,height:20})});
   const pane=p.roots.get("page-left")!;
   await selectWide(p);
-  const dep=p.all().find(e=>e.dataset.sel === "dep:area@far")!;
+  const dep=p.all().find(e=>e.dataset.sel === "row:area@far")!;
   pane.scrollTo(0,700); await p.flush(); assert.equal(pane.scrollTop,700);
-  await dep.click(); await p.flush();
+  await (dep.querySelector(".plan-link") ?? dep).click(); await p.flush();
   assert.ok(pane.scrollTop>1000,"following the dependency scrolls the pane to its row");
   p.key("Backspace"); await p.flush();
   const top=rowOf(p,"area").getBoundingClientRect().top;
@@ -2213,24 +2253,17 @@ test("a on an item inside an archived subtree un-archives the nearest archived a
   assert.equal(p.roots.get("server-banner")!.hidden,true);
 });
 
-test("LEGACY PRIORITY: an unmigrated item raised by a waiter shows its written priority struck; a migrated raise shows only the higher one", async () => {
-  for (const migratedWaiter of [false, true]) {
-    const s = snapshot();
-    s.board.projects = [{ name: "Project" }, { name: "Elsewhere", ...(migratedWaiter ? { migrated: true } : {}) }];
-    s.items.waiter = { title: "Waiter", group: migratedWaiter ? "Elsewhere" : "Project", status: "todo", priority: "P0", updated: at, rev: 1, deps: [{ id: "child", why: "Needs child" }], links: [], log: [] };
-    const p = await page(s, []); await expand(p);
-    const head = descendants(item(p)).find(e => e.className === "item-head")!, badge = head.children.find(e => e.className.split(" ").includes("prio"))!;
-    assert.equal(badge.innerHTML, "P0", String(migratedWaiter));
-    const was = head.children.find(e => e.className === "prio-was");
-    if (migratedWaiter) { assert.equal(was, undefined); assert.ok(!markup(item(p)).includes("按 P0 排")); }
-    else { assert.equal(was!.innerHTML, "P1"); assert.equal(badge.title, "写的是 P1；因为「Waiter」(P0) 在等它"); assert.ok(markup(item(p)).includes("按 P0 排：写的是 P1，因为 ")); }
-  }
+test("a shared waiter raises priority and the page shows the derived value without a legacy struck value", async () => {
+  const s=nativeSnapshot(); s.board.projects.push({name:"Elsewhere"});
+  s.items.waiter={...s.items.area!,title:"Waiter",group:"Elsewhere",priority:"P0",plan:planWork([sharedRow("child")])};
+  const p=await page(s,[]); await expand(p);
+  assert.equal(item(p).querySelector(".prio")!.innerHTML,"P0");
+  assert.equal(item(p).querySelector(".prio-was"),null); assert.ok(!markup(item(p)).includes("按 P0 排"));
 });
-
 // Glossary links: each project's glossary; the anchor a term link leads to, as the page names it.
-function glossaries(s: Snapshot) {
+function glossaries<T extends PageInput>(s: T): T {
   const term = (term: string, definition: string, by: string) => ({ term, definition, updated: at, by });
-  s.board.projects.push({ name: "Other", migrated: true });
+  s.board.projects.push({ name: "Other" });
   s.glossaries = {
     Project: { terms: [term("否决线", "本项目的否决线", "Project"), term("否决", "本项目的否决", "Project")], rev: 1 },
     Other: { terms: [term("孪生对照", "同一构建的第二份副本", "Other"), term("否决线", "另一项目的否决线", "Other")], rev: 1 },
@@ -2362,7 +2395,7 @@ test("glossary links follow a live glossary change", async () => {
 });
 
 // References with # and the / search: items and decision cards found by title.
-function linked(): Snapshot {
+function linked(): PageFixture {
   const s = snapshot(); s.decisions.q = card();
   s.items.shipped = { title: "已交付 Alpha", group: "Project", status: "done", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
   s.items.dropped = { title: "取消的 Beta", parent: "area", status: "cancelled", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
@@ -2370,7 +2403,7 @@ function linked(): Snapshot {
 }
 const classes = (e: Element) => e.className.split(" ");
 const rowTitle = (e: Element) => e.innerHTML.match(/class="t">([^<]*)</)![1]!;
-async function composer(snap: Snapshot = linked()) {
+async function composer(snap: PageInput = linked()) {
   const p = await page(snap, [], null, undefined, { response: path => path === "/api/notes" ? reply({ id: "saved" }) : undefined });
   await expand(p); p.key("c"); await p.flush();
   const ta = p.all().find(e => e.id === "ed-it_child")!;
@@ -2544,7 +2577,7 @@ test("the keyboard help lists the search key", async () => {
 });
 
 // Owner waits: blocking (purple) and non-blocking (red), the 等你 panel and the 要你知道 list.
-function waitSnapshot(): Snapshot {
+function waitSnapshot(): PageFixture {
   const s=snapshot();
   s.items.hot={title:"Hot",group:"Project",priority:"P0",ask:{text:"Hot ask"},updated:"2026-10-02T00:00:00Z",rev:1,deps:[],links:[],log:[]};
   s.decisions.old={...card(),question:"旧的问题",blocks:"#398 合并停着",at:"2026-10-01T00:00:00Z"};
@@ -2578,7 +2611,7 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
 test("top controls: 未读 labels the second row with 进展, 其他 and 全部已阅; 评论回复 sits in the first row; the view row has no label", async () => {
   const s=snapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
   s.items.child!.steps=[{id:"p",text:"Progress",state:"todo"}];
-  const docs=[{kind:"item",id:"child",summary:"head changed, steps changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
+  const docs=[{kind:"item",id:"child",summary:"head changed, plan changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
   const labels=rows.map(r=>r.children[0]?.className === "sum-k" ? r.children[0]!.innerHTML : "");
@@ -2791,44 +2824,31 @@ test("a sent transition closes a draft editor and a late save cannot restore the
   assert.equal(noteButton(p, "d", "编辑"), undefined);
 });
 
-test("item steps show all states, elapsed days and a ratio excluding dropped; every log starts collapsed", async () => {
-  const s=snapshot(); s.items.child!.head="Stable head";
-  s.items.child!.steps=[
-    {id:"done",text:"Deliver parser #42",state:"done",doneAt:"2026-10-06T12:00:00Z"},
-    {id:"doing",text:"Validate replies",state:"doing",since:"2026-10-06T12:00:00Z",waits:"CI"},
-    {id:"todo",text:"Publish evidence",state:"todo"},
-    {id:"drop",text:"Old approach",state:"dropped",reason:"Superseded",droppedAt:"2026-10-07T12:00:00Z"},
-  ];
-  s.items.child!.log=[{at,text:"Detailed investigation"}];
+test("plan steps show all states, elapsed days and acceptance; comments precede prose and logs start collapsed", async () => {
+  const s=nativeSnapshot(); s.items.child!.head="Stable head";
+  s.items.child!.plan=planWork([planStep("done","Deliver parser #42","done",{doneAt:"2026-10-06T12:00:00Z"}),planStep("doing","Validate replies","doing",{since:"2026-10-06T12:00:00Z",waits:"CI"}),planStep("todo","Publish evidence"),planStep("drop","Old approach","dropped",{reason:"Superseded"})]); s.items.child!.log=[{at,text:"Detailed investigation"}];
   const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
-  const lines=item(p).querySelectorAll(".item-step").map(e=>e.innerHTML);
-  assert.deepEqual(lines,["✓ Deliver parser #42 (10-06)","● Validate replies — 6 天，等 CI","○ Publish evidence","✗ Old approach — Superseded"]);
-  assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/3");
-  assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/3");
-  const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "item-steps"), logs=body.children.findIndex(e=>e.className === "log");
-  assert.ok(progress >= 0 && logs === progress+1,"progress occupies the former log position and history follows it");
-  assert.equal(item(p).querySelector(".log-toggle")!.attributes["aria-expanded"],"false");
-  assert.equal(item(p).querySelectorAll(".log-entry").length,0);
-  await button(p,"▸ 日志").click();
-  assert.equal(item(p).querySelectorAll(".log-entry").length,1);
-  assert.match(markup(item(p)),/Detailed investigation/);
-  await expand(p,"area");
-  assert.equal(item(p,"area").querySelector(".item-steps"),null,"old items need no steps field");
-  assert.equal(item(p,"area").querySelector(".log-toggle")!.attributes["aria-expanded"],"false","even an item without steps or log has the collapsed section");
+  assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","●","○","✗","◆"]);
+  assert.match(markup(planRow(p,"child","done")),/Deliver parser #42 · 10-06/); assert.match(markup(planRow(p,"child","doing")),/Validate replies · 6 天 · 等 CI/); assert.match(markup(planRow(p,"child","drop")),/Old approach · Superseded/);
+  assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/4"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
+  const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), comments=body.children.findIndex(e=>e.className === "item-comments"), prose=body.children.findIndex(e=>e.className === "rich"), logs=body.children.findIndex(e=>e.className === "log");
+  assert.ok(progress>=0 && comments === progress+1 && prose === comments+1 && logs>prose);
+  assert.equal(item(p).querySelector(".log-toggle")!.attributes["aria-expanded"],"false"); assert.equal(item(p).querySelectorAll(".log-entry").length,0);
+  await button(p,"▸ 日志").click(); assert.equal(item(p).querySelectorAll(".log-entry").length,1); assert.match(markup(item(p)),/Detailed investigation/);
+  await expand(p,"area"); assert.ok(item(p,"area").querySelector(".plan")); assert.equal(item(p,"area").querySelector(".log-toggle")!.attributes["aria-expanded"],"false");
   await button(p,"▸ 日志").click(); assert.match(markup(item(p,"area")),/暂无日志/);
 });
-
 const goalNumber = (id: string, current = "12 倍 Chromium"): ItemTarget => ({id, goal: "apollo11 样式计算 " + id, target: "≤ 1 倍 Chromium", current, baseline: "Chromium 同机同页", date: at});
 
-test("goal numbers show a five-column table after steps for work and record items and hide absent or empty lists", async t => {
+test("goal numbers show a five-column table before plans for work and record items and hide absent or empty lists", async t => {
   for (const record of [false, true]) await t.test(record ? "record" : "work", async () => {
-    const s=snapshot();
+    const s=nativeSnapshot();
     if (record) { s.items.child!.record=true; delete s.items.child!.status; }
-    s.items.child!.steps=[{id:"part",text:"Measure goal",state:"todo"}];
+    s.items.child!.plan=record ? [planStep("part","Measure goal")] : planWork([planStep("part","Measure goal")]);
     s.items.child!.targets=[{...goalNumber("style"),goal:"<script>goal</script>"},goalNumber("layout","2 倍 Chromium")];
     const p=await page(s,[]); await expand(p);
-    const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "item-steps"), targets=body.children.findIndex(e=>e.className === "item-targets"), log=body.children.findIndex(e=>e.className === "log");
-    assert.ok(progress >= 0 && targets === progress+1 && log === targets+1,"targets follow steps and precede history");
+    const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), targets=body.children.findIndex(e=>e.className === "item-targets"), log=body.children.findIndex(e=>e.className === "log");
+    assert.ok(targets >= 0 && progress === targets+1 && log > progress,"targets precede plans and history follows comments");
     const table=item(p).querySelector(".targets-table")!;
     assert.equal(table.querySelector("caption")!.innerHTML,"目标");
     assert.deepEqual(table.querySelectorAll("th").map(e=>[e.innerHTML,e.attributes.scope]),["目标","当前","目标值","比较对象","日期"].map(label=>[label,"col"]));
@@ -2884,54 +2904,165 @@ test("legacy unread summaries classify target changes as progress", async () => 
   await button(p,"进展 1").click(); assert.ok(rowOf(p).className.includes("fresh"));
 });
 
-test("added and edited steps mark only their own lines until r reads them and progress filter walks them", async () => {
-  const s=snapshot();
-  const baseline={...s.items.child!,steps:[{id:"same",text:"Unchanged",state:"todo" as const},{id:"edit",text:"Earlier",state:"todo" as const}]};
-  s.items.child!.steps=[{id:"new",text:"Added",state:"todo"},{id:"same",text:"Unchanged",state:"todo"},{id:"edit",text:"Changed",state:"doing",since:at,waits:"Review"}];
-  const history=[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:2,reply:0,other:0}}]}];
+test("added and edited plan rows mark only themselves until r reads them and the progress filter walks them", async () => {
+  const s=nativeSnapshot(), baseline={...s.items.child!,plan:planWork([planStep("same","Unchanged"),planStep("edit","Earlier")])};
+  s.items.child!.plan=planWork([planStep("new","Added"),planStep("same","Unchanged"),planStep("edit","Changed","doing",{waits:"Review"})]);
+  const history=[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"plan changed",pieces:{progress:2,reply:0,other:0}}]}];
   const p=await page(s,history,baseline,undefined,{now:()=>Date.parse(at)}); await expand(p); await p.flush();
-  const marked=()=>item(p).querySelectorAll(".item-step.newbar").map(e=>e.id);
-  assert.deepEqual(marked(),["step-child-new","step-child-edit"],"insertion does not mark unchanged neighbors whose index shifted");
-  assert.ok(rowOf(p).className.includes("fresh"));
-  assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
-  await button(p,"进展 1").click(); p.key("n"); await p.flush();
-  assert.ok(rowOf(p).className.includes("cur"));
-  p.key("r"); await p.flush();
-  assert.deepEqual(marked(),[]);
-  assert.ok(!rowOf(p).className.includes("fresh"));
-  assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));
+  const marked=()=>item(p).querySelectorAll(".plan-row.newbar").map(e=>e.id);
+  assert.deepEqual(marked(),[planRowDomId("child","new"),planRowDomId("child","edit")]); assert.ok(rowOf(p).className.includes("fresh"));
+  await button(p,"进展 1").click(); p.key("n"); await p.flush(); assert.ok(rowOf(p).className.includes("cur"));
+  p.key("r"); await p.flush(); assert.deepEqual(marked(),[]); assert.ok(!rowOf(p).className.includes("fresh"));
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:stepId}]);
 });
-
-test("step removal and reordering keep item progress unread without highlighting unchanged lines", async t => {
+test("plan removal and reordering remain unread progress without marking unchanged rows", async t => {
   for (const change of ["remove","reorder"] as const) await t.test(change,async()=> {
-    const s=snapshot(), baseline={...s.items.child!,steps:[{id:"a",text:"A",state:"todo" as const},{id:"b",text:"B",state:"todo" as const}]};
-    s.items.child!.steps=change === "remove" ? [baseline.steps[1]!] : [...baseline.steps].reverse();
-    const p=await page(s,[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:1,reply:0,other:0}}]}],baseline); await expand(p); await p.flush();
-    assert.ok(rowOf(p).className.includes("fresh")); assert.ok(p.all().some(e=>e.innerHTML === "进展 1"));
-    assert.equal(item(p).querySelectorAll(".item-step.newbar").length,0);
-    assert.deepEqual(item(p).querySelectorAll(".item-step").map(e=>e.id),s.items.child!.steps!.map(step=>"step-child-"+step.id));
+    const s=nativeSnapshot(), rows=[planStep("a","A","todo",{after:[]}),planStep("b","B","todo",{after:[]})], baseline={...s.items.child!,plan:planWork(rows)};
+    s.items.child!.plan=planWork(change === "remove" ? [rows[1]!] : [...rows].reverse());
+    const p=await page(s,[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"plan changed",pieces:{progress:1,reply:0,other:0}}]}],baseline); await expand(p); await p.flush();
+    assert.ok(rowOf(p).className.includes("fresh")); assert.ok(p.all().some(e=>e.innerHTML === "进展 1")); assert.equal(item(p).querySelectorAll(".plan-row.newbar").length,0);
+    assert.deepEqual(item(p).querySelectorAll(".plan-row").map(e=>e.id),s.items.child!.plan.map(row=>planRowDomId("child",row.id)));
+  });
+});
+test("record plans omit acceptance, show zero when all dropped and refresh doing days without writes", async () => {
+  const s=nativeSnapshot(); s.items.child!.record=true; s.items.child!.plan=[planStep("old","Retired","dropped",{reason:"No longer needed"})];
+  let now=Date.parse(at)+24*60*60*1000-1; const p=await page(s,[],null,undefined,{now:()=>now}); await expand(p); await p.flush();
+  assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"0/0"); assert.equal(item(p).querySelectorAll(".plan-row.accept").length,0);
+  await p.change("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,rev:2,plan:[planStep("work","Collect evidence","doing")]}}]); await p.flush();
+  assert.match(markup(planRow(p,"child","work")),/Collect evidence · 0 天/);
+  const calls=p.calls.length; now++; p.intervals.forEach(fn=>fn()); await p.flush(); assert.match(markup(planRow(p,"child","work")),/Collect evidence · 1 天/); assert.equal(p.calls.length,calls);
+});
+test("plan prose resolves glossary and reference tokens and follows target renames", async () => {
+  const s=glossaries(nativeSnapshot()); s.items.child!.plan=planWork([planStep("ref","否决线 [[it:area]]","doing",{waits:"[[it:area]]"})]);
+  const p=await page(s,[]); await expand(p);
+  const text=()=>planRow(p,"child","ref").querySelector(".plan-text")!.innerHTML;
+  assert.deepEqual(termLinks(text()),[["否决线",anchor("Project","否决线")]]); assert.match(text(),/data-ref="it:area">Parent<\/a>/);
+  await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush(); assert.match(text(),/data-ref="it:area">Renamed parent<\/a>/);
+});
+
+test("the native plan mockup shows glyphs, parallel groups, owned activity, shared ownership and final acceptance", async () => {
+  const s=nativeSnapshot(); s.board.projects.push({name:"Other"});
+  s.items.child!.plan=planWork([planStep("ci","Run Lua checks","doing",{waits:"CI"})]);
+  s.items.host={...s.items.area!,title:"Other owner",group:"Other",plan:planWork([ownedRow("dependency")])};
+  s.items.dependency={...s.items.child!,title:"Whitefoot can read the peer address",group:"Other",plan:planWork([planStep("build")])};
+  s.decisions.q={...card(),item:"area",blocks:"Release waits for the ruling"};
+  s.items.area!.provisional=true;
+  s.items.area!.plan=planWork([planStep("done","Delivered parser","done"),planStep("drop","Old approach","dropped"),planStep("writing","Write parser","doing",{after:[]}),ownedRow("child"),sharedRow("dependency"),cardRow("q"),planStep("notes","Release notes","todo",{after:[]})]);
+  const p=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(p,"area");
+  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","○","◆"]);
+  const group=item(p,"area").querySelector(".plan-group")!; assert.equal(group.attributes.role,"group"); assert.equal(group.attributes["aria-label"],"可同时进行");
+  assert.match(markup(planRow(p,"area","child").querySelector(".plan-sub")!),/Run Lua checks — 2 天，等 CI/);
+  assert.match(markup(planRow(p,"area","dependency").querySelector(".plan-sub")!),/Other · 共用 · 归属在「[^]*Other owner/);
+  assert.equal(planRow(p,"area","q").querySelector(".plan-link")!.dataset.ref,"q:q");
+  assert.ok(planRow(p,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
+  const plan=item(p,"area").querySelector(".plan")!; assert.ok(plan.querySelector(".checktag")!.innerHTML === "待重写");
+  const rows=plan.querySelectorAll(".plan-row"); assert.ok(rows.at(-1)!.classList.contains("accept")); assert.match(markup(rows.at(-1)!),/验收[^]*Checks pass/);
+  assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"1/7","the dropped step is excluded and acceptance counts");
+});
+
+test("plan rows refresh when shared ownership, child reference labels or card blocking text changes", async () => {
+  const s=nativeSnapshot();
+  s.board.projects.push({name:"Other"});
+  s.items.host={...s.items.area!,group:"Other",title:"First owner",plan:planWork([ownedRow("dependency")])};
+  s.items.otherHost={...s.items.area!,group:"Other",title:"Second owner",plan:planWork([])};
+  s.items.dependency={...s.items.child!,group:"Other",title:"Shared result",plan:planWork([])};
+  s.items.waited={...s.items.child!,title:"Original prerequisite",plan:planWork([])};
+  s.decisions.childCard={...card(),question:"Original ruling",item:"child"};
+  s.decisions.q={...card(),question:"Direct card",item:"area"};
+  s.items.child!.plan=planWork([sharedRow("waited"),cardRow("childCard")]);
+  s.items.area!.plan=planWork([ownedRow("child"),sharedRow("dependency"),cardRow("q")]);
+  const p=await page(s,[]); await expand(p,"area");
+  assert.match(markup(planRow(p,"area","dependency")),/First owner/);
+  assert.match(markup(planRow(p,"area","child")),/Original prerequisite[^]*Original ruling/);
+  assert.match(markup(planRow(p,"area","q")),/决策卡/);
+  await p.change("b".repeat(40),[
+    {kind:"item",id:"host",after:{...s.items.host!,plan:planWork([])}},
+    {kind:"item",id:"otherHost",after:{...s.items.otherHost!,plan:planWork([ownedRow("dependency")])}},
+  ]); await p.flush();
+  assert.match(markup(planRow(p,"area","dependency")),/Second owner/);
+  assert.doesNotMatch(markup(planRow(p,"area","dependency")),/First owner/);
+  await p.change("c".repeat(40),[{kind:"item",id:"otherHost",after:{...s.items.otherHost!,title:"Renamed owner",plan:planWork([ownedRow("dependency")])}}]); await p.flush();
+  assert.match(markup(planRow(p,"area","dependency")),/Renamed owner/);
+  await p.change("d".repeat(40),[{kind:"item",id:"waited",after:{...s.items.waited!,title:"Renamed prerequisite"}}]); await p.flush();
+  assert.match(markup(planRow(p,"area","child")),/Renamed prerequisite[^]*Original ruling/);
+  await p.change("e".repeat(40),[{kind:"decision",id:"childCard",after:{...s.decisions.childCard!,question:"Renamed ruling"}}]); await p.flush();
+  assert.match(markup(planRow(p,"area","child")),/Renamed prerequisite[^]*Renamed ruling/);
+  await p.change("f".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,blocks:"Release waits"}}]); await p.flush();
+  assert.match(markup(planRow(p,"area","q")),/阻塞/);
+  assert.equal(planRow(p,"area","q").querySelector(".waittag")!.attributes.title,"Release waits");
+});
+
+test("every resolved plan row stays visible in stored order on initial paint and reload despite stale folding storage", async t => {
+  for (const stale of [undefined, "{}", JSON.stringify({[JSON.stringify(["child","a","b","drop","finished","cancelled","shared","ruled"])]:false}), JSON.stringify({[JSON.stringify(["child","a","b","drop","finished","cancelled","shared","ruled"])]:true}), "malformed old setting"]) await t.test(String(stale), async () => {
+    const s=nativeSnapshot(), storage=new Map<string,string>([["board-selected","child"]]);
+    if (stale !== undefined) storage.set("board-plan-open",stale);
+    s.items.finished={...s.items.child!,title:"Finished owned result",plan:planWork([],"done")};
+    s.items.cancelled={...s.items.child!,title:"Cancelled owned result",status:"cancelled",plan:planWork([],"dropped")};
+    s.items.shared={...s.items.child!,title:"Finished shared result",plan:planWork([],"done")};
+    s.items.area!.plan=planWork([ownedRow("child"),ownedRow("shared")]);
+    s.decisions.ruled={...card(),question:"Resolved choice",status:"ruled",ruling:"Settled"};
+    s.items.child!.plan=planWork([
+      planStep("a","A","done",{after:[]}),planStep("b","B","done",{after:[]}),planStep("drop","Dropped step","dropped",{after:[]}),
+      ownedRow("finished"),ownedRow("cancelled"),sharedRow("shared"),cardRow("ruled"),
+    ],"done");
+    const expected=s.items.child!.plan.map(row=>planRowDomId("child",row.id));
+    for (const p of [await page(s,[],null,undefined,{storage}),await page(s,[],null,undefined,{storage})]) {
+      assert.ok(detailItem(p,"child"),"the selected plan is present on its first paint, with no plan controls pressed");
+      assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
+      assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✓","✗","✓","✗","✓","✓","◆"]);
+      assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
+      assert.deepEqual(item(p).querySelector(".plan-group")!.querySelectorAll(".plan-row").map(row=>row.id),expected.slice(0,-1));
+      assert.match(markup(planRow(p,"child","drop")),/Dropped step[^]*Replaced/);
+    }
+    assert.equal(storage.get("board-plan-open"),stale,"the retired choice is neither read nor rewritten");
   });
 });
 
-test("record steps show a zero denominator when all dropped and doing days refresh without writes", async () => {
-  const s=snapshot(); s.items.child!.record=true; delete s.items.child!.status;
-  s.items.child!.steps=[{id:"old",text:"Retired",state:"dropped",reason:"No longer needed",droppedAt:at}];
-  let now=Date.parse(at)+24*60*60*1000-1;
-  const p=await page(s,[],null,undefined,{now:()=>now}); await expand(p); await p.flush();
-  assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"0/0");
-  await p.change("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,rev:2,steps:[{id:"work",text:"Collect evidence",state:"doing",since:at}]}}]); await p.flush();
-  assert.equal(item(p).querySelector(".item-step")!.innerHTML,"● Collect evidence — 0 天");
-  const calls=p.calls.length; now++; p.intervals.forEach(fn=>fn()); await p.flush();
-  assert.equal(item(p).querySelector(".item-step")!.innerHTML,"● Collect evidence — 1 天");
-  assert.equal(p.calls.length,calls,"day display refresh is local");
+test("resolved rows preserve unread bars and current selection while every completed row remains visible", async () => {
+  const s=nativeSnapshot(), rows=[planStep("a","A","done"),planStep("b","B","dropped"),planStep("c","C","done")]; s.items.child!.plan=planWork(rows,"done");
+  const baseline={...s.items.child!,plan:planWork([{...rows[0]!,text:"Earlier A"},rows[1]!,rows[2]!],"done")};
+  const p=await page(s,unread(),baseline); await expand(p); await p.flush();
+  const expected=s.items.child!.plan.map(row=>planRowDomId("child",row.id));
+  assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
+  assert.ok(planRow(p,"child","a").classList.contains("newbar"));
+  assert.ok(!planRow(p,"child","b").classList.contains("newbar"),"unchanged dropped rows are visible without becoming unread");
+  await planRow(p,"child","b").click(); await p.flush();
+  assert.ok(planRow(p,"child","b").classList.contains("cur"));
+  await p.change("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,title:"Renamed child"}}]); await p.flush();
+  assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
+  assert.ok(planRow(p,"child","b").classList.contains("cur"),"a detail refresh preserves the selected dropped row");
+  assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
 });
 
-test("step prose resolves glossary and reference tokens and follows target renames", async () => {
-  const s=glossaries(snapshot()); s.items.child!.steps=[{id:"ref",text:"否决线 [[it:area]]",state:"doing",since:at,waits:"[[it:area]]"}];
+test("mixed parallel groups retain every completed, dropped and open member in stored order", async () => {
+  const s=nativeSnapshot(); s.items.child!.plan=planWork([planStep("a","A","done",{after:[]}),planStep("b","B","dropped",{after:[]}),planStep("c","C","done",{after:[]}),planStep("d","D","todo",{after:[]})]);
   const p=await page(s,[]); await expand(p);
-  assert.deepEqual(termLinks(item(p).querySelector(".item-step")!.innerHTML),[["否决线",anchor("Project","否决线")]]);
-  assert.match(item(p).querySelector(".item-step")!.innerHTML,/data-ref="it:area">Parent<\/a>/);
-  await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush();
-  assert.match(item(p).querySelector(".item-step")!.innerHTML,/data-ref="it:area">Renamed parent<\/a>/);
+  const expected=s.items.child!.plan.map(row=>planRowDomId("child",row.id));
+  assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
+  assert.deepEqual(item(p).querySelector(".plan-group")!.querySelectorAll(".plan-row").map(row=>row.id),expected.slice(0,-1));
+  await p.change("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,plan:planWork([planStep("a","A","done",{after:[]}),planStep("b","B","dropped",{after:[]}),planStep("c","C","done",{after:[]}),planStep("d","D","done",{after:[]})])}}]); await p.flush();
+  assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected,"resolving the last member does not replace the group with a summary");
+  assert.deepEqual(item(p).querySelector(".plan-group")!.querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✗","✓","✓"]);
+});
+
+test("a plan row comment goes to its item without an anchor and the comment entry follows the plan", async () => {
+  const s=nativeSnapshot(); s.items.child!.plan=planWork([planStep("part","Write checks")]);
+  const p=await page(s,[],null,undefined,{response:path=>path === "/api/notes" ? reply({id:"saved"}) : undefined}); await expand(p); const body=item(p).querySelector(".body")!, index=body.children.findIndex(e=>e.className === "plan"); assert.equal(body.children[index+1]!.className,"item-comments");
+  await planRow(p,"child","part").click(); p.key("c"); await p.flush(); assert.ok(p.document.getElementById("ed-it_child"));
+  const editor=p.document.getElementById("ed-it_child")!; editor.value="Row work question";
+  await editor.parentElement!.querySelector(".save")!.click(); await p.flush();
+  const call=p.calls.find(c=>c.path === "/api/notes"); assert.ok(call); assert.equal((call.body as {target:string}).target,"it:child"); assert.equal(Object.hasOwn(call.body as object,"anchor"),false);
+});
+
+test("complete plans render without storage and phone CSS retains the glyph gutter", async () => {
+  const s=nativeSnapshot(); s.items.child!.plan=planWork([planStep("a","A","done"),planStep("b","B","dropped"),planStep("c","C","done")]);
+  const expected=s.items.child!.plan.map(row=>planRowDomId("child",row.id));
+  for (let reload=0;reload<2;reload++) {
+    const p=await page(s,[],null,undefined,{storageUnavailable:true}); await expand(p);
+    assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
+    assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✗","✓","◆"]);
+    assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
+  }
+  const source=await readFile("web/app.ts","utf8"); assert.ok(!source.includes("board-plan-open"),"the retired choice has no reader or writer");
+  const css=await readFile("web/index.html","utf8"); assert.ok(!css.includes(".plan-fold")); assert.match(css,/\.plan-row\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\)/); assert.match(css,/@media \(max-width: 560px\)[^]*\.plan-row\.own \.plan-meta\s*\{[^}]*display:\s*flex/); assert.match(css,/\.plan-group\s*\{[^}]*border-left-width:\s*1px/);
 });

@@ -1,4 +1,4 @@
-import { rules, draftEditable, noteTextProblem, changedItemSteps, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -180,7 +180,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return { byId, children, notesBy, decById: new Map(state.decisions.map(d => [d.id, d])) };
     });
   }
-  function up(it: ViewItem) { return it.parent || ""; }
+  function up(it: ViewItem) { return derived.parentOf(it.id) || ""; }
   function upItem(it: ViewItem) { return index().byId.get(derived.parentOf(it.id) || "") || null; }
   function notesOf(key: string) { return index().notesBy.get(key) || []; }
   function headOf(it: ViewItem) { return it.head || ""; }
@@ -194,12 +194,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
-  // LEGACY PRIORITY: the written priority and the waiter that raised it, shown struck on unmigrated items.
-  function writtenPriorityOf(it: ViewItem) { return derived.writtenPriorityOf(it.id); }
-  function raisedBy(it: ViewItem) { return index().byId.get(derived.raisedBy(it.id) || "") || null; }
   function visible(it: ViewItem) { return !isArchived(it) && !isCancelled(it); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
-  function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)).sort(byPriority); }
+  function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
   function waitsQ(d: ViewDecision) { return derived.cardWaiting(d.id); }
@@ -210,7 +207,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
-  function whyOf(w: ViewItem, id: string) { return depEntries(w).find(d => d.kind === "item" && d.id === id)?.why || ""; }
   function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).map(e => e.kind === "item" ? index().byId.get(e.id)! : index().byId.get(snapshot.decisions[e.id]!.item)!).filter(Boolean); }
   function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w) && !inArchive(w)); }
   function outDeps(it: ViewItem) { return openDeps(it).filter(d => !derived.ancestors(d.id).includes(it.id)); }
@@ -253,7 +249,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const reply = changes.includes("new reply") || changes.includes("reply changed");
     for (const change of changes) {
       if (isLogChange(change)) continue;
-      else if (change === "steps changed" || change === "targets changed") kinds.add("progress");
+      else if (change === "plan changed" || change === "targets changed") kinds.add("progress");
       else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
       else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
     }
@@ -443,7 +439,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
   function freshMarks(box: HTMLElement, id: string) {
     if (unreadBefore<Item>("item", id) === null) return [];
-    return [...box.querySelectorAll<HTMLElement>(".chg-add, .item-step.newbar, .item-target.newbar, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
+    return [...box.querySelectorAll<HTMLElement>(".chg-add, .plan-row.newbar, .item-target.newbar, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
   }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
@@ -537,7 +533,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (key?.startsWith("it:")) return "item:" + key.slice(3);
     if (key?.startsWith("q:")) return "decision:" + key.slice(2);
     if (key?.startsWith("note:")) return key;
-    if (key?.startsWith("log:") || key?.startsWith("dep:")) return "item:" + key.slice(4, key.indexOf("@"));
+    if (key?.startsWith("log:") || key?.startsWith("row:")) return "item:" + key.slice(4, key.indexOf("@"));
     return null;
   }
   // What r reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
@@ -637,7 +633,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!key) return null;
     if (key.startsWith("it:") || key.startsWith("q:")) return key;
     if (key.startsWith("log:")) return "it:" + key.slice(4, key.indexOf("@"));
-    if (key.startsWith("dep:")) return "it:" + key.slice(4, key.indexOf("@"));
+    if (key.startsWith("row:")) return "it:" + key.slice(4, key.indexOf("@"));
     if (key.startsWith("note:")) { const n = state.notes.find(x => x.id === key.slice(5)); return n ? n.target : null; }
     return null;
   }
@@ -1011,29 +1007,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     b.addEventListener("click", ev => { ev.stopPropagation(); follow(d.id); });
     return b;
   }
-  // A row of the 被依赖 or 依赖 list: the item and, under its title, why the depending item needs it.
-  function whyRow(d: ViewItem, from: ViewItem, why: string) {
-    const b = depRow(d, from);
-    b.querySelector(".t")!.appendChild(el("span", "why" + (why ? "" : " none"), why ? inline(why) : "（没写为什么）"));
-    return b;
-  }
-  // A row for a dependency that is not a live item: a decision card shows its state where an item shows its status,
-  // its question as the title and, under it, why the depending item needs it, like an item row.
   function cardTag(id: string, d: Decision | undefined) {
     return !d ? '<span class="st cancelled">已删除</span>'
       : derived.cardBlocking(id) ? '<span class="waittag" title="' + esc(d.blocks) + '">阻塞</span>'
       : derived.cardWaiting(id) ? '<span class="asktag">决策卡</span>'
       : d.status === "open" ? '<span class="st todo">未定</span>'
       : '<span class="st done">' + (d.ruling ? "已裁定" : "已结束") + "</span>";
-  }
-  function depFallbackRow(kind: string, id: string, why: string) {
-    const d = kind === "card" ? snapshot.decisions[id] : undefined;
-    const tag = cardTag(id, d);
-    const b = el("button", "deprow", tag + '<span class="t">' + inline(d?.question || id)
-      + '<span class="why' + (why ? "" : " none") + '">' + (why ? inline(why) : "（没写为什么）") + "</span></span>");
-    b.type = "button";
-    if (d) b.addEventListener("click", ev => { ev.stopPropagation(); followCard(id); });
-    return b;
   }
   function followCard(id: string) { if (snapshot.decisions[id]) jump("q-"+id); }
   // Every item and decision card the owner can search for or refer to, in board data order, with what a result row shows:
@@ -1576,16 +1555,101 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return box;
   }
 
-  function stepsSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
-    if (!it.steps?.length) return null;
-    const changed = new Set(before === undefined ? [] : changedItemSteps(before?.steps, it.steps).map(step => step.id));
-    const box = el("div", "item-steps");
-    box.appendChild(el("div", "log-head", "进展"));
-    for (const step of it.steps) {
-      const row = el("div", "item-step" + (fon("progress") && changed.has(step.id) ? " newbar" : ""), linkTerms(inline(derived.stepLine(step)),terms));
-      row.id = "step-" + it.id + "-" + step.id;
-      box.appendChild(row);
+  function planSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
+    if (!it.plan.length) return null;
+    const changed = new Set(before === undefined ? [] : changedItemPlan(before?.plan, it.plan).map(row => row.id));
+    const rows = derived.planRows(it.id), groups = new Map(derived.planGroups(it.id).map(group => [group.start, group]));
+    const box = el("section", "plan"); box.setAttribute("aria-label", "计划和进展");
+    const ratio = derived.planRatio(it.id);
+    const heading = el("div", "log-head", "计划和进展");
+    if (it.provisional) heading.appendChild(el("span", "checktag", "待重写"));
+    heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total)); box.appendChild(heading);
+    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
+    const ref = (kind: "item" | "card", id: string, title: string) => {
+      const link = el("a", "plan-link itemref", esc(plain(title))); link.href = "#"; link.dataset.ref = (kind === "item" ? "it:" : "q:") + id;
+      return link;
+    };
+    const nextActivity = (id: string) => {
+      if (derived.statusOf(id) === "cancelled") return "";
+      const childRows = derived.planRows(id), doing = childRows.filter(row => "text" in row.row && row.row.state === "doing");
+      if (doing.length) return doing.map(row => "text" in row.row ? derived.stepLine(row.row) : "").join(" · ");
+      const waiting = childRows.filter(row => row.ready && row.state === "waiting");
+      const title = (row: typeof rows[number]) => "item" in row.row ? snapshot.items[row.row.item]?.title || row.row.item
+        : "card" in row.row ? snapshot.decisions[row.row.card]?.question || row.row.card : row.row.text;
+      if (waiting.length) return waiting.map(row => "⏸ 等「" + plain(title(row)) + "」").join(" · ");
+      const next = childRows.find(row => row.ready);
+      return next ? "下一步：" + next.glyph + " " + plain(title(next)) : "";
+    };
+    const renderRow = (value: typeof rows[number]) => {
+      const stored = value.row, accept = "accept" in stored && stored.accept;
+      const row = el("div", "plan-row " + stateClass(value) + (accept ? " accept" : "") + (fon("progress") && changed.has(stored.id) ? " newbar" : ""));
+      row.dataset.sel = "row:" + it.id + "@" + stored.id;
+      row.id = "plan-" + encodeURIComponent(JSON.stringify([it.id, stored.id]));
+      if (current === row.dataset.sel) row.classList.add("cur");
+      row.appendChild(el("span", "g", value.glyph));
+      const main = el("div", "plan-main");
+      if ("text" in stored) {
+        if (accept) main.appendChild(el("span", "tag", "验收"));
+        let text = stored.text;
+        if (stored.state === "doing") text += " · " + derived.stepDays(stored) + " 天" + (stored.waits ? " · 等 " + stored.waits : "");
+        else if (stored.state === "done") text += " · " + stored.doneAt!.slice(5,10);
+        else if (stored.state === "dropped") text += " · " + stored.reason;
+        main.appendChild(el("span", "plan-text rich", linkTerms(blocks(text), terms)));
+      } else if ("item" in stored) {
+        const target = snapshot.items[stored.item], st = derived.statusOf(stored.item) ?? (target?.record ? "record" : "todo");
+        row.classList.add(stored.own ? "own" : "shared");
+        main.appendChild(ref("item", stored.item, target?.title || stored.item));
+        const meta = el("span", "plan-meta");
+        meta.appendChild(el("span", "st " + st, STATUS[st] || st));
+        if (stored.own && target) {
+          const childRatio = derived.planRatio(stored.item);
+          meta.appendChild(el("span", "steps-ratio", childRatio.done + "/" + childRatio.total));
+          if (it.provisional) meta.appendChild(el("span", "checktag", "待重写"));
+        }
+        main.appendChild(meta);
+        if (stored.own) {
+          const activity = target ? nextActivity(stored.item) : "";
+          if (activity) row.appendChild(el("div", "plan-sub", inline(activity)));
+        } else {
+          const owner = derived.parentOf(stored.item), project = target?.group || "";
+          const sub = el("div", "plan-sub");
+          if (owner) {
+            sub.appendChild(document.createTextNode((project !== it.group ? project + " · " : "") + "共用 · 归属在「"));
+            sub.appendChild(ref("item", owner, snapshot.items[owner]?.title || owner)); sub.appendChild(document.createTextNode("」"));
+          } else sub.appendChild(document.createTextNode("共用 · " + project + " 顶层"));
+          row.appendChild(sub);
+        }
+      } else {
+        const card = snapshot.decisions[stored.card];
+        main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
+          ? '<span class="waittag" title="' + esc(card.blocks) + '">阻塞</span>'
+          : '<span class="asktag">决策卡</span>'));
+        main.appendChild(ref("card", stored.card, card?.question || stored.card));
+      }
+      row.insertBefore(main, row.children[1] || null);
+      return row;
+    };
+    const units: Array<{start:number;end:number}> = [];
+    for (let i=0; i<rows.length;) {
+      const group=groups.get(i), end=group?.end ?? i+1;
+      units.push({start:i,end}); i=end;
     }
+    const renderUnit = (unit: typeof units[number]) => {
+      const group = groups.get(unit.start);
+      if (!group) { box.appendChild(renderRow(rows[unit.start]!)); return; }
+      const bracket = el("div", "plan-group"); bracket.setAttribute("role", "group"); bracket.setAttribute("aria-label", "可同时进行");
+      bracket.appendChild(el("div", "plan-group-label", "可同时进行"));
+      rows.slice(unit.start,unit.end).forEach(row => bracket.appendChild(renderRow(row))); box.appendChild(bracket);
+    };
+    units.forEach(renderUnit);
+    return box;
+  }
+  function itemComments(it: ViewItem) {
+    const box=el("div","item-comments");
+    const button=el("button","sbtn s-plain item-comment","评论这个条目"); button.type="button";
+    button.addEventListener("click",ev => { ev.stopPropagation(); if (!connected) { showDisconnected(); return; } openComment("it:"+it.id); });
+    box.appendChild(button);
+    const notes=noteBlock("it:"+it.id,it.title); if (notes) box.appendChild(notes);
     return box;
   }
 
@@ -1696,21 +1760,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (current === "it:" + it.id) box.classList.add("cur");
     // Archived and cancelled sub-items stay where they are: hidden, unless the 已归档 or 取消 filter shows them.
     const sub = kids(it.id, inArchive || showsArchived(groupOf(it)) || showsCancelled(groupOf(it))).filter(k => inArchive || passes(k));
-    const ck = checksOf(it), raised = raisedBy(it);
+    const ck = checksOf(it);
 
     const head = el("button", "item-head");
     head.type = "button";
 
     head.appendChild(el("span", "st " + st + (before && (!!before.record !== !!it.record || it.status !== undefined && before.status !== it.status) ? " chg-add" : ""), esc(STATUS[st] || st)));
-    // The badge shows the priority; a legacy raise also shows the written one, struck through (LEGACY PRIORITY).
-    const pr = priorityOf(it), wrote = writtenPriorityOf(it);
-    const pb = el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?");
-    if (raised) pb.title = "写的是 " + (wrote || "未设") + "；因为「" + plain(raised.title) + "」(" + priorityOf(raised) + ") 在等它";
-    head.appendChild(pb);
-    if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
+    const pr = priorityOf(it);
+    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
-    if (it.steps?.length) {
-      const ratio = derived.stepsRatio(it.id);
+    if (it.plan.length) {
+      const ratio = derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
@@ -1772,57 +1832,34 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
       const body = el("div", "body");
-      // The body reads from what depends on the item, through the item itself, to what it depends on, then its log.
-      // The parent, which the tree requires to be one of them, leads the 被依赖 list. Both lists leave out cancelled items.
-      const ws = (waitedBy().get(it.id) || []).filter(w => !isCancelled(w)).sort((a, b) => Number(b === upItem(it)) - Number(a === upItem(it)));
-      if (ws.length) {
-        const wl = el("div", "deplists");
-        wl.appendChild(el("div", "k", "被依赖"));
-        ws.forEach(w => wl.appendChild(whyRow(w, it, whyOf(w, it.id))));
-        body.appendChild(wl);
-      }
-      // The head and the shown log are one text for glossary links.
+      const owner=upItem(it), ownership=el("div","item-owner");
+      if (owner) { ownership.appendChild(document.createTextNode("属于「")); ownership.appendChild(depLink(owner)); ownership.appendChild(document.createTextNode("」")); }
+      else ownership.appendChild(document.createTextNode("顶层 · "+it.group));
+      body.appendChild(ownership);
       const terms = itemTerms(it.id);
+      const targets = targetsSection(it, before); if (targets) body.appendChild(targets);
+      const plan = planSection(it, before, terms); if (plan) body.appendChild(plan);
+      body.appendChild(itemComments(it));
       if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it)),terms)));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
-      const des = orderedChanges(before?.deps || it.deps,it.deps).map(({value,mark}) => ({kind:"id" in value ? "item" : "card",id:"id" in value ? value.id : value.card,why:value.why,mark})).filter(e => e.mark || !(e.kind === "item" && index().byId.has(e.id) && isCancelled(index().byId.get(e.id)!)));
-      if (des.length) {
-        const dl = el("div", "deplists after");
-        dl.appendChild(el("div", "k", "依赖"));
-        des.forEach(e => {
-          const d = e.kind === "item" ? index().byId.get(e.id) : undefined;
-          const r = d ? whyRow(d, it, e.why) : depFallbackRow(e.kind, e.id, e.why);
-          r.dataset.sel = "dep:" + it.id + "@" + e.id;
-          r.id = "sel-" + encodeURIComponent(JSON.stringify([r.dataset.sel]));
-          if (e.mark) r.classList.add(e.mark);
-          if (e.mark === "chg-add" || before === null) r.classList.add("fresh");
-          if (current === r.dataset.sel) r.classList.add("cur");
-          dl.appendChild(r);
-        });
-        body.appendChild(dl);
+      const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
+      if (ws.length) {
+        const list = el("div", "deplists"); list.appendChild(el("div", "k", "被依赖"));
+        ws.forEach(row => list.appendChild(depRow(row,it))); body.appendChild(list);
       }
-      const progress = stepsSection(it, before, terms);
-      if (progress) body.appendChild(progress);
-      const targets = targetsSection(it, before);
-      if (targets) body.appendChild(targets);
       body.appendChild(logSection(it, terms));
       // The owner's request and decision cards follow its progress and optional log history.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);
       cardsUnder(it).forEach(d => body.appendChild(decisionCard(d)));
       ruledUnder(it).filter(ruledShown).forEach(d => body.appendChild(decisionCard(d)));
-      if (ck.length || raised) {
+      if (ck.length) {
         const cb = el("div", "checks");
-        if (raised) { // LEGACY PRIORITY
-          const r = el("div", null, "按 " + pr + " 排：写的是 " + esc(wrote || "未设") + "，因为 "); r.appendChild(depLink(raised)); r.appendChild(document.createTextNode("（" + priorityOf(raised) + "）在等它")); cb.appendChild(r);
-        }
         ck.forEach(c => { const r = el("div", null, "需核对：" + esc(c.text) + " "); if (c.target) r.appendChild(depLink(c.target)); cb.appendChild(r); });
         body.appendChild(cb);
       }
       const refs=refsRow(it,before); if (refs) body.appendChild(refs);
       box.appendChild(body);
-      // Comments follow the same body, inline or in the detail pane.
-      const nb = noteBlock("it:" + it.id, it.title);
-      if (nb) box.appendChild(nb);
+
     }
     li.appendChild(box);
     if (open && sub.length && !boxOnly && !detail) {
@@ -2018,10 +2055,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const next=new Map<string,{signature:string;archived:boolean;cancelled:boolean;shown:boolean;request:boolean;group:string}>();
     for (const it of state.items) {
       const id=it.id;
-      const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
+      const label=(kind:string,key:string) => {
+        if (kind === "card") return [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status,snapshot.decisions[key]?.blocks];
+        const owner=derived.parentOf(key);
+        return [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key),owner,owner ? snapshot.items[owner]?.title : null,derived.planRatio(key)];
+      };
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),derived.stalledBelow(id),deps,waiters,it.steps?.map(step => derived.stepLine(step))]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
       const current={signature,archived:inArchive(it),cancelled:isCancelled(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;
@@ -2038,8 +2079,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       reconcileCard(target.slice(2)); return;
     }
     const it=index().byId.get(target.slice(3)), box=itemBox(target.slice(3)); if (!it || !box) return;
-    const old=[...box.children].find(e => e.classList.contains("notes")), next=bodyShown(it.id) ? noteBlock(target,it.title) : null;
-    if (old && next) old.replaceWith(next); else if (old) old.remove(); else if (next) box.appendChild(next);
+    const old=box.querySelector<HTMLElement>(".item-comments"), next=bodyShown(it.id) ? itemComments(it) : null;
+    if (old && next) old.replaceWith(next); else if (old) old.remove();
     const ask=get("ask-"+it.id), nextAsk=askRow(it,unreadBefore<Item>("item",it.id));
     const body=[...box.children].find(e => e.classList.contains("body"));
     if (ask && nextAsk) ask.replaceWith(nextAsk); else if (ask) ask.remove(); else if (body && nextAsk) body.insertBefore(nextAsk,[...body.children].find(e => e.classList.contains("card")) || null);
@@ -2149,7 +2190,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       for (const key of scope) if (key.startsWith("item:")) { const li=get("it-"+key.slice(5))?.parentElement; if (li?.parentElement) parents.add(li.parentElement); }
       for (const parent of parents) {
         const rows=[...parent.children] as HTMLElement[];
-        if (parent.parentElement?.tagName === "LI" && rows.every(li => li.children[0]?.id.startsWith("it-"))) rows.sort((a,b) => derived.compareSiblings(a.children[0]!.id.slice(3),b.children[0]!.id.slice(3))).forEach(li => parent.appendChild(li));
+        if (parent.parentElement?.tagName === "LI" && rows.every(li => li.children[0]?.id.startsWith("it-"))) rows.sort((a,b) => { const owner=parent.parentElement!.children[0]!.id.slice(3), order=derived.children(owner); return order.indexOf(a.children[0]!.id.slice(3))-order.indexOf(b.children[0]!.id.slice(3)); }).forEach(li => parent.appendChild(li));
       }
     }
     // Group counts and dependency summaries are independent of the unchanged item/card subtrees.
@@ -2520,7 +2561,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const before=previous as Item | undefined, after=doc.after as Item | null;
           scope.add("item:"+doc.id);
           if (before?.title !== after?.title) retitled.push("it:"+doc.id);
-          if (!before || !after || before.parent !== after.parent || before.group !== after.group || before.order !== after.order || !sameValue(before.request,after.request)) {
+          if (!before || !after || !sameValue(before.plan.filter(row => "item" in row && row.own), after.plan.filter(row => "item" in row && row.own)) || before.group !== after.group || before.order !== after.order || !sameValue(before.request,after.request)) {
             if (before) { scope.add("group:"+derived.groupOf(doc.id)); derived.ancestors(doc.id).forEach(p => scope.add("item:"+p)); } relocated.push(doc.id);
           }
           else {

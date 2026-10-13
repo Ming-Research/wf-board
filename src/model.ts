@@ -31,25 +31,52 @@ export const StepId = Key.max(40);
 export const STEP_STATES = ["done", "doing", "todo", "dropped"] as const;
 const StepText = z.string().min(1).refine(text => !!text.trim(), "Provide nonempty text after trimming");
 /** Callers describe a step; transition dates belong to the server. */
-export const ItemStepInput = z.object({
+export const PlanStepInput = z.object({
   id: StepId,
   text: StepText,
   state: z.enum(STEP_STATES),
   waits: StepText.optional(),
   reason: StepText.optional(),
-}).strict().refine(step => step.state !== "dropped" || !!step.reason, { message: "A dropped step needs a reason", path: ["reason"] });
-export type ItemStepInput = z.infer<typeof ItemStepInput>;
-export const ItemStep = ItemStepInput.safeExtend({
+  after: z.array(Key).optional(),
+  accept: z.literal(true).optional(),
+}).strict().refine(step => step.state !== "dropped" || !!step.reason, { message: "A dropped step needs a reason", path: ["reason"] })
+  .refine(step => !step.accept || (step.after === undefined && step.waits === undefined), "An acceptance step takes neither after nor waits");
+export type PlanStepInput = z.infer<typeof PlanStepInput>;
+export const PlanStep = PlanStepInput.safeExtend({
   doneAt: Time.optional(),
   since: Time.optional(),
   droppedAt: Time.optional(),
 }).refine(step => step.state !== "done" || !!step.doneAt, { message: "A done step needs doneAt", path: ["doneAt"] })
   .refine(step => step.state !== "doing" || !!step.since, { message: "A doing step needs since", path: ["since"] })
   .refine(step => step.state !== "dropped" || !!step.droppedAt, { message: "A dropped step needs droppedAt", path: ["droppedAt"] });
-export type ItemStep = z.infer<typeof ItemStep>;
+export type PlanStep = z.infer<typeof PlanStep>;
 const uniqueStepIds = (steps: readonly { id: string }[]): boolean => new Set(steps.map(step => step.id)).size === steps.length;
-export const ItemStepsInput = z.array(ItemStepInput).refine(uniqueStepIds, "Step ids must be unique");
-export const ItemSteps = z.array(ItemStep).refine(uniqueStepIds, "Step ids must be unique");
+
+const PlanItemInput = z.object({ item: Key, own: z.boolean(), after: z.array(Key).optional() }).strict();
+const PlanCardInput = z.object({ card: Key, after: z.array(Key).optional() }).strict();
+export const PlanRowInput = z.union([PlanStepInput, PlanItemInput, PlanCardInput]);
+export type PlanRowInput = z.infer<typeof PlanRowInput>;
+export const PlanRow = z.union([
+  PlanStep,
+  PlanItemInput.extend({ id: Key }).refine(row => row.id === row.item, "An item row id is its target key"),
+  PlanCardInput.extend({ id: Key }).refine(row => row.id === row.card, "A card row id is its target key"),
+]);
+export type PlanRow = z.infer<typeof PlanRow>;
+
+/** Both input and stored plans use target keys for reference-row ids. */
+export function planRowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
+function validPlan(rows: readonly PlanRowInput[]): boolean {
+  const earlier = new Set<string>();
+  for (const [i, row] of rows.entries()) {
+    const id = planRowId(row);
+    if (earlier.has(id) || row.after?.some(target => !earlier.has(target))) return false;
+    if ("accept" in row && row.accept && i !== rows.length - 1) return false;
+    earlier.add(id);
+  }
+  return true;
+}
+export const PlanInput = z.array(PlanRowInput).refine(validPlan, "Plan ids must be unique, after must name earlier rows, and acceptance must be last");
+export const ItemPlan = z.array(PlanRow).refine(validPlan, "Plan ids must be unique, after must name earlier rows, and acceptance must be last");
 
 /** One goal's latest numbers; measurement dates belong to the server. */
 export const ItemTargetInput = z.object({
@@ -65,13 +92,6 @@ export type ItemTarget = z.infer<typeof ItemTarget>;
 export const ItemTargetsInput = z.array(ItemTargetInput).refine(uniqueStepIds, "Target ids must be unique");
 export const ItemTargets = z.array(ItemTarget).refine(uniqueStepIds, "Target ids must be unique");
 
-/** A dependency names an item or a decision card, with one sentence on what the dependent item needs from it. */
-export const Dep = z.union([
-  z.object({ id: Key, why: z.string() }).strict(),
-  z.object({ card: Key, why: z.string() }).strict(),
-]);
-export type Dep = z.infer<typeof Dep>;
-
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
@@ -84,36 +104,34 @@ export const Ask = z.object({
 export type Ask = z.infer<typeof Ask>;
 
 /**
- * An item. An item without `parent` is an area: a line of work with its
- * project heading (`group`); responsibility comes from Board.projects. `status` belongs to leaves; a parent's is derived
- * from its sub-items. In a migrated project `priority` belongs to roots, items no open item depends on, and every other
- * item's is derived from the open items depending on it; otherwise leaves store it (src/rules.ts).
+ * Every item stores its project. Ownership, work status and priority are
+ * derived from its plan; cancellation alone is stored as a status.
  */
 export const Item = z.object({
   title: z.string().min(1),
-  parent: Key.optional(),
   request: z.object({ by: z.string().min(1), at: Time }).strict().optional(),
-  group: z.string().min(1).optional(),
+  group: z.string().min(1),
   order: z.number().optional(),
-  status: Status.optional(),
+  status: z.literal("cancelled").optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
   priority: Priority.optional(),
   head: z.string().optional(),
   log: z.array(LogEntry).default([]),
-  /** Parts of this item's own work, in display order; never imply its status. */
-  steps: ItemSteps.optional(),
+  plan: ItemPlan.default([]),
+  /** Server-owned conversion marker, cleared by a whole-plan rewrite. */
+  provisional: z.literal(true).optional(),
   /** One row per goal, with only its latest current value and measurement date. */
   targets: ItemTargets.optional(),
   /** One line of key numbers. */
   data: z.string().min(1).optional(),
-  deps: z.array(Dep).default([]),
   links: z.array(Link).default([]),
   ask: Ask.optional(),
   created: Time.optional(),
   updated: Time,
   rev: z.number().int().positive(),
-}).strict().refine(it => !it.record || it.status === undefined, "A record has no status");
+}).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
+  .refine(it => it.plan.filter(row => "accept" in row && row.accept).length === (it.record ? 0 : 1), "A work item needs one last acceptance step; a record takes none");
 export type Item = z.infer<typeof Item>;
 
 export const Option = z.object({
@@ -192,8 +210,6 @@ export type Notice = z.infer<typeof Notice>;
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
-  /** Priority comes from dependents (src/rules.ts); absent means the legacy rules (src/legacy-priority.ts). Set only in board.yaml. */
-  migrated: z.boolean().optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
 

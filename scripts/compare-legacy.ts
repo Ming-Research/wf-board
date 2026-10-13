@@ -4,8 +4,8 @@
 // its item (legacy homeOf fallback when omitted), so stale qs can disagree.
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { Item, Decision, Note } from "../src/model.ts";
-import type { Snapshot } from "../src/model.ts";
+import { Item, Decision, Note } from "../src/legacy-model.ts";
+import type { Snapshot } from "../src/legacy-model.ts";
 import { legacyRules } from "../test/legacy/board-rules.js";
 import type { LegacyItem, LegacyDecision, LegacyNote, LegacyState } from "../test/legacy/board-rules.js";
 import { compare } from "../test/legacy/compare.ts";

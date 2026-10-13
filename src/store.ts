@@ -10,11 +10,15 @@ import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
+import * as Legacy from "./legacy-model.ts";
+import { convertPlans, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
+import type { PlanConversionReport } from "./convert-plans.ts";
+import { verifyPlans } from "./verify-plans.ts";
 
 export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
-export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board> }
+export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
 export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
@@ -192,7 +196,7 @@ export class Store {
     return result.stdout;
   }
 
-  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board> } = {}): Promise<Store> {
+  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string } = {}): Promise<Store> {
     dir = resolve(dir);
     let entries: string[];
     try { entries = await readdir(dir); }
@@ -213,6 +217,38 @@ export class Store {
       atomicWrite(join(dir, "board.yaml"), board);
       await store.git(["add", "--", "board.yaml"]);
       await store.git(["-c", "commit.gpgsign=false", "commit", "--author", "wf-board <wf-board@wf-board.invalid>", "-m", "Initialize board"], "wf-board");
+    }
+    if (entries.includes("board.yaml")) {
+      const raw = await readPlanData(dir);
+      if (raw.legacy) {
+        if (!opts.planConversionHead) throw new Error("Legacy item plans require an owner-approved dry run; set WF_BOARD_PLAN_CONVERSION_HEAD to its sourceHead");
+        if (opts.planConversionHead !== raw.snapshot.head) throw new Error(`Approved plan conversion head ${opts.planConversionHead} differs from current ${raw.snapshot.head}`);
+        const source = raw.snapshot as Legacy.Snapshot;
+        const result = convertPlans(source, { at: new Date().toISOString() });
+        result.report.errors.push(...verifyPlans(source, result));
+        updatePlanSummary(result.report,true);
+        if (result.report.errors.length) throw new Error(`Plan conversion refused:\n${result.report.errors.join("\n")}`);
+        const migration = new Store(dir, source as unknown as Snapshot);
+        const committedOwner = await migration.readAt("state/owner.yaml", source.head);
+        migration.committedOwner = committedOwner === null ? {archived:{}} : validated(OwnerState, committedOwner, "state/owner.yaml");
+        migration.ownerInHead = committedOwner !== null;
+        migration.ownerFileExists = await stat(join(dir,"state/owner.yaml")).then(()=>true).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return false;throw error;});
+        const originalOwner = structuredClone(source.owner), ownerPath = join(dir,"state/owner.yaml");
+        const ownerBytes = await readFile(ownerPath).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;});
+        migration.state.owner = structuredClone(result.snapshot.owner);
+        try {
+          await migration.commit({ author: "总管", message: PLAN_CONVERSION_MESSAGE, board: result.snapshot.board,
+            puts: Object.entries(result.snapshot.items).map(([id, doc]) => ({ kind: "item", id, doc, expectRev: source.items[id]!.rev })),
+            planConversionReport: result.report });
+        } catch(error) {
+          // Ordinary commits save pending owner reads on rollback. A failed
+          // migration must additionally restore the original archive sidefile.
+          migration.state.owner = originalOwner;
+          if(ownerBytes === undefined)rmSync(ownerPath,{force:true});else writeFileSync(ownerPath,ownerBytes);
+          throw error;
+        }
+        return Store.open(dir);
+      }
     }
     const invalid: InvalidDocument[] = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
@@ -449,6 +485,9 @@ export class Store {
     const ownerAtCommit = structuredClone(this.state.owner);
     if (ownerChanged) changed.push({ kind: "owner", id: "owner", before: this.ownerInHead ? this.committedOwner : null, after: ownerAtCommit });
     const paths = changed.map(c => c.kind === "board" ? "board.yaml" : c.kind === "owner" ? "state/owner.yaml" : docPath(c.kind, c.id));
+    const reportPath = "import/plan-conversion.yaml";
+    const priorReport = txn.planConversionReport ? await readFile(join(this.dir, reportPath), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }) : undefined;
+    if (txn.planConversionReport) paths.push(reportPath);
     if ((await this.git(["diff", "--cached", "--name-only"])).trim()) throw new Error("Refusing to commit an already staged index");
     this.writing = true;
     let event: Change;
@@ -459,6 +498,7 @@ export class Store {
         if (changed[i]!.after === null) rmSync(path);
         else atomicWrite(path, changed[i]!.after);
       }
+      if (txn.planConversionReport) { mkdirSync(join(this.dir, "import"), { recursive: true }); atomicWrite(join(this.dir, reportPath), txn.planConversionReport); }
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
       await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message], txn.author);
@@ -480,6 +520,10 @@ export class Store {
         const change = changed[i]!;
         if (change.before === null || (change.kind === "owner" && await this.readAt(paths[i]!, this.state.head) === null)) rmSync(join(this.dir, paths[i]!), { force: true });
         else await this.git(["restore", "--source=HEAD", "--worktree", "--", paths[i]!]);
+      }
+      if (txn.planConversionReport) {
+        if (priorReport === undefined) rmSync(join(this.dir, reportPath), { force: true });
+        else writeFileSync(join(this.dir, reportPath), priorReport);
       }
       if (this.ownerPending()) this.writeOwner();
       throw error;
@@ -611,6 +655,35 @@ export class Store {
     return this.readAt(path, hash);
   }
 
+  private readonly compared = new Map<string, Promise<Snapshot>>();
+  private readonly comparisonAt = new Date().toISOString();
+  /** Normalized comparison only; show() and diff() retain raw historical evidence. */
+  async comparisonSnapshot(commit: string): Promise<Snapshot> {
+    const hash = await this.resolveCommit(commit);
+    let hit = this.compared.get(hash);
+    if (!hit) {
+      hit = (async () => {
+        const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
+        const raw: Record<string, unknown> = {};
+        for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
+        const loaded = parsePlanData(raw, hash);
+        if (!loaded.legacy) return loaded.snapshot as Snapshot;
+        const migrationReport = await this.readAt("import/plan-conversion.yaml", this.state.head) as { at?: unknown } | null;
+        const at = typeof migrationReport?.at === "string" ? Legacy.Time.parse(migrationReport.at) : this.comparisonAt;
+        return convertPlans(loaded.snapshot as Legacy.Snapshot, { at }).snapshot;
+      })();
+      this.compared.set(hash, hit);
+      hit.catch(() => this.compared.delete(hash));
+    }
+    return hit;
+  }
+  async showCompared(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
+    docPath(kind, id);
+    const raw = await this.show(kind, id, commit);
+    if (kind !== "item" || raw === null || typeof raw === "object" && "plan" in raw) return raw;
+    return (await this.comparisonSnapshot(commit))[collections[kind]][id] ?? null;
+  }
+
   /** The full commit id of `ref` when it is `at` or an ancestor of it; null when either ref is unknown or ancestry fails. */
   async inHistory(ref: string, at = "HEAD"): Promise<string | null> {
     try {
@@ -644,4 +717,68 @@ export class Store {
       return true;
     });
   }
+}
+
+/** Transient reader for the CLI and startup migration; all data-file IO stays in Store. */
+export async function readPlanData(dir: string): Promise<{ legacy: boolean; snapshot: Legacy.Snapshot | Snapshot }> {
+  const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
+  async function load(path: string, optional = false): Promise<void> {
+    try { raw[path] = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); }
+    catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
+  }
+  await load("board.yaml");
+  for (const collection of ["items","decisions","notes","notices","glossaries"]) {
+    const files = await readdir(join(dir,collection)).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
+    for (const file of files.sort()) {
+      const path=`${collection}/${file}`;
+      if(!file.endsWith(".yaml")){invalid.push({path,issues:"Expected a .yaml document"});continue;}
+      await load(path);
+    }
+  }
+  await load("state/owner.yaml",true);
+  let loaded: ReturnType<typeof parsePlanData> | undefined;
+  try { loaded=parsePlanData(raw,""); }
+  catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
+  if(invalid.length||!loaded)throw new ValidationError(invalid);
+  const dirty=await run("git",["status","--porcelain","--","board.yaml","items","decisions","notes","notices","glossaries"],{cwd:dir});
+  if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
+  loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
+  return loaded;
+}
+function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; snapshot: Legacy.Snapshot | Snapshot } {
+  const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
+  const retiredItemShape = (doc: unknown): boolean => {
+    if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
+    const fields = doc as Record<string, unknown>;
+    return ["parent", "deps", "steps"].some(key => Object.hasOwn(fields, key))
+      || ["todo", "wip", "blocked", "done"].includes(String(fields.status))
+      || (fields.record !== true && !Object.hasOwn(fields, "plan"));
+  };
+  const boardFields = raw["board.yaml"] as { projects?: unknown } | undefined;
+  const legacyBoard = Array.isArray(boardFields?.projects) && boardFields.projects.some(project =>
+    project && typeof project === "object" && Object.hasOwn(project, "migrated"));
+  const legacy=legacyBoard || items.some(([,doc])=>retiredItemShape(doc));
+  // Records may omit plan in the current schema. A current work plan alongside
+  // a retired work shape still indicates an incomplete migration.
+  if(legacy&&items.some(([,doc])=>doc&&typeof doc==="object"&&Object.hasOwn(doc,"plan")))throw new Error("Mixed legacy and plan items are refused");
+  const schema=legacy?Legacy: {Board,Item,Decision,Note,Notice,Glossary,OwnerState};
+  const invalid: InvalidDocument[]=[];
+  function load<T>(documentSchema:z.ZodType<T>, value:unknown, path:string):T|undefined {
+    try {return validated(documentSchema,value,path);}
+    catch(error){if(error instanceof ValidationError){invalid.push(...error.invalid);return undefined;}throw error;}
+  }
+  const board=load(schema.Board,raw["board.yaml"],"board.yaml");
+  const owner=load(OwnerState,raw["state/owner.yaml"]??{archived:{}},"state/owner.yaml");
+  const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},notices:{},glossaries:{}};
+  for(const [path,doc]of Object.entries(raw)){
+    const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);if(!match)continue;
+    const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
+    const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
+    const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
+    const parsed=load(schema[kind] as z.ZodType<unknown>,doc,path);
+    if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
+  }
+  if(invalid.length||!board||!owner)throw new ValidationError(invalid);
+  const snapshot={board,...documents,owner,head} as Legacy.Snapshot|Snapshot;
+  return {legacy,snapshot};
 }

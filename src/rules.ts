@@ -1,10 +1,7 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
-// Ported from ~/dev/agents_config/status-board.html, except in migrated projects:
-// priority comes from dependents, and a parent listing its own cancelled sub-item
-// is not flagged. The verbatim test oracle preserves the old rules independently
-// of this implementation.
-import type { Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
+// The plan is the single source for ownership, status, priority and progress.
+import type { Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import { planRowId } from "./model.ts";
 
 /** Project list order is page order; only the coordinator may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
@@ -29,23 +26,29 @@ export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { l
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
 
-const STEP_FIELDS = ["id", "text", "state", "waits", "reason", "doneAt", "since", "droppedAt"] as const;
-function sameStep(a: ItemStep, b: ItemStep): boolean { return STEP_FIELDS.every(field => a[field] === b[field]); }
+function sameRow(a: PlanRow, b: PlanRow): boolean {
+  const { after: aa, ...av } = a, { after: ba, ...bv } = b;
+  const ar: Record<string, unknown> = av, br: Record<string, unknown> = bv;
+  const ak = Object.keys(ar), bk = Object.keys(br);
+  return ak.length === bk.length && ak.every(key => ar[key] === br[key]) &&
+    (aa === undefined ? ba === undefined : ba !== undefined && aa.length === ba.length && aa.every((id, i) => id === ba[i]));
+}
 /** Current added or changed lines; moving an unchanged line does not highlight it. */
-export function changedItemSteps(before: readonly ItemStep[] = [], after: readonly ItemStep[] = []): ItemStep[] {
-  const previous = new Map(before.map(step => [step.id, step]));
-  return after.filter(step => { const old = previous.get(step.id); return !old || !sameStep(old, step); });
+export function changedItemPlan(before: readonly PlanRow[] = [], after: readonly PlanRow[] = []): PlanRow[] {
+  const previous = new Map(before.map(row => [row.id, row]));
+  return after.filter(row => { const old = previous.get(row.id); return !old || !sameRow(old, row); });
 }
 /** Order and removals are progress changes too, even without a surviving changed line. */
-export function stepsChanged(before: readonly ItemStep[] = [], after: readonly ItemStep[] = []): boolean {
-  return before.length !== after.length || before.some((step, i) => !sameStep(step, after[i]!));
+export function planChanged(before: readonly PlanRow[] = [], after: readonly PlanRow[] = []): boolean {
+  return before.length !== after.length || before.some((row, i) => !sameRow(row, after[i]!));
 }
 /** Retain earlier transition dates, stamp only entry into the current state. */
-export function stampItemStep(input: ItemStepInput, previous: ItemStep | undefined, at: string): ItemStep {
-  const step: ItemStep = { ...input };
-  for (const field of ["doneAt", "since", "droppedAt"] as const) if (previous?.[field] !== undefined) step[field] = previous[field];
+export function stampPlanRow(input: PlanRowInput, previous: PlanRow | undefined, at: string): PlanRow {
+  if (!("text" in input)) return { ...structuredClone(input), id: planRowId(input) };
+  const step: PlanStep = structuredClone(input), old = previous && "text" in previous ? previous : undefined;
+  for (const field of ["doneAt", "since", "droppedAt"] as const) if (old?.[field] !== undefined) step[field] = old[field];
   const date = input.state === "done" ? "doneAt" : input.state === "doing" ? "since" : input.state === "dropped" ? "droppedAt" : undefined;
-  if (date && (previous?.state !== input.state || !step[date])) step[date] = at;
+  if (date && (old?.state !== input.state || !step[date])) step[date] = at;
   return step;
 }
 
@@ -85,7 +88,7 @@ export interface Rules {
   item(id: string): Item | undefined;
   parentOf(id: string): string | undefined;
   children(id: string): string[];
-  /** Filter before ranking groups, as the legacy archive controls do. */
+  /** Top items grouped in configured project order, after filtering. */
   areas(include?: (id: string) => boolean): string[];
   ancestors(id: string): string[];
   lineOf(id: string): string;
@@ -99,23 +102,15 @@ export interface Rules {
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
   statusOf(id: string): Status | undefined;
-  /** Its project sets `migrated: true` in board.yaml, so priority comes from dependents. */
-  migrated(id: string): boolean;
-  /** No open item depends on it through an item dependency; in a migrated project only a root's stored priority counts. */
+  /** Open work directly owned by any record has no root or priority role. */
+  isBacklog(id: string): boolean;
+  /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
-  /**
-   * The priority shown. Migrated: a root's stored priority, raised by the open items
-   * depending on it, transitively. Unmigrated: the legacy effective priority,
-   * raised by open migrated dependents too.
-   */
+  /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
-  /** LEGACY PRIORITY: the priority written on an unmigrated item or its leaves. */
-  writtenPriorityOf(id: string): Priority | "";
-  /** LEGACY PRIORITY: the unmigrated waiter whose wait raised this unmigrated item, for the struck original priority. */
-  raisedBy(id: string): string | null;
-  depsOf(id: string): Array<{ kind: "item" | "card"; id: string; why: string; open: boolean; missing: boolean }>;
-  dependents(id: string): Array<{ id: string; why: string }>;
-  cardDependents(key: string): Array<{ id: string; why: string }>;
+  depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
+  dependents(id: string): Array<{ id: string; own?: boolean }>;
+  cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
@@ -134,18 +129,28 @@ export interface Rules {
   checks(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
-  stepDays(step: ItemStep): number;
-  stepsRatio(id: string): { done: number; total: number };
-  stepLine(step: ItemStep): string;
+  stepDays(step: PlanStep): number;
+  stepLine(step: PlanStep): string;
+  planRows(id: string): DerivedPlanRow[];
+  planGroups(id: string): Array<{ start: number; end: number; level: number }>;
+  planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
 }
 
 type Dependency = ReturnType<Rules["depsOf"]>[number];
+export interface DerivedPlanRow {
+  row: PlanRow;
+  state: "resolved" | "progress" | "waiting" | "open";
+  ready: boolean;
+  level: number;
+  glyph: string;
+  dropped: boolean;
+  excluded: boolean;
+}
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
+const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
-// A head states its completion condition under a heading or bold label naming it.
-const DONE_WHEN = /^#{1,6}[ \t].*(完成条件|怎样算完成)|\*\*[^*\n]*(完成条件|怎样算完成)[^*\n]*\*\*/m;
 
 /** A Rules object belongs to one immutable snapshot. Create another after a write.
  * Array/object results are defensive copies; item() returns the snapshot's item.
@@ -155,12 +160,8 @@ export const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
 export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
-  function stepDays(step: ItemStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
-  function stepsRatio(id: string): { done: number; total: number } {
-    const steps = (s.items[id]?.steps ?? []).filter(step => step.state !== "dropped");
-    return { done: steps.filter(step => step.state === "done").length, total: steps.length };
-  }
-  function stepLine(step: ItemStep): string {
+  function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
+  function stepLine(step: PlanStep): string {
     if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
     if (step.state === "doing") return `● ${step.text} — ${stepDays(step)} 天${step.waits ? `，等 ${step.waits}` : ""}`;
     if (step.state === "dropped") return `✗ ${step.text} — ${step.reason}`;
@@ -177,15 +178,15 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     return cached("index", "", () => {
       const items = new Map(Object.entries(s.items));
       const children = new Map<string, string[]>();
+      const owners = new Map<string, string[]>();
       const notes = new Map<string, Note[]>();
       const cards = new Map<string, string[]>();
       for (const [id, it] of items) {
-        const p = it.parent || "";
-        const list = children.get(p) || [];
-        list.push(id); children.set(p, list);
+        const owned = it.plan.filter(row => "item" in row && row.own).map(row => (row as Extract<PlanRow, { item: string }>).item);
+        children.set(id, owned);
+        for (const target of owned) { const list = owners.get(target) || []; list.push(id); owners.set(target, list); }
       }
-      // Public children() is unsorted; legacy recursive traversal used order.
-      const orderedChildren = new Map([...children].map(([p, ids]) => [p, ids.slice().sort(byOrder)]));
+      children.set("", [...items.keys()].filter(id => !owners.has(id)).sort(byOrder));
       for (const n of Object.values(s.notes)) {
         const list = notes.get(n.target) || [];
         list.push(n); notes.set(n.target, list);
@@ -195,17 +196,16 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         list.push(key); cards.set(d.item, list);
       }
       for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
-      return { items, children, orderedChildren, notes, cards, decisions: new Map(Object.entries(s.decisions)) };
+      return { items, children, owners, notes, cards, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
   // Called while building the index too, so it must not call index().
   function byOrder(a: string, b: string): number { return (s.items[a]?.order || 0) - (s.items[b]?.order || 0); }
   const item = (id: string): Item | undefined => index().items.get(id);
-  const kids = (id: string): string[] => index().orderedChildren.get(id) || [];
+  const kids = (id: string): string[] => index().children.get(id) || [];
   const notesOf = (target: string): Note[] => index().notes.get(target) || [];
   function parentOf(id: string): string | undefined {
-    const p = item(id)?.parent;
-    return p && item(p) ? p : undefined;
+    return index().owners.get(id)?.[0];
   }
   function ancestors(id: string): string[] {
     return cached("ancestors", id, () => {
@@ -215,50 +215,95 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function lineOf(id: string): string { return ancestors(id).at(-1) || id; }
-  function groupOf(id: string): string { return item(lineOf(id))?.group || ""; }
+  function groupOf(id: string): string { return item(id)?.group || ""; }
   function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
-      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map<string, number>();
+      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
       return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
     }
     return include ? ordered() : cached("areas", "", ordered);
   }
+  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded"> {
+    if ("text" in row) return {
+      state: row.state === "doing" ? "progress" : row.state === "todo" ? "open" : "resolved",
+      dropped: row.state === "dropped", excluded: row.state === "dropped",
+    };
+    if ("card" in row) return { state: !s.decisions[row.card] || s.decisions[row.card]?.status === "open" ? "waiting" : "resolved", dropped: false, excluded: false };
+    const target = item(row.item);
+    if (!target) return { state: "waiting", dropped: false, excluded: false };
+    if (target.record) return { state: "resolved", dropped: false, excluded: row.own };
+    const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
+    const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" ? "waiting" : status === "wip" ? "progress" : "open";
+    return { state, dropped, excluded: dropped };
+  }
+  function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
+    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
+    for (const row of item(id)?.plan ?? []) {
+      const accept = "text" in row && row.accept;
+      const preceding = accept ? out : row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
+      const derived = rowState(row, seen);
+      const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
+      const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
+      const glyph = accept ? "◆" : derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
+      const entry = { row, ...derived, ready, level, glyph };
+      out.push(entry); byId.set(row.id, entry);
+    }
+    return out;
+  }
+  function planRows(id: string): DerivedPlanRow[] { return cached("planRows", id, () => planRowsWalk(id, new Set([id]))); }
+  function planRatio(id: string): { done: number; total: number } {
+    const rows = planRows(id).filter(row => !row.excluded);
+    return { done: rows.filter(row => row.state === "resolved").length, total: rows.length };
+  }
+  function planGroups(id: string): Array<{ start: number; end: number; level: number }> {
+    const rows = planRows(id), groups: Array<{ start: number; end: number; level: number }> = [];
+    for (let start = 0; start < rows.length;) {
+      const first = rows[start]!;
+      if ("text" in first.row && first.row.accept) { start++; continue; }
+      let end = start + 1;
+      while (end < rows.length && rows[end]!.level === first.level && !("text" in rows[end]!.row && (rows[end]!.row as PlanStep).accept)) end++;
+      if (end - start >= 2) groups.push({ start, end, level: first.level });
+      start = end;
+    }
+    return groups;
+  }
   function statusWalk(id: string, seen: Set<string>): Status | undefined {
     const it = item(id);
-    if (it?.record) return undefined;
-    if (seen.has(id)) return it?.status || "todo";
+    if (!it || it.record) return undefined;
+    if (it.status === "cancelled") return "cancelled";
+    if (seen.has(id)) return "blocked";
     seen.add(id);
-    const all = kids(id).map(k => statusWalk(k, seen)).filter((st): st is Status => st !== undefined);
-    if (!all.length) return it?.status || "todo";
-    const live = all.filter(st => st !== "cancelled");
-    if (!live.length) return "cancelled";
-    if (live.includes("wip")) return "wip";
-    if (live.includes("blocked")) return "blocked";
-    return live.every(st => st === "done") ? "done" : "todo";
+    const rows = planRowsWalk(id, seen);
+    seen.delete(id);
+    if (!rows.length) return "todo";
+    if (rows.every(row => row.state === "resolved")) return "done";
+    if (rows.some(row => row.state === "progress")) return "wip";
+    const frontier = rows.filter(row => row.ready);
+    return askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
   }
   function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
-  function isLeaf(id: string): boolean { return !kids(id).length; }
-  function isStatusLeaf(id: string): boolean { return !kids(id).some(k => !item(k)?.record); }
+  function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
+  function isStatusLeaf(id: string): boolean { return isLeaf(id); }
   function ended(id: string): boolean { const st = statusOf(id); return st === "done" || st === "cancelled"; }
   function isOpenWork(id: string): boolean { return !!item(id) && statusOf(id) !== undefined && !ended(id); }
   function depsOf(id: string): Dependency[] {
-    return cached("deps", id, () => (item(id)?.deps || []).map(e => {
-      if ("id" in e) return { kind: "item", id: e.id, why: e.why, missing: !item(e.id), open: isOpenWork(e.id) };
-      const d = index().decisions.get(e.card);
-      return { kind: "card", id: e.card, why: e.why, missing: !d, open: d?.status === "open" };
+    return cached("deps", id, () => planRows(id).flatMap(({ row, state }): Dependency[] => {
+      if ("item" in row) return [{ kind: "item" as const, id: row.item, own: row.own, missing: !item(row.item), open: state !== "resolved" }];
+      if ("card" in row) return [{ kind: "card" as const, id: row.card, missing: !s.decisions[row.card], open: state !== "resolved" }];
+      return [];
     }));
   }
   function reverseDeps() {
     return cached("reverseDeps", "", () => {
-      const items = new Map<string, Array<{ id: string; why: string }>>(), cards = new Map<string, Array<{ id: string; why: string }>>();
+      const items = new Map<string, Array<{ id: string; own?: boolean }>>(), cards = new Map<string, Array<{ id: string; own?: boolean }>>();
       for (const id of index().items.keys()) {
-        for (const e of depsOf(id)) {
-          const m = e.kind === "item" ? items : cards, list = m.get(e.id) || [];
-          // Legacy waitedBy deduplicates a waiter, and whyOf takes its first why.
-          if (!list.some(w => w.id === id)) list.push({ id, why: e.why });
-          m.set(e.id, list);
+        for (const row of item(id)!.plan) {
+          if ("text" in row) continue;
+          const target = "item" in row ? row.item : row.card, m = "item" in row ? items : cards, list = m.get(target) || [];
+          if (!list.some(w => w.id === id)) list.push("item" in row ? { id, own: row.own } : { id });
+          m.set(target, list);
         }
       }
       return { items, cards };
@@ -292,42 +337,35 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function inArchive(id: string): boolean { return cached("inArchive", id, () => [id, ...ancestors(id)].some(isArchived)); }
-  function migrated(id: string): boolean {
-    return cached("migrated", id, () => !!s.board.projects.find(p => p.name === groupOf(id))?.migrated);
-  }
   const waiters = (id: string): string[] => (reverseDeps().items.get(id) || []).map(w => w.id);
-  function isRoot(id: string): boolean { return !!item(id) && !waiters(id).some(w => !ended(w)); }
-  const legacy = legacyPriority({ item, kids, isLeaf, statusOf, ended, inArchive, ancestors, waiters, migrated, cached }); // LEGACY PRIORITY
-  // One least fixpoint over both kinds of project. A migrated item starts at its
-  // stored priority when it is a root and takes the highest of its open
-  // dependents; an unmigrated leaf starts at its stored priority and is raised
-  // by the legacy rule (legacy-priority.ts). Every rank only falls, from at most
-  // 3, so the loop ends, cycles included; a closed item passes nothing on.
+  function isBacklog(id: string): boolean {
+    return isOpenWork(id) && (index().owners.get(id) || []).some(owner => item(owner)?.record);
+  }
+  function isRoot(id: string): boolean { return !!item(id) && !isBacklog(id) && !waiters(id).some(isOpenWork); }
+  // Only roots seed the least fixed point. Closed work, records and open
+  // record-owned work never pass priority, even when another project waits.
   function ranks() {
     return cached("ranks", "", () => {
-      const ids = [...index().items.keys()], rank = new Map<string, number>(), why = new Map<string, string>();
-      for (const id of ids) if (migrated(id) ? isRoot(id) : isLeaf(id)) rank.set(id, rankOfPriority(item(id)!.priority));
-      const rankOf = (id: string): number => migrated(id) || isLeaf(id) ? rank.get(id) ?? 3 : legacy.parentRank(id, rank);
+      const ids = [...index().items.keys()], rank = new Map<string, number>();
+      for (const id of ids) if (isRoot(id)) rank.set(id, rankOfPriority(item(id)!.priority));
+      const rankOf = (id: string): number => rank.get(id) ?? 3;
       for (let changed = true; changed;) {
         changed = false;
         for (const id of ids) {
-          if (migrated(id)) {
-            const r = Math.min(rank.get(id) ?? 3, ...waiters(id).filter(w => !ended(w)).map(rankOf));
-            if (r < (rank.get(id) ?? 3)) { rank.set(id, r); changed = true; }
-          } else if (isLeaf(id) && legacy.relax(id, rank, why, rankOf)) changed = true;
+          if (isBacklog(id)) continue;
+          const r = Math.min(rankOf(id), ...waiters(id).filter(isOpenWork).map(rankOf));
+          if (r < rankOf(id)) { rank.set(id, r); changed = true; }
         }
       }
-      return { rankOf, why };
+      return { rankOf };
     });
   }
   function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
-  // LEGACY PRIORITY
-  function raisedBy(id: string): string | null { return migrated(id) ? null : cached("raisedBy", id, () => legacy.raisedBy(id, priorityOf, ranks().why)); }
   function cycles(): Set<string> {
     return cached("cycles", "", () => {
       const idx = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>(), out = new Set<string>();
       let n = 0;
-      const next = (id: string): string[] => kids(id).concat(depsOf(id).filter(e => e.kind === "item" && !e.missing).map(e => e.id));
+      const next = (id: string): string[] => (item(id)?.plan ?? []).flatMap(row => "item" in row && item(row.item) ? [row.item] : []);
       function visit(v: string): void {
         idx.set(v, n); low.set(v, n++); stack.push(v); on.add(v);
         for (const w of next(v)) {
@@ -338,7 +376,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
           const component: string[] = [];
           let w: string;
           do { w = stack.pop()!; on.delete(w); component.push(w); } while (w !== v);
-          if (component.length > 1 || depsOf(v).some(e => e.kind === "item" && e.id === v)) for (const id of component) out.add(id);
+          if (component.length > 1 || next(v).includes(v)) for (const id of component) out.add(id);
         }
       }
       for (const id of index().items.keys()) if (!idx.has(id)) visit(id);
@@ -379,13 +417,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function stalled(id: string): boolean {
-    const { intervals, changed } = activity(), seen = new Set<string>();
-    function latest(key: string): number {
-      if (seen.has(key)) return -Infinity;
-      seen.add(key);
-      return Math.max(changed.get(key) ?? -Infinity, ...kids(key).map(latest));
-    }
-    const since = latest(id);
+    const { intervals, changed } = activity(), since = changed.get(id) ?? -Infinity;
     if (!Number.isFinite(since)) return false;
     return intervals.reduce((total, [start, end]) => total + Math.max(0, end - Math.max(start, since)), 0) >= STALLED_AFTER_MS;
   }
@@ -393,37 +425,40 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
       if (!it || inArchive(id)) return out;
-      const st = statusOf(id), leaf = isStatusLeaf(id), parent = parentOf(id), deps = depsOf(id);
+      const st = statusOf(id), parent = parentOf(id), deps = depsOf(id), rows = planRows(id);
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
-        else if (st !== undefined && e.kind === "item" && statusOf(e.id) === "cancelled" && !(migrated(id) && parentOf(e.id) === id) && !ended(id)) out.push({ text: "依赖的条目已取消", target });
-        else if (!e.why.trim() && !ended(id)) out.push({ text: "依赖没写为什么：", target });
+        else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
       }
       if (cycles().has(id)) out.push({ text: "依赖成环" });
-      if (!it.parent) {
-        const project = s.board.projects.find(p => p.name === it.group);
-        if (!project) out.push({ text: "项目没有配置：" + (it.group || "") });
+      if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });
+      if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
+      for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
+      if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
+      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有验收步骤" });
+      if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
+      if (!it.record) {
+        const accept = rows.find(({ row }) => "text" in row && row.accept), others = rows.filter(row => row !== accept);
+        if (accept && "text" in accept.row && accept.row.text === "（转换时没找到完成条件，待补）") out.push({ text: "验收步骤待补" });
+        if (accept && "text" in accept.row && accept.row.state === "done" && others.some(row => row.state !== "resolved")) out.push({ text: "验收已标完成，但还有行没完成" });
+        if (accept && "text" in accept.row && (accept.row.state === "todo" || accept.row.state === "doing") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
+        if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
+        if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       }
-      if (it.parent && !parent) out.push({ text: "上级条目不存在：" + it.parent });
-      if (parent && !ended(id) && !depsOf(parent).some(e => e.kind === "item" && e.id === id)) out.push({ text: "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", target: { kind: "item", id: parent } });
-      const open = deps.filter(e => e.open);
-      if (leaf && st === "blocked" && deps.length && !open.length) out.push({ text: "可解除阻塞：等的都已完成" });
-      if (leaf && st === "blocked" && !deps.length && !needsOwner(id)) out.push({ text: "卡住了，但没写在等什么" });
-      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静", label: STALLED_LABEL });
-      if (leaf && st === "wip" && open.length) out.push({ text: "标为进行中，但还在等别的", target: { kind: open[0]!.kind, id: open[0]!.id } });
-      if (st !== undefined && migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
-      if (st !== undefined && migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       return out;
     });
   }
   return {
-    stepDays, stepsRatio, stepLine,
+    stepDays, stepLine, planRatio,
+    planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
+    planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, isStatusLeaf, statusOf, migrated, isRoot, priorityOf, writtenPriorityOf: legacy.writtenPriorityOf, raisedBy,
+    isLeaf, isStatusLeaf, statusOf, isBacklog, isRoot, priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

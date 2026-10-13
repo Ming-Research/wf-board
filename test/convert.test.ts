@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import { Board, Item, Decision, Note } from "../src/model.ts";
+import { Board, Item, Decision, Note } from "../src/legacy-model.ts";
 import { Store } from "../src/store.ts";
 import { convertExport, importExport } from "../src/convert.ts";
+import { convertPlans } from "../src/convert-plans.ts";
 import { verifyConverted } from "../scripts/verify-import.ts";
 
 const t0 = "2026-10-11T00:00:00Z";
@@ -211,10 +212,20 @@ test("importExport writes the read state, then one commit per changed document i
   const dir = await mkdtemp(join(tmpdir(), "wf-board-import-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await Store.open(dir, { init: true, board: { title: "Empty" } });
+  const blockedImport = fullFixture();
+  await assert.rejects(importExport(store, blockedImport), /Artifact import cannot bypass plan-conversion checks/);
   const input = fullFixture();
-  const expected = convertExport(input);
+  for (const entry of input.items) {
+    if (!entry.data.parent && !entry.data.area && !entry.data.group) entry.data.group = "Snowghost-wf";
+    entry.data.priority = "P1";
+  }
+  const migrationAt = new Date().toISOString();
+  const legacy = convertExport(input);
+  const normalized = (documents: typeof legacy.current) => convertPlans({board:legacy.board,...documents,notices:{},glossaries:{},owner:legacy.owner,head:""},{at:migrationAt}).snapshot;
+  const expectedCurrent = normalized(legacy.current);
+  const expected = {...legacy,asRead:normalized(legacy.asRead),current:expectedCurrent,owner:expectedCurrent.owner};
   const initial = store.snapshot().head;
-  const { asReadCommit, currentCommit } = await importExport(store, input);
+  const { asReadCommit, currentCommit } = await importExport(store, input, {at:migrationAt});
   assert.notEqual(asReadCommit, currentCommit);
   const log = (await store.log({ since: initial })).reverse();
   assert.ok(log.every(c => c.author === "migration"));

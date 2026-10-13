@@ -1,102 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Decision, Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
+import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, changedItemSteps, stepsChanged, changedItemTargets, targetsChanged, targetLine, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
-// Items state a completion condition unless a case is about a head without one.
-const DONE_WHEN = "**完成条件**：测试通过";
+const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
+const accept = (state: PlanStep["state"] = "todo") => step("accept", state, { accept: true, text: "Checks pass" });
+const own = (item: string, after: string[] = []): PlanRow => ({ id: item, item, own: true, after });
+const shared = (item: string, after: string[] = []): PlanRow => ({ id: item, item, own: false, after });
+const card = (key: string, after: string[] = []): PlanRow => ({ id: key, card: key, after });
+const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [...rows, accept(state)];
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}, archived: Record<string, string> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default","First","Second"].map(name => ({name, migrated: true})) }, head: "0".repeat(40), notices: {},
-    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", head: DONE_WHEN, updated: T0, rev: 1, ...fields })])),
+    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), notices: {}, glossaries: {}, owner: { archived },
+    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
-    glossaries: {}, owner: { archived },
   };
 }
-// The same board with the named projects migrated and the rest as board.yaml without the field.
-function projects(s: Snapshot, migrated: string[]): Snapshot {
-  return { ...s, board: { ...s.board, projects: s.board.projects.map(({ name }) => migrated.includes(name) ? { name, migrated: true } : { name }) } };
-}
-const legacy = (...a: Parameters<typeof snapshot>): Snapshot => projects(snapshot(...a), []);
-const dep = (id: string, why = "needs it") => ({ id, why });
-const card = (key: string, why = "needs ruling") => ({ card: key, why });
-
-test("tree lookup, unsorted children, grouped areas, inheritance and missing ids", () => {
-  const s = snapshot({
-    a: { group: "First", order: 9 }, z: { group: "Second", order: -4 }, a2: { group: "First", order: 1 },
-    c2: { parent: "a", order: 2 }, c1: { parent: "a", order: 1 },
-    leaf: { parent: "c1" }, orphan: { parent: "absent" },
-  });
-  const r = rules(s);
-  assert.equal(r.item("a"), s.items.a);
-  assert.equal(r.item("absent"), undefined);
-  assert.equal(r.item("constructor"), undefined);
-  assert.equal(r.parentOf("a"), undefined);
-  assert.equal(r.parentOf("orphan"), undefined);
-  assert.equal(r.parentOf("leaf"), "c1");
-  assert.deepEqual(r.children("a"), ["c2", "c1"]);
-  assert.deepEqual(r.children("absent"), ["orphan"]);
-  assert.deepEqual(r.areas(), ["z", "a2", "a"]);
-  assert.deepEqual(r.ancestors("leaf"), ["c1", "a"]);
-  assert.deepEqual(r.ancestors("orphan"), []);
-  assert.equal(r.lineOf("leaf"), "a");
-  assert.equal(r.lineOf("a"), "a");
-  assert.equal(r.groupOf("leaf"), "First");
-  assert.equal(r.projectOf("c2"), "First");
-  assert.equal(r.projectOf("leaf"), "First");
-  assert.equal(r.projectOf("orphan"), "Default");
-  assert.equal(r.isLeaf("a"), false);
-  assert.equal(r.isLeaf("leaf"), true);
-  assert.equal(r.lineOf("absent"), "absent");
-  assert.equal(r.groupOf("absent"), "");
-  assert.equal(r.projectOf("absent"), "");
-  assert.equal(r.isLeaf("absent"), false); // dangling children remain indexed
-  assert.equal(r.statusOf("unknown"), "todo");
-  assert.equal(r.priorityOf("unknown"), "");
-  assert.equal(r.isRoot("unknown"), false);
-  assert.deepEqual(r.depsOf("unknown"), []);
-  assert.deepEqual(r.cardsOf("unknown"), []);
-  assert.deepEqual(r.checks("unknown"), []);
-});
-
-test("status rolls up children, ignoring a parent's written status", () => {
-  const cases: Array<[Array<Item["status"]>, string]> = [
-    [["cancelled", "cancelled"], "cancelled"], [["done", "cancelled"], "done"],
-    [["done", "todo"], "todo"], [["blocked", "todo"], "blocked"], [["blocked", "wip"], "wip"],
-    [[undefined], "todo"],
-  ];
-  for (const [statuses, expected] of cases) {
-    const items: Record<string, Partial<Item>> = { area: { status: "done" } };
-    statuses.forEach((status, i) => { items["c" + i] = { parent: "area", status }; });
-    assert.equal(rules(snapshot(items)).statusOf("area"), expected);
-  }
-  for (const status of ["todo", "wip", "blocked", "done", "cancelled"] as const) assert.equal(rules(snapshot({ leaf: { status } })).statusOf("leaf"), status);
-});
-
-test("dependencies retain missing targets, distinguish cards and deduplicate reverse waiters", () => {
-  const r = rules(snapshot({
-    a: { deps: [dep("b", "first"), dep("b", "second"), dep("missing"), card("open"), card("ruled"), card("absent"), dep("cancelled")] },
-    b: { status: "done" }, cancelled: { status: "cancelled" }, c: { deps: [dep("b", "other"), card("open")] },
-  }, { open: { item: "a" }, ruled: { item: "a", status: "ruled" } }));
-  assert.deepEqual(r.depsOf("a"), [
-    { kind: "item", id: "b", why: "first", missing: false, open: false },
-    { kind: "item", id: "b", why: "second", missing: false, open: false },
-    { kind: "item", id: "missing", why: "needs it", missing: true, open: false },
-    { kind: "card", id: "open", why: "needs ruling", missing: false, open: true },
-    { kind: "card", id: "ruled", why: "needs ruling", missing: false, open: false },
-    { kind: "card", id: "absent", why: "needs ruling", missing: true, open: false },
-    { kind: "item", id: "cancelled", why: "needs it", missing: false, open: false },
-  ]);
-  assert.deepEqual(r.dependents("b"), [{ id: "a", why: "first" }, { id: "c", why: "other" }]);
-  assert.deepEqual(r.dependents("missing"), [{ id: "a", why: "needs it" }]);
-  assert.deepEqual(r.cardDependents("open"), [{ id: "a", why: "needs ruling" }, { id: "c", why: "needs ruling" }]);
-  assert.deepEqual(r.cardDependents("absent"), [{ id: "a", why: "needs ruling" }]);
-  assert.deepEqual(r.dependents("open"), []);
-  assert.deepEqual(r.cardDependents("b"), []);
-});
+const texts = (s: Snapshot, id: string) => rules(s).checks(id).map(c => c.text);
 
 test("cards belong to decision.item and sort by order, regardless of status", () => {
   const r = rules(snapshot({ a: {}, b: {} }, {
@@ -133,500 +56,275 @@ test("open cards wait for a sent/done choice; comments and drafts do not answer"
   assert.equal(answered.needsOwner("a"), true); // answered ask does not answer card
 });
 
-test("cycles cover deps, parent edges and mixed edges without marking their waiters", () => {
-  const r = rules(snapshot({
-    a: { priority: "P2", deps: [dep("b")] }, b: { priority: "P1", deps: [dep("a")] },
-    waiter: { priority: "P0", deps: [dep("a")] }, self: { deps: [dep("self")] },
-    p: {}, c: { parent: "p", deps: [dep("p")] }, x: { parent: "y" }, y: { parent: "x" },
-    clear: { deps: [dep("missing"), card("q")] },
-  }, { q: { item: "clear" } }));
-  for (const id of ["a", "b", "self", "p", "c", "x", "y"]) assert.equal(r.onCycle(id), true, id);
-  for (const id of ["waiter", "clear", "missing"]) assert.equal(r.onCycle(id), false, id);
-  assert.equal(r.priorityOf("a"), "P0");
-  assert.equal(r.priorityOf("b"), "P0");
-  assert.deepEqual(r.ancestors("x"), ["y"]);
-  assert.equal(r.statusOf("x"), "todo");
-  assert.equal(r.priorityOf("x"), "");
-  assert.equal(r.inArchive("x"), false);
+
+test("schema permits only the plan shape, project identity and cancellation status", () => {
+  const base = { title: "Work", group: "Default", updated: T0, rev: 1, plan: workPlan() };
+  assert.equal(Item.safeParse(base).success, true);
+  assert.equal(Item.safeParse({ ...base, status: "cancelled" }).success, true);
+  for (const status of ["todo", "wip", "blocked", "done"]) assert.equal(Item.safeParse({ ...base, status }).success, false);
+  for (const field of ["parent", "deps", "steps", "migrated"]) assert.equal(Item.safeParse({ ...base, [field]: [] }).success, false);
+  assert.equal(Item.safeParse({ ...base, group: undefined }).success, false);
+  assert.equal(Item.safeParse({ ...base, plan: [] }).success, false);
+  assert.equal(Item.safeParse({ ...base, record: true }).success, false, "records cannot accept work");
+  assert.equal(Item.safeParse({ ...base, record: true, plan: [] }).success, true);
+  assert.equal(Item.safeParse({ ...base, record: true, plan: [], status: "cancelled" }).success, false);
+  assert.equal(Project.safeParse({ name: "Default", migrated: true }).success, false);
 });
 
-test("archives use the latest update, any log and replied notes with legacy time fallbacks", () => {
-  const items: Record<string, Partial<Item>> = {
-    equal: { updated: T1 }, update: { updated: T2 }, log: { log: [{ at: T2, text: "new" }, { at: T0, text: "old" }] },
-    reply: {}, sentFallback: {}, atFallback: {}, noReply: {}, cardReply: {}, area: {}, child: { parent: "area", updated: T2 },
-  };
-  const r = rules(snapshot(items, { q: { item: "cardReply", updated: T2 } }, {
-    r: { target: "it:reply", reply: "answer", repliedAt: T2 }, s: { target: "it:sentFallback", reply: "answer", sentAt: T2 },
-    a: { target: "it:atFallback", reply: "answer", at: T2 }, n: { target: "it:noReply", at: T2, repliedAt: T2 },
-    c: { target: "q:q", reply: "answer", repliedAt: T2 },
-  }, Object.fromEntries(Object.keys(items).filter(id => id !== "child").map(id => [id, T1]))));
-  for (const id of ["update", "log", "reply", "sentFallback", "atFallback"]) assert.equal(r.isArchived(id), false, id);
-  for (const id of ["equal", "noReply", "cardReply", "area"]) assert.equal(r.isArchived(id), true, id);
-  assert.equal(r.isArchived("child"), false);
-  assert.equal(r.inArchive("child"), true);
-  assert.equal(r.isArchived("missing"), false);
-  assert.equal(r.inArchive("missing"), false);
+test("row schemas refuse forged ids, target metadata, dates from callers and invalid acceptance fields", () => {
+  const id = "x";
+  assert.equal(PlanRowInput.safeParse({ item: id, own: true }).success, true);
+  assert.equal(PlanRowInput.safeParse({ card: id }).success, true);
+  assert.equal(PlanRowInput.safeParse({ item: id, own: true, id }).success, false);
+  assert.equal(PlanRow.safeParse({ item: id, own: true, id: "wrong" }).success, false);
+  assert.equal(PlanRow.safeParse({ card: id, id: "wrong" }).success, false);
+  for (const extra of [{ why: "old explanation" }, { state: "todo" }, { since: T0 }]) assert.equal(PlanRow.safeParse({ ...own(id), ...extra }).success, false);
+  for (const extra of [{ after: [] }, { waits: "CI" }]) assert.equal(PlanStepInput.safeParse({ ...accept(), ...extra }).success, false);
+  for (const [state, field] of [["done", "doneAt"], ["doing", "since"], ["dropped", "droppedAt"]] as const) {
+    const input = { id, text: "Result", state, ...(state === "dropped" ? { reason: "Replaced" } : {}) };
+    assert.equal(PlanStepInput.safeParse(input).success, true);
+    assert.equal(PlanStep.safeParse(input).success, false);
+    assert.equal(PlanStep.safeParse({ ...input, [field]: T0 }).success, true);
+    assert.equal(PlanStepInput.safeParse({ ...input, [field]: T0 }).success, false);
+  }
+  assert.equal(PlanStepInput.safeParse({ id, text: " ", state: "todo" }).success, false);
+  assert.equal(PlanStepInput.safeParse({ id, text: "Result", state: "dropped", reason: " " }).success, false);
+  const prose = step(id, "dropped", { text: "  Exact text  ", reason: "  Exact reason  ", waits: "  Exact wait  " });
+  assert.deepEqual(PlanStep.parse(prose), prose);
+});
+
+test("plans enforce unique ids, earlier-only after and exactly one last acceptance on work items", () => {
+  const valid = [shared("dep"), step("work", "todo", { after: ["dep"] }), accept()];
+  assert.equal(ItemPlan.safeParse(valid).success, true);
+  for (const rows of [
+    [step("work", "todo", { after: ["later"] }), shared("later"), accept()],
+    [step("work", "todo", { after: ["work"] }), accept()],
+    [step("dep"), shared("dep"), accept()],
+    [shared("same"), card("same"), accept()],
+    [accept(), step()], [accept(), accept()],
+  ]) assert.equal(ItemPlan.safeParse(rows).success, false);
+  assert.equal(PlanInput.safeParse([{ item: "dep", own: false }, { id: "work", text: "Work", state: "todo", after: ["dep"] }]).success, true);
+  assert.equal(PlanInput.safeParse([{ id: "work", text: "Work", state: "todo", after: ["dep"] }, { item: "dep", own: false }]).success, false);
+});
+
+test("ownership builds the tree in plan order and does not follow shared rows or child order", () => {
+  const s = snapshot({ root: { group: "First", plan: workPlan([own("later"), own("earlier"), shared("foreign")]) }, later: { group: "First", order: 9 }, earlier: { group: "First", order: -9, plan: workPlan([own("leaf")]) }, leaf: { group: "First" }, foreign: { group: "Second" }, recordOwner: { record: true, plan: [own("record")] }, record: { record: true } });
+  const r = rules(s);
+  assert.deepEqual(r.children("root"), ["later", "earlier"]);
+  assert.equal(r.parentOf("foreign"), undefined);
+  assert.deepEqual(r.ancestors("leaf"), ["earlier", "root"]);
+  assert.equal(r.lineOf("leaf"), "root"); assert.equal(r.projectOf("leaf"), "First");
+  assert.equal(r.isLeaf("root"), false); assert.equal(r.isLeaf("recordOwner"), true); assert.equal(r.isStatusLeaf("recordOwner"), true);
+  assert.deepEqual(r.areas(), ["recordOwner", "root", "foreign"]);
+  assert.equal(r.statusOf("absent"), undefined); assert.equal(r.isRoot("absent"), false);
+  assert.deepEqual(r.depsOf("absent"), []); assert.deepEqual(r.checks("absent"), []);
+  assert.deepEqual(r.dependents("foreign"), [{ id: "root", own: false }]);
+  assert.equal(r.item("constructor"), undefined);
+});
+
+test("status derives from all plan rows and distinguishes the frontier from later work", () => {
+  const s = snapshot({
+    todo: {}, doing: { plan: workPlan([step("work", "doing", { waits: "CI" })]) }, done: { plan: workPlan([step("work", "done")], "done") }, cancelled: { status: "cancelled" },
+    blocked: { plan: workPlan([shared("todo"), step("work", "todo", { after: ["todo"] })]) },
+    canMove: { plan: workPlan([shared("todo"), step("work", "todo", { after: [] })]) },
+    ownsDoing: { plan: workPlan([own("doing")]) }, sharesDoing: { plan: workPlan([shared("doing")]) },
+    acceptanceOnly: { plan: workPlan() }, completedParts: { plan: workPlan([own("done"), own("cancelled")]) },
+    legacyAsk: { ask: { text: "Approve" } }, record: { record: true, plan: [own("todo")] },
+  });
+  const r = rules(s);
+  for (const [id, expected] of Object.entries({ todo: "todo", doing: "wip", done: "done", cancelled: "cancelled", blocked: "blocked", canMove: "todo", ownsDoing: "wip", sharesDoing: "blocked", acceptanceOnly: "todo", completedParts: "todo", legacyAsk: "blocked" })) assert.equal(r.statusOf(id), expected, id);
+  assert.equal(r.statusOf("record"), undefined);
+  assert.deepEqual(r.planRows("blocked").map(row => row.ready), [true, false, false]);
+  assert.deepEqual(r.planRows("canMove").map(row => row.ready), [true, true, false]);
+  assert.deepEqual(r.planRows("completedParts").map(row => [row.state, row.dropped, row.excluded]), [["resolved", false, false], ["resolved", true, true], ["open", false, false]]);
+});
+
+test("cards and missing targets wait, and a sent choice does not resolve an open card row", () => {
+  const s = snapshot({ waiter: { plan: workPlan([card("q")]) }, missing: { plan: workPlan([shared("gone")]) }, missingCard: { plan: workPlan([card("gone-card")]) } }, { q: { item: "waiter" } }, { choice: { target: "q:q", kind: "choice", state: "sent" } });
+  const r = rules(s);
+  assert.equal(r.cardWaiting("q"), false); assert.equal(r.statusOf("waiter"), "blocked");
+  for (const id of ["missing", "missingCard"]) { assert.equal(r.statusOf(id), "blocked"); assert.equal(r.depsOf(id)[0]!.open, true); assert.equal(r.depsOf(id)[0]!.missing, true); }
+  assert.deepEqual(r.cardDependents("q"), [{ id: "waiter" }]);
+  for (const status of ["ruled", "withtree", "elsewhere"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo"); }
+});
+
+test("row ratios exclude dropped steps, cancelled owned work and owned records, while shared records count", () => {
+  const s = snapshot({ item: { plan: workPlan([step("done", "done"), step("dropped", "dropped"), own("cancelled"), own("ownedRecord"), shared("sharedRecord"), shared("cancelled-shared")]) }, cancelled: { status: "cancelled" }, ownedRecord: { record: true }, sharedRecord: { record: true }, "cancelled-shared": { status: "cancelled" } });
+  const r = rules(s);
+  assert.deepEqual(r.planRatio("item"), { done: 2, total: 4 });
+  assert.deepEqual(r.planRows("item").map(row => row.glyph), ["✓", "✗", "✗", "✓", "✓", "⏸", "◆"]);
+  assert.equal(r.statusOf("item"), "blocked");
+  assert.ok(texts(s, "item").includes("依赖的条目已取消"));
+  assert.deepEqual(r.planRatio("ownedRecord"), { done: 0, total: 0 });
+});
+
+test("after defaults chain only the previous row; acceptance waits for every row", () => {
+  const s = snapshot({ a: { plan: workPlan([shared("dep"), step("independent", "done", { after: [] }), step("next")]) }, dep: {} });
+  const rows = rules(s).planRows("a");
+  assert.deepEqual(rows.map(row => row.level), [0, 0, 1, 2]);
+  assert.deepEqual(rows.map(row => row.ready), [true, false, true, false]);
+  assert.deepEqual(rules(s).planGroups("a"), [{ start: 0, end: 2, level: 0 }]);
+  const split = snapshot({ a: { record: true, plan: [step("a"), step("b"), step("c", "todo", { after: [] }), step("d", "todo", { after: [] }), step("e"), step("f", "todo", { after: [] })] } });
+  assert.deepEqual(rules(split).planGroups("a"), [{ start: 2, end: 4, level: 0 }]);
+});
+
+test("priority flows across owned and shared item rows, including across projects, but not card rows", () => {
+  const s = snapshot({ far: { group: "Second", priority: "P2" }, mid: { plan: workPlan([shared("far")]) }, root: { priority: "P1", plan: workPlan([own("mid")]) }, urgent: { priority: "P0", plan: workPlan([shared("far"), card("q")]) }, host: {} }, { q: { item: "host" } });
+  const r = rules(s);
+  assert.equal(r.priorityOf("mid"), "P1"); assert.equal(r.priorityOf("far"), "P0"); assert.equal(r.priorityOf("host"), "P2");
+  assert.equal(r.isRoot("mid"), false); assert.equal(r.isRoot("far"), false); assert.equal(r.isRoot("root"), true);
+});
+
+test("open record-owned work receives no priority even from shared work and retains none of its stored priority", () => {
+  const s = snapshot({ queue: { record: true, priority: "P0", plan: [own("run"), own("closed")] }, run: { priority: "P1", plan: workPlan([shared("beyond")]) }, closed: { priority: "P1", plan: workPlan([], "done") }, beyond: { priority: undefined }, urgent: { priority: "P0", plan: workPlan([shared("run")]) } });
+  const r = rules(s);
+  assert.equal(r.isBacklog("run"), true); assert.equal(r.isRoot("run"), false); assert.equal(r.priorityOf("run"), ""); assert.equal(r.priorityOf("beyond"), "");
+  assert.ok(!texts(s, "run").includes("没有未完成的条目依赖它，却没写优先级"));
+  assert.equal(r.isBacklog("closed"), false); assert.equal(r.isRoot("closed"), true); assert.equal(r.priorityOf("closed"), "P1");
+  s.items.queue!.plan = [own("closed")]; s.items.urgent!.plan = workPlan([own("run")]);
+  const moved = rules(s); assert.equal(moved.isBacklog("run"), false); assert.equal(moved.priorityOf("run"), "P0"); assert.equal(moved.priorityOf("beyond"), "P0");
+});
+
+test("records and closed work pass no priority, but closed targets keep incoming priority", () => {
+  const s = snapshot({ root: { priority: "P0", plan: workPlan([own("record"), own("finished")]) }, record: { record: true, plan: [shared("far")] }, finished: { priority: "P2", plan: workPlan([shared("far")], "done") }, far: { plan: workPlan([], "done") } });
+  const r = rules(s);
+  assert.equal(r.priorityOf("record"), "P0"); assert.equal(r.priorityOf("finished"), "P0"); assert.equal(r.priorityOf("far"), "P2");
+});
+
+test("cycles terminate, identify only members, and receive priority only from outside open work", () => {
+  const s = snapshot({ a: { priority: "P0", plan: workPlan([own("b")]) }, b: { priority: "P1", plan: workPlan([own("a")]) }, self: { plan: workPlan([shared("self")]) }, missing: { plan: workPlan([shared("gone")]) } });
+  const r = rules(s);
+  for (const id of ["a", "b", "self"]) { assert.equal(r.onCycle(id), true); assert.equal(r.priorityOf(id), ""); assert.equal(r.statusOf(id), "blocked"); }
+  assert.deepEqual(r.ancestors("a"), ["b"]); assert.equal(r.inArchive("a"), false); assert.equal(r.onCycle("missing"), false);
+  s.items.waiter = Item.parse({ title: "Waiter", group: "Default", priority: "P1", plan: workPlan([shared("a")]), updated: T0, rev: 1 });
+  const reached = rules(s); assert.equal(reached.onCycle("waiter"), false); assert.equal(reached.priorityOf("a"), "P1"); assert.equal(reached.priorityOf("b"), "P1");
+});
+
+test("plan checks flag structural violations and conversion placeholders, without old manual-status checks", () => {
+  const s = snapshot({ p: { plan: workPlan([own("x")]) }, second: { group: "Second", plan: workPlan([own("x")]) }, x: {}, loose: { priority: undefined }, waiter: { plan: workPlan([shared("loose")]) }, missing: { plan: workPlan([shared("gone"), card("gone-card")]) }, provisional: { provisional: true, plan: workPlan([step()]) }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, oldParent: { status: "cancelled", plan: workPlan([own("open")]) }, open: {}, onlyAcceptance: { plan: workPlan() }, acceptedEarly: { plan: workPlan([step()], "done") }, unconfigured: { group: "Unknown" }, rootMissing: { priority: undefined } });
+  assert.ok(texts(s, "x").includes("被多个条目拥有")); assert.ok(texts(s, "x").includes("跨项目拥有"));
+  assert.ok(texts(s, "loose").includes("同项目有条目在等它，却没有条目拥有它"));
+  assert.deepEqual(texts(s, "missing"), ["依赖的条目不存在：gone", "依赖的决策卡不存在：gone-card"]);
+  assert.ok(texts(s, "provisional").includes("计划待重写")); assert.equal(rules(s).checks("provisional").find(c => c.text === "计划待重写")!.label, "待重写");
+  assert.ok(texts(s, "placeholder").includes("验收步骤待补")); assert.ok(texts(s, "open").includes("拥有它的条目已关闭"));
+  assert.ok(texts(s, "onlyAcceptance").includes("只差验收：其它行都已完成")); assert.ok(texts(s, "acceptedEarly").includes("验收已标完成，但还有行没完成"));
+  assert.deepEqual(texts(s, "unconfigured"), ["项目没有配置：Unknown"]);
+  assert.ok(texts(s, "rootMissing").includes("没有未完成的条目依赖它，却没写优先级"));
+  const corrupt = structuredClone(s); corrupt.items.rootMissing!.plan = [];
+  assert.ok(texts(corrupt, "rootMissing").includes("没有计划：至少要有验收步骤"));
+  for (const check of rules(s).checks("missing")) assert.ok(!/可解除阻塞|卡住了，但|标为进行中|正文没写/.test(check.text));
+});
+
+test("inboxes omit records and closed requests and follow request dates", () => {
+  const s = snapshot({ newer: { request: { by: "First", at: T2 } }, older: { request: { by: "First", at: T1 } }, closed: { request: { by: "First", at: T0 }, status: "cancelled" }, record: { request: { by: "First", at: T0 }, record: true }, other: { group: "First" } });
+  const r = rules(s); assert.deepEqual(r.inbox("Default"), ["older", "newer"]); assert.equal(r.isRequest("record"), false); assert.equal(r.isRequest("closed"), false);
+  assert.deepEqual(r.areas(), ["closed", "record", "other"]);
+});
+
+test("archives follow ownership, and updates, logs and replied item notes reopen their document", () => {
+  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: { updated: T2 }, log: { log: [{ at: T2, text: "New" }] }, reply: {}, equal: { updated: T1 }, noReply: {} }, {}, { reply: { target: "it:reply", reply: "Answer", repliedAt: T2 }, noReply: { target: "it:noReply", at: T2 } }, { parent: T1, log: T1, reply: T1, equal: T1, noReply: T1 });
+  const r = rules(s); assert.equal(r.isArchived("parent"), true); assert.equal(r.inArchive("child"), true); assert.equal(r.isArchived("child"), false);
+  for (const id of ["log", "reply"]) assert.equal(r.isArchived(id), false);
+  for (const id of ["equal", "noReply"]) assert.equal(r.isArchived(id), true);
   assert.deepEqual(r.checks("child"), []);
 });
 
-const C = {
-  missing: "依赖的条目不存在：missing", missingCard: "依赖的决策卡不存在：absent", cancelled: "依赖的条目已取消",
-  why: "依赖没写为什么：", cycle: "依赖成环", project: "项目没有配置：", parent: "上级条目不存在：missing",
-  unlisted: "上级没有把它列在依赖里（上级必须是直接依赖它的条目）：", unblock: "可解除阻塞：等的都已完成",
-  blocker: "卡住了，但没写在等什么", wip: "标为进行中，但还在等别的",
-};
-test("legacy checks apart from superseded per-item ownership have the exact text, condition, suppression and target", () => {
-  const cases: Array<[Partial<Item>, Record<string, Partial<Item>>, Array<{ text: string; target?: { kind: "item"; id: string } }>]> = [
-    [{ deps: [dep("missing")] }, {}, [{ text: C.missing }]],
-    [{ deps: [dep("cancelled", "")] }, { cancelled: { status: "cancelled" } }, [{ text: C.cancelled, target: { kind: "item", id: "cancelled" } }]],
-    [{ status: "cancelled", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
-    [{ deps: [dep("own"), dep("live")] }, { own: { parent: "a", status: "cancelled" }, live: { parent: "a" } }, []], // a parent keeps listing its cancelled sub-item
-    [{ status: "done", deps: [dep("cancelled")] }, { cancelled: { status: "cancelled" } }, []],
-    [{ deps: [dep("other", "")] }, { other: {} }, [{ text: C.why, target: { kind: "item", id: "other" } }]],
-    [{ status: "done", deps: [dep("other", "")] }, { other: {} }, []],
-    [{ status: "cancelled", deps: [dep("other", "")] }, { other: {} }, []],
-    [{ deps: [dep("a")] }, {}, [{ text: C.cycle }]],
-    [{ group: undefined }, {}, [{ text: C.project }]],
-    [{ parent: "missing" }, {}, [{ text: C.parent }]],
-    [{ parent: "p" }, { p: {} }, [{ text: C.unlisted, target: { kind: "item", id: "p" } }]],
-    [{ parent: "p", status: "done" }, { p: {} }, []],
-    [{ parent: "p" }, { p: { deps: [dep("a")] } }, []],
-    [{ status: "blocked", deps: [dep("done")] }, { done: { status: "done" } }, [{ text: C.unblock }]],
-    [{ status: "blocked", deps: [dep("missing")] }, {}, [{ text: C.missing }, { text: C.unblock }]],
-    [{ status: "blocked" }, {}, [{ text: C.blocker }]],
-    [{ status: "blocked", ask: { text: "approve" } }, {}, []],
-    [{ status: "blocked", deps: [dep("other")] }, { other: {} }, []],
-    [{ status: "wip", deps: [dep("other")] }, { other: {} }, [{ text: C.wip, target: { kind: "item", id: "other" } }]],
-    [{ status: "wip", deps: [dep("done")] }, { done: { status: "done" } }, []],
-    [{ status: "blocked" }, { child: { parent: "a" } }, []], // parent status is derived; leaf checks do not apply
-  ];
-  for (const [a, others, expected] of cases) assert.deepEqual(rules(snapshot({ a: { priority: "P2", ...a }, ...others })).checks("a"), expected, JSON.stringify(a));
-  assert.deepEqual(rules(snapshot({ a: { status: "blocked", deps: [dep("missing")] } }, {}, {}, { a: T1 })).checks("a"), []);
+test("derived arrays are defensive copies and snapshot changes require a new rules object", () => {
+  const s = snapshot({ a: { plan: workPlan([own("b"), step("next", "todo", { after: [] })]) }, b: {} }), before = structuredClone(s), r = rules(s);
+  r.children("a").push("bad"); r.ancestors("b").push("bad"); r.depsOf("a")[0]!.id = "bad"; r.dependents("b")[0]!.id = "bad";
+  const row = r.planRows("a")[0]!; row.row.id = "bad"; row.row.after!.push("bad");
+  const group = r.planGroups("a")[0]!; group.start = 99;
+  assert.deepEqual(s, before); assert.deepEqual(r.children("a"), ["b"]); assert.equal(r.planRows("a")[0]!.row.id, "b"); assert.equal(r.planGroups("a")[0]!.start, 0);
+  const next = structuredClone(s); next.items.b!.plan = workPlan([], "done"); assert.equal(rules(next).planRows("a")[0]!.state, "resolved"); assert.equal(r.planRows("a")[0]!.state, "open");
 });
 
-test("card deps participate in missing/why/wip/blocker checks but not item cycles or priority raising", () => {
-  const r = rules(snapshot({
-    a: { status: "blocked", priority: "P2", deps: [card("q")] }, b: { status: "blocked", priority: "P2", deps: [card("closed")] },
-    c: { status: "blocked", priority: "P2", deps: [card("absent")] }, d: { status: "wip", priority: "P2", deps: [card("q", "")] },
-    urgent: { priority: "P0", deps: [card("q")] }, host: { priority: "P2" },
-  }, { q: { item: "host" }, closed: { item: "host", status: "ruled" } }, { choice: { target: "q:q", kind: "choice" } }));
-  assert.deepEqual(r.checks("a"), []); // sent choice does not close an open dependency
-  assert.deepEqual(r.checks("b"), [{ text: C.unblock }]);
-  assert.deepEqual(r.checks("c"), [{ text: C.missingCard }, { text: C.unblock }]);
-  assert.deepEqual(r.checks("d"), [{ text: C.why, target: { kind: "card", id: "q" } }, { text: C.wip, target: { kind: "card", id: "q" } }]);
-  assert.equal(r.onCycle("host"), false);
-  assert.equal(r.priorityOf("host"), "P2");
-  const ownCard = rules(snapshot({ a: { status: "blocked", priority: "P2" } }, { q: { item: "a" } }));
-  assert.deepEqual(ownCard.checks("a"), []);
-  const answeredCard = rules(snapshot({ a: { status: "blocked", priority: "P2" } }, { q: { item: "a" } }, { n: { target: "q:q", kind: "choice" } }));
-  assert.deepEqual(answeredCard.checks("a"), [{ text: C.blocker }]);
+test("plan stamps preserve dates within a state, restamp re-entry, and never put step dates on target rows", () => {
+  const previous = step("a", "doing", { since: T0, doneAt: T0 });
+  assert.deepEqual(stampPlanRow({ id: "a", text: "Changed", state: "doing" }, previous, T1), { id: "a", text: "Changed", state: "doing", since: T0, doneAt: T0 });
+  const done = stampPlanRow({ id: "a", text: "Done", state: "done" }, previous, T1);
+  assert.equal("doneAt" in done && done.doneAt, T1);
+  const again = stampPlanRow({ id: "a", text: "Again", state: "doing" }, done, T2);
+  assert.equal("since" in again && again.since, T2);
+  assert.deepEqual(stampPlanRow({ item: "a", own: true, after: [] }, again, T2), own("a"));
+  assert.deepEqual(stampPlanRow({ card: "q", after: [] }, undefined, T2), card("q"));
 });
 
-test("sibling sorting uses priority, then open/ended, then order", () => {
-  const r = rules(snapshot({
-    low: { priority: "P2", order: -10 }, urgent: { priority: "P0", deps: [dep("low")] },
-    p1: { priority: "P1" }, done0: { priority: "P0", status: "done" }, drop0: { priority: "P0", status: "cancelled", order: 2 },
-    openLate: { priority: "P1", order: 3 }, unset: { order: -99 },
-  }));
-  assert.deepEqual(["unset", "openLate", "p1", "drop0", "done0", "low"].sort(r.compareSiblings), ["low", "done0", "drop0", "p1", "openLate", "unset"]);
-  assert.equal(r.compareSiblings("p1", "p1"), 0);
-  assert.equal(r.compareSiblings("p1", "openLate"), -3);
-});
-
-test("cached result arrays are isolated and rules never mutate the snapshot", () => {
-  const s = snapshot({ a: { priority: "P2", deps: [dep("b", "")] }, b: { parent: "a" } }, { q: { item: "b" } });
-  const before = structuredClone(s), r = rules(s);
-  r.children("a").push("bad"); r.ancestors("b").push("bad"); r.areas().push("bad"); r.cardsOf("b").push("bad");
-  r.depsOf("a")[0]!.why = "bad"; r.dependents("b")[0]!.why = "bad";
-  const checks = r.checks("a"); checks[0]!.text = "bad"; checks[0]!.target!.id = "bad";
-  assert.deepEqual(r.children("a"), ["b"]);
-  assert.deepEqual(r.ancestors("b"), ["a"]);
-  assert.deepEqual(r.areas(), ["a"]);
-  assert.deepEqual(r.cardsOf("b"), ["q"]);
-  assert.equal(r.depsOf("a")[0]!.why, "");
-  assert.equal(r.dependents("b")[0]!.why, "");
-  assert.deepEqual(r.checks("a"), [{ text: C.why, target: { kind: "item", id: "b" } }]);
-  r.statusOf("a"); r.priorityOf("a"); r.onCycle("a"); r.needsOwner("b");
-  assert.deepEqual(s, before);
-  const next = { ...s, items: { ...s.items, b: { ...s.items.b!, status: "done" as const, priority: "P0" as const } } };
-  assert.equal(rules(next).statusOf("a"), "done");
-  assert.equal(r.statusOf("a"), "todo");
-});
-
-test("project rules resolve identity, flag configuration and separate ordered inboxes", () => {
-  const s: Snapshot = { board: { title: "Projects", projects: [{ name: "P" }, { name: "Empty" }] }, head: "", owner: { archived: {} }, notes: {}, decisions: {}, glossaries: {}, notices: {}, items: {} };
-  for (const [id, fields] of Object.entries({ area: { group: "P" }, child: { parent: "area" }, empty: { group: "Empty" }, missing: { group: "Missing" }, newer: { group: "P", request: { by: "x", at: T2 } }, older: { group: "P", request: { by: "x", at: T1 } }, closed: { group: "P", request: { by: "x", at: T0 }, status: "cancelled" } })) s.items[id] = Item.parse({ title: id, head: DONE_WHEN, priority: "P2", updated: T0, rev: 1, ...fields });
-  const r = rules(s);
-  assert.equal(r.projectOf("child"), "P");
-  assert.equal(Object.hasOwn(r, "agentsFor"), false);
-  assert.deepEqual(r.checks("empty"), []);
-  assert.deepEqual(r.checks("missing").map(c => c.text), ["项目没有配置：Missing"]);
-  assert.deepEqual(r.inbox("P"), ["older", "newer"]); assert.equal(r.isRequest("closed"), false);
-  assert.ok(!r.areas().includes("older")); assert.ok(!r.areas().includes("newer"));
-});
-
-test("priority flows from a root through several levels of parent listings and dependencies, ignoring stored priority below the root", () => {
-  // Insert dependencies before their dependents so one pass in key order is not enough.
-  const r = rules(snapshot({
-    far: { priority: "P2" }, leaf: { parent: "mid", priority: "P2", deps: [dep("far")] }, mid: { parent: "area", deps: [dep("leaf")] },
-    area: { priority: "P0", deps: [dep("mid")] }, loose: { priority: "P1" },
-  }));
-  assert.equal(r.isRoot("area"), true); assert.equal(r.isRoot("loose"), true);
-  for (const id of ["mid", "leaf", "far"]) { assert.equal(r.isRoot(id), false, id); assert.equal(r.priorityOf(id), "P0", id); }
-  assert.equal(r.priorityOf("area"), "P0"); assert.equal(r.priorityOf("loose"), "P1");
-});
-
-test("a child is raised above its parent by another dependent but never falls below its parent", () => {
-  const r = rules(snapshot({
-    area: { priority: "P2", deps: [dep("parent")] }, parent: { parent: "area", deps: [dep("child")] }, child: { parent: "parent" },
-    urgent: { priority: "P0", deps: [dep("child")] }, later: { priority: "P2", deps: [dep("parent")] },
-  }));
-  assert.equal(r.priorityOf("parent"), "P2"); assert.equal(r.priorityOf("child"), "P0");
-  const lower = rules(snapshot({ area: { priority: "P0", deps: [dep("child")] }, child: { parent: "area" }, other: { priority: "P2", deps: [dep("child")] } }));
-  assert.equal(lower.priorityOf("child"), "P0");
-});
-
-test("priority crosses projects through dependencies", () => {
-  const r = rules(snapshot({
-    goal: { group: "First", priority: "P0", deps: [dep("step")] }, step: { parent: "goal", priority: "P2", deps: [dep("theirs")] },
-    theirs: { group: "Second", priority: "P2", deps: [dep("part")] }, part: { parent: "theirs", priority: "P2" },
-    own: { group: "Second", priority: "P2" },
-  }));
-  for (const id of ["step", "theirs", "part"]) assert.equal(r.priorityOf(id), "P0", id);
-  assert.equal(r.priorityOf("own"), "P2");
-});
-
-test("closed dependents raise nothing, closed roots keep their own priority, and an item left without an open dependent is a root", () => {
-  const r = rules(snapshot({
-    shipped: { status: "done", priority: "P0", deps: [dep("shared")] }, dropped: { status: "cancelled", priority: "P0", deps: [dep("shared")] },
-    open: { priority: "P2", deps: [dep("shared")] }, shared: {},
-    live: { priority: "P1", deps: [dep("finished")] }, finished: { status: "done", deps: [dep("beyond")] }, beyond: {},
-    orphaned: { status: "done", priority: "P1", deps: [dep("stranded")] }, stranded: { priority: "P0" },
-  }));
-  assert.equal(r.priorityOf("shared"), "P2");
-  assert.equal(r.priorityOf("shipped"), "P0"); assert.equal(r.priorityOf("dropped"), "P0");
-  assert.equal(r.priorityOf("finished"), "P1"); // a closed item keeps what reached it but passes nothing on
-  assert.equal(r.priorityOf("beyond"), "");
-  assert.equal(r.isRoot("stranded"), true); assert.equal(r.priorityOf("stranded"), "P0"); // its only dependent is done
-  assert.equal(r.isRoot("shared"), false); assert.equal(r.isRoot("beyond"), true); // finished, its only dependent, is done
-});
-
-test("a dependency cycle terminates: alone it has no priority, and an open outside dependent reaches all of it", () => {
-  const alone = rules(snapshot({ a: { priority: "P0", deps: [dep("b")] }, b: { priority: "P1", deps: [dep("a")] } }));
-  for (const id of ["a", "b"]) { assert.equal(alone.isRoot(id), false); assert.equal(alone.priorityOf(id), ""); assert.equal(alone.onCycle(id), true); }
-  const reached = rules(snapshot({ a: { priority: "P0", deps: [dep("b")] }, b: { priority: "P2", deps: [dep("c")] }, c: { deps: [dep("a")] }, waiter: { priority: "P1", deps: [dep("b")] } }));
-  for (const id of ["a", "b", "c"]) assert.equal(reached.priorityOf(id), "P1", id);
-});
-
-test("a dependency on a decision card carries no priority and does not make the card's item a non-root", () => {
-  const r = rules(snapshot({ urgent: { priority: "P0", deps: [card("q")] }, host: { priority: "P2" }, bare: {} }, { q: { item: "host" }, other: { item: "bare" } }));
-  assert.equal(r.isRoot("host"), true); assert.equal(r.priorityOf("host"), "P2");
-  const unset = rules(snapshot({ urgent: { priority: "P0", deps: [card("q")] }, host: {} }, { q: { item: "host" } }));
-  assert.equal(unset.priorityOf("host"), "");
-});
-
-const NO_DONE_WHEN = "正文没写完成条件", NO_PRIORITY = "没有未完成的条目依赖它，却没写优先级";
-test("open items without a completion-condition heading or bold label are flagged", () => {
-  for (const head of ["**完成条件**：测试通过", "背景\n\n**怎样算完成**：页面显示", "## 完成条件\n\n测试通过", "**完成条件和验证**"]) {
-    assert.deepEqual(rules(snapshot({ a: { priority: "P2", head } })).checks("a"), [], head);
-  }
-  for (const head of [undefined, "", "完成条件：没有标题或加粗", "**背景**：写了别的"]) {
-    assert.deepEqual(rules(snapshot({ a: { priority: "P2", head } })).checks("a"), [{ text: NO_DONE_WHEN }], String(head));
-  }
-  for (const status of ["done", "cancelled"] as const) assert.deepEqual(rules(snapshot({ a: { priority: "P2", status, head: "" } })).checks("a"), [], status);
-  const parent = rules(snapshot({ a: { priority: "P2", head: "", deps: [dep("c")] }, c: { parent: "a", status: "done" } }));
-  assert.deepEqual(parent.checks("a"), []); // a parent's derived done status counts as closed
-});
-
-test("open roots without a stored priority are flagged, including items whose dependents are all closed; items with an open dependent and closed roots are not", () => {
-  assert.deepEqual(rules(snapshot({ a: {} })).checks("a"), [{ text: NO_PRIORITY }]);
-  assert.deepEqual(rules(snapshot({ a: { head: "" } })).checks("a"), [{ text: NO_DONE_WHEN }, { text: NO_PRIORITY }]);
-  assert.deepEqual(rules(snapshot({ a: { priority: "P1" } })).checks("a"), []);
-  assert.deepEqual(rules(snapshot({ a: {}, w: { priority: "P1", deps: [dep("a")] } })).checks("a"), []);
-  const left = rules(snapshot({ a: {}, w: { status: "done", priority: "P1", deps: [dep("a")] }, p: { priority: "P1", deps: [dep("a"), dep("c")] }, c: { parent: "p", status: "todo" } }));
-  assert.equal(left.isRoot("a"), false); assert.deepEqual(left.checks("a"), []); // p is open
-  const closed = rules(snapshot({ a: {}, w: { status: "done", priority: "P1", deps: [dep("a")] }, p: { priority: "P1", deps: [dep("a"), dep("c")] }, c: { parent: "p", status: "done" } }));
-  assert.equal(closed.statusOf("p"), "done"); assert.equal(closed.isRoot("a"), true); // a parent counts by its derived status
-  assert.deepEqual(closed.checks("a"), [{ text: NO_PRIORITY }]);
-  for (const status of ["done", "cancelled"] as const) assert.deepEqual(rules(snapshot({ a: { status } })).checks("a"), [], status);
-});
-
-test("LEGACY PRIORITY: unmigrated written priority prefers open leaves, then done leaves, then cancelled leaves", () => {
-  const cases: Array<[Partial<Item>, Partial<Item>, string]> = [
-    [{ status: "todo", priority: "P2" }, { status: "done", priority: "P0" }, "P2"],
-    [{ status: "todo", priority: "P2" }, { status: "cancelled", priority: "P0" }, "P2"],
-    [{ status: "todo", priority: "P1" }, { status: "wip", priority: "P0" }, "P0"],
-    [{ status: "done", priority: "P1" }, { status: "cancelled", priority: "P0" }, "P1"],
-    [{ status: "cancelled", priority: "P2" }, { status: "cancelled", priority: "P1" }, "P1"],
-    [{ status: "todo" }, { status: "done", priority: "P1" }, "P1"],
-    [{}, {}, ""],
-  ];
-  for (const [a, b, expected] of cases) {
-    const r = rules(legacy({ area: { priority: "P0" }, mid: { parent: "area" }, a: { parent: "mid", ...a }, b: { parent: "mid", ...b } }));
-    assert.equal(r.writtenPriorityOf("area"), expected);
-    assert.equal(r.writtenPriorityOf("mid"), expected);
-  }
-  assert.equal(rules(legacy({ leaf: { priority: "P2", status: "done" } })).writtenPriorityOf("leaf"), "P2");
-});
-
-test("LEGACY PRIORITY: unmigrated effective priority propagates through wait chains and ancestors, with a raising witness", () => {
-  // Insert targets before waiters to require more than one relaxation pass.
-  const r = rules(legacy({
-    area: { deps: [dep("mid")], priority: "P0" }, mid: { parent: "area", deps: [dep("target")] },
-    target: { parent: "mid", priority: "P2" }, chain: { priority: "P2", deps: [dep("area")] },
-    urgent: { priority: "P0", deps: [dep("chain")] },
-  }));
-  assert.equal(r.writtenPriorityOf("target"), "P2");
-  for (const id of ["area", "mid", "target", "chain"]) assert.equal(r.priorityOf(id), "P0", id);
-  assert.equal(r.raisedBy("target"), "chain");
-  assert.equal(r.raisedBy("mid"), "chain");
-  assert.equal(r.raisedBy("area"), "chain");
-  assert.equal(r.raisedBy("chain"), "urgent");
-  assert.equal(r.raisedBy("urgent"), null);
-});
-
-test("LEGACY PRIORITY: in unmigrated projects ended and archived work do not raise priorities, and ancestors do not act as external waiters", () => {
-  const r = rules(legacy({
-    area: { deps: [dep("low"), dep("high")] }, low: { parent: "area", priority: "P2" }, high: { parent: "area", priority: "P0" },
-    done: { status: "done", priority: "P0", deps: [dep("low")] }, cancelled: { status: "cancelled", priority: "P0", deps: [dep("low")] },
-    archived: { priority: "P0", deps: [dep("low")] }, arChild: { parent: "archived", priority: "P0", deps: [dep("low")] },
-    endTarget: { status: "done", priority: "P2" }, arTarget: { priority: "P2" },
-    urgent: { priority: "P0", deps: [dep("endTarget"), dep("arTarget")] },
-  }, {}, {}, { archived: T1, arTarget: T1 }));
-  assert.equal(r.priorityOf("low"), "P2");
-  assert.equal(r.raisedBy("low"), null);
-  assert.equal(r.priorityOf("endTarget"), "P2");
-  assert.equal(r.priorityOf("arTarget"), "P2");
-  assert.equal(r.priorityOf("area"), "P0");
-  const unset = rules(legacy({ target: {}, waiter: { priority: "P1", deps: [dep("target")] } }));
-  assert.equal(unset.priorityOf("target"), "P1");
-  assert.equal(unset.raisedBy("target"), "waiter");
-});
-
-test("one board gives the new results when its project is migrated and the legacy ones when board.yaml omits the field", () => {
-  const items: Record<string, Partial<Item>> = { area: { priority: "P0", deps: [dep("leaf")], head: "" }, leaf: { parent: "area", priority: "P2", head: "" }, waiter: { priority: "P1", deps: [dep("leaf")] } };
-  const now = rules(snapshot(items)), before = rules(legacy(items));
-  assert.equal(now.migrated("leaf"), true); assert.equal(before.migrated("leaf"), false);
-  assert.equal(now.priorityOf("leaf"), "P0"); assert.equal(now.raisedBy("leaf"), null); assert.equal(now.writtenPriorityOf("leaf"), "P2");
-  assert.equal(before.priorityOf("leaf"), "P1"); assert.equal(before.raisedBy("leaf"), "waiter"); // the parent does not raise its own leaves
-  assert.deepEqual(now.checks("area").map(c => c.text), [NO_DONE_WHEN]); assert.deepEqual(before.checks("area"), []);
-  assert.deepEqual(before.checks("leaf"), []); assert.deepEqual(rules(legacy({ bare: { head: "" } })).checks("bare"), []); // no new flags, even on a root without priority or completion condition
-});
-
-test("a migrated dependent raises an unmigrated item without a struck original, and never lowers it", () => {
-  const r = rules(projects(snapshot({
-    goal: { group: "First", priority: "P0", deps: [dep("old")] },
-    area: { group: "Second", priority: "P2", deps: [dep("old"), dep("sib")] }, old: { parent: "area", priority: "P2" }, sib: { parent: "area", priority: "P2", deps: [dep("lib")] },
-    lib: { group: "Second", priority: "P2" }, low: { group: "First", priority: "P2", deps: [dep("high")] }, high: { group: "Second", priority: "P0" },
-  }), ["First"]));
-  assert.equal(r.migrated("goal"), true); assert.equal(r.migrated("old"), false);
-  assert.equal(r.priorityOf("old"), "P0"); assert.equal(r.raisedBy("old"), null); assert.equal(r.writtenPriorityOf("old"), "P2");
-  assert.equal(r.priorityOf("area"), "P0"); assert.equal(r.raisedBy("area"), null); // the parent shows its highest open leaf
-  assert.equal(r.priorityOf("sib"), "P2"); assert.equal(r.priorityOf("lib"), "P2"); // the raise reaches only what waits under the migrated dependent
-  assert.equal(r.priorityOf("high"), "P0"); // a lower migrated dependent leaves the legacy priority alone
-  const mixed = rules(projects(snapshot({ goal: { group: "First", priority: "P1", deps: [dep("old")] }, old: { group: "Second", priority: "P2" }, urgent: { group: "Second", priority: "P0", deps: [dep("old")] } }), ["First"]));
-  assert.equal(mixed.priorityOf("old"), "P0"); assert.equal(mixed.raisedBy("old"), "urgent"); // the legacy raise keeps its record
-});
-
-test("an unmigrated dependent gives a migrated item its effective priority, and counts for rootness", () => {
-  const s = snapshot({
-    waiter: { group: "Second", priority: "P2", deps: [dep("tool")] }, boss: { group: "Second", priority: "P0", deps: [dep("waiter")] },
-    tool: { group: "First", priority: "P2", deps: [dep("part")] }, part: { parent: "tool" },
-  });
-  const r = rules(projects(s, ["First"]));
-  assert.equal(r.priorityOf("waiter"), "P0"); assert.equal(r.raisedBy("waiter"), "boss");
-  assert.equal(r.isRoot("tool"), false); assert.equal(r.priorityOf("tool"), "P0"); assert.equal(r.priorityOf("part"), "P0");
-  assert.deepEqual(r.checks("tool"), []); // not a root: no flag for its ignored stored priority
-  const closed = rules(projects({ ...s, items: { ...s.items, waiter: { ...s.items.waiter!, status: "done" } } }, ["First"]));
-  assert.equal(closed.isRoot("tool"), true); assert.equal(closed.priorityOf("tool"), "P2");
-});
-
-test("records have no status and do not contribute status roll-up or status checks", () => {
-  const s = snapshot({
-    root: { status: "wip", priority: "P1", deps: [dep("record")] },
-    record: { parent: "root", record: true, head: "Queue history", deps: [dep("cancelled")] },
-    cancelled: { status: "cancelled", priority: "P2" },
-  });
-  let r = rules(s);
-  assert.equal(r.statusOf("record"), undefined);
-  assert.equal(r.statusOf("root"), "wip");
-  assert.equal(r.isLeaf("root"), false);
-  assert.equal(r.isStatusLeaf("root"), true);
-  assert.equal(r.depsOf("root")[0]!.open, false);
-  assert.equal(r.priorityOf("record"), "P1");
-  assert.deepEqual(r.checks("record"), []);
-  assert.ok(!r.checks("root").some(c => c.text.includes("还在等别的")));
-  s.items.work = Item.parse({ title: "work", parent: "root", status: "done", updated: T0, rev: 1 });
-  r = rules(s);
-  assert.equal(r.statusOf("root"), "done");
-  s.items.work.parent = "record";
-  assert.equal(rules(s).statusOf("record"), undefined, "even a record with work children has no status");
-  assert.equal(Item.safeParse({ ...s.items.record, status: "todo" }).success, false);
+test("plan freshness compares own fields and dates by id while reorders and removals remain progress", () => {
+  const a = step("a", "doing"), b = shared("b");
+  assert.deepEqual(changedItemPlan(undefined, [a, b]), [a, b]); assert.deepEqual(changedItemPlan([a, b], [b, a]), []); assert.equal(planChanged([a, b], [b, a]), true);
+  assert.deepEqual(changedItemPlan([a, b], [b]), []); assert.equal(planChanged([a, b], [b]), true); assert.equal(planChanged(undefined, []), false);
+  assert.equal(planChanged([a, b], [{ ...a }, { ...b, after: [] }]), false);
+  for (const changed of [{ ...a, text: "Changed" }, { ...a, waits: "CI" }, { ...a, since: T1 }, { ...a, after: [] }, { ...a, accept: true as const }]) assert.deepEqual(changedItemPlan([a, b], [changed, b]), [changed]);
+  assert.deepEqual(changedItemPlan([a, b], [a, { ...b, own: true }]), [{ ...b, own: true }]);
 });
 
 const hour = 60 * 60 * 1000, start = Date.parse(T0);
 const timeAt = (hours: number) => new Date(start + hours * hour).toISOString();
 function activeBoard(): Snapshot {
-  const s = snapshot({ quiet: { status: "wip", priority: "P1" }, other: { status: "todo", priority: "P1", group: "Second" } });
-  s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0, other: timeAt(3) } };
-  return s;
+  const s = snapshot({ quiet: { plan: workPlan([step("work", "doing")]) }, other: { group: "Second" } });
+  s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0, other: timeAt(3) } }; return s;
 }
-const hasStalled = (s: Snapshot, id = "quiet", hours = 3) => rules(s, start + hours * hour).checks(id).some(c => c.text.includes("活跃时间"));
+const hasStalled = (s: Snapshot, id = "quiet", hours = 3) => rules(s, start + hours * hour).checks(id).some(c => c.label === STALLED_LABEL);
 
-test("stalled checks count the union of board-active windows, with an inclusive two-hour threshold", () => {
-  const s = activeBoard();
-  assert.equal(hasStalled(s), true, "another project wrote throughout three quiet hours");
-  assert.equal(hasStalled(s, "quiet", 2 - 1 / hour), false);
-  assert.equal(hasStalled(s, "quiet", 2), true);
-  delete s.activity;
-  assert.equal(hasStalled(s), false, "the board-wide silent interval stops every clock");
-  s.activity = { writes: Array.from({ length: 20 }, () => T0), items: {} };
-  assert.equal(hasStalled(s), false, "overlapping writes do not multiply active time");
-  s.activity.writes.push(timeAt(3));
-  assert.equal(hasStalled(s), false, "a write at now does not retroactively fill silence");
-  s.activity.writes = [T0, timeAt(1), timeAt(2), timeAt(3)];
-  assert.equal(hasStalled(s, "quiet", 3.5), true, "four separated half-hour windows total two hours");
+test("stall time is the union of active windows, clips silence, and includes the two-hour boundary", () => {
+  const s = activeBoard(); assert.equal(hasStalled(s), true); assert.equal(hasStalled(s, "quiet", 2 - 1 / hour), false); assert.equal(hasStalled(s, "quiet", 2), true);
+  delete s.activity; assert.equal(hasStalled(s), false);
+  s.activity = { writes: Array.from({ length: 20 }, () => T0), items: {} }; assert.equal(hasStalled(s), false);
+  s.activity.writes.push(timeAt(3)); assert.equal(hasStalled(s), false);
+  s.activity.writes = [T0, timeAt(1), timeAt(2), timeAt(3)]; assert.equal(hasStalled(s, "quiet", 3.5), true);
 });
 
-test("each own document change resets a stalled leaf, including historical card or note revisions", () => {
+test("only own changes reset a doing item's clock, including historical card and note revisions", () => {
   const changes: Array<(s: Snapshot) => void> = [
-    s => { s.items.quiet!.updated = timeAt(2); },
-    s => { s.items.quiet!.log.push({ at: timeAt(2), text: "Progress" }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2), rev: 1 }); },
-    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2), state: "sent", rev: 1 }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2), state: "done", rev: 1 }); },
-    s => { s.activity!.items.quiet = timeAt(2); },
-    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2), rev: 1 }); },
+    s => { s.items.quiet!.updated = timeAt(2); }, s => { s.items.quiet!.log.push({ at: timeAt(2), text: "Progress" }); }, s => { s.activity!.items.quiet = timeAt(2); },
+    s => { s.decisions.q = Decision.parse({ item: "quiet", question: "Q", background: "Why", options: [{ key: "A", text: "Go" }], status: "open", updated: timeAt(2), rev: 1 }); },
+    s => { s.notes.n = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2), state: "sent", rev: 1 }); },
+    s => { s.decisions.q = Decision.parse({ item: "quiet", question: "Q", background: "Why", options: [{ key: "A", text: "Go" }], status: "open", updated: T0, rev: 1 }); s.notes.n = Note.parse({ target: "q:q", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2), state: "done", rev: 1 }); },
   ];
-  for (const change of changes) {
-    const s = activeBoard(); assert.equal(hasStalled(s), true);
-    change(s); assert.equal(hasStalled(s), false);
-  }
+  for (const change of changes) { const s = activeBoard(); assert.equal(hasStalled(s), true); change(s); assert.equal(hasStalled(s), false); }
+  const s = activeBoard(); s.items.child = Item.parse({ title: "Child", group: "Default", updated: timeAt(2), plan: workPlan(), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("child")]); assert.equal(hasStalled(s), true, "child progress does not reset the owner's doing clock");
 });
 
-test("records, todo, done, blocked, cancelled and work parents never get stalled flags", () => {
-  for (const status of ["todo", "done", "blocked", "cancelled"] as const) {
-    const s = activeBoard(); s.items.quiet!.status = status; assert.equal(hasStalled(s), false, status);
-  }
-  const s = activeBoard(); delete s.items.quiet!.status; s.items.quiet!.record = true;
-  assert.equal(hasStalled(s), false);
-  delete s.items.quiet!.record;
-  s.items.child = Item.parse({ title: "Child", parent: "quiet", status: "wip", updated: T0, rev: 1 });
-  assert.equal(hasStalled(s), false); assert.equal(hasStalled(s, "child"), true);
+test("a parent with only owned progress has no clock, but its own doing step has one", () => {
+  const s = activeBoard(); s.items.parent = Item.parse({ title: "Parent", group: "Default", plan: workPlan([own("quiet")]), updated: T0, rev: 1 });
+  assert.equal(hasStalled(s, "parent"), false); assert.equal(hasStalled(s), true);
+  s.items.parent!.plan = workPlan([own("quiet"), step("own-work", "doing", { after: [] })]); assert.equal(hasStalled(s, "parent"), true);
+  const r = rules(s, start + 3 * hour); assert.equal(r.stalledBelow("parent"), 2); assert.equal(checkLabel(r.checks("quiet").find(c => c.label === STALLED_LABEL)!), "无人推进"); assert.equal(checkLabel({}), "需核对");
+  for (const fields of [{ record: true, plan: [] }, { plan: workPlan() }, { plan: workPlan([], "done") }, { status: "cancelled" as const }]) { const next = activeBoard(); Object.assign(next.items.quiet!, fields); assert.equal(hasStalled(next), false); }
 });
 
-test("current notice and note write times contribute active windows across projects", () => {
+test("current notice and note write times count as active windows across projects", () => {
   const s = activeBoard(); delete s.activity;
-  for (let i = 0; i < 6; i++) s.notices["notice" + i] = { text: "Changed", author: "Second", at: timeAt(i / 2), rev: 1 };
+  for (let i = 0; i < 6; i++) s.notices["n" + i] = { text: "Changed", author: "Second", at: timeAt(i / 2), rev: 1 };
+  assert.equal(hasStalled(s), true); s.notices = {};
+  for (let i = 0; i < 6; i++) s.notes["n" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
   assert.equal(hasStalled(s), true);
-  s.notices = {};
-  for (let i = 0; i < 6; i++) s.notes["note" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
-  assert.equal(hasStalled(s), true);
 });
 
-
-test("step rules render markers, elapsed whole days and done ratio excluding dropped steps", () => {
-  const steps = [
-    { id: "done", text: "Checks pass #341", state: "done" as const, doneAt: T0 },
-    { id: "doing", text: "Review complete", state: "doing" as const, since: T0, waits: "Owner" },
-    { id: "todo", text: "Merged", state: "todo" as const },
-    { id: "dropped", text: "Old approach", state: "dropped" as const, droppedAt: T1, reason: "Replaced" },
-  ];
-  const s = snapshot({ item: { steps }, record: { record: true, steps }, empty: {}, onlyDropped: { steps: [steps[3]!] } });
-  const r = rules(s, Date.parse(T2));
-  assert.deepEqual(r.stepsRatio("item"), { done: 1, total: 3 });
-  assert.deepEqual(r.stepsRatio("record"), { done: 1, total: 3 });
-  assert.deepEqual(r.stepsRatio("empty"), { done: 0, total: 0 });
-  assert.deepEqual(r.stepsRatio("onlyDropped"), { done: 0, total: 0 });
-  assert.equal(r.statusOf("item"), "todo", "steps do not derive work status");
-  assert.equal(r.statusOf("record"), undefined);
-  assert.deepEqual(steps.map(r.stepLine), ["✓ Checks pass #341 (10-10)", "● Review complete — 2 天，等 Owner", "○ Merged", "✗ Old approach — Replaced"]);
-  assert.equal(rules(s, Date.parse(T1) - 1).stepDays(steps[1]!), 0, "whole-day boundary");
-  assert.equal(rules(s, Date.parse(T1)).stepDays(steps[1]!), 1);
-  assert.equal(rules(s, Date.parse(T0) - 1).stepDays(steps[1]!), 0, "future since clamps to zero");
-  assert.equal(r.stepDays(steps[2]!), 0);
+test("step text and days retain state markers, dates, waits and whole-day boundaries", () => {
+  const rows = [step("Done", "done"), step("Doing", "doing", { waits: "CI" }), step("Todo"), step("Dropped", "dropped")], s = snapshot({ a: {} }), r = rules(s, Date.parse(T2));
+  assert.deepEqual(rows.map(r.stepLine), ["✓ Done (10-10)", "● Doing — 2 天，等 CI", "○ Todo", "✗ Dropped — Replaced"]);
+  assert.equal(rules(s, Date.parse(T1) - 1).stepDays(rows[1]!), 0); assert.equal(rules(s, Date.parse(T1)).stepDays(rows[1]!), 1); assert.equal(rules(s, Date.parse(T0) - 1).stepDays(rows[1]!), 0);
 });
 
-test("stored step schemas require state dates and dropped reasons but old items omit steps", () => {
-  assert.equal(Object.hasOwn(Item.parse({ title: "Old", updated: T0, rev: 1 }), "steps"), false);
-  const spaced = { id: "spaced", text: "  Exact step text  ", state: "dropped" as const, reason: "  Exact reason  ", waits: "  Exact wait  ", droppedAt: T0 };
-  assert.deepEqual(ItemStep.parse(spaced), spaced, "schema reads preserve prose exactly");
-  for (const [state, date] of [["done", "doneAt"], ["doing", "since"], ["dropped", "droppedAt"]] as const) {
-    const input = { id: "x", text: "Result", state, ...(state === "dropped" ? { reason: "No longer needed" } : {}) };
-    assert.equal(ItemStepInput.safeParse(input).success, true);
-    assert.equal(ItemStep.safeParse(input).success, false);
-    assert.equal(ItemStep.safeParse({ ...input, [date]: T0 }).success, true);
-    assert.equal(ItemStepInput.safeParse({ ...input, [date]: T0 }).success, false, "callers cannot set server dates");
-  }
-  assert.equal(ItemStepInput.safeParse({ id: "x", text: "Result", state: "dropped", reason: " " }).success, false);
-  assert.equal(Item.safeParse({ title: "Bad", updated: T0, rev: 1, steps: [{ id: "same", text: "A", state: "todo" }, { id: "same", text: "B", state: "todo" }] }).success, false);
+test("targets retain required text, exact prose, server dates and unique goal ids", () => {
+  const input = { id: "style", goal: "  apollo11 style time  ", target: "  ≤ 1 倍 Chromium  ", current: "  12 倍 Chromium  ", baseline: "  Chromium 同机同页  " }, stored = { ...input, date: T0 };
+  assert.deepEqual(ItemTargetInput.parse(input), input); assert.equal(ItemTarget.safeParse(input).success, false); assert.deepEqual(ItemTarget.parse(stored), stored); assert.equal(ItemTargetInput.safeParse(stored).success, false);
+  for (const field of ["goal", "target", "current", "baseline"] as const) for (const value of [undefined, "", " \n "]) assert.equal(ItemTargetInput.safeParse({ ...input, [field]: value }).success, false);
+  assert.equal(Item.safeParse({ title: "Bad", group: "Default", plan: workPlan(), updated: T0, rev: 1, targets: [stored, stored] }).success, false);
+  assert.equal(Object.hasOwn(snapshot({ a: {} }).items.a!, "targets"), false);
+  assert.equal(stampItemTarget(input, undefined, T0).date, T0); assert.equal(stampItemTarget({ ...input, goal: "New" }, stored, T1).date, T0); assert.equal(stampItemTarget({ ...input, current: "New" }, stored, T1).date, T1);
 });
 
-test("step freshness compares full values by stable id and separates reorder or removal from changed lines", () => {
-  const a = { id: "a", text: "A", state: "doing" as const, since: T0 };
-  const b = { id: "b", text: "B", state: "done" as const, doneAt: T1 };
-  assert.deepEqual(changedItemSteps(undefined, [a, b]), [a, b]);
-  assert.deepEqual(changedItemSteps([a, b], [b, a]), []);
-  assert.equal(stepsChanged([a, b], [b, a]), true);
-  assert.deepEqual(changedItemSteps([a, b], [b]), []);
-  assert.equal(stepsChanged([a, b], [b]), true);
-  assert.equal(stepsChanged(undefined, []), false);
-  assert.equal(stepsChanged([a, b], [{ ...a }, { ...b }]), false);
-  for (const changed of [{ ...a, text: "Revised A" }, { ...a, waits: "CI" }, { ...a, since: T1 }, { ...a, doneAt: T1 }, { ...a, reason: "Changed context" }]) {
-    assert.deepEqual(changedItemSteps([a, b], [changed, b]), [changed]);
-    assert.equal(stepsChanged([a, b], [changed, b]), true);
-  }
-});
-
-test("target schemas require all text and stored dates while preserving prose and old items", () => {
-  const input = { id: "style", goal: "  apollo11 style time  ", target: "  ≤ 1 倍 Chromium  ", current: "  12 倍 Chromium  ", baseline: "  Chromium 同机同页  " };
-  assert.equal(Object.hasOwn(Item.parse({ title: "Old", updated: T0, rev: 1 }), "targets"), false);
-  assert.deepEqual(ItemTargetInput.parse(input), input, "schema reads preserve prose exactly");
-  assert.equal(ItemTarget.safeParse(input).success, false, "stored targets need a measurement date");
-  const stored = { ...input, date: T0 };
-  assert.deepEqual(ItemTarget.parse(stored), stored);
-  assert.equal(ItemTargetInput.safeParse(stored).success, false, "callers cannot provide dates");
-  assert.equal(ItemTarget.safeParse({ ...input, date: "2026-10-10" }).success, false, "stored dates use server UTC timestamps");
-  for (const field of ["goal", "target", "current", "baseline"] as const) {
-    for (const value of [undefined, "", " \n "]) assert.equal(ItemTargetInput.safeParse({ ...input, [field]: value }).success, false, `${field} must be present and nonempty`);
-  }
-  assert.equal(Item.safeParse({ title: "Bad", updated: T0, rev: 1, targets: [stored, stored] }).success, false, "duplicate stable ids are refused on read too");
-});
-
-test("target lines are compact and target numbers do not derive work or record status", () => {
-  const target = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页", date: T0 };
-  assert.equal(targetLine(target), "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-10");
-  assert.equal(targetLine({ ...target, goal: "  apollo11\n样式计算耗时  ", current: " 12\t倍 Chromium ", baseline: "Chromium\n同机同页", target: "≤ 1\r\n倍 Chromium" }), targetLine(target));
-  const s = snapshot({ item: { targets: [target] }, record: { record: true, targets: [target] } }), r = rules(s);
-  assert.equal(r.statusOf("item"), "todo"); assert.equal(r.statusOf("record"), undefined);
-});
-
-test("target freshness compares full values by stable id and separates reorder or removal from changed rows", () => {
+test("target text is compact and does not affect status, and freshness uses full values by goal id", () => {
   const a = { id: "a", goal: "A", target: "1× main", current: "2× main", baseline: "main", date: T0 }, b = { ...a, id: "b", goal: "B" };
-  assert.deepEqual(changedItemTargets(undefined, [a, b]), [a, b]);
-  assert.deepEqual(changedItemTargets([a, b], [b, a]), []);
-  assert.equal(targetsChanged([a, b], [b, a]), true);
-  assert.deepEqual(changedItemTargets([a, b], [b]), []);
-  assert.equal(targetsChanged([a, b], [b]), true);
-  assert.equal(targetsChanged(undefined, []), false);
+  assert.equal(targetLine(a), "A: 2× main (vs main) → 1× main, 2026-10-10"); assert.equal(targetLine({ ...a, goal: "  A\n " }), targetLine(a));
+  const r = rules(snapshot({ work: { targets: [a] }, record: { record: true, targets: [a] } })); assert.equal(r.statusOf("work"), "todo"); assert.equal(r.statusOf("record"), undefined);
+  assert.deepEqual(changedItemTargets(undefined, [a, b]), [a, b]); assert.deepEqual(changedItemTargets([a, b], [b, a]), []); assert.equal(targetsChanged([a, b], [b, a]), true);
+  assert.deepEqual(changedItemTargets([a, b], [b]), []); assert.equal(targetsChanged([a, b], [b]), true); assert.equal(targetsChanged(undefined, []), false);
   assert.equal(targetsChanged([a, b], [{ ...a }, { ...b }]), false);
-  for (const changed of [{ ...a, goal: "Revised A" }, { ...a, target: "≤ 1× main" }, { ...a, current: "1× main" }, { ...a, baseline: "Chrome" }, { ...a, date: T1 }, { ...a, id: "new" }]) {
-    assert.deepEqual(changedItemTargets([a, b], [changed, b]), [changed]);
-    assert.equal(targetsChanged([a, b], [changed, b]), true);
-  }
-});
-
-test("the stalled check carries the visible label 无人推进 while other checks keep 需核对, and parents count stalled leaves below", () => {
-  const s = activeBoard();
-  s.items.child = Item.parse({ title: "Child", parent: "quiet", status: "wip", updated: T0, rev: 1 });
-  s.items.child2 = Item.parse({ title: "Child 2", parent: "quiet", status: "wip", updated: T0, rev: 1 });
-  s.items.fresh = Item.parse({ title: "Fresh", parent: "quiet", status: "wip", updated: timeAt(2.9), rev: 1 });
-  const r = rules(s, start + 3 * hour), stalled = r.checks("child").find(c => c.text.includes("活跃时间"))!;
-  assert.equal(stalled.label, STALLED_LABEL); assert.equal(checkLabel(stalled), "无人推进");
-  assert.equal(checkLabel({}), "需核对", "a check without its own label is 需核对");
-  assert.ok(r.checks("child").filter(c => c.text !== stalled.text).every(c => checkLabel(c) === "需核对"), "checks() returns copies, so compare by text");
-  assert.equal(r.stalledBelow("quiet"), 2, "the folded parent counts child and child2 but not the recently changed fresh");
-  assert.equal(r.stalledBelow("child"), 1); assert.equal(r.stalledBelow("fresh"), 0); assert.equal(r.stalledBelow("other"), 0);
+  for (const changed of [{ ...a, goal: "New" }, { ...a, target: "New" }, { ...a, current: "New" }, { ...a, baseline: "New" }, { ...a, date: T1 }, { ...a, id: "new" }]) { assert.deepEqual(changedItemTargets([a, b], [changed, b]), [changed]); assert.equal(targetsChanged([a, b], [changed, b]), true); }
 });
 
 test("log entries never count as owner-unread: one rule drops the log and names log-only change summaries", () => {
