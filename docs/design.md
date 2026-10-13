@@ -913,7 +913,9 @@ Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-Each tree row stays on one line: caret, status glyph (✓ ● ○ ⏸ ✗ as on plan
+A tree row's right-hand counts show only open parts (todo, in progress,
+blocked); done and cancelled parts are not counted there, and a cancelled
+item shows no check tags. Each tree row stays on one line: caret, status glyph (✓ ● ○ ⏸ ✗ as on plan
 rows, with the status name as its tooltip; a record keeps its 记录 tag),
 priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
