@@ -1132,21 +1132,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     b.addEventListener("click", ev => { ev.stopPropagation(); if (card) followCard(d.id); else follow(d.id); }); return b;
   }
 
-  // One line per project group: how much open work there waits on other projects, and how much waits on it.
-  function crossSummary(g: string) {
-    const out = new Map<string,number>(), inn = new Map<string,number>();
-    state.items.forEach(w => {
-      if (ended(w) || inArchive(w)) return;
-      openDeps(w).forEach(d => {
-        const gw = groupOf(w), gd = groupOf(d);
-        if (gw === gd) return;
-        if (gw === g) out.set(gd, (out.get(gd) || 0) + 1);
-        if (gd === g) inn.set(gw, (inn.get(gw) || 0) + 1);
-      });
-    });
-    const name = (x: string) => plain(x) || "其他";
-    return [...out].map(([k, n]) => "等 " + name(k) + " " + n).concat([...inn].map(([k, n]) => "被 " + name(k) + " 等 " + n)).join(" · ");
-  }
   // Comments are kept in the board's own store; the owner writes them inline and sends the batch at once.
   const EXPLAIN = "请详细解释这一项。";
   function titleOf(key: string) {
@@ -1879,8 +1864,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       box.id = "group-" + gi;
       box.dataset.group=g.name;
       const gh = el("h2", "group-head", inline(g.name || "其他"));
-      const xs = crossSummary(g.name);
-      if (xs) { const x = el("button", "xdeps", esc(xs)); x.type = "button"; x.title = "只看跨项目依赖"; x.addEventListener("click", () => setDepFilter(g.name, "cross")); gh.appendChild(x); }
       box.appendChild(gh);
       if (!partial) { const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl); }
       const requests = derived.inbox(g.name);
@@ -2174,8 +2157,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const box=get("group-"+i); if (!box) return;
       const filters=[...box.children].find(e => e.classList.contains("grp-filters")); if (filters) filters.replaceWith(filterRow(g.name));
       const head=box.children[0] as HTMLElement | undefined; if (!head) return;
-      const next=el("h2","group-head",inline(g.name || "其他")), summary=crossSummary(g.name);
-      if (summary) { const button=el("button","xdeps",esc(summary)); button.type="button"; button.title="只看跨项目依赖"; button.addEventListener("click",() => setDepFilter(g.name,"cross")); next.appendChild(button); }
+      const next=el("h2","group-head",inline(g.name || "其他"));
       head.replaceWith(next);
     });
     const order=stops().map(s => s.id);
