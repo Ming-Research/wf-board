@@ -1673,8 +1673,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
             if (inlineOpen[home.id]) jump("q-" + home.id); else renderNow("card:" + home.id);
           };
           toggle.addEventListener("click", flip);
-          // The whole row folds and unfolds the card, so a click beside a wrapped question still acts; controls inside
-          // the row, such as a glossary term, keep their own action.
+          // The whole row folds and unfolds the card, so a click beside a wrapped question still acts; links and buttons
+          // inside the row keep their own action.
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) flip(ev); });
           main.appendChild(toggle);
