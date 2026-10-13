@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <style>
-/* The page is always the split view: the item tree on the left, the selected item's detail on the right. */
+/* The selected item's detail opens beside the tree; with no selection the tree fills the page. */
 :root {
   --bg: #f3f5f4;
   --surface: #ffffff;
@@ -70,11 +70,12 @@
 body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; padding-inline: 16px; padding-block: 0 64px; }
 .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
 .page-left { min-width: 0; display: flex; flex-direction: column; gap: 26px; }
-/* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the detail pane are each
-   their own scroll container, so each scrollbar sits at the right edge of its own pane. */
+/* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the selected item's detail
+   scroll independently; without a selection the list fills the frame. */
 body.wide { margin: 0; padding-inline: 8px; padding-block: 0; height: 100dvh; display: flex; flex-direction: column; overflow-y: hidden; }
 body.wide #server-banner { flex: none; }
 body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 0; }
+body.wide .wrap.detail-collapsed { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 
 #split-divider { cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
 #split-divider:hover { background-color: var(--accent); }
@@ -362,7 +363,7 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 <body class="wide">
 <div id="server-banner" role="alert" hidden></div>
 <div id="hint" role="status" hidden></div>
-<div class="wrap">
+<div class="wrap detail-collapsed">
   <div class="page-left" id="page-left">
   <header class="top">
     <div class="eyebrow" id="eyebrow">状态看板</div>
@@ -387,8 +388,8 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
     <span id="send-note"></span>
   </footer>
   </div>
-  <div id="split-divider"></div>
-  <aside id="item-detail" aria-label="条目正文"></aside>
+  <div id="split-divider" hidden></div>
+  <aside id="item-detail" aria-label="条目正文" hidden></aside>
 </div>
 
 

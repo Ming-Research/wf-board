@@ -454,8 +454,11 @@ snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
 the owner's notes, reads and archive actions to `/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
-The page always has two columns: there is no single-column layout, and
-viewport width never changes it. It uses the full window with compact tree
+The page shows two columns while an item is selected. With no selected item,
+the right column and divider collapse and the tree uses the full width.
+Selecting an item opens its detail again at the last dragged column width;
+there is no layout toggle, and viewport width never changes whether detail is open.
+It uses the full window with compact tree
 margins and equal, smaller detail side padding.
 The left column contains the header, summary and
 navigation, project groups and filters, and the nested item tree.
@@ -486,7 +489,7 @@ accessibility labels retain their full meaning, and a purple or red chip leads
 to the first such wait. The purple differs from the light-purple 卡住 status
 styling, which is unchanged.
 Every 新 chip shows only its number, including detail headlines and cards.
-The existing ☰ menu help keeps its shortcut sentence and explains
+The existing ☰ menu help states which shortcuts require a selection and explains
 only the blue new-content number, the purple and red wait numbers and
 right-side status-colored leaf counts alongside its keyboard actions.
 
@@ -532,16 +535,20 @@ The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by 被依赖, head text, data, 依赖, 进展 steps, collapsed 日志, ask, open cards, shown ruled cards,
 checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
-cancelled items, except a dependency row marked as added. With no selection the column says
-“点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
+cancelled items, except a dependency row marked as added. Clicking blank space
+clears both the tree highlight and the detail selection and collapses the right column.
+Clicks on controls or the divider and drags that select text preserve selection.
+All change marks, fresh lines, notes and
 replies retain their meanings. Selection inside the detail column retains
 the existing item, log, dependency, card and note selection keys and actions.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
 
-Enter on a focused head selects its item; j/k move focus. Actions use the
-current selection, falling back to the selected item or the top visible tree
-row.
+Enter on a focused head selects its item; j/k move focus without opening detail.
+Reading and archiving require a current selection or a selected detail item;
+with neither, they read or archive nothing. Comment and explain actions fall
+back to the selected detail item or the top visible tree row. After clearing
+selection, j/k followed by Enter or an unread/wait jump opens detail again.
 
 `n`, `N` and 新 chips select the stop's item, unfold its
 ancestors and bring its tree row into view, then scroll the right column to
