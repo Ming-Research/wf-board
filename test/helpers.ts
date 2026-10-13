@@ -10,7 +10,7 @@ export const author = "Whitefoot";
 /** Projects are migrated unless `unmigrated` writes board.yaml without the field, as the legacy rules read it. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }].map(p => options.unmigrated ? p : { ...p, migrated: true }) } });
   const item = (title: string, fields: object = {}) => ({ title, priority: "P1", status: "todo", updated: at, ...fields });
   // A migrated board stores priority only on roots, as update_project's migration leaves it.
