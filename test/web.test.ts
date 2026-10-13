@@ -1183,14 +1183,63 @@ test("prose and priority updates preserve sibling cards and owned rows remain in
   assert.equal(rowOf(p,"area").querySelector(".counts .done"),null,"a finished part is not counted on its owner's row");
   const open=rowOf(p,"area").querySelectorAll(".counts .st"); assert.equal(open.length,1,"the sibling still open is counted"); assert.equal(open[0]!.innerHTML,"1");
 });
-test("send waits for optimistic draft acknowledgement and refuses to send a failed draft", async t => {
+test("send hides the chosen card immediately, waits for draft acknowledgement and restores a failed draft", async t => {
   for(const failed of [false,true]) await t.test(failed ? "failure" : "acknowledgement",async()=> {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); s.decisions.q=card();
     const p=await page(s,[],null,undefined,{clock,response:(path,_body,init)=>init.method && init.method !== "GET" && path !== "/api/send" ? hold.promise : undefined}); await expand(p);
     const click=option(p,"A").click(), sending=p.roots.get("send-all")!.click(); await settle();
+    assert.equal(p.document.getElementById("q-q")!.hidden,true,"the card hides before the draft server answers");
     assert.equal(p.calls.filter(c=>c.path === "/api/send").length,0,"visible pending draft must settle first");
     if(failed) hold.reject(new Error("Draft refused")); else hold.resolve(reply({note:{id:"persisted",doc:{target:"q:q",kind:"choice",choice:"A",text:"选 A",at,state:"draft",rev:1}},deleted:[],commit:"c".repeat(40)}));
     await click; await sending; await p.flush(); assert.equal(p.calls.filter(c=>c.path === "/api/send").length,failed ? 0 : 1);
+    if (failed) {
+      assert.equal(p.document.getElementById("q-q")!.hidden,false,"failed draft restores the card");
+      assert.equal(option(p,"A").classList.contains("sel"),false,"failed choice restores the previous unselected state");
+      assert.equal(option(p,"A").disabled,false);
+      assert.equal(cardSend(p).disabled,true,"no failed choice becomes sendable");
+      shownInHint(p,/Draft refused/);
+    }
+  });
+});
+
+test("card send hides before send acknowledgement and restores its exact choice and comments on refusal", async () => {
+  assert.match(await readFile("web/index.html","utf8"),/\.card\[hidden\]\s*\{\s*display:\s*none\s*;/,"card flex styling must not override the hidden state");
+  const s=snapshot(), hold=deferred<FakeResponse>(); s.decisions.q=card();
+  s.notes.choice={target:"q:q",kind:"choice",choice:"B",text:"选 B",at,state:"draft",rev:1};
+  s.notes.comment={target:"q:q",kind:"comment",text:"Card detail",at,state:"draft",rev:1};
+  s.notes.other={target:"it:child",kind:"comment",text:"Unrelated",at,state:"draft",rev:1};
+  const p=await page(s,[],null,undefined,{notesOpen:{"q:q":true,"it:child":true},response:path=>path === "/api/send" ? hold.promise : undefined}); await expand(p); await p.flush();
+  const before=markup(p.document.getElementById("q-q")!), unrelated=markup(p.document.getElementById("note-other")!);
+  const sending=cardSend(p).click();
+  assert.equal(p.document.getElementById("q-q")!.hidden,true,"hide synchronously before any server response");
+  assert.equal(markup(p.document.getElementById("note-other")!),unrelated,"scoped send leaves other drafts alone");
+  await settle();
+  assert.deepEqual(p.calls.find(c=>c.path === "/api/send")!.body,{ids:["choice","comment"]});
+  hold.reject(new Error("Send refused")); await sending; await p.flush();
+  assert.equal(p.document.getElementById("q-q")!.hidden,false);
+  assert.equal(markup(p.document.getElementById("q-q")!),before,"choice, note text and draft controls return exactly");
+  shownInHint(p,/Send refused/);
+});
+
+test("comment, explain and send-all show sent immediately and restore only their affected drafts on failure", async t => {
+  for (const action of ["comment","explain","all"] as const) await t.test(action,async()=> {
+    const s=snapshot(), hold=deferred<FakeResponse>();
+    s.notes.comment={target:"it:child",kind:"comment",text:"Comment text",at,state:"draft",rev:1};
+    s.notes.explain={target:"it:child",kind:"explain",text:"请详细解释这一项。",at,state:"draft",rev:1};
+    const p=await page(s,[],null,undefined,{notesOpen:{"it:child":true},response:path=>path === "/api/send" ? hold.promise : undefined}); await expand(p); await p.flush();
+    const beforeComment=markup(p.document.getElementById("note-comment")!), beforeExplain=markup(p.document.getElementById("note-explain")!);
+    const sending=(action === "all" ? p.roots.get("send-all")! : noteButton(p,action,"发送")!).click();
+    const selected=action === "all" ? ["comment","explain"] : [action];
+    for (const id of selected) {
+      assert.match(markup(p.document.getElementById("note-"+id)!),/已发送，等处理/,"mark sent before the server answers");
+      assert.equal(noteButton(p,id,"发送"),undefined,"pending sends cannot be clicked twice");
+    }
+    if (action === "comment") assert.equal(markup(p.document.getElementById("note-explain")!),beforeExplain);
+    if (action === "explain") assert.equal(markup(p.document.getElementById("note-comment")!),beforeComment);
+    await settle(); hold.reject(new Error("Send refused")); await sending; await p.flush();
+    assert.equal(markup(p.document.getElementById("note-comment")!),beforeComment);
+    assert.equal(markup(p.document.getElementById("note-explain")!),beforeExplain);
+    shownInHint(p,/Send refused/);
   });
 });
 
@@ -3004,10 +3053,16 @@ test("send waits for draft text saves and stops after a failed save", async t =>
     assert.equal(noteButton(p, "d", "删除")!.disabled, true);
     const sending = p.roots.get("send-all")!.click(); await settle();
     assert.equal(p.calls.filter(c => c.path === "/api/send").length, 0);
+    assert.match(markup(p.document.getElementById("note-d")!),/已发送，等处理/,"pending text acknowledgement does not delay the visual send");
     if (failed) hold.reject(new Error("Edit refused"));
     else hold.resolve(reply({note: {id: "d", doc: {...s.notes.d, text: "Edited", rev: 2}}, deleted: [], commit: "c".repeat(40)}));
     await saving; await sending; await p.flush();
     assert.equal(p.calls.filter(c => c.path === "/api/send").length, failed ? 0 : 1);
+    if (failed) {
+      assert.equal(p.document.getElementById("edit-draft-d")!.value,"Edited","failed save restores the editor and unsaved text");
+      assert.equal(noteButton(p,"d","删除")!.disabled,false);
+      shownInHint(p,/Edit refused/);
+    }
   });
 });
 

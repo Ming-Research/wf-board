@@ -70,6 +70,39 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 interface Work { moved?: string[]; id: string; kind: Put["kind"] | "board"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
+/** Required checks depend on plan structure and open status, not logs or display
+ * metadata. Follow status changes backwards through both graphs, then include
+ * the targets whose ownership requirement can change when a waiter opens.
+ * Both graphs matter when rows or card/note targets are removed or replaced.
+ */
+function requiredCheckItems(before: Snapshot, after: Snapshot, work: Work, oldRules: ReturnType<typeof rules>, newRules: ReturnType<typeof rules>): Set<string> {
+  if (work.board) return new Set(Object.keys(after.items));
+  const affected = new Set<string>();
+  const itemInputs = (it: Item | undefined) => it && { group: it.group, record: it.record, status: it.status, plan: it.plan, ask: it.ask };
+  const noteInputs = (note: Note | undefined) => note && { target: note.target, kind: note.kind, state: note.state, text: note.text, answerText: note.answerText };
+  const card = (key: string) => {
+    for (const s of [before, after]) { const owner = s.decisions[key]?.item; if (owner) affected.add(owner); }
+    for (const r of [oldRules, newRules]) for (const waiter of r.cardDependents(key)) affected.add(waiter.id);
+  };
+  for (const put of work.puts) {
+    if (put.kind === "item") {
+      if (!isDeepStrictEqual(itemInputs(before.items[put.id]), itemInputs(after.items[put.id]))) affected.add(put.id);
+    } else if (put.kind === "decision") {
+      if (!isDeepStrictEqual(before.decisions[put.id], after.decisions[put.id])) card(put.id);
+    } else if (put.kind === "note" && !isDeepStrictEqual(noteInputs(before.notes[put.id]), noteInputs(after.notes[put.id]))) {
+      for (const s of [before, after]) {
+        const target = s.notes[put.id]?.target;
+        if (target?.startsWith("it:")) affected.add(target.slice(3));
+        else if (target?.startsWith("q:")) card(target.slice(2));
+      }
+    }
+  }
+  // Set iteration visits newly added members too, giving a transitive closure.
+  for (const id of affected) for (const r of [oldRules, newRules]) for (const waiter of r.dependents(id)) affected.add(waiter.id);
+  const checked = new Set(affected);
+  for (const id of affected) for (const s of [before, after]) for (const row of s.items[id]?.plan ?? []) if ("item" in row) checked.add(row.item);
+  return checked;
+}
 /** The document this operation already wrote for an item, else the snapshot's. */
 function docOf(s: Snapshot, puts: Put[], id: string, field = "id"): Item {
   return (puts.find(p => p.kind === "item" && p.id === id)?.doc as Item | undefined) ?? requireItem(s, id, field);
@@ -144,7 +177,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (!anyAuthor) requireAuthor(s, a.author);
         // Validate the prospective board, including indirect effects on children,
         // dependents and items whose owner actions a card/note write changes.
-        const next = structuredClone(s);
+        // snapshot() freezes every document. Only these collection slots change;
+        // copying all existing plans and logs is unnecessary for a prospective write.
+        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, notices: { ...s.notices }, glossaries: { ...s.glossaries } };
         if (work.board) next.board = parse(Board, work.board);
         for (const put of work.puts) {
           if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
@@ -198,7 +233,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           }
         }
         const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
+        const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
         for (const id of Object.keys(next.items)) {
+          if (!checked.has(id)) continue;
           const oldChecks = new Set(beforeRules.checks(id).map(c => JSON.stringify(c)));
           for (const check of afterRules.checks(id)) {
             if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {

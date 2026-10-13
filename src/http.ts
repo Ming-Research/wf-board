@@ -138,8 +138,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The (item, check text) pairs flagged now; a pair absent from it that appears emits one "check" event.
   // Seeded at start without emitting, so a restart does not announce every standing check.
   let flagged = new Set<string>();
-  function scanChecks(announce: boolean) {
-    const s = store.snapshot(), r = rules(s, now()), next = new Set<string>();
+  function scanChecks(announce: boolean, s = store.snapshot()) {
+    const r = rules(s, now()), next = new Set<string>();
     for (const id of Object.keys(s.items)) {
       if (!r.isOpenWork(id)) continue;
       for (const c of r.checks(id)) {
@@ -172,7 +172,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         wake({event:"note",note:doc.id,target:n.target,kind:n.kind,title:card?.question ?? s.items[item]?.title ?? n.target,project:r.projectOf(item)});
       }
     }
-    scanChecks(true);
+    scanChecks(true, s);
     const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: s.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
     for (const stream of streams) stream.write(data);
   });

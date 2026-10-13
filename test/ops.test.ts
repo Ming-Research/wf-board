@@ -718,6 +718,54 @@ test("ownership, missing targets and cycles are refused without changing the sna
   assert.deepEqual(store.snapshot(), before);
 });
 
+test("required validation skips unrelated items for log and local plan writes", async t => {
+  const { store, op } = await board(t);
+  const snapshot = store.snapshot.bind(store);
+  let unrelatedChecks = 0;
+  t.mock.method(store, "snapshot", () => {
+    const s = snapshot(), unrelated = { ...s.items.other! };
+    // checks() reads provisional; ownership, priority and status do not. The
+    // accessor observes visits without adding a production instrumentation API.
+    Object.defineProperty(unrelated, "provisional", { enumerable: true, get() { unrelatedChecks++; return undefined; } });
+    return { ...s, items: { ...s.items, other: unrelated } };
+  });
+  await op.appendLog({ author, id: "a", text: "New evidence" });
+  assert.equal(unrelatedChecks, 0, "an unrelated check is not revisited for a log-only write");
+  await op.setPlan({ author, id: "a", row: { id: "local", text: "Own implementation", state: "todo" } });
+  assert.equal(unrelatedChecks, 0, "a changed plan checks its affected graph, not unrelated items");
+});
+
+test("reopening a waiter refuses a new ownership violation on its unwritten shared target", async t => {
+  const { store, op, dir } = await board(t);
+  const acceptance = [{ id: "accept", accept: true, text: "Check passes", state: "todo" as const }];
+  await store.commit({ author: "Fixture", message: "Closed waiter and loose work", puts: [
+    { kind: "item", id: "loose", expectRev: null, doc: { title: "Loose work", group: author, plan: acceptance, updated: at } },
+    { kind: "item", id: "waiter", expectRev: null, doc: { title: "Cancelled waiter", group: author, status: "cancelled", plan: [{ id: "loose", item: "loose", own: false }, ...acceptance], updated: at } },
+  ] });
+  const before = store.snapshot();
+  assert.equal(before.items.loose!.priority, undefined, "priority cleanup must not turn the target into a written item");
+  assert.ok(!rules(before).checks("loose").some(c => c.text.includes("没有条目拥有")));
+  await assert.rejects(op.setStatus({ author, id: "waiter", status: "open", log: "Resume waiting" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual((await Store.open(dir)).snapshot(), before, "refusal preserves documents, revisions and head on disk too");
+});
+
+test("reopening a child refuses a new ownership violation on its unwritten status ancestor", async t => {
+  const { store, op, dir } = await board(t);
+  const acceptance = (state: "done" | "todo") => ({ id: "accept", accept: true, text: "Check passes", state, ...(state === "done" ? { doneAt: at } : {}) });
+  await store.commit({ author: "Fixture", message: "Closed shared target with a cancelled part", puts: [
+    { kind: "item", id: "part", expectRev: null, doc: { title: "Cancelled part", group: author, status: "cancelled", plan: [acceptance("todo")], updated: at } },
+    { kind: "item", id: "loose", expectRev: null, doc: { title: "Completed shared target", group: author, plan: [{ id: "part", item: "part", own: true }, acceptance("done")], updated: at } },
+    { kind: "item", id: "waiter", expectRev: null, doc: { title: "Open waiter", group: author, priority: "P1", plan: [{ id: "loose", item: "loose", own: false }, acceptance("todo")], updated: at } },
+  ] });
+  const before = store.snapshot();
+  assert.equal(rules(before).statusOf("loose"), "done");
+  assert.equal(before.items.loose!.priority, undefined);
+  await assert.rejects(op.setStatus({ author, id: "part", status: "open", log: "Resume part" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+});
+
 test("acceptance naming avoids collisions with valid ordinary rows", async t => {
   const { store, op } = await board(t);
   await op.createItem({ author, key: "collision", group: author, title: "New", priority: "P1", accept: "Pass", plan: [{ id: "accept", text: "Ordinary work", state: "todo" }] });

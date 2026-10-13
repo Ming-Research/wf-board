@@ -21,6 +21,53 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
 async function git(dir: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: dir })).stdout.trim(); }
 const put = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "item" as const, id, doc, expectRev });
 
+test("published snapshots are reused until a write and remain deeply immutable", async t => {
+  const { store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  const before = store.snapshot();
+  assert.strictEqual(store.snapshot(), before, "unchanged reads do not clone every item again");
+  assert.throws(() => { before.items.a!.plan[0]!.after = []; }, TypeError);
+  assert.throws(() => { before.activity!.writes.push(at); }, TypeError);
+  await store.commit({ author: "a", message: "Update", puts: [put("a", item("Changed"), 1)] });
+  const after = store.snapshot();
+  assert.notStrictEqual(after, before);
+  assert.strictEqual(store.snapshot(), after);
+  assert.equal(after.items.a!.title, "Changed");
+  assert.equal(before.items.a!.title, "An item", "publishing later state cannot mutate an earlier snapshot");
+  assert.equal(after.activity!.writes.length, before.activity!.writes.length + 1);
+});
+
+test("published snapshots refresh on owner-only changes and preserve a failed owner's previous state", async t => {
+  const { store } = await setup(t);
+  const before = store.snapshot();
+  store.setOwner({ cursor: before.head });
+  const read = store.snapshot();
+  assert.notStrictEqual(read, before);
+  assert.equal(read.head, before.head);
+  assert.equal(read.owner.cursor, before.head);
+  assert.equal(before.owner.cursor, undefined);
+  assert.strictEqual(store.snapshot(), read);
+  assert.throws(() => { read.owner.cursor = "0".repeat(40); }, TypeError);
+  const internals = store as unknown as { writeOwner(): void };
+  t.mock.method(internals, "writeOwner", () => { throw new Error("owner save failed"); });
+  assert.throws(() => store.setOwner({}), /owner save failed/);
+  assert.strictEqual(store.snapshot(), read, "failed persistence restores the same published owner state");
+});
+
+test("reloading activity invalidates a previously published snapshot without a new commit", async t => {
+  const { store } = await setup(t);
+  const before = store.snapshot();
+  assert.strictEqual(store.snapshot(), before);
+  t.mock.method(store, "log", async () => [{ commit: before.head, parents: [], at, author: "a", message: "Historical work", files: ["items/old.yaml"] }]);
+  await (store as unknown as { loadActivity(): Promise<void> }).loadActivity();
+  const after = store.snapshot();
+  assert.notStrictEqual(after, before);
+  assert.equal(after.head, before.head);
+  assert.deepEqual(after.activity, { writes: [at], items: { old: at } });
+  assert.equal(before.activity?.items.old, undefined);
+  assert.strictEqual(store.snapshot(), after);
+});
+
 test("historical document cache stays bounded, evicts FIFO and rereads unchanged evidence", async t => {
   const { store } = await setup(t);
   const internals = store as unknown as {

@@ -205,6 +205,9 @@ export class Store {
   private readonly blobs: BlobReader;
   /** Last known placement also resolves later changes to notes on a deleted card. */
   private readonly cardItems = new Map<string, string>();
+  // Keep a defensive frozen copy, never expose mutable transaction state. Owner
+  // reads can change without a commit, and startup replaces the activity index.
+  private published?: { state: Snapshot; owner: OwnerState; activity: Snapshot["activity"]; head: string; value: Snapshot };
 
   private constructor(dir: string, state: Snapshot) {
     this.dir = dir;
@@ -433,7 +436,13 @@ export class Store {
     return touched;
   }
 
-  snapshot(): Snapshot { return frozen(structuredClone(this.state)); }
+  snapshot(): Snapshot {
+    const s = this.state, previous = this.published;
+    if (previous?.state === s && previous.owner === s.owner && previous.activity === s.activity && previous.head === s.head) return previous.value;
+    const value = frozen(structuredClone(s));
+    this.published = { state: s, owner: s.owner, activity: s.activity, head: s.head, value };
+    return value;
+  }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const task = this.queue.then(fn);

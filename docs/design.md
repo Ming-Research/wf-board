@@ -1163,6 +1163,12 @@ the "发送" button after a decision card (enabled once the card has a choice
 draft, sending that card's drafts) and under a saved draft comment; the send
 box still sends every draft.
 
+The page immediately hides a card whose choice is being sent and shows the
+affected comments and explain requests as sent, while saving and sending in
+the background. Sending still waits for every pending draft save; a failed
+save prevents sending. A failed save or send restores the previous controls
+and draft text and shows the error; the committed snapshot stays authoritative.
+
 A blocking wait produces `{event:"blocking", kind:"card"|"ask", key, item,
 project, text}` (a card event also carries `question`): when a card is created
 open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
