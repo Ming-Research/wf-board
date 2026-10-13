@@ -1861,3 +1861,87 @@ the board.
   oracle, and for the plan rules a case per derived status, per refused
   ownership or cycle write and per check, each failing on the wrong input.
 - CI on GitHub-hosted runners for every push.
+
+### Three test layers
+
+The page is tested in three layers. Each catches a class of fault the layer
+below cannot see, and a page bug gets its test in the lowest layer that can.
+
+1. **Rules, store and server** (`test/*.test.ts` other than the page test):
+   the board rules, the file format, writes and their checks, the HTTP and
+   MCP surfaces, each against synthetic fixtures.
+2. **The page in a fake DOM** (`test/web.test.ts`): the bundled page runs
+   against a hand-written DOM with modeled geometry and a small synthetic
+   board. It is fast and checks controls, render scopes and scrolling, but it
+   computes no CSS and no real layout, and its fixtures hold few of the real
+   board's shapes.
+3. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
+   `e2e`): headless Chromium (Playwright) loads the real page from the real
+   server (the wiring of `src/main.ts`, in process) on a temporary data
+   repository, so the page talks to the real API and event stream.
+
+The third layer exists because five page bugs in one day passed every test of
+the first two: saving a comment folded the card's comment list and hid its
+send button; the purple and red numbers jumped to another project's card
+after unrelated re-renders; a card row in a plan jumped to another item
+instead of unfolding in place; a global `code` rule kept code blocks out of
+Monaco; an empty pause row sat under every title. None of them shows in a
+fake DOM over a small board.
+
+**The board.** `test/e2e/board-gen.ts` generates a board from a seed; no real
+text is copied. `test/e2e/shapes.ts` names the structural shape categories,
+and `test/board-gen.test.ts` (layer 1) requires every one of them in the
+generated board. The categories come from a survey of the real board on
+2026-10-13: 1522 items in six projects (574 done, 481 todo, 203 cancelled,
+107 blocked, 94 paused of which 87 by inheritance, 56 wip, 7 records);
+ownership up to six levels deep, 27 items owning more than ten; 119 items
+owned under a record; 272 items named by shared rows, 151 of them across
+projects; 707 plans with parallel rows; 596 cards (83 open, 24 open and
+blocking), 6 named by two plans and 8 by three, 66 named by a done item's
+plan, 19 named only by other items' plans, 8 open cards no plan names (one on
+a record), 2 open cards on done items; 754 notes (603 on cards, 201 with
+replies, 23 anchored); 257 heads with code blocks; 28 tags, every item
+tagged. Shapes the real board lacks today but the schema allows and the page
+handles (pending asks, inbox requests, unread notices) are generated too.
+Viewer state is part of the shape: the tests fold comment lists in
+localStorage and unfold every tree row.
+
+**The invariants.** `test/e2e/invariants.ts` clicks every kind of clickable
+thing and compares where the page landed with what the element claims,
+computed independently from the stored board with `src/rules.ts` and the
+server's unread history:
+
+- a tree row's title selects that item and shows its detail;
+- in a plan, an item row goes to its item and 返回 comes back; a card row
+  unfolds that card right under the row and keeps the selected item; a step
+  row selects the step and keeps the item;
+- each 被依赖 row goes to its dependent and 返回 comes back;
+- the purple and red numbers after a title equal the blocking and other waits
+  in the item's owned subtree, and clicking a number as often as it says
+  visits each of those waits once, in its own item;
+- the header's 阻塞 and 决策卡 numbers and the wait panel cover exactly the
+  board's waits;
+- each blue number counts the items under it holding unread content and
+  leads to one of them; 新 counts the unread units; n reaches every item
+  holding unread content and nothing else;
+- each project filter's number counts its matches; pressed, the tree shows
+  every match undimmed and nothing else of the project undimmed;
+- the "/" search lists an item or card first by its short number, and
+  choosing it shows it;
+- a comment saved on a folded list stays in view with its 发送 button, which
+  sends it;
+- code blocks are set in Monaco at 13.5px, inner code included; no empty row
+  sits under an item's title; tag chips name the item's tags and contrast
+  with their background at 4.5:1 or more in both themes (chips in rows the
+  page dims on purpose are left out).
+
+Each family runs on a freshly loaded page, then again on one page kept open
+while a burst of writes lands on other items before each family (new waits
+on the first item in board order, progress, log lines, a ruling, replies, a
+new item), so incremental re-renders happen in between.
+
+**Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
+current page, where it must find nothing, and on the page with a past fix
+reversed (that commit's hunks undone in a copy served from a temporary
+directory), where it must report the bug. A witness whose hunks no longer
+match the current file fails and is retired on purpose.

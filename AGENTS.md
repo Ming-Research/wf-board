@@ -36,13 +36,23 @@ matches what the artifact board offered.
   walks, and `find.ts`, title search and reference tokens, as plain functions
   tests call directly), bundled by esbuild.
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
-  never enters this repository.
+  never enters this repository. `test/e2e/` holds the browser layer: a seeded
+  board generator with the real board's shapes, the harness (real server,
+  headless Chromium) and the click invariants.
 
 ## Checks
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. CI runs all three on
   every push.
+- `npm run test:e2e` builds the page and drives it in headless Chromium;
+  CI's `e2e` job runs it on every push. It needs a Playwright browser and is
+  never run on the owner's Mac.
+- Three test layers, each catching what the one before cannot (design
+  section 11): unit and server tests; the page in a fake DOM
+  (`test/web.test.ts`), fast but without CSS or layout; the page in a real
+  browser on a generated board (`test/e2e`). A page bug gets its test in the
+  lowest layer that can see it.
 - Run them locally only when small and needed; CI is the record.
 
 ## Rules
