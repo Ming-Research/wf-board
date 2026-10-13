@@ -141,7 +141,15 @@ test("MCP set_targets exposes date-free goal edits, all modes and compact contex
   const line = "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-11";
   assert.ok(readText(await client.callTool({ name: "context", arguments: { id: "a", log: 0 } })).includes(`targets:\n  ${line}`));
   const brief = JSON.parse(readText(await client.callTool({ name: "brief", arguments: { project: author } })));
-  assert.deepEqual(brief.todo.find((item: { id: string }) => item.id === "a").targets, [line]);
+  assert.ok(!brief.todo.some((item: { id: string }) => item.id === "a"), "the pending ask blocks this fixture's next work");
+  const blocked = brief.checks.find((item: { id: string }) => item.id === "a");
+  assert.ok(blocked, "the blocked fixture remains in the brief checks");
+  assert.deepEqual(blocked.targets, [line]);
+  await op.clearAsk({ author, id: "a", log: "Ready to work on the target" });
+  const readyBrief = JSON.parse(readText(await client.callTool({ name: "brief", arguments: { project: author } })));
+  const ready = readyBrief.todo.find((item: { id: string }) => item.id === "a");
+  assert.ok(ready, "clearing the ask makes the frontier available");
+  assert.deepEqual(ready.targets, [line]);
   const before = store.snapshot();
   for (const args of [
     {}, { targets: [], target }, { targets: [], remove: "style" }, { target, remove: "style" },
