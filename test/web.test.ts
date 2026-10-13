@@ -3783,3 +3783,9 @@ test("an item's blue number leads to its own first new place after an unrelated 
   const selected=p.all().find(e=>e.id.startsWith("detail-it-"));
   assert.equal(selected?.id,"detail-it-z","the click lands on Y's new place (its child Z), not on X");
 });
+
+test("code blocks are set in Monaco: the inner code element inherits the block's font instead of the inline-code font", async () => {
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html.match(/\.rich pre\.code \{[^}]*\}/)![0], /font-family: Monaco/);
+  assert.match(html.match(/\.rich pre\.code code \{[^}]*\}/)![0], /font: inherit/, "the global code rule would otherwise reset the family to the mono stack");
+});
