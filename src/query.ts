@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
-import { STATUSES, numRef } from "./model.ts";
+import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; plan?: string[]; targets?: string[] }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -37,7 +37,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -218,12 +218,17 @@ function requestRow(s: Snapshot, r: Rules, id: string) {
   const it = s.items[id]!, request = it.request!;
   const prefix = `${request.by} 提出：`;
   const first = it.log[0]?.text ?? "";
-  return { id, ...(it.num === undefined ? {} : { num: it.num }), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
+  return { id, ...(it.num === undefined ? {} : { num: it.num }), ...tagsOf(it), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
   return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
     project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
+/** The approved tags, with meanings, that an item of `project` may carry; every tag when no project is given. */
+export function tagVocabulary(s: Snapshot, project?: string) {
+  return boardTags(s.board).filter(t => project === undefined || tagApplies(t, project)).map(t => ({ name: t.name, meaning: t.meaning, ...(t.projects ? { projects: t.projects } : {}) }));
+}
+const tagsOf = (doc: { tags?: string[] }) => doc.tags?.length ? { tags: doc.tags } : {};
 const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
@@ -238,17 +243,18 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
-    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
+    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
     wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
     todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
+    tags: tagVocabulary(s, project),
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
   const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
-    .map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id) }));
+    .map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */
@@ -314,6 +320,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
       if (planChanged(a.plan as PlanRow[] | undefined, b.plan as PlanRow[] | undefined)) changes.push("plan changed");
     } else if (key === "targets") {
       if (targetsChanged(a.targets as ItemTarget[] | undefined, b.targets as ItemTarget[] | undefined)) changes.push("targets changed");
+    } else if (key === "tags") {
+      changes.push(`tags ${((a.tags as string[] | undefined) ?? []).join(" ") || "none"}→${((b.tags as string[] | undefined) ?? []).join(" ") || "none"}`);
     } else if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);

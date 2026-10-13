@@ -110,7 +110,7 @@ agent reading with Grep or Read when the server is down.
 
 ```
 wf-board-data/
-  board.yaml              title, eyebrow, goal, projects
+  board.yaml              title, eyebrow, goal, projects, tags (the approved tag vocabulary)
   numbers.yaml            the short-number counter: next: <the number the next item or card gets>
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
@@ -319,6 +319,22 @@ log:
   stamps `updated` and `by`. A replaced term keeps its place. A glossary is
   not an unread document: its changes neither count as 新 nor appear in
   `changes`.
+- **Tags.** The board keeps one approved vocabulary, `tags: [{name, meaning,
+  projects?}]`, in `board.yaml`; each item carries `tags: [name]`. A name is 1–12
+  characters without whitespace or commas and unique; `meaning` is one sentence
+  telling agents when to apply the tag; `projects` is absent when every project
+  may use the tag. The vocabulary lives in `board.yaml` because it is small
+  board-level configuration with the same single writer rule as the project
+  list, and a rename or removal must change the vocabulary and every carrying
+  item in one commit, which the store's one-commit-per-operation already gives
+  for the board plus items; its own document would add a file that every such
+  commit must also write. Only `总管` changes the vocabulary, after the owner
+  approves the change on a decision card; the server enforces the author, not
+  the card. An item's `tags` are unique, each in the vocabulary and applicable
+  to the item's project, and every item needs at least one, records and
+  requests included. `tags` is optional on read for data written before tags
+  existed; the 缺标签 check lists such items until a session backfills them.
+  A tag change is a real change in `changes` and in unread, unlike `num`.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -669,6 +685,7 @@ checks:
 | 拥有它的条目已关闭 | no |
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
+| 缺标签 (the item has no tag; `set_tags` fixes it) | no |
 | 无人推进 (stalled, above) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
@@ -971,9 +988,14 @@ item and card writes retain the normal project ownership checks.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
+| `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
+| `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
+| `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `总管`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
+| `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `总管`; `to` unused |
+| `remove_tag(name, replace?)` | Removes a tag | Only `总管`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -986,7 +1008,7 @@ item and card writes retain the normal project ownership checks.
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
 | `update_project(name, repo?, after?)` | Sets or changes a project’s repository or its place in the page order | Repository: author is that project or the coordinator project `总管`; order: only `总管` |
-| `create_request(project, key, title, head, accept, why, priority?, from?, after?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it |
+| `create_request(project, key, title, head, accept, why, priority?, from?, after?, tags?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it; tags as for `create_item`, applicable to the receiving project |
 | `triage_request(id, owner?, after?, priority?, log)` | Accepts a request: with `owner`, the owner's plan in the request's project gains an owned row for it (usually the item collecting the filing project's needs); without, it stays a top item | Author is the request's project; same-project owner; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
@@ -1023,13 +1045,21 @@ resuming a child cannot clear that ancestor. Closed work with an inactive
 own marker offers only 恢复, so the owner can also release open descendants
 under a record without asking an agent to clear the marker. Records have
 no pause control.
+The detail shows an item's tags on their own line directly under the title.
+Each project's filter row also offers one button per tag applicable to the
+project (with the count of its items); selecting tags, any number, keeps the
+items carrying any selected tag and their ancestors as dimmed path, as the other
+filters do. The page shows nothing special for an untagged item beyond the 缺标签
+check tag.
 An item's status chip shows its short number (`812`) rather than a status
 word: the chip's background and text colour carry the status, and its tooltip
 names it (TODO, WIP, BLOCK, DONE, DROP, ◌ PAUSE, 记录). Every item status chip
 does this alike: tree rows, the detail header, dependency rows and search
 rows. An item not yet numbered shows the status word. A decision card's header
 shows its number before the question.
-Each item shows only its head row: fold toggle, status, priority, title, tags,
+Each item shows only its head row: fold toggle, status, priority, title, its
+tags as small neutral grey chips (never a status colour; the tooltip is the tag's meaning),
+
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
