@@ -2782,23 +2782,23 @@ test("record labels render in the page and stay outside status counts", async ()
 
 test("page refreshes the stalled check when active time crosses the threshold without another write", async () => {
   const s = snapshot(), began = Date.parse(at);
-  let now = began + 2 * 60 * 60 * 1000 - 1;
-  s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  let now = began + 60 * 60 * 1000 - 1;
+  s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
   const p = await page(s, [], null, undefined, {now: () => now}); await expand(p); await p.flush();
   const checkText = (id = "child") => rowOf(p, id).querySelectorAll(".checktag").map(e => e.title).join("\n");
-  assert.ok(!checkText().includes("活跃时间"), "the visible leaf is not stalled one millisecond before two active hours");
+  assert.ok(!checkText().includes("活跃时间"), "the visible leaf is not stalled one millisecond before one active hour");
   const callsBeforeTick = p.calls.length;
   now++;
   p.intervals.forEach(fn => fn()); await p.flush();
-  assert.ok(checkText().includes("进行中但 2 小时（活跃时间）没有动静"), "the timer refreshes the visible leaf's check at exactly two active hours");
+  assert.ok(checkText().includes("进行中但 1 小时（活跃时间）没有动静"), "the timer refreshes the visible leaf's check at exactly one active hour");
   assert.ok(!checkText("area").includes("活跃时间"), "a parent with a work child is not a stalled leaf");
   assert.equal(p.calls.length, callsBeforeTick, "the timer updates checks without another server request or write");
 });
 
 test("a stalled leaf shows 无人推进 beside its title with the full explanation as tooltip, and a folded parent shows the count", async () => {
   const s = snapshot(), began = Date.parse(at);
-  s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
-  const p = await page(s, [], null, undefined, {now: () => began + 2 * 60 * 60 * 1000});
+  s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000});
   // Other checks (here the missing completion condition) keep their own 需核对 tag; only the stalled tags are asserted on.
   const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对");
   const folded = tags("area");
@@ -2806,7 +2806,7 @@ test("a stalled leaf shows 无人推进 beside its title with the full explanati
   await expand(p);
   const leaf = tags("child");
   assert.deepEqual(leaf.map(e => e.innerHTML), ["无人推进"], "the stalled leaf shows its own label, not 需核对");
-  assert.equal(leaf[0]!.title, "进行中但 2 小时（活跃时间）没有动静");
+  assert.equal(leaf[0]!.title, "进行中但 1 小时（活跃时间）没有动静");
   assert.deepEqual(tags("area").map(e => e.innerHTML), [], "an open parent shows no count");
 });
 

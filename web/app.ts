@@ -1711,7 +1711,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // One tag per distinct label, each explained by its checks' full texts.
     for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
     const stalledBelow = sub.length && !open ? derived.stalledBelow(it.id) : 0;
-    if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 2 小时（活跃时间）没有动静";
+    if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 1 小时（活跃时间）没有动静";
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
     if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
