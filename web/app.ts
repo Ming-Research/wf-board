@@ -46,6 +46,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   type DraftKind = "choice" | "approve" | "done" | "explain";
   interface DraftOverlay { on:boolean; choice?:string; state:"draft"; promise?:Promise<boolean> }
   const optimistic = new Map<string,DraftOverlay>();
+  // Sending changes presentation only. Draft acknowledgements still gate the send,
+  // and a refusal reveals the untouched snapshot and any editor again.
+  const sentNotes = new Set<string>();
+  const sendingDrafts = new Set<string>();
+  function sendPending(n: Pick<ViewNote,"id" | "target" | "kind">) {
+    return sentNotes.has(n.id) || sendingDrafts.has(draftKey(n.target,n.kind as DraftKind));
+  }
   interface DraftEdit { text: string; rev: number }
   const draftEdits = new Map<string, DraftEdit>();
   const pendingEdits = new Map<string, Promise<boolean>>();
@@ -176,7 +183,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const children = new Map<string, ViewItem[]>();
       for (const id of ["", ...byId.keys()]) children.set(id, (id ? derived.children(id) : derived.areas()).map(k => byId.get(k)!).filter(Boolean));
       const notesBy = new Map<string, ViewNote[]>();
-      state.notes.forEach(n => { const list = notesBy.get(n.target) || []; list.push(n); notesBy.set(n.target, list); });
+      state.notes.forEach(n => { const list = notesBy.get(n.target) || []; list.push(n.state === "draft" && sendPending(n) ? {...n,state:"sent"} : n); notesBy.set(n.target, list); });
       return { byId, children, notesBy, decById: new Map(state.decisions.map(d => [d.id, d])) };
     });
   }
@@ -199,7 +206,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
-  function waitsQ(d: ViewDecision) { return derived.cardWaiting(d.id); }
+  function sendingChoice(id:string) { return sendingDrafts.has(draftKey("q:"+id,"choice")) || state.notes.some(n => n.target === "q:"+id && n.kind === "choice" && sentNotes.has(n.id)); }
+  function waitsQ(d: ViewDecision) { return !sendingChoice(d.id) && derived.cardWaiting(d.id); }
   const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it) ?? "");
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
@@ -1112,6 +1120,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const d = index().decById.get(key.slice(2)); return d ? d.question || "决策" : "决策";
   }
   function pendingDraft(key:string,kind:DraftKind) {
+    if (sendingDrafts.has(draftKey(key,kind))) return undefined;
     const overlay = optimistic.get(draftKey(key,kind));
     return overlay ? overlay.on ? overlay : undefined : notesOf(key).find(n => n.kind === kind && n.state === "draft");
   }
@@ -1323,7 +1332,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
         // Sends this comment alone, below its text; the editor stays as it is.
         const send = el("button", "cardsend", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected;
-        send.addEventListener("click", () => sendDrafts(() => draftEditable(snapshot.notes[n.id]) ? [n.id] : []));
+        send.addEventListener("click", () => sendDrafts(note => note.id === n.id));
         box.appendChild(send);
       }
       wrap.appendChild(box);
@@ -1408,9 +1417,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const note = get("send-note");
     if (!connected) { box.hidden = true; return; }
     box.hidden = false;
-    const pending = [...state.notes.filter(x => x.state === "draft" && !optimistic.has(draftKey(x.target,x.kind as DraftKind))), ...[...optimistic].filter(([,o]) => o.on).map(([key]) => ({kind:key.slice(key.lastIndexOf("|")+1)}))];
+    const pending = [...state.notes.filter(x => x.state === "draft" && !sendPending(x) && !optimistic.has(draftKey(x.target,x.kind as DraftKind))), ...[...optimistic].filter(([key,o]) => o.on && !sendingDrafts.has(key)).map(([key]) => ({kind:key.slice(key.lastIndexOf("|")+1)}))];
     const n = pending.length;
-    const waiting = state.notes.filter(x => x.state === "sent").length;
+    const waiting = state.notes.filter(x => x.state === "sent" || x.state === "draft" && sendPending(x)).length;
     btn.textContent = n ? "把 " + n + " 条发给 Claude" : "发给 Claude";
     btn.disabled = sending || !n;
     const ex = pending.filter(x => x.kind === "explain").length;
@@ -1718,7 +1727,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const send = el("button", "cardsend", "发送");
           send.type = "button"; send.dataset.asksend = it.id; send.dataset.askkind = kind;
           send.disabled = !connected || !pendingDraft("it:" + it.id, kind);
-          send.addEventListener("click", () => sendDrafts(() => notesOf("it:" + it.id).filter(n => n.kind === kind && n.state === "draft").map(n => n.id)));
+          send.addEventListener("click", () => sendDrafts(note => note.target === "it:" + it.id && note.kind === kind));
           a.appendChild(send);
         }
         return a;
@@ -1921,13 +1930,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   function choiceOf(d: ViewDecision) {
     const overlay = optimistic.get(draftKey("q:"+d.id,"choice"));
-    return overlay ? overlay.on ? overlay : undefined : notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done"));
+    return overlay ? overlay.on ? sendingDrafts.has(draftKey("q:"+d.id,"choice")) ? {...overlay,state:"sent" as const} : overlay : undefined : notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done"));
   }
   function decisionCard(d: ViewDecision) {
     const retained=groupReuse?.cards.get(d.id); if (retained && !groupReuse!.dirtyCards.has(d.id)) return retained;
     const before = unreadBefore<Decision>("decision",d.id);
     const c = el("article", "card" + (current === "q:" + d.id ? " cur" : "") + (before === null ? " fresh" : ""));
     c.id = "q-" + d.id;
+    c.hidden = sendingChoice(d.id);
     const terms = itemTerms(d.item);
     const top = el("div", "card-top");
     const h = el("h3");
@@ -1984,7 +1994,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const send = el("button", "cardsend", "发送");
       send.type = "button"; send.dataset.cardsend = d.id;
       send.disabled = !connected || choiceOf(d)?.state !== "draft";
-      send.addEventListener("click", () => sendDrafts(() => notesOf("q:" + d.id).filter(n => n.state === "draft").map(n => n.id)));
+      send.addEventListener("click", () => sendDrafts(note => note.target === "q:" + d.id));
       foot.appendChild(send);
       c.appendChild(foot);
     }
@@ -2249,19 +2259,38 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   get("to-top").addEventListener("click", () => glideTo(0));
 
-  // Sends every draft, or only those a card or comment picks once its pending writes have settled.
-  async function sendDrafts(pick?: () => string[]) {
-    if (sending) return; sending = true; sendMessage = ""; renderSend();
+  // React before awaiting draft writes, but never send a draft whose save failed.
+  async function sendDrafts(pick?: (note: Pick<ViewNote,"target" | "kind"> & {id?:string}) => boolean) {
+    if (sending) return;
+    if (!connected) { showDisconnected(); return; }
+    sending = true; sendMessage = "";
+    const selected = new Set(state.notes.filter(n => n.state === "draft" && !sendPending(n) && (!pick || pick(n))).map(n => n.id));
+    const targets = new Set(state.notes.filter(n => selected.has(n.id)).map(n => n.target));
+    for (const [key,overlay] of optimistic) {
+      const split=key.lastIndexOf("|"), target=key.slice(0,split), kind=key.slice(split+1) as DraftKind;
+      if (overlay.on && (!pick || pick({target,kind}))) { sendingDrafts.add(key); targets.add(target); }
+    }
+    selected.forEach(id => sentNotes.add(id));
+    const paint = () => renderNow(...[...targets].map(target => "notes:"+target));
+    paint();
+    let succeeded=false;
     try {
       const drafts=[...[...optimistic.values()].map(o => o.promise!), ...pendingEdits.values()];
       if ((await Promise.all(drafts)).some(ok => !ok)) return;
-      const ids = pick?.();
-      if (ids && !ids.length) return;
-      const result = await api<{sent: Array<{project: string}>}>("/api/send", ids ? {ids} : {});
+      for (const [id,n] of Object.entries(snapshot.notes)) if (n.state === "draft" && sendingDrafts.has(draftKey(n.target,n.kind as DraftKind))) selected.add(id);
+      // A newer sent/deleted SSE revision must not be sent again.
+      const ids=[...selected].filter(id => draftEditable(snapshot.notes[id]));
+      selected.forEach(id => sentNotes.add(id));
+      if (pick && !ids.length) return;
+      const result = await api<{sent: Array<{project: string}>}>("/api/send", pick ? {ids} : {});
+      succeeded=true;
       const counts = new Map<string,number>();
       result.sent.forEach(n => counts.set(n.project, (counts.get(n.project) || 0) + 1));
       sendMessage = "已发出 " + result.sent.length + " 条：" + [...counts].map(([project,n]) => project + "×" + n).join(" · ");
-    } catch(e) { showError(e); } finally { sending = false; renderSend(); }
+    } catch(e) { showError(e); } finally {
+      if (!succeeded) selected.forEach(id => sentNotes.delete(id));
+      sendingDrafts.clear(); sending = false; paint();
+    }
   }
   get<HTMLButtonElement>("send-all").addEventListener("click", () => sendDrafts());
 
@@ -2298,6 +2327,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function applySnapshot(s: Snapshot) {
     rulePresentationDirty=true;
     snapshot = s;
+    for (const id of sentNotes) if (s.notes[id]?.state !== "draft") sentNotes.delete(id);
     for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
     state.meta = s.board;
     state.items = Object.entries(s.items).map(([id,it]) => ({...it,id}));
