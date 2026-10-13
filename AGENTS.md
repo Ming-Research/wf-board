@@ -96,7 +96,7 @@ code skips this section.
 
 ### Stalled items
 
-The board flags a leaf item in progress that has not changed for two hours
+The board flags a leaf item in progress that has not changed for one hour
 of active time. A moment is active when some session wrote to the board in
 the 30 minutes before it, so a usage pause, Claude Code being closed or a
 network outage stops every item's clock together, 30 minutes after the last

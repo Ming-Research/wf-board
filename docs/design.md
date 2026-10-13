@@ -249,8 +249,8 @@ log:
   completion-condition section shows 正文没写完成条件, and an open root without
   a stored priority shows 没有未完成的条目依赖它，却没写优先级.
 - **Stalled work.** A WIP item with no work children is flagged after at
-  least two hours of active time without a change to itself or its subtree:
-  `进行中但 2 小时（活跃时间）没有动静`. Each board content write starts a
+  least one hour of active time without a change to itself or its subtree:
+  `进行中但 1 小时（活跃时间）没有动静`. Each board content write starts a
   30-minute active interval; overlapping intervals count only once, and the
   measure clips their union to the item's last change through the current
   time. When no one writes, all clocks stop after the last interval ends.

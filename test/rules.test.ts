@@ -473,30 +473,31 @@ function activeBoard(): Snapshot {
 }
 const hasStalled = (s: Snapshot, id = "quiet", hours = 3) => rules(s, start + hours * hour).checks(id).some(c => c.text.includes("活跃时间"));
 
-test("stalled checks count the union of board-active windows, with an inclusive two-hour threshold", () => {
+test("stalled checks count the union of board-active windows, with an inclusive one-hour threshold", () => {
   const s = activeBoard();
   assert.equal(hasStalled(s), true, "another project wrote throughout three quiet hours");
-  assert.equal(hasStalled(s, "quiet", 2 - 1 / hour), false);
-  assert.equal(hasStalled(s, "quiet", 2), true);
+  assert.equal(hasStalled(s, "quiet", 1 - 1 / hour), false);
+  assert.equal(hasStalled(s, "quiet", 1), true);
   delete s.activity;
   assert.equal(hasStalled(s), false, "the board-wide silent interval stops every clock");
   s.activity = { writes: Array.from({ length: 20 }, () => T0), items: {} };
   assert.equal(hasStalled(s), false, "overlapping writes do not multiply active time");
   s.activity.writes.push(timeAt(3));
   assert.equal(hasStalled(s), false, "a write at now does not retroactively fill silence");
-  s.activity.writes = [T0, timeAt(1), timeAt(2), timeAt(3)];
-  assert.equal(hasStalled(s, "quiet", 3.5), true, "four separated half-hour windows total two hours");
+  s.activity.writes = [T0, timeAt(1)];
+  assert.equal(hasStalled(s, "quiet", 1.5 - 1 / hour), false, "two separated half-hour windows total just under one hour");
+  assert.equal(hasStalled(s, "quiet", 1.5), true, "two separated half-hour windows total exactly one hour");
 });
 
 test("each own document change resets a stalled leaf, including historical card or note revisions", () => {
   const changes: Array<(s: Snapshot) => void> = [
-    s => { s.items.quiet!.updated = timeAt(2); },
-    s => { s.items.quiet!.log.push({ at: timeAt(2), text: "Progress" }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2), rev: 1 }); },
-    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2), state: "sent", rev: 1 }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2), state: "done", rev: 1 }); },
-    s => { s.activity!.items.quiet = timeAt(2); },
-    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2), rev: 1 }); },
+    s => { s.items.quiet!.updated = timeAt(2.5); },
+    s => { s.items.quiet!.log.push({ at: timeAt(2.5), text: "Progress" }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2.5), rev: 1 }); },
+    s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2.5), state: "sent", rev: 1 }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2.5), state: "done", rev: 1 }); },
+    s => { s.activity!.items.quiet = timeAt(2.5); },
+    s => { s.items.record = Item.parse({ title: "Queue", record: true, parent: "quiet", updated: timeAt(2.5), rev: 1 }); },
   ];
   for (const change of changes) {
     const s = activeBoard(); assert.equal(hasStalled(s), true);
