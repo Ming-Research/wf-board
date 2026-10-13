@@ -1665,11 +1665,11 @@ test("tree new and blocking chips show only numbers with full labels", async () 
 });
 
 // The owner limited the added help to the three numeric row marks.
-test("existing menu help keeps its shortcut sentence and explains only the three numeric row marks", async () => {
+test("existing menu help states shortcut selection scope and explains only the three numeric row marks", async () => {
   const p=await page(snapshot(),[]), menu=p.document.getElementById("keymenu")!;
   assert.equal(menu.querySelectorAll(".keymenu-head").length,1,"help extends the existing description");
   const help=menu.querySelector(".keymenu-head")!.innerHTML;
-  assert.match(help,/^快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>/,"the original shortcut sentence is retained");
+  assert.match(help,/^快捷键：已阅和归档需要选中条目或卡片；评论和解释在没选中时作用于屏幕最上面那一条<br>/,"the shortcut sentence distinguishes actions that require selection");
   for (const mark of ["▸/▾","TODO","WIP","BLOCK","DONE","DROP","P0","P1","P2","蓝线","需核对","待发","状态条","选中底色","原标题","原写优先级","父条目"]) assert.ok(!help.includes(mark),"help omits unrequested explanation "+mark);
   assert.match(help,/蓝色数字[^。]*新内容/); assert.match(help,/紫色数字[^。]*阻塞[^。]*红色数字[^。]*决策卡/);
   assert.match(help,/右侧状态色数字[^。]*叶条目/);
@@ -1701,6 +1701,7 @@ test("parent counts are numbers with status color and labels", async () => {
 
 test("split divider pointer drag clamps both columns and persists the width", async () => {
   const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{storage});
+  await selectWide(p);
   const divider=p.roots.get("split-divider")!;
   assert.equal(divider.hidden,false,"split exposes a divider");
   assert.equal(divider.attributes.role,"separator");
@@ -1735,15 +1736,21 @@ test("split divider has no added keyboard resizing or focus styles", async () =>
   assert.doesNotMatch(html,/#split-divider[^}]*:focus-visible|id="split-divider"[^>]*tabindex/);
 });
 
-test("the page is always the split view: a fixed two-column body, a divider, no layout toggle and no stored layout choice", async () => {
+test("the page collapses unselected detail and opens a split view on selection without a layout toggle", async () => {
   const html=await readFile("web/index.html","utf8");
-  assert.match(html,/<body class="wide">/,"the two-column layout is on from the first paint");
-  assert.doesNotMatch(html,/split-toggle|id="split-divider"[^>]*hidden|id="item-detail"[^>]*hidden/);
+  assert.match(html,/<body class="wide">/,"the viewport remains the panes' fixed-height frame");
+  assert.match(html,/<div class="wrap detail-collapsed">/,"unselected first paint uses the full-width tree");
+  assert.match(html,/id="split-divider"[^>]*hidden/);
+  assert.match(html,/id="item-detail"[^>]*hidden/);
+  assert.doesNotMatch(html,/split-toggle/);
   const storage=new Map<string,string>(), p=await page(snapshot(),[],null,undefined,{storage});
-  assert.equal(p.roots.get("item-detail")!.hidden,false); assert.equal(p.roots.get("split-divider")!.hidden,false);
+  assert.equal(p.roots.get("item-detail")!.hidden,true); assert.equal(p.roots.get("split-divider")!.hidden,true);
+  assert.ok(p.wrap.classList.contains("detail-collapsed"));
   assert.equal(p.document.getElementById("split-toggle"),null,"there is no 分屏 / 单栏 toggle");
   assert.ok(!p.all().some(e=>e.innerHTML === "单栏" || e.innerHTML === "分屏"));
   await selectWide(p); await p.flush();
+  assert.equal(p.roots.get("item-detail")!.hidden,false); assert.equal(p.roots.get("split-divider")!.hidden,false);
+  assert.ok(!p.wrap.classList.contains("detail-collapsed"));
   assert.ok(detailItem(p),"a head click selects the item for the detail column");
   assert.equal(rowOf(p,"area").querySelector(".body"),null,"the tree never holds a body");
   assert.ok(![...storage.keys()].some(k=>k === "board-split"),"no layout choice is stored");
@@ -1752,11 +1759,78 @@ test("the page is always the split view: a fixed two-column body, a divider, no 
 
 test("the page tolerates unavailable localStorage", async () => {
   const p=await page(snapshot(),[],null,undefined,{storageUnavailable:true});
-  assert.equal(p.roots.get("item-detail")!.hidden,false);
+  assert.equal(p.roots.get("item-detail")!.hidden,true);
   await selectWide(p); assert.ok(detailItem(p),"selecting still works without storage");
   await p.roots.get("split-divider")!.pointer("pointerdown",{clientX:400});
   await p.roots.get("split-divider")!.pointer("pointermove",{clientX:420});
   assert.ok(Number.isFinite(parseFloat(p.wrap.style["--tree-width"]!)));
+});
+
+test("blank space in either pane clears both selections and reselecting restores the dragged width", async t => {
+  for (const pane of ["page-left","item-detail"] as const) await t.test(pane,async()=> {
+    const storage=new Map<string,string>(), s=snapshot(); s.items.child!.head="Picked child detail";
+    const p=await page(s,[],null,undefined,{storage});
+    await wideCaret(p).click(); await p.flush(); await selectWide(p,"child");
+    const divider=p.roots.get("split-divider")!;
+    await divider.pointer("pointerdown",{clientX:400}); await divider.pointer("pointermove",{clientX:480}); await divider.pointer("pointerup",{clientX:480});
+    const width=p.wrap.style["--tree-width"]!;
+    assert.ok(rowOf(p,"child").classList.contains("selected")); assert.ok(detailItem(p,"child")!.classList.contains("cur"));
+    const blank=p.document.createElement("div"); p.roots.get(pane)!.appendChild(blank); await blank.click(); await p.flush();
+    assert.equal(p.all().filter(e=>e.classList.contains("selected") || e.classList.contains("cur")).length,0,"neither pane retains a selected row");
+    assert.equal(p.roots.get("item-detail")!.children.length,0,"detail has no selected content or placeholder");
+    assert.equal(p.roots.get("item-detail")!.hidden,true); assert.equal(divider.hidden,true);
+    assert.ok(p.wrap.classList.contains("detail-collapsed"));
+    assert.equal(storage.get("board-selected"),"","a cleared selection is persisted");
+    assert.equal(storage.get("board-tree-width"),String(parseFloat(width)),"collapse preserves the dragged width");
+    const reloaded=await page(s,[],null,undefined,{storage});
+    assert.equal(reloaded.roots.get("item-detail")!.hidden,true,"reload does not restore the cleared item");
+    assert.ok(reloaded.wrap.classList.contains("detail-collapsed"));
+    await selectWide(p,"child");
+    assert.equal(p.roots.get("item-detail")!.hidden,false); assert.equal(divider.hidden,false);
+    assert.ok(!p.wrap.classList.contains("detail-collapsed"));
+    assert.match(markup(detailItem(p,"child")!),/Picked child detail/);
+    assert.ok(rowOf(p,"child").classList.contains("selected"));
+    assert.equal(p.wrap.style["--tree-width"],width,"reopening uses the existing remembered split width");
+  });
+});
+
+test("controls divider clicks and text-selection drags preserve an open detail", async () => {
+  const p=await page(snapshot(),[]); await selectWide(p);
+  const picked=detailItem(p)!, divider=p.roots.get("split-divider")!;
+  const dividerTarget=p.document.createElement("span"); divider.appendChild(dividerTarget);
+  await dividerTarget.click(); await p.flush();
+  assert.equal(detailItem(p),picked,"the click after divider dragging does not clear selection");
+  await wideCaret(p).click(); await p.flush(); assert.equal(detailItem(p),picked,"folding is independent of detail selection");
+  const blank=p.document.createElement("div"); p.roots.get("page-left")!.appendChild(blank);
+  p.press(0,0,true); await blank.click({clientX:100,clientY:0}); await p.flush();
+  assert.equal(detailItem(p),picked,"a text-selection drag ending on blank space does not deselect");
+  p.press(0,0,false); await blank.click(); await p.flush();
+  assert.equal(p.roots.get("item-detail")!.hidden,true,"an ordinary blank click still deselects");
+});
+
+test("blank deselection cancels an unread jump waiting for its baseline", async () => {
+  const s=snapshot(), baseline=deferred<unknown>();
+  const p=await page(s,unread(),async()=>baseline.promise);
+  p.key("n"); await settle();
+  assert.ok(detailItem(p,"child"),"navigation opens the target before its baseline arrives");
+  const blank=p.document.createElement("div"); await blank.click();
+  baseline.resolve({before:null,after:s.items.child,diff:""}); await p.flush();
+  assert.equal(p.all().filter(e=>e.classList.contains("cur") || e.classList.contains("selected")).length,0,"the late baseline cannot revive a cleared selection");
+  assert.equal(p.roots.get("item-detail")!.hidden,true);
+  p.key("n"); await p.flush(); assert.ok(detailItem(p,"child"),"a new unread jump can reopen the detail");
+});
+
+function collapsedTreeContract(html:string) {
+  const rules=[...html.replace(/\/\*[\s\S]*?\*\//g,"").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  const rule=rules.find(r=>r[1]!.trim() === "body.wide .wrap.detail-collapsed");
+  assert.ok(rule,"collapse has a more specific rule than both desktop and narrow split layouts");
+  assert.match(rule[2]!,/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/,"one column gives the tree all available width");
+  assert.match(rule[2]!,/min-width:\s*0\s*;/,"collapse does not retain the split's desktop minimum");
+}
+test("collapsed layout fills the tree width at desktop and narrow widths and rejects missing collapse CSS", async () => {
+  const html=await readFile("web/index.html","utf8"); collapsedTreeContract(html);
+  assert.throws(()=>collapsedTreeContract(html.replace(/body\.wide \.wrap\.detail-collapsed\s*\{[^}]*\}/,"")));
+  assert.throws(()=>collapsedTreeContract(html.replace(/(body\.wide \.wrap\.detail-collapsed\s*\{[^}]*grid-template-columns:)\s*minmax\(0, 1fr\)/,"$1 300px 8px 1fr")));
 });
 
 test("parent leaf counts are number-only with a status label", async () => {
@@ -1970,7 +2044,8 @@ test("wide selected item survives reload through per-viewer localStorage", async
   const missing=snapshot(); delete missing.items.child;
   const removed=await page(missing,[],null,undefined,{storage});
   assert.ok(!detailItem(removed,"child"),"a removed item cannot be restored");
-  assert.match(markup(removed.roots.get("item-detail")!),/点左边/);
+  assert.equal(removed.roots.get("item-detail")!.hidden,true,"a removed stored selection leaves the tree full-width");
+  assert.equal(removed.roots.get("split-divider")!.hidden,true);
 });
 
 test("wide dependency follow and Backspace restore the prior dependency selection", async () => {
@@ -2125,7 +2200,7 @@ test("wide landing in the list pins through updates until the reader scrolls the
   assert.equal(pane.scrollTop,released,"scrolling the pane releases the pin"); assert.equal(p.windowScrollY,0);
 });
 
-test("wide blank clicks clear the current selection while actions fall back to the displayed item", async t => {
+test("wide blank clicks clear both selections and keyboard actions use the visible tree or navigation cursor", async t => {
   for (const action of ["r","a","c","e","Enter","j","k","ArrowRight","ArrowLeft","n","N"] as const) await t.test(action,async()=> {
     const s=snapshot(), fresh=[...unread("item","area"),...unread("item","child","e".repeat(40))];
     s.items.area!.ask={text:"Parent ask"}; s.items.child!.ask={text:"Child ask"}; if (action === "a") s.items.child!.status="done";
@@ -2139,19 +2214,27 @@ test("wide blank clicks clear the current selection while actions fall back to t
     const displayed=detailItem(p,"child"); assert.ok(displayed);
     const blank=p.document.createElement("div"); blank.focus(); await blank.click();
     assert.equal(p.all().filter(e=>e.classList.contains("cur")).length,0,"blank space clears the current item or sub-selection");
-    assert.equal(detailItem(p,"child"),displayed,"clearing current leaves the displayed item intact");
+    assert.equal(p.all().filter(e=>e.classList.contains("selected")).length,0,"the displayed item's tree highlight clears too");
+    assert.equal(detailItem(p,"child"),null,"the old detail is removed");
+    assert.equal(p.roots.get("item-detail")!.hidden,true);
     const prevented=p.key(action); await p.flush();
     if (action === "r") {
-      assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:"e".repeat(40)}]);
-      assert.ok(rowOf(p,"area").className.includes("fresh"),"fallback read leaves the parent's own unread content alone");
-    } else if (action === "a") assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"child",on:true}]);
-    else if (action === "c") { assert.ok(p.document.getElementById("ed-it_child")); assert.equal(p.document.getElementById("ed-it_area"),null); }
-    else if (action === "e") assert.equal((p.calls.find(c=>c.path === "/api/draft")!.body as {target:string}).target,"it:child");
-    else if (action === "Enter") { assert.equal(prevented,true); assert.ok(rowOf(p,"child").className.includes("cur"),"Enter selects the displayed item's head after a blank click"); }
+      assert.equal(p.calls.filter(c=>c.path === "/api/read").length,0,"r does not read the cleared item or imply a new selection");
+      assert.equal(p.roots.get("item-detail")!.hidden,true,"reading does not open a detail selection");
+      p.key("n"); await p.flush(); p.key("r"); await p.flush();
+      assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}],"n explicitly reselects the first unread item so r can read it");
+      assert.ok(rowOf(p,"child").className.includes("fresh"),"reading the reopened parent leaves the child unread");
+    } else if (action === "a") {
+      assert.equal(prevented,false); assert.equal(p.calls.filter(c=>c.path === "/api/archive").length,0,"archive still requires a selection after clearing");
+    }
+    else if (action === "c") { assert.ok(p.document.getElementById("ed-it_area")); assert.equal(p.document.getElementById("ed-it_child"),null); }
+    else if (action === "e") assert.equal((p.calls.find(c=>c.path === "/api/draft")!.body as {target:string}).target,"it:area");
+    else if (action === "Enter") { assert.equal(prevented,false); assert.equal(p.roots.get("item-detail")!.hidden,true,"Enter with no focused or selected head leaves detail collapsed"); }
     else if (action === "j" || action === "k") {
-      assert.ok(rowOf(p,action === "j" ? "other" : "area").className.includes("cur"),"tree focus starts from the displayed item's row");
-      assert.equal(detailItem(p,"child"),displayed,"moving focus leaves the displayed detail intact");
-    } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "other" : "area"),"owner-work navigation starts from the displayed item's ask");
+      assert.ok(rowOf(p,"area").className.includes("cur"),"tree focus starts at the first visible row with no selection");
+      assert.equal(p.roots.get("item-detail")!.hidden,true,"moving focus leaves detail collapsed");
+      p.key("Enter"); await p.flush(); assert.ok(detailItem(p,"area"),"Enter opens the newly focused head");
+    } else if (action === "ArrowRight" || action === "ArrowLeft") assert.ok(detailItem(p,action === "ArrowRight" ? "area" : "other"),"owner-work navigation starts from the visible waits with no selection");
     else assert.ok(detailItem(p,action === "n" ? "area" : "child"),"fresh navigation retains its global cursor and selects its stop");
   });
 });

@@ -666,6 +666,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (current?.startsWith("it:")) get("it-"+current.slice(3))?.classList.remove("cur");
   }
   function clearCurrent() { clearSelectionClasses(); current = null; }
+  function clearSelectedItem() {
+    clearCurrent();
+    get("it-"+selectedItem)?.classList.remove("selected");
+    rememberSelected(null);
+    // Keep n/N's place, but no logical stop remains selected for r.
+    shownStop=null;
+    releaseLanding();
+    detailDirty=true;
+    renderNow("detail");
+  }
   // A drag that selects text ends in a click on the row where it started; that click must not toggle, follow or
   // re-render the row, or the selection is gone. Movement is required: a press on a button keeps a selection made
   // elsewhere, so a plain click with text still selected is a click.
@@ -674,15 +684,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   document.addEventListener("click", ev => {
     const moved = pressedAt && Math.abs(ev.clientX - pressedAt.x) + Math.abs(ev.clientY - pressedAt.y) > 4;
     const sel = getSelection();
-    if (moved && sel && !sel.isCollapsed) { ev.stopPropagation(); ev.preventDefault(); }
-  }, true);
-  // A click on an item or card selects it; a click on blank space (not on a control) clears the selection.
-  document.addEventListener("click", ev => {
+    if (moved && sel && !sel.isCollapsed) { ev.stopPropagation(); ev.preventDefault(); return; }
+    // A click on an item or card selects it; blank space outside a control clears both selection states.
     const t = ev.target as HTMLElement & {type?: string};
-    if (t.closest && t.closest<HTMLElement>("button.caret")) return;
+    if (t.closest && t.closest<HTMLElement>("button.caret, #split-divider")) return;
     const box = t.closest && t.closest<HTMLElement>("[data-sel], #areas .item, #areas .card, #cards .card, #item-detail .card");
     if (box) setCurrent(box);
-    else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearCurrent();
+    else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearSelectedItem();
   }, true);
   // Otherwise the item or card the reader is looking at near the top of the screen.
   function targetOnScreen() {
@@ -728,7 +736,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (act && act.run()) ev.preventDefault();
   });
   // The actions behind the shortcut keys; the menu (☰) lists them and runs them on a click as well.
-  // Each acts on the selected item or card while it is on screen, else on the one at the top of the screen.
+  // Reading and archiving require a selection; commenting and explaining can use the top visible row.
   function itemOfSelection() {
     const selection=effectiveSelection();
     if (!selection || current && !onScreen(boxOfKey(selection))) return null;
@@ -800,7 +808,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       b.addEventListener("click", ev => { ev.stopPropagation(); m.classList.toggle("open"); });
       m.appendChild(b);
       const list = el("div", "keymenu-list");
-      list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>" +
+      list.appendChild(el("div", "keymenu-head", "快捷键：已阅和归档需要选中条目或卡片；评论和解释在没选中时作用于屏幕最上面那一条<br>" +
         "蓝色数字是本条及子树有新内容的条目数。" +
         "紫色数字是本条及下面阻塞工作、等你处理的处数，红色数字是不挡工作的决策卡张数。" +
         "右侧状态色数字是子树未归档叶条目按状态分类的数量。"));
@@ -2056,14 +2064,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const retained=new Map(elements(pane).filter(e => e.classList.contains("card")).map(e => [e.id,e]));
     pane.innerHTML="";
     const it=selectedItem && index().byId.get(selectedItem);
+    pane.hidden=!it;
+    divider.hidden=!it;
+    if (it) wrap.classList.remove("detail-collapsed"); else wrap.classList.add("detail-collapsed");
     if (it) {
+      applyTreeWidth();
       const next=itemNode(it,inArchive(it),false,true,true);
       for (const card of elements(next).filter(e => e.classList.contains("card"))) {
         const old=retained.get(card.id), id=card.id.slice(2);
         if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
       }
       [...next.children].forEach(child => pane.appendChild(child));
-    } else pane.appendChild(el("p","empty","点左边的条目标题，在这里看正文"));
+    }
     pane.scrollTop=top;
     detailDirty=false;
   }
@@ -2182,7 +2194,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     divider.releasePointerCapture(drag.pointer); drag=null;
   }
   divider.addEventListener("pointerdown",ev => {
-    if (drag || ev.button !== 0) return;
+    if (divider.hidden || drag || ev.button !== 0) return;
     ev.preventDefault();
     drag={pointer:ev.pointerId,x:ev.clientX,width:applyTreeWidth()!}; divider.setPointerCapture(ev.pointerId);
   });
