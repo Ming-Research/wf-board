@@ -1,4 +1,4 @@
-import { rules, draftEditable, noteTextProblem, changedItemSteps, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemSteps, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -253,7 +253,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const reply = changes.includes("new reply") || changes.includes("reply changed");
     for (const change of changes) {
       if (isLogChange(change)) continue;
-      else if (change === "steps changed") kinds.add("progress");
+      else if (change === "steps changed" || change === "targets changed") kinds.add("progress");
       else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
       else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
     }
@@ -371,8 +371,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function blockingStop(st: {id:string}) { return st.id.startsWith("ask-") || derived.cardBlocking(st.id.slice(2)); }
   // Unread steps stay in commit order, independent of tree and filter order.
   // Which kinds of new things the 新 walk and counts include, picked like the project filters: replies to the owner's
-  // notes (reply), item step changes (progress) and every other change (other); none picked means all of them.
-  const FRESH_KINDS: Array<[string,string,string]> = [["reply", "评论回复", "只看对你评论的新回复"], ["progress", "进展", "只看步骤改动"], ["other", "其他", "只看正文、标题、状态等其他改动"]];
+  // notes (reply), item step and target changes (progress) and every other change (other); none picked means all of them.
+  const FRESH_KINDS: Array<[string,string,string]> = [["reply", "评论回复", "只看对你评论的新回复"], ["progress", "进展", "只看步骤和目标数字改动"], ["other", "其他", "只看正文、标题、状态等其他改动"]];
   let freshSel: string[] = [];
   try { freshSel = (JSON.parse(localStorage.getItem("board-fresh-sel") || "[]") || []).map((k: string) => k === "log" ? "progress" : k).filter((k: string) => FRESH_KINDS.some(f => f[0] === k)); } catch (e) {}
   function fon(kind: string) { return !freshSel.length || freshSel.includes(kind); }
@@ -439,11 +439,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshIndex().position.has(st.key));
   }
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
-  // The new places inside a changed item, top to bottom: a changed status, title or body block, a new or changed step, an added
+  // The new places inside a changed item, top to bottom: a changed status, title or body block, a new or changed step or target, an added
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
   function freshMarks(box: HTMLElement, id: string) {
     if (unreadBefore<Item>("item", id) === null) return [];
-    return [...box.querySelectorAll<HTMLElement>(".chg-add, .item-step.newbar, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
+    return [...box.querySelectorAll<HTMLElement>(".chg-add, .item-step.newbar, .item-target.newbar, .deprow.fresh, .refs .fresh")].filter(m => m.closest(".item") === box && !m.closest(".card, .notes"));
   }
   async function navigate(target:NavigationTarget, valid:() => boolean = () => true) {
     const navigation=++freshNavigation;
@@ -1589,6 +1589,28 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return box;
   }
 
+  function targetsSection(it: ViewItem, before: Item | null | undefined) {
+    if (!it.targets?.length) return null;
+    const changed = new Set(before === undefined ? [] : changedItemTargets(before?.targets, it.targets).map(target => target.id));
+    const box = el("div", "item-targets"), table = el("table", "targets-table");
+    table.appendChild(el("caption", "log-head", "目标"));
+    const columns = ["目标", "当前", "目标值", "比较对象", "日期"];
+    const head = el("thead"), headings = el("tr");
+    for (const label of columns) { const cell = el("th", null, label); cell.setAttribute("scope", "col"); headings.appendChild(cell); }
+    head.appendChild(headings); table.appendChild(head);
+    const body = el("tbody");
+    for (const target of it.targets) {
+      const row = el("tr", "item-target" + (fon("progress") && changed.has(target.id) ? " newbar" : ""));
+      row.id = "target-" + it.id + "-" + target.id;
+      [target.goal, target.current, target.target, target.baseline, target.date.slice(0, 10)].forEach((value, i) => {
+        const cell = el("td", null, esc(value)); cell.dataset.label = columns[i]!; row.appendChild(cell);
+      });
+      body.appendChild(row);
+    }
+    table.appendChild(body); box.appendChild(table);
+    return box;
+  }
+
   // Logs retain the full history and comment anchors, but never mark unread progress.
   let logOpen: Record<string, boolean> = {};
   function logEntry(e: LogEntry, terms: TermLinks) {
@@ -1781,6 +1803,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       const progress = stepsSection(it, before, terms);
       if (progress) body.appendChild(progress);
+      const targets = targetsSection(it, before);
+      if (targets) body.appendChild(targets);
       body.appendChild(logSection(it, terms));
       // The owner's request and decision cards follow its progress and optional log history.
       const ask = askRow(it,before); if (ask) body.appendChild(ask);

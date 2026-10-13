@@ -9,6 +9,7 @@ import { describeChanges } from "../src/query.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { Store } from "../src/store.ts";
+import type { ItemTarget } from "../src/model.ts";
 
 test("cursor range, single-document grouping, author boundaries and endpoint diff", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
@@ -121,6 +122,42 @@ test("owner pieces count step changes, replies and heads, while every kind of lo
   assert.deepEqual(piecesOf(null, {}, "decision", "new card"), {...zero, other: 1});
   assert.deepEqual(piecesOf({}, {}, "note", "text changed"), {...zero, other: 1});
   assert.deepEqual(piecesOf({}, {}, "note", "reply cleared, state changed"), {...zero, other: 1});
+});
+
+const targetRow = (id: string, current = "12 倍 Chromium"): ItemTarget => ({id, goal: "样式计算 " + id, target: "≤ 1 倍 Chromium", current, baseline: "Chromium 同机同页", date: later});
+
+test("goal numbers count as progress, including edits, dates, removals and reordering, never other changes", () => {
+  const item = (targets: ItemTarget[] = []) => ({title: "Goal", targets, steps: [], log: [], updated: later, deps: [], links: [], rev: 1});
+  const a = targetRow("a"), b = targetRow("b"), zero = {progress: 0, reply: 0, other: 0};
+  assert.deepEqual(piecesOf(item(), item([a, b]), "item", "targets changed"), {...zero, progress: 2});
+  assert.deepEqual(piecesOf(item([a, b]), item([a, b]), "item", "metadata changed"), zero);
+  assert.deepEqual(piecesOf(item([a, b]), item([b, a]), "item", "targets changed"), {...zero, progress: 1}, "reorder leaves one progress piece");
+  assert.deepEqual(piecesOf(item([a, b]), item([b]), "item", "targets changed"), {...zero, progress: 1}, "removal leaves one progress piece");
+  assert.deepEqual(piecesOf(item([a]), item(), "item", "targets changed"), {...zero, progress: 1}, "removing the last target remains progress");
+  for (const field of ["goal", "target", "current", "baseline", "date"] as const) {
+    const next = {...a, [field]: field === "date" ? "2026-10-12T12:00:00Z" : "Changed"};
+    assert.deepEqual(piecesOf(item([a, b]), item([next, b]), "item", "targets changed"), {...zero, progress: 1}, field + " changes only its stable row");
+  }
+  const before = item(), after = {...item([a, b]), steps: [{id: "s", text: "Step", state: "todo" as const}]};
+  assert.deepEqual(piecesOf(before, after, "item", "steps changed, targets changed"), {...zero, progress: 3}, "step and target pieces add up");
+  assert.deepEqual(piecesOf(null, item([a]), "item", "new item"), {...zero, progress: 1, other: 1});
+  assert.deepEqual(piecesOf(item([a]), {...item([b]), head: "Changed head"}, "item", "head changed, targets changed"), {...zero, progress: 1, other: 1});
+});
+
+test("target writes produce compact progress summaries and honor document read marks", async t => {
+  const {store, op} = await board(t), cursor = store.snapshot().head;
+  const {date: _date, ...firstRow} = targetRow("goal");
+  const first = await op.setTargets({author, id: "a", target: firstRow});
+  const firstStops = await unreadSteps(store, cursor);
+  assert.equal(firstStops[0]!.docs[0]!.summary, "targets changed");
+  assert.deepEqual(firstStops[0]!.docs[0]!.pieces, {progress: 1, reply: 0, other: 0});
+  const next = await op.setTargets({author, id: "a", target: {...firstRow, current: "6 倍 Chromium"}});
+  const marked = await unreadSteps(store, cursor, {"item:a": first.commit});
+  assert.deepEqual(marked[0]!.commits, [next.commit]);
+  assert.deepEqual(marked[0]!.docs[0]!.pieces, {progress: 1, reply: 0, other: 0});
+  const diff = await stepDiff(store, marked[0]!, "item", "a");
+  assert.equal((diff.before as {targets: ItemTarget[]}).targets[0]!.current, "12 倍 Chromium");
+  assert.equal((diff.after as {targets: ItemTarget[]}).targets[0]!.current, "6 倍 Chromium");
 });
 
 test("log-only writes never become unread stops or extend a progress stop across a read mark", async t => {
@@ -237,14 +274,17 @@ function referencePieces(before: unknown, after: unknown, kind: Parameters<typeo
     const parts = summary === "metadata changed" ? [] : summary.split(", ");
     return {...zero, reply: Number(parts.includes("new reply") || parts.includes("reply changed")), other: Number(before === null || after === null || parts.some(part => !["new reply", "reply changed", "state changed", "sentAt changed"].includes(part)))};
   }
-  const old = before as {steps?: Array<{id: string}>} | null, next = after as {steps?: Array<{id: string}>} | null;
-  const previous = old?.steps ?? [], current = next?.steps ?? [];
+  const old = before as {steps?: Array<{id: string}>; targets?: Array<{id: string}>} | null, next = after as typeof old;
   let count = 0;
-  for (const step of current) if (!isDeepStrictEqual(step, previous.find(other => other.id === step.id))) count++;
-  if (!isDeepStrictEqual(previous, current)) count = Math.max(1, count);
+  for (const field of ["steps", "targets"] as const) {
+    const previous = old?.[field] ?? [], current = next?.[field] ?? [];
+    let changed = 0;
+    for (const row of current) if (!isDeepStrictEqual(row, previous.find(other => other.id === row.id))) changed++;
+    if (!isDeepStrictEqual(previous, current)) count += Math.max(1, changed);
+  }
   const rest = (doc: unknown) => {
     if (doc === null) return null;
-    const result = {...doc as Record<string, unknown>}; delete result.log; delete result.steps;
+    const result = {...doc as Record<string, unknown>}; delete result.log; delete result.steps; delete result.targets;
     return result;
   };
   return {...zero, progress: count, other: Number(describeChanges(rest(before), rest(after), "item") !== "metadata changed")};
@@ -322,6 +362,12 @@ test("the incremental unread list equals the from-scratch computation through wr
   const a1 = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "one" } });
   await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "two: same author and document, one step" } });
   await same("coalesced step writes");
+  const {date: _date, ...goal} = targetRow("speed");
+  await op.setTargets({author, id: "a", target: goal});
+  await op.setTargets({author, id: "a", target: {...goal, current: "6 倍 Chromium"}});
+  await same("coalesced target writes beside steps");
+  await op.setTargets({author, id: "a", remove: goal.id});
+  await same("target removal remains progress in the incremental cache");
   await write("Firn", "a", "another author on the same document");
   await store.commit({ author, message: "retitle board", board: { ...store.snapshot().board, title: "Renamed board" } });
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });

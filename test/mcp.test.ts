@@ -6,14 +6,14 @@ import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { board, author, later } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
-test("SDK client discovers exactly thirty-two described tools, reads/writes fresh state and receives tool errors", async t => {
+test("SDK client discovers exactly thirty-three described tools, reads/writes fresh state and receives tool errors", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Test agent", version: "1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
-  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "set_steps", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups", "glossary", "set_term", "delete_term", "post_notice"].sort());
+  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "set_steps", "set_targets", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups", "glossary", "set_term", "delete_term", "post_notice"].sort());
   for (const tool of tools) {
     assert.ok(tool.description && tool.description.length > 30);
     for (const [key, value] of Object.entries(tool.inputSchema.properties ?? {})) assert.ok((value as { description?: string }).description, `${tool.name}.${key} describes its parameter`);
@@ -304,4 +304,40 @@ test("MCP set_steps exposes date-free edits and context and brief format current
   assert.equal(ambiguous.isError, true); assert.match(readText(ambiguous), /exactly one/); assert.deepEqual(store.snapshot(), before);
   const dated = await client.callTool({ name: "set_steps", arguments: { author, id: "a", step: { id: "mine", text: "Result", state: "doing", since: later } } });
   assert.equal(dated.isError, true); assert.deepEqual(store.snapshot(), before);
+});
+
+
+test("MCP set_targets exposes date-free goal edits, all modes and compact context and brief", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Targets client", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tool = (await client.listTools()).tools.find(tool => tool.name === "set_targets")!;
+  assert.ok(tool);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "remove", "target", "targets"]);
+  const targetSchema = tool.inputSchema.properties!.target as { properties: Record<string, unknown> };
+  assert.deepEqual(Object.keys(targetSchema.properties).sort(), ["baseline", "current", "goal", "id", "target"]);
+  assert.match(client.getInstructions()!, /Use set_targets.*goal/);
+  const readText = (value: Awaited<ReturnType<typeof client.callTool>>) => (value.content as Array<{ text: string }>).map(c => c.text).join("\n");
+  const target = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
+  const written = await client.callTool({ name: "set_targets", arguments: { author, id: "a", targets: [target] } });
+  assert.equal(written.isError, undefined); assert.match(readText(written), /set_targets a/);
+  const line = "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-11";
+  assert.ok(readText(await client.callTool({ name: "context", arguments: { id: "a", log: 0 } })).includes(`targets:\n  ${line}`));
+  const brief = JSON.parse(readText(await client.callTool({ name: "brief", arguments: { project: author } })));
+  assert.deepEqual(brief.todo.find((item: { id: string }) => item.id === "a").targets, [line]);
+  const before = store.snapshot();
+  for (const args of [
+    {}, { targets: [], target }, { targets: [], remove: "style" }, { target, remove: "style" },
+    { target: { ...target, date: later } }, { targets: [{ ...target, date: later }] },
+    { target: { ...target, current: " " } }, { target: { id: "missing", goal: "Goal", target: "1", current: "2" } },
+  ]) {
+    const refused = await client.callTool({ name: "set_targets", arguments: { author, id: "a", ...args } });
+    assert.equal(refused.isError, true); assert.deepEqual(store.snapshot(), before);
+  }
+  const changed = await client.callTool({ name: "set_targets", arguments: { author, id: "a", target: { ...target, current: "8 倍 Chromium" } } });
+  assert.equal(changed.isError, undefined); assert.equal(store.snapshot().items.a!.targets![0]!.current, "8 倍 Chromium");
+  const removed = await client.callTool({ name: "set_targets", arguments: { author, id: "a", remove: "style" } });
+  assert.equal(removed.isError, undefined); assert.deepEqual(store.snapshot().items.a!.targets, []);
+  assert.doesNotMatch(readText(await client.callTool({ name: "context", arguments: { id: "a", log: 0 } })), /targets:/);
 });

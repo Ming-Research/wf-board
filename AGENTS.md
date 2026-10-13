@@ -49,6 +49,7 @@ matches what the artifact board offered.
   `Ming-Research/wf-board-data`). Only the daemon writes it; tests use
   temporary directories.
 - The daemon binds `127.0.0.1` only.
+- Use `set_targets` for each goal's target value, current value and comparison baseline, updating the current value after measuring.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
 
@@ -123,8 +124,10 @@ do not collide, answers "可以", and records the new main in the merge log.
 
 The coordinator keeps the queue of runs on the 14900K in priority order,
 tells each session when its turn starts, and checks that the machine is idle
-first (`gh api orgs/Ming-Research/actions/runners`). One run at a time; a run
-waiting its turn makes its item blocked on the queue record.
+first (`gh api orgs/Ming-Research/actions/runners`). One run at a time. Each
+waiting run is a work item under the queue record, which the coordinator
+marks done when the run finishes; the item waiting for the run is blocked on
+that run item, since a record has no status and is never an open dependency.
 
 - Native Ubuntu, P-cores CPUs 0-15 as hyperthread pairs, fixed at 5.0 GHz
   with the performance governor. Timed jobs pin to P-cores with `taskset`

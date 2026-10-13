@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Item, ItemStep, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Decision, Item, ItemStep, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { rules as makeRules, stepsChanged } from "./rules.ts";
+import { rules as makeRules, stepsChanged, targetLine, targetsChanged } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; steps?: string[] }
+export interface Row { kind: Kind; id: string; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; steps?: string[]; targets?: string[] }
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -136,7 +136,7 @@ export function context(s: Snapshot, r: Rules, id: string, options: { log?: numb
   }
   const it = s.items[id]!, count = options.log === "all" ? it.log.length : options.log ?? 5;
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
-  return { ...row(s, r, "item", id), steps: (it.steps ?? []).map(r.stepLine), item: { ...it, log }, migrated: r.migrated(id), raisedBy: r.raisedBy(id), earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), steps: (it.steps ?? []).map(r.stepLine), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, migrated: r.migrated(id), raisedBy: r.raisedBy(id), earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)), children: r.children(id).sort(r.compareSiblings).map(c => row(s, r, "item", c)),
     deps: r.depsOf(id).map(d => ({ ...dependency(s, r, d.kind, d.id, d.why), open: d.open, missing: d.missing })),
     dependents: r.dependents(id).map(d => dependency(s, r, "item", d.id, d.why)),
@@ -195,11 +195,14 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), leaves = ids.filter(id => r.isStatusLeaf(id) && !r.isRequest(id) && !r.inArchive(id));
   const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
   for (const id of ids) for (const dep of r.depsOf(id)) if (dep.kind === "item" && dep.open && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
-  const stepLines = (id: string) => s.items[id]?.steps?.length ? { steps: s.items[id]!.steps!.map(r.stepLine) } : {};
-  const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...stepLines(id) });
-  const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...stepLines(id) })),
+  const progressLines = (id: string) => ({
+    ...(s.items[id]?.steps?.length ? { steps: s.items[id]!.steps!.map(r.stepLine) } : {}),
+    ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
+  });
+  const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
+  const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
-    checks: ids.map(id => ({ id, title: s.items[id]!.title, ...stepLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
+    checks: ids.map(id => ({ id, title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     wip: leaves.filter(id => r.statusOf(id) === "wip").sort(r.compareSiblings).map(workRow),
     todo: leaves.filter(id => r.statusOf(id) === "todo").sort(r.compareSiblings).slice(0,10).map(workRow),
@@ -207,9 +210,9 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.outgoing].map(item => item.id));
-  const progress = ids.filter(id => !shown.has(id) && !r.inArchive(id) && !!s.items[id]!.steps?.length &&
+  const progress = ids.filter(id => !shown.has(id) && !r.inArchive(id) && (!!s.items[id]!.steps?.length || !!s.items[id]!.targets?.length) &&
     (s.items[id]!.record || r.statusOf(id) === "wip" || r.statusOf(id) === "blocked"))
-    .map(id => ({ id, title: s.items[id]!.title, steps: s.items[id]!.steps!.map(r.stepLine) }));
+    .map(id => ({ id, title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */
@@ -274,6 +277,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
     if (kind === "item" && (key === "status" || key === "priority") && b[key] === undefined) continue;
     if (key === "steps") {
       if (stepsChanged(a.steps as ItemStep[] | undefined, b.steps as ItemStep[] | undefined)) changes.push("steps changed");
+    } else if (key === "targets") {
+      if (targetsChanged(a.targets as ItemTarget[] | undefined, b.targets as ItemTarget[] | undefined)) changes.push("targets changed");
     } else if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);

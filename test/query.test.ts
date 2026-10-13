@@ -362,3 +362,50 @@ test("brief progress includes record steps and active parent steps without dupli
   assert.deepEqual(brief.progress.find(item => item.id === "queue-record")!.steps, ["○ Own current progress"]);
   assert.ok(!brief.progress.some(item => ["a", "done-with-steps", "todo-with-steps", "archived-record"].includes(item.id)));
 });
+
+
+test("context and brief compact target lines beside steps and retain target-free compatibility", async t => {
+  const { store, op } = await board(t);
+  const empty = q.context(store.snapshot(), rules(store.snapshot()), "a");
+  assert.ok("targets" in empty); assert.deepEqual(empty.targets, []);
+  assert.equal(Object.hasOwn(q.brief(store.snapshot(), rules(store.snapshot()), author).todo.find(item => item.id === "a")!, "targets"), false);
+  await op.setSteps({ author, id: "a", step: { id: "measure", text: "Measured style", state: "done" } });
+  await op.setTargets({ author, id: "a", targets: [
+    { id: "style", goal: "apollo11\n样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍\nChromium", baseline: "Chromium 同机同页" },
+    { id: "memory", goal: "Memory", target: "≤ 100 MB", current: "120 MB", baseline: "main" },
+  ] });
+  const s = store.snapshot(), r = rules(s), context = q.context(s, r, "a");
+  assert.ok("targets" in context);
+  assert.deepEqual(context.targets, [
+    "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-11",
+    "Memory: 120 MB (vs main) → ≤ 100 MB, 2026-10-11",
+  ]);
+  const entry = q.brief(s, r, author).todo.find(item => item.id === "a")!;
+  assert.deepEqual(entry.targets, context.targets); assert.deepEqual(entry.steps, context.steps);
+  assert.equal(Object.hasOwn(q.row(s, r, "item", "a"), "targets"), false, "ordinary rows remain compact");
+  assert.equal(q.describeChanges({}, { targets: [] }, "item"), "metadata changed");
+  assert.equal(q.describeChanges({ targets: [] }, {}, "item"), "metadata changed");
+  assert.equal(q.describeChanges({}, { targets: s.items.a!.targets }, "item"), "targets changed");
+  assert.equal(q.describeChanges({ targets: s.items.a!.targets }, { targets: s.items.a!.targets!.slice().reverse() }, "item"), "targets changed");
+  assert.equal(q.describeChanges({ targets: s.items.a!.targets }, { targets: [{ ...s.items.a!.targets![0]!, current: "4 倍 Chromium" }, s.items.a!.targets![1]!] }, "item"), "targets changed");
+});
+
+test("brief includes target-only records and active parents without duplicating shown rows or archived and closed work", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "target-record", title: "Goals", group: author, priority: "P1", record: true });
+  await op.createItem({ author, key: "archived-targets", title: "Archived goals", group: author, priority: "P1", record: true });
+  const target = { id: "memory", goal: "Memory", target: "≤ 100 MB", current: "120 MB", baseline: "main" };
+  for (const id of ["target-record", "archived-targets", "a", "area", "b"]) await op.setTargets({ author, id, target });
+  const s = structuredClone(store.snapshot());
+  s.decisions = {}; s.notes = {};
+  for (const item of Object.values(s.items)) { item.head = "**完成条件**：验证通过"; item.log = []; item.updated = later; delete item.ask; }
+  s.items.a!.status = "wip"; s.items.b!.status = "todo"; s.items.b!.deps = [];
+  s.owner.archived["archived-targets"] = later;
+  s.items["done-targets"] = { ...s.items.other!, group: author, status: "done", targets: [{ ...target, date: later }] };
+  const brief = q.brief(s, rules(s, Date.parse(later)), author);
+  assert.ok(brief.wip.some(item => item.id === "a" && item.targets?.length === 1));
+  assert.ok(brief.todo.some(item => item.id === "b" && item.targets?.length === 1));
+  assert.deepEqual(brief.progress.map(item => item.id).sort(), ["area", "target-record"]);
+  assert.deepEqual(brief.progress.find(item => item.id === "target-record")!.targets, ["Memory: 120 MB (vs main) → ≤ 100 MB, 2026-10-11"]);
+  assert.ok(!brief.progress.some(item => ["a", "b", "done-targets", "archived-targets"].includes(item.id)));
+});

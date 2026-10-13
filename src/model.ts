@@ -51,6 +51,20 @@ const uniqueStepIds = (steps: readonly { id: string }[]): boolean => new Set(ste
 export const ItemStepsInput = z.array(ItemStepInput).refine(uniqueStepIds, "Step ids must be unique");
 export const ItemSteps = z.array(ItemStep).refine(uniqueStepIds, "Step ids must be unique");
 
+/** One goal's latest numbers; measurement dates belong to the server. */
+export const ItemTargetInput = z.object({
+  id: StepId,
+  goal: StepText,
+  target: StepText,
+  current: StepText,
+  baseline: StepText,
+}).strict();
+export type ItemTargetInput = z.infer<typeof ItemTargetInput>;
+export const ItemTarget = ItemTargetInput.extend({ date: Time });
+export type ItemTarget = z.infer<typeof ItemTarget>;
+export const ItemTargetsInput = z.array(ItemTargetInput).refine(uniqueStepIds, "Target ids must be unique");
+export const ItemTargets = z.array(ItemTarget).refine(uniqueStepIds, "Target ids must be unique");
+
 /** A dependency names an item or a decision card, with one sentence on what the dependent item needs from it. */
 export const Dep = z.union([
   z.object({ id: Key, why: z.string() }).strict(),
@@ -89,6 +103,8 @@ export const Item = z.object({
   log: z.array(LogEntry).default([]),
   /** Parts of this item's own work, in display order; never imply its status. */
   steps: ItemSteps.optional(),
+  /** One row per goal, with only its latest current value and measurement date. */
+  targets: ItemTargets.optional(),
   /** One line of key numbers. */
   data: z.string().min(1).optional(),
   deps: z.array(Dep).default([]),

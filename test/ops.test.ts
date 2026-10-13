@@ -1043,3 +1043,151 @@ test("moving work into a todo parent with steps preserves its own progress and r
   assert.equal(s.items["other-own-steps"]!.status, "todo");
   assert.equal(s.items.a!.parent, "other");
 });
+
+const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
+
+test("targets upsert, replace and remove keep stable order and make one commit per change", async t => {
+  const { store, op } = await board(t), baseline = store.snapshot().head, before = store.snapshot().items.a!;
+  await op.setTargets({ author, id: "a", target: goalNumbers });
+  await op.setTargets({ author, id: "a", target: { ...goalNumbers, id: "memory", goal: "Peak memory" } });
+  await op.setTargets({ author, id: "a", target: { ...goalNumbers, current: "3 倍 Chromium" } });
+  assert.deepEqual(store.snapshot().items.a!.targets!.map(target => target.id), ["style", "memory"]);
+  assert.equal(store.snapshot().items.a!.targets![0]!.current, "3 倍 Chromium");
+  await op.setTargets({ author, id: "a", targets: [
+    { ...goalNumbers, id: "memory", goal: "Peak memory" },
+    { ...goalNumbers, current: "3 倍 Chromium" },
+    { ...goalNumbers, id: "size", goal: "Build size" },
+  ] });
+  assert.deepEqual(store.snapshot().items.a!.targets!.map(target => target.id), ["memory", "style", "size"]);
+  await op.setTargets({ author, id: "a", remove: "memory" });
+  assert.deepEqual(store.snapshot().items.a!.targets!.map(target => target.id), ["style", "size"]);
+  await op.setTargets({ author, id: "a", targets: [] });
+  assert.deepEqual(store.snapshot().items.a!.targets, []);
+  const current = store.snapshot().items.a!;
+  assert.equal(current.status, before.status); assert.equal(current.head, before.head); assert.deepEqual(current.log, before.log);
+  const commits = await store.log({ since: baseline });
+  assert.equal(commits.length, 6); assert.ok(commits.every(commit => commit.message === "set_targets a"));
+});
+
+test("target current values overwrite their old value and restamp dates only when current changes", async t => {
+  const { store, dir } = await board(t);
+  let clock = "2026-10-12T00:00:00Z";
+  const op = ops(store, () => clock);
+  await op.setTargets({ author, id: "a", target: goalNumbers });
+  const initial = store.snapshot().items.a!.targets![0]!;
+  assert.deepEqual(initial, { ...goalNumbers, date: clock });
+  clock = "2026-10-13T00:00:00Z";
+  const revised = { ...goalNumbers, goal: "Style calculation time", target: "≤ 2 倍 Chromium", baseline: "Chromium 同机同页，新版本" };
+  await op.setTargets({ author, id: "a", target: revised });
+  assert.deepEqual(store.snapshot().items.a!.targets![0], { ...revised, date: initial.date }, "other text edits keep the measurement date");
+  clock = "2026-10-14T00:00:00Z";
+  await op.setTargets({ author, id: "a", target: { ...revised, current: "4 倍 Chromium" } });
+  const measured = store.snapshot().items.a!.targets![0]!;
+  assert.deepEqual(measured, { ...revised, current: "4 倍 Chromium", date: clock });
+  assert.equal(store.snapshot().items.a!.targets!.length, 1, "no measurement history is appended");
+  clock = "2026-10-15T00:00:00Z";
+  await op.setTargets({ author, id: "a", targets: [{ ...goalNumbers, id: "new", current: "4 倍 Chromium" }, { ...revised, current: "4 倍 Chromium" }] });
+  assert.equal(store.snapshot().items.a!.targets![1]!.date, measured.date, "replacement matches dates by stable id after a position change");
+  assert.equal(store.snapshot().items.a!.targets![0]!.date, clock, "new goal gets a date even if another goal has the same current value");
+  clock = "2026-10-16T00:00:00Z";
+  await op.setTargets({ author, id: "a", targets: [{ ...revised, current: "2 倍 Chromium" }] });
+  assert.equal(store.snapshot().items.a!.targets![0]!.date, clock, "replacement also restamps changed current values");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot(), "stored targets survive schema readback");
+});
+
+test("identical target upserts and replacements change neither updated nor history", async t => {
+  const { store } = await board(t);
+  let clock = "2026-10-12T00:00:00Z";
+  const op = ops(store, () => clock), empty = store.snapshot();
+  await op.setTargets({ author, id: "a", targets: [] });
+  assert.deepEqual(store.snapshot(), empty, "clearing an absent list also writes no commit");
+  await op.setTargets({ author, id: "a", target: goalNumbers });
+  const before = store.snapshot(), commits = (await store.log()).length;
+  clock = "2026-10-13T00:00:00Z";
+  for (const args of [{ target: goalNumbers }, { targets: [goalNumbers] }]) {
+    const result = await op.setTargets({ author, id: "a", ...args });
+    assert.equal(result.commit, before.head);
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal((await store.log()).length, commits);
+  }
+  await op.setTargets({ author, id: "a", target: { ...goalNumbers, target: "≤ 2 倍 Chromium" } });
+  assert.equal((await store.log()).length, commits + 1, "a target-value edit still writes one commit");
+});
+
+test("targets refuse missing or empty text, invalid ids, caller dates and ambiguous operations atomically", async t => {
+  const { store, op, dir } = await board(t), before = store.snapshot();
+  type Args = Parameters<Ops["setTargets"]>[0];
+  const cases: Array<[Args, RegExp]> = [
+    [{ author, id: "a", target: { ...goalNumbers, id: "../bad" } }, /id/],
+    [{ author, id: "a", target: { ...goalNumbers, id: "a".repeat(41) } }, /id/],
+    [{ author, id: "a", targets: [goalNumbers, goalNumbers] }, /unique/],
+    [{ author, id: "a", remove: "../bad" }, /input/],
+    [{ author, id: "a", remove: "missing" }, /existing target/],
+    [{ author, id: "a" }, /exactly one/],
+    [{ author, id: "a", target: goalNumbers, targets: [] }, /exactly one/],
+    [{ author, id: "a", target: goalNumbers, remove: "style" }, /exactly one/],
+    [{ author, id: "a", targets: [], remove: "style" }, /exactly one/],
+    [{ author, id: "a", target: { ...goalNumbers, date: later } } as Args, /Unrecognized key/],
+    [{ author, id: "a", targets: [{ ...goalNumbers, date: later }] } as Args, /Unrecognized key/],
+    [{ author: " ", id: "a", target: goalNumbers }, /author/],
+    [{ author, id: "missing", target: goalNumbers }, /existing item/],
+  ];
+  for (const field of ["goal", "target", "current", "baseline"] as const) {
+    for (const value of [undefined, "", " \n "]) {
+      const invalid = { ...goalNumbers, [field]: value };
+      cases.push([{ author, id: "a", target: invalid } as Args, new RegExp(field)]);
+      cases.push([{ author, id: "a", targets: [goalNumbers, { ...invalid, id: "other" }] } as Args, new RegExp(field)]);
+    }
+  }
+  for (const [args, error] of cases) {
+    await assert.rejects(op.setTargets(args), error);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  assert.deepEqual((await Store.open(dir)).snapshot(), before, "refused input changes neither disk nor commit history");
+});
+
+test("targets enforce project ownership in every mode and support records without deriving work status", async t => {
+  const { store, op } = await board(t);
+  await op.setTargets({ author, id: "a", target: goalNumbers });
+  const before = store.snapshot();
+  for (const mode of [{ target: goalNumbers }, { targets: [] }, { remove: "style" }]) {
+    await assert.rejects(op.setTargets({ author: "Firn", id: "a", ...mode }), /belongs to project Whitefoot/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  await op.createItem({ author, key: "record-with-targets", title: "Goal numbers", record: true, group: author, priority: "P1" });
+  await op.setTargets({ author, id: "record-with-targets", target: goalNumbers });
+  const s = store.snapshot(); assert.equal(s.items["record-with-targets"]!.targets![0]!.date, later);
+  assert.equal(s.items["record-with-targets"]!.status, undefined); assert.equal(rules(s).statusOf("record-with-targets"), undefined);
+});
+
+test("revision-free target writes retry real conflicts and retain concurrent goals, head and logs", async t => {
+  const { store, op } = await board(t), original = store.commit.bind(store);
+  let raced = false;
+  t.mock.method(store, "commit", async (txn: Txn) => {
+    if (!raced) {
+      raced = true; const current = store.snapshot().items.a!;
+      await original({ author, message: "Concurrent progress", puts: [{ kind: "item", id: "a", expectRev: current.rev,
+        doc: { ...current, head: "Concurrent stable head", targets: [{ ...goalNumbers, id: "other", date: at }], log: [...current.log, { at, by: author, text: "Concurrent detail" }] } }] });
+    }
+    return original(txn);
+  });
+  await op.setTargets({ author, id: "a", target: goalNumbers });
+  assert.ok(raced);
+  const it = store.snapshot().items.a!;
+  assert.deepEqual(it.targets!.map(target => target.id), ["other", "style"]);
+  assert.equal(it.targets![0]!.date, at); assert.equal(it.targets![1]!.date, later);
+  assert.equal(it.head, "Concurrent stable head"); assert.equal(it.log.at(-1)!.text, "Concurrent detail");
+});
+
+test("moving work into a todo parent with targets preserves goal numbers and requires an own-work child", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.setTargets({ author, id: "other", target: goalNumbers });
+  const before = store.snapshot();
+  await assert.rejects(op.moveItem({ author, id: "a", parent: "other", parentWhy: "Needs its result" }), /parentOwnWork/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.moveItem({ author, id: "a", parent: "other", parentWhy: "Needs its result", parentOwnWork: { key: "other-own-targets", title: "Parent own work" } });
+  const s = store.snapshot();
+  assert.deepEqual(s.items.other!.targets, before.items.other!.targets, "goal ownership stays with its original item");
+  assert.equal(s.items["other-own-targets"]!.status, "todo");
+  assert.equal(s.items.a!.parent, "other");
+});
