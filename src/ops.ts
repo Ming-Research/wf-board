@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -14,15 +14,19 @@ export interface Result { commit: string; id: string; rev?: number; summary: str
 export interface Ops {
   createProject(a: { author: string; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  createRequest(a: { author: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[] }): Promise<Result>;
+  createRequest(a: { author: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
   triageRequest(a: { author: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[] }): Promise<Result>;
+  createItem(a: { author: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
   setPlan(a: { author: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
+  setTags(a: { author: string; id: string; tags: string[] }): Promise<Result>;
+  setTag(a: { author: string; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
+  renameTag(a: { author: string; name: string; to: string }): Promise<Result>;
+  removeTag(a: { author: string; name: string; replace?: string }): Promise<Result>;
   setPause(a: { author: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
@@ -64,6 +68,30 @@ function derivedPriority(id: string, from: string[]): OpError {
   return new OpError(`priority: ${id} 有未完成的条目依赖它，它的优先级来自这些条目（${from.join("、")}），不能自己设；只有没有未完成条目依赖的根条目才写优先级`);
 }
 const openDependents = (r: ReturnType<typeof rules>, id: string): string[] => r.dependents(id).map(d => d.id).filter(d => r.statusOf(d) !== "done" && r.statusOf(d) !== "cancelled");
+
+/** The tags an item of `project` may carry, as a sentence for an error message. */
+function allowedTags(s: Snapshot, project: string): string {
+  const names = boardTags(s.board).filter(t => tagApplies(t, project)).map(t => t.name);
+  return names.length ? `tags allowed for ${project}: ${names.join(", ")}` : `no tag is approved for ${project} yet; 总管 adds one after the owner approves it on a decision card`;
+}
+/**
+ * Validates the tags a write gives an item of `project`: unique, in the vocabulary and applicable to the project.
+ * `required`: at least one is needed whenever the vocabulary has a tag applicable to the project; before that none can be given.
+ */
+function checkedTags(s: Snapshot, project: string, tags: readonly string[] | undefined, required: boolean): string[] | undefined {
+  const given = tags ?? [];
+  if (new Set(given).size !== given.length) throw new OpError("tags: name each tag once");
+  for (const name of given) {
+    const tag = boardTags(s.board).find(t => t.name === name);
+    if (!tag) throw new OpError(`tags ${name}: not in the tag vocabulary; ${allowedTags(s, project)}`);
+    if (!tagApplies(tag, project)) throw new OpError(`tags ${name}: applies only to ${tag.projects!.join(", ")}, not ${project}; ${allowedTags(s, project)}`);
+  }
+  if (!given.length && required && boardTags(s.board).some(t => tagApplies(t, project))) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
+  return given.length ? [...given] : undefined;
+}
+function only总管(author: string): void {
+  if (author !== "总管") throw new OpError("author: only 总管 may change the tag vocabulary, and only after the owner approves the change on a decision card");
+}
 
 function newKey(s: Snapshot, key: string): void {
   if (!Key.safeParse(key).success) throw new OpError("key: use 1–200 letters, digits, dots, underscores or hyphens, starting with a letter or digit");
@@ -348,7 +376,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.from && a.priority) throw derivedPriority(a.key, [a.from]);
       if (!a.from && !a.priority) throw new OpError("priority: a request without from requires a root priority");
       if (!a.from && a.after !== undefined) throw new OpError("after: requires from");
-      const doc = parse(Item, { title: a.title, group: a.project, head: a.head, priority: a.priority, plan: [{ id: "accept", accept: true, text: a.accept, state: "todo" }], request: { by: a.author, at }, created: at, updated: at, rev: 1, log: [entry(a.author, at, `${a.author} 提出：${a.why}`)] });
+      const tags = checkedTags(s, a.project, a.tags, true);
+      const doc = parse(Item, { title: a.title, group: a.project, ...(tags ? { tags } : {}), head: a.head, priority: a.priority, plan: [{ id: "accept", accept: true, text: a.accept, state: "todo" }], request: { by: a.author, at }, created: at, updated: at, rev: 1, log: [entry(a.author, at, `${a.author} 提出：${a.why}`)] });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       if (a.from) { const from = ownedItem(s, a.from, a.author, "from"); puts.push(itemPut(a.from, { ...from, updated: at, plan: insert(from.plan ?? [], { id: a.key, item: a.key, own: false, ...(a.after === undefined ? {} : { after: a.after }) }) })); }
       return { id: a.key, kind: "item", puts, message: `create_request ${a.key}` };
@@ -390,7 +419,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (new Set(children).size !== children.length) throw new OpError("children: name each item once");
       for (const id of children) { ownedItem(s, id, a.author, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
-      const doc = parse(Item, { title: a.title, head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const tags = checkedTags(s, group, a.tags, true);
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rules(s).parentOf(id);
@@ -438,6 +468,49 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return isDeepStrictEqual(targets, previous) ? it : { ...it, targets, updated: at };
     }),
+    setTags: a => edit(a, "set_tags", (it, s, at) => {
+      if (!Array.isArray(a.tags) || !a.tags.length) throw new OpError(`tags: give the item's whole tag list, at least one tag; ${allowedTags(s, it.group)}`);
+      const tags = checkedTags(s, it.group, a.tags, true)!;
+      return isDeepStrictEqual(tags, it.tags) ? it : { ...it, tags, updated: at };
+    }),
+    setTag: a => run(a, s => {
+      only总管(a.author);
+      const known = boardTags(s.board).find(t => t.name === a.name);
+      const projects = a.projects === undefined ? known?.projects : a.projects ?? undefined;
+      for (const name of projects ?? []) requireProject(s, name);
+      const tag = parse(Tag, { name: a.name, meaning: a.meaning, ...(projects ? { projects } : {}) });
+      const stranded = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name) && !tagApplies(tag, it.group)).map(([id]) => id);
+      if (stranded.length) throw new OpError(`projects: items of projects outside the list still carry ${a.name}: ${stranded.join(", ")}; retag them first`);
+      const tags = known ? boardTags(s.board).map(t => t.name === a.name ? tag : t) : [...boardTags(s.board), tag];
+      return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags }), puts: [], message: `set_tag ${a.name}` };
+    }, false, true),
+    renameTag: a => run(a, (s, at) => {
+      only总管(a.author);
+      if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
+      parse(TagName, a.to);
+      if (boardTags(s.board).some(t => t.name === a.to)) throw new OpError(`to ${a.to}: already a tag; choose an unused name, or remove ${a.name} with replace`);
+      const puts = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name)).map(([id, it]) =>
+        itemPut(id, { ...it, tags: it.tags!.map(t => t === a.name ? a.to : t), updated: at, log: [...it.log, entry(a.author, at, `标签改名：${a.name} → ${a.to}`)] }));
+      const tags = boardTags(s.board).map(t => t.name === a.name ? { ...t, name: a.to } : t);
+      return { id: a.to, kind: "board", board: parse(Board, { ...s.board, tags }), puts, message: `rename_tag ${a.name} ${a.to}` };
+    }, false, true),
+    removeTag: a => run(a, (s, at) => {
+      only总管(a.author);
+      if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
+      const carrying = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name));
+      let replace: Tag | undefined;
+      if (a.replace !== undefined) {
+        replace = boardTags(s.board).find(t => t.name === a.replace);
+        if (!replace || replace.name === a.name) throw new OpError(`replace ${a.replace}: choose another tag in the vocabulary`);
+        const wrong = carrying.filter(([, it]) => !tagApplies(replace!, it.group)).map(([id]) => id);
+        if (wrong.length) throw new OpError(`replace ${a.replace}: does not apply to the projects of ${wrong.join(", ")}`);
+      } else if (carrying.length) throw new OpError(`name ${a.name}: ${carrying.length} items still carry it (${carrying.slice(0, 10).map(([id]) => id).join(", ")}${carrying.length > 10 ? ", …" : ""}); retag them, or give replace`);
+      const puts = carrying.map(([id, it]) => {
+        const rest = it.tags!.filter(t => t !== a.name);
+        return itemPut(id, { ...it, tags: rest.includes(replace!.name) ? rest : [...rest, replace!.name], updated: at, log: [...it.log, entry(a.author, at, `标签 ${a.name} 已删除，换成 ${replace!.name}`)] });
+      });
+      return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags: boardTags(s.board).filter(t => t.name !== a.name) }), puts, message: `remove_tag ${a.name}${a.replace === undefined ? "" : ` → ${a.replace}`}` };
+    }, false, true),
     updateItem: a => run(a, async (s, at) => {
       const it = ownedItem(s, a.id, a.author); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;

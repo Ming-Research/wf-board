@@ -3617,3 +3617,54 @@ test("n visits an item, then the cards its plan unfolds, then its comments, then
   assert.deepEqual(visited,["detail-it-child","q-q","note-n","q-loose"]);
   assert.ok(planRow(p,"child","q").parentElement!.children.some(e=>e.id === "q-q"),"n unfolded the planned card under its row");
 });
+
+function taggedSnapshot(): Snapshot {
+  const s = nativeSnapshot();
+  s.board.tags = [{ name: "健全性", meaning: "改动影响程序是否被正确拒绝或接受" }, { name: "报错信息", meaning: "改动影响诊断" }];
+  s.items.child!.tags = ["健全性", "报错信息"];
+  return s;
+}
+test("a tree row shows its tags after the title, and the detail shows them on a line directly under the title", async () => {
+  const p = await page(taggedSnapshot(), []);
+  await expand(p, "child");
+  const head = rowOf(p, "child").querySelector(".item-head")!;
+  const kinds = head.children.map(e => e.className.split(" ")[0]);
+  assert.ok(kinds.indexOf("tagchips") > kinds.indexOf("item-title"), "the chips follow the title on the same row");
+  const chips = head.querySelector(".tagchips")!.children;
+  assert.deepEqual(chips.map(c => c.innerHTML), ["健全性", "报错信息"]);
+  assert.equal(chips[0]!.title, "改动影响程序是否被正确拒绝或接受", "hovering a tag shows its meaning");
+  assert.equal(rowOf(p, "child").querySelector(".item-tags"), null, "the tree row has no separate tag line");
+  const detail = item(p, "child");
+  assert.equal(detail.id, "detail-it-child");
+  assert.ok(detail.children[0]!.classList.contains("item-row"));
+  assert.ok(detail.children[1]!.classList.contains("item-tags"), "the tag line comes directly after the title row");
+  assert.deepEqual(detail.children[1]!.children.map(c => c.innerHTML), ["健全性", "报错信息"]);
+  assert.equal(detail.children[0]!.querySelector(".tagchips"), null, "the detail title row does not repeat them");
+  assert.equal(rowOf(p, "area").querySelector(".item-head .tagchips"), null, "an untagged item shows no chips and no warning");
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html, /\.tagchip \{[^}]*background/, "the chips are neutral, not a status colour");
+  assert.doesNotMatch(html.match(/\.tagchip \{[^}]*\}/)![0], /--(wip|done|blocked|todo)/);
+});
+
+test("the tag filter shows items carrying any selected tag and their ancestors, and hides the rest", async () => {
+  const s = taggedSnapshot();
+  s.items.sibling = { ...structuredClone(s.items.child!), title: "Sibling", tags: ["报错信息"] } as Item;
+  s.items.area!.plan = [...s.items.area!.plan.filter(r => !("accept" in r)), { id: "sibling", item: "sibling", own: true, after: [] }, ...s.items.area!.plan.filter(r => "accept" in r)];
+  s.items.other = { ...structuredClone(s.items.child!), title: "Other", tags: ["健全性"], group: "Project" } as Item;
+  s.items.area!.plan.splice(-1, 0, { id: "other", item: "other", own: true, after: [] });
+  s.items.child!.tags = ["健全性"];
+  const p = await page(s, []); await expand(p, "child");
+  assert.ok(rowOf(p, "child") && rowOf(p, "sibling") && rowOf(p, "other"), "unfiltered: all visible");
+  const button = (text: string) => p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === text);
+  assert.ok(button("健全性 2") && button("报错信息 1"), "the filter row offers each tag with its item count");
+  await button("报错信息 1")!.click(); await p.flush();
+  assert.ok(rowOf(p, "sibling"), "the item carrying the tag stays");
+  assert.ok(rowOf(p, "area"), "its ancestor stays for context");
+  assert.equal(rowOf(p, "child"), undefined, "an item without the selected tag is hidden");
+  assert.equal(rowOf(p, "other"), undefined);
+  await button("健全性 2")!.click(); await p.flush();
+  assert.ok(rowOf(p, "sibling") && rowOf(p, "child") && rowOf(p, "other"), "any selected tag keeps an item");
+  await button("报错信息 1")!.click(); await p.flush();
+  assert.equal(rowOf(p, "sibling"), undefined);
+  assert.ok(rowOf(p, "child") && rowOf(p, "other"));
+});

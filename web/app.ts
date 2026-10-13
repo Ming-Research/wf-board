@@ -1,3 +1,4 @@
+import { tagApplies } from "../src/model.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
@@ -289,9 +290,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
   // Closed nodes show under their status filters or as a path to open work; their plan rows always show.
-  let filters: Record<string, {status:string[];dep:string}> = {};
+  let filters: Record<string, {status:string[];dep:string;tags?:string[]}> = {};
   try { filters = JSON.parse(localStorage.getItem("board-filters2") || "{}") || {}; } catch (e) {}
-  function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k))} : { status: [], dep: "" }; }
+  function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k)),tags:(f.tags ?? []).filter(t => (snapshot.board.tags ?? []).some(v => v.name === t))} : { status: [], dep: "", tags: [] as string[] }; }
   const WEEK = 7 * 24 * 3600 * 1000;
   type Filter = [string,string,string,(it:ViewItem)=>boolean];
   const STATUS_FILTERS: Filter[] = [
@@ -308,13 +309,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ["cross", "跨项目依赖", "只看依赖或被依赖跨了项目的条目", it => !ended(it) && (openDeps(it).some(d => groupOf(d) !== groupOf(it)) || openWaiters(it).some(w => groupOf(w) !== groupOf(it)))],
     ["check", "需核对", "只看状态和依赖对不上、或依赖写错的条目", it => checksOf(it).length > 0]
   ];
-  function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep; }
+  function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep || f.tags.length > 0; }
   function anyFiltering() { return Object.keys(filters).some(filtering); }
   function matches(it: ViewItem) {
     const f = groupFilter(groupOf(it));
     const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !ended(it);
     const d = DEP_FILTERS.find(x => x[0] === f.dep);
-    return st && (!d || d[3](it));
+    return st && (!d || d[3](it)) && (!f.tags.length || f.tags.some(t => it.tags?.includes(t)));
   }
   function filterMatches() {
     return cached("filterMatch", () => {
@@ -329,8 +330,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && f![3](it)).length; }
   function passes(it: ViewItem) { return filtering(groupOf(it)) ? filterMatches().keep.has(it.id) : visible(it); }
   function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
-  function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
-  function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key }; saveFilters(); }
+  function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep, tags: f.tags }; saveFilters(); }
+  // Tag filters keep items carrying any selected tag.
+  function toggleTagFilter(g: string, name: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep, tags: f.tags.includes(name) ? f.tags.filter(t => t !== name) : f.tags.concat(name) }; saveFilters(); }
+  function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key, tags: f.tags }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); }
   // The filter row under a project heading: the status filters with their counts in that project, then the dependency ones it has.
   function filterRow(g: string) {
@@ -344,6 +347,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     DEP_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(DEP_FILTERS, key, g), on = f.dep === key;
       if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
+    });
+    (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
+      const n = state.items.filter(it => groupOf(it) === g && it.tags?.includes(t.name)).length, on = f.tags.includes(t.name);
+      if (n || on) { const b = btn(on, t.name + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
     });
     if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
     return row;
@@ -1825,6 +1832,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const pr = priorityOf(it);
     head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     if (it.plan.length) {
       const ratio = derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
@@ -1886,6 +1894,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
+    if (detail && it.tags?.length) { const tags = el("div", "tagchips item-tags"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; box.appendChild(tags); }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
@@ -2123,7 +2132,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       };
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),derived.pausedBy(id),snapshot.items[derived.pausedBy(id) || ""]?.paused,it.paused,deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),it.tags ?? [],derived.stalledBelow(id),derived.pausedBy(id),snapshot.items[derived.pausedBy(id) || ""]?.paused,it.paused,deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
       const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;

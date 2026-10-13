@@ -105,6 +105,19 @@ export type ItemTarget = z.infer<typeof ItemTarget>;
 export const ItemTargetsInput = z.array(ItemTargetInput).refine(uniqueStepIds, "Target ids must be unique");
 export const ItemTargets = z.array(ItemTarget).refine(uniqueStepIds, "Target ids must be unique");
 
+/** A tag's name: 1–12 characters, no whitespace and no comma (ASCII, fullwidth or enumeration comma), so a list of tags reads unambiguously. */
+export const TagName = z.string().regex(/^[^\s,，、]{1,12}$/u, "use 1–12 characters without whitespace or commas");
+/** One approved tag. `projects` absent: every project may use it; otherwise only the listed ones. */
+export const Tag = z.object({
+  name: TagName,
+  /** One sentence telling agents when to apply the tag. */
+  meaning: z.string().min(1).refine(text => !!text.trim(), "Provide nonempty text after trimming"),
+  projects: z.array(z.string().min(1)).min(1).refine(p => new Set(p).size === p.length, "Projects must be unique").optional(),
+}).strict();
+export type Tag = z.infer<typeof Tag>;
+/** Whether a vocabulary tag may be used by an item of this project. */
+export const tagApplies = (tag: Tag, project: string): boolean => tag.projects === undefined || tag.projects.includes(project);
+
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
@@ -129,6 +142,11 @@ export const Item = z.object({
   status: z.literal("cancelled").optional(),
   /** Explicit owner/coordinator pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
+  /**
+   * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
+   * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
+   */
+  tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
   priority: Priority.optional(),
@@ -257,11 +275,15 @@ export type Glossary = z.infer<typeof Glossary>;
 
 export const Board = z.object({
   projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
+  /** The approved tag vocabulary; only 总管 changes it, on the owner's decision card. */
+  tags: z.array(Tag).refine(t => new Set(t.map(t => t.name)).size === t.length, "Tag names must be unique").optional(),
   title: z.string().min(1),
   eyebrow: z.string().optional(),
   goal: z.string().optional(),
 }).strict();
 export type Board = z.infer<typeof Board>;
+/** The approved tags; a board written before tags existed has none. */
+export const boardTags = (board: Pick<Board, "tags">): Tag[] => board.tags ?? [];
 
 /** A board document whose changes can be read independently. */
 export const ReadDocument = z.string().regex(/^(item|decision|note):[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);

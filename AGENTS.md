@@ -64,6 +64,11 @@ matches what the artifact board offered.
 - Only `总管` uses `set_pause` to pause or resume work, at the owner's
   request in a comment, with a reason when pausing. It preserves every plan row, applies through
   same-project ownership, and stops priority propagation and stalled clocks.
+- Tag every item with at least one tag from the vocabulary (`tags` lists
+  them with meanings; `set_tags` sets an item's whole list; `create_item`
+  and `create_request` take `tags`). Only `总管` changes the vocabulary
+  (`set_tag`, `rename_tag`, `remove_tag`), and only after the owner approves
+  the change on a decision card; the server checks the author, not the card.
 - Records have no acceptance step and pass no priority. Open work owned by
   a record stores no priority, but derives the highest priority from open
   shared dependents, or none without them. Record ownership passes none.
