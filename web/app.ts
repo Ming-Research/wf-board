@@ -789,7 +789,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       list.appendChild(el("div", "keymenu-head", "快捷键：作用于选中的条目或卡片；没选中时作用于屏幕最上面那一条<br>" +
         "蓝色数字是本条及子树有新内容的条目数。" +
         "紫色数字是本条及下面阻塞工作、等你处理的处数，红色数字是不挡工作的决策卡张数。" +
-        "右侧状态色数字是子树未归档叶条目按状态分类的数量。"));
+        "右侧状态色数字是子树叶条目按状态分类的数量，不计取消的条目。"));
       ACTIONS.forEach(a => {
         const r = el("button", "keymenu-row", '<kbd>' + esc(a.show || a.key) + "</kbd><span>" + esc(a.label) + "</span>");
         r.type = "button";
