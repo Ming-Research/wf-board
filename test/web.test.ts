@@ -1180,7 +1180,8 @@ test("prose and priority updates preserve sibling cards and owned rows remain in
   p.emit("c".repeat(40),[{kind:"item",id:"pusher",after:{...s.items.pusher!,plan:planWork([sharedRow("sibling")])}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-child" || e.id === "it-sibling").map(e=>e.id),["it-child","it-sibling"],"owned order never follows changed priority");
   p.emit("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,plan:planWork([],"done")}}]); await p.flush();
-  const doneCount=rowOf(p,"area").querySelector(".counts .done")!; assert.equal(doneCount.innerHTML,"1"); assert.equal(doneCount.attributes["aria-label"],"DONE 1");
+  assert.equal(rowOf(p,"area").querySelector(".counts .done"),null,"a finished part is not counted on its owner's row");
+  const open=rowOf(p,"area").querySelectorAll(".counts .st"); assert.equal(open.length,1,"the sibling still open is counted"); assert.equal(open[0]!.innerHTML,"1");
 });
 test("send waits for optimistic draft acknowledgement and refuses to send a failed draft", async t => {
   for(const failed of [false,true]) await t.test(failed ? "failure" : "acknowledgement",async()=> {
@@ -3345,4 +3346,14 @@ test("project headings omit the retired cross-dependency summary and shared plan
   assert.equal(p.all().filter(e=>e.classList.contains("xdeps")).length,0,"neither project heading displays the removed cross-dependency summary");
   assert.match(markup(planRow(p,"child","far")),/External result/,"the shared row names its target");
   assert.doesNotMatch(markup(planRow(p,"child","far")),/Other/,"the owner asked for no project or owner line under a shared row");
+});
+
+test("a cancelled item shows no check tags, in the tree or on plan rows", async () => {
+  const s=nativeSnapshot(); s.items.gone={...s.items.child!,title:"Gone",status:"cancelled",provisional:true,plan:planWork([])};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("gone")]);
+  const p=await page(s,[]); await expand(p,"area");
+  assert.ok(!planRow(p,"area","gone").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"),"a cancelled owned row drops 待重写");
+  s.items.child!.provisional=true;
+  const q=await page(s,[]); await expand(q,"area");
+  assert.ok(planRow(q,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"),"an open owned row keeps it");
 });
