@@ -539,19 +539,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // chip of its own. A click opens the first new place there, in page order.
   function freshChip(key: string, n: number, own: boolean) {
     const id = key.startsWith("it:") ? key.slice(3) : null;
-    const first = id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
+    // Read when clicked: an incremental repaint elsewhere can move the stops this chip was drawn against.
+    const firstNow = () => id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
+    const first = firstNow();
     const c = el("span", "newtag freshchip", String(Math.max(1, n)));
     c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，m 把这一条标为已阅（子条目不动）"
       : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 m";
     c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
     if (first !== undefined) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
-      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(first); };
+      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); const now = firstNow(); if (now !== undefined) goFresh(now); };
       c.addEventListener("click", go);
       c.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
     }
     return c;
   }
+  // Clicks per purple or red number, kept across repaints, so repeated clicks walk the stops it counts.
+  const chipClicks = new Map<string, number>();
   function shownFresh() { const k = shownStop === null ? undefined : allFreshIndex().position.get(shownStop); return k === undefined ? null : allFreshStops()[k]!; }
   function selectedDocument() {
     // Deleted documents have no selectable body, but n still exposes their logical stop before the displayed item.
@@ -1159,6 +1163,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (key.startsWith("it:")) { openPath(key.slice(3)); selectItem(key.slice(3)); }
     else if (key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
     editing = key; editingAnchor = anchor || null;
+    // Writing a comment shows the list it joins, so the saved draft and its send button are in view.
+    notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
     renderNow("notes:"+key);
     const ta = get<HTMLTextAreaElement>("ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_"));
     if (ta) { ta.focus(); ta.scrollIntoView({ block: "center" }); }
@@ -1388,7 +1394,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         save.disabled = true;
         try {
           await createNote(Object.assign({ target: key, text: text, kind: "comment" as const }, editingAnchor ? { anchor: editingAnchor } : {}));
-          drafts[key] = ""; editing = null; editingAnchor = null; renderNow("notes:"+key);
+          drafts[key] = ""; editing = null; editingAnchor = null;
+          notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
+          renderNow("notes:"+key);
         } catch (e) { save.disabled = false; save.textContent = "保存"; }
       });
       cancel.addEventListener("click", () => { editing = null; editingAnchor = null; renderNow("notes:"+key); });
@@ -1843,10 +1851,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (!count) continue;
       const chip = el("span", cls, String(count));
       chip.title = count + " " + label; chip.setAttribute("aria-label", chip.title); head.appendChild(chip);
-      const first = stops().findIndex(st => !!st.item && (st.item === it.id || derived.ancestors(st.item).includes(it.id)) && blockingStop(st) === wanted);
-      if (first >= 0) {
+      // The stops this number counts: the item's own and those of the items it owns, read when clicked so a re-render
+      // elsewhere cannot leave the chip pointing at a stale position. Each click goes to the next of them, then around.
+      const reachable = () => {
+        const sub = new Set<string>(), walk = (v: string) => { if (sub.has(v)) return; sub.add(v); derived.children(v).forEach(walk); };
+        walk(it.id);
+        return stops().map((st, k) => ({ st, k })).filter(({ st }) => !!st.item && sub.has(st.item) && blockingStop(st) === wanted).map(({ k }) => k);
+      };
+      if (reachable().length) {
         chip.setAttribute("role","button"); chip.tabIndex=0;
-        const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goStop(first); };
+        const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); const ks = reachable(), at = chipClicks.get(cls+it.id) ?? 0; if (ks.length) { chipClicks.set(cls+it.id, at + 1); goStop(ks[at % ks.length]!); } };
         chip.addEventListener("click",go); chip.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
       }
     }
@@ -2150,7 +2164,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const d=index().decById.get(id), old=get("q-"+id);
     if (d && inPlan(d)) {
       // An inline card lives right after its plan row, only while unfolded and its item's body is shown.
-      const row=bodyShown(d.item) ? get(planRowId(d.item,id)) : null, parent=row?.parentElement;
+      const planned=index().byId.get(d.item)?.plan.find(r => "card" in r && r.card === id);
+      const row=bodyShown(d.item) && planned ? get(planRowId(d.item,planned.id)) : null, parent=row?.parentElement;
       const toggle=row?.querySelector<HTMLElement>(".cardtoggle");
       if (toggle) { toggle.setAttribute("aria-expanded",String(inlineShown(d))); toggle.title=inlineShown(d) ? "收起这张决策卡" : "展开这张决策卡"; }
       if (!row || !parent || !inlineShown(d)) old?.remove();
