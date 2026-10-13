@@ -196,21 +196,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
             if (!("item" in row && row.own) || work.moved?.includes(row.item) || !beforeRules.isOpenWork(row.item)) continue;
             if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
           }
-          const accept = current.plan?.find(row => "accept" in row && row.accept);
-          const was = old?.plan?.find(row => "accept" in row && row.accept);
-          if (accept && "state" in accept && accept.state === "done" && (!was || !("state" in was) || was.state !== "done" || !isDeepStrictEqual(accept, was))) {
-            const open = afterRules.planRows(id).filter(p => p.row.id !== accept.id && p.state !== "resolved");
-            if (open.length) throw new OpError(`accept: unresolved rows ${open.map(p => p.row.id).join(", ")}; resolve each row before marking acceptance done`);
-          }
         }
-        const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有验收步骤)/;
+        const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
         for (const id of Object.keys(next.items)) {
           const oldChecks = new Set(beforeRules.checks(id).map(c => JSON.stringify(c)));
           for (const check of afterRules.checks(id)) {
             if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
               const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
                 : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
-                : check.text.startsWith("没有计划") ? "use set_plan to add the final acceptance step"
+                : check.text.startsWith("没有计划") ? "use set_plan to add at least one acceptance step where its check happens"
                 : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
                 : "use move_item to place the item under exactly one same-project owner";
               throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
@@ -401,9 +395,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const key of ["title", "head", "links", "priority", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
         if (a.accept !== undefined) throw new OpError("accept: refused for a record");
-        const accept = it.plan?.find(row => "accept" in row && row.accept);
+        const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
         doc.plan = (it.plan ?? []).filter(row => !("accept" in row && row.accept)); delete doc.status;
-        doc.log.push(entry(a.author, at, `改为记录条目：不再有状态；原验收：${accept && "text" in accept ? accept.text : ""}`));
+        doc.log.push(entry(a.author, at, `改为记录条目：不再有状态；原验收：${accepts.map(row => "text" in row ? row.text : "").join("；")}`));
       } else if (a.record === false && it.record) {
         if (!a.accept) throw new OpError("accept: required when changing a record to work");
         doc.plan = [...it.plan ?? [], stampPlanRow({ id: acceptId(it.plan ?? []), accept: true, text: a.accept, state: "todo" }, undefined, at)];

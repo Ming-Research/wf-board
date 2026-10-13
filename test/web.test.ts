@@ -268,7 +268,7 @@ function nativeFixture(source: PageInput): Snapshot {
     for (const [child, it] of Object.entries(source.items)) if ((it as FixtureItem).parent === id && !refs.some(row=>"item" in row && row.item === child)) refs.push({id:child,item:child,own:true,after:[]});
     const ownSteps=steps ?? (old.record ? [] : refs.some(row=>"item" in row && row.own) ? [] : [{id:"work",text:"Work",state: derived === "wip" ? "doing" as const : derived === "done" ? "done" as const : "todo" as const, ...(derived === "wip" ? {since:old.updated} : derived === "done" ? {doneAt:old.updated} : {}), after:[]}]);
     const plan: PlanRow[]=[...refs,...ownSteps];
-    if (!old.record) plan.push({id:"accept",accept:true,text:"Checks pass",state:derived === "done" ? "done" : derived === "cancelled" ? "dropped" : "todo",...(derived === "done" ? {doneAt:old.updated} : derived === "cancelled" ? {droppedAt:old.updated,reason:"Cancelled fixture work"} : {})});
+    if (!old.record) plan.push({id:"accept",accept:true,text:"Checks pass",state:derived === "done" ? "done" : "todo",...(derived === "done" ? {doneAt:old.updated} : {})});
     items[id]={...fields,group:groupOf(id),plan,...(derived === "cancelled" ? {status:"cancelled"} : {})};
   }
   return {...source,board:{...source.board,projects:source.board.projects.map(value=> { const {migrated:_migrated,...p}=value as Project & {migrated?:boolean}; return p; })},items};
@@ -2723,6 +2723,7 @@ test("search: arrows and Enter jump to the item with its ancestors unfolded, eve
   p.key("/"); await type("取消"); p.key("Enter", input()); await p.flush();
   assert.ok(detailItem(p, "dropped"), "a cancelled item hidden from the tree is shown");
   assert.ok(!rowOf(p,"dropped"),"following a closed item leaves its tree node hidden");
+  assert.equal(planRow(p,"dropped","accept").querySelector(".g")!.innerHTML,"○","a converted cancelled item's acceptance remains todo for reopening");
   p.key("/"); await type("显示"); await rows()[0]!.click(); await p.flush();
   assert.equal(p.document.getElementById("search"), null);
   assert.ok(detailItem(p, "child") && p.all().find(e => e.id === "q-q")!.className.includes("cur"), "a card result shows its item and selects the card");
@@ -3134,16 +3135,16 @@ test("plan prose resolves glossary and reference tokens and follows target renam
   await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush(); assert.match(text(),/data-ref="it:area">Renamed parent<\/a>/);
 });
 
-test("the native plan mockup shows glyphs, parallel groups, glyph-only item status, shared ownership and final acceptance", async () => {
+test("the native plan mockup shows glyphs, parallel groups, glyph-only item status, shared ownership and acceptance before delivery", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other"});
   s.items.child!.plan=planWork([planStep("ci","Run Lua checks","doing",{waits:"CI"})]);
   s.items.host={...s.items.area!,title:"Other owner",group:"Other",plan:planWork([ownedRow("dependency")])};
   s.items.dependency={...s.items.child!,title:"Whitefoot can read the peer address",group:"Other",plan:planWork([planStep("build")])};
   s.decisions.q={...card(),item:"area",blocks:"Release waits for the ruling"};
   s.items.area!.provisional=true;
-  s.items.area!.plan=planWork([planStep("done","Delivered parser","done"),planStep("drop","Old approach","dropped"),planStep("writing","Write parser","doing",{after:[]}),ownedRow("child"),sharedRow("dependency"),cardRow("q"),planStep("notes","Release notes","todo",{after:[]})]);
+  s.items.area!.plan=[planStep("done","Delivered parser","done"),planStep("drop","Old approach","dropped"),planStep("writing","Write parser","doing",{after:[]}),ownedRow("child"),sharedRow("dependency"),cardRow("q"),{...planAcceptance("done"),after:["done"]},planStep("notes","Release notes")];
   const p=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(p,"area");
-  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","○","○"]);
+  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","✓","○"]);
   const group=item(p,"area").querySelector(".plan-group")!; assert.equal(group.attributes.role,"group"); assert.equal(group.attributes["aria-label"],"可同时进行");
   const owned=planRow(p,"area","child");
   assert.equal(owned.querySelector(".plan-sub"),null,"an owned item row has no activity line under it");
@@ -3156,8 +3157,38 @@ test("the native plan mockup shows glyphs, parallel groups, glyph-only item stat
   const q=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(q,"area");
   assert.ok(planRow(q,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
   const plan=item(p,"area").querySelector(".plan")!; assert.ok(plan.querySelector(".checktag")!.innerHTML === "待重写");
-  const rows=plan.querySelectorAll(".plan-row"); assert.ok(rows.at(-1)!.classList.contains("accept")); assert.match(markup(rows.at(-1)!),/验收[^]*Checks pass/);
-  assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"1/7","the dropped step is excluded and acceptance counts");
+  const rows=plan.querySelectorAll(".plan-row"); assert.ok(rows.at(-2)!.classList.contains("accept")); assert.match(markup(rows.at(-2)!),/验收[^]*Checks pass/);
+  assert.equal(rows.at(-1)!.id,planRowDomId("area","notes")); assert.ok(!rows.at(-1)!.classList.contains("accept"));
+  assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"2/7","the dropped step is excluded and completed acceptance counts before delivery");
+  assert.doesNotMatch(markup(item(p,"area")),/验收已标完成，但还有行没完成/,"a completed acceptance check does not warn about unrelated or later unfinished work");
+});
+
+test("acceptance scenarios keep step glyphs and tags in a parallel group before delivery", async () => {
+  const s=nativeSnapshot(), scenarios=[
+    planStep("checked","Replies match","done",{accept:true,after:["build"]}),
+    planStep("timing","Timing check","doing",{accept:true,after:["build"]}),
+    planStep("scenario","Second scenario","todo",{accept:true,after:["build"]}),
+    planStep("superseded","Retired scenario","dropped",{accept:true,after:["build"]}),
+  ];
+  s.items.child!.plan=[planStep("build","Build implementation","done"),...scenarios,planStep("merge","Merge into main","todo",{after:scenarios.map(row=>row.id)})];
+  const p=await page(s,[],null,undefined,{now:()=>Date.parse(at)}); await expand(p);
+  const plan=item(p).querySelector(".plan")!;
+  const group=plan.querySelector(".plan-group");
+  assert.ok(group,"acceptance uses ordinary after levels, so independent scenarios form one parallel group");
+  assert.deepEqual(group.querySelectorAll(".plan-row").map(row=>row.id),scenarios.map(row=>planRowDomId("child",row.id)));
+  assert.deepEqual(plan.querySelectorAll(".plan-row").map(row=>row.id),s.items.child!.plan.map(row=>planRowDomId("child",row.id)),"acceptance scenarios and delivery remain in stored order");
+  assert.deepEqual(plan.querySelectorAll(".plan-row.accept .g").map(row=>row.innerHTML),["✓","●","○","✗"]);
+  assert.deepEqual(plan.querySelectorAll(".plan-row.accept .tag").map(row=>row.innerHTML),["验收","验收","验收","验收"]);
+  assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"2/5","each acceptance counts like a step and a dropped scenario is excluded");
+  assert.equal(planRow(p,"child","merge").querySelector(".g")!.innerHTML,"○");
+  assert.equal(rowOf(p).querySelector(".st")!.innerHTML,"WIP","unfinished scenarios and delivery do not become done early");
+});
+
+test("acceptance tags do not add a divider or extra spacing above ordinary plan rows", async () => {
+  const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
+  const acceptanceRules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].filter(rule=>/\.plan-row\.accept\b/.test(rule[1]!));
+  for (const rule of acceptanceRules) assert.doesNotMatch(rule[2]!,/(?:^|;)\s*(?:border-top|margin-top|padding-top)\s*:/,"acceptance is an ordinary row wherever the check happens");
+  assert.match(html,/\.plan-row \.tag\s*\{[^}]*border:\s*1px solid var\(--rule\)/,"the 验收 tag remains visually distinct");
 });
 
 test("plan rows refresh when shared ownership or card blocking text changes", async () => {

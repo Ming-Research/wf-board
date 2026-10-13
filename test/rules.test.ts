@@ -71,7 +71,7 @@ test("schema permits only the plan shape, project identity and cancellation stat
   assert.equal(Project.safeParse({ name: "Default", migrated: true }).success, false);
 });
 
-test("row schemas refuse forged ids, target metadata, dates from callers and invalid acceptance fields", () => {
+test("row schemas refuse forged ids, target metadata and dates from callers, while acceptance takes ordinary step fields", () => {
   const id = "x";
   assert.equal(PlanRowInput.safeParse({ item: id, own: true }).success, true);
   assert.equal(PlanRowInput.safeParse({ card: id }).success, true);
@@ -79,7 +79,7 @@ test("row schemas refuse forged ids, target metadata, dates from callers and inv
   assert.equal(PlanRow.safeParse({ item: id, own: true, id: "wrong" }).success, false);
   assert.equal(PlanRow.safeParse({ card: id, id: "wrong" }).success, false);
   for (const extra of [{ why: "old explanation" }, { state: "todo" }, { since: T0 }]) assert.equal(PlanRow.safeParse({ ...own(id), ...extra }).success, false);
-  for (const extra of [{ after: [] }, { waits: "CI" }]) assert.equal(PlanStepInput.safeParse({ ...accept(), ...extra }).success, false);
+  for (const extra of [{ after: [] }, { waits: "CI" }]) assert.equal(PlanStepInput.safeParse({ ...accept(), ...extra }).success, true);
   for (const [state, field] of [["done", "doneAt"], ["doing", "since"], ["dropped", "droppedAt"]] as const) {
     const input = { id, text: "Result", state, ...(state === "dropped" ? { reason: "Replaced" } : {}) };
     assert.equal(PlanStepInput.safeParse(input).success, true);
@@ -93,7 +93,7 @@ test("row schemas refuse forged ids, target metadata, dates from callers and inv
   assert.deepEqual(PlanStep.parse(prose), prose);
 });
 
-test("plans enforce unique ids, earlier-only after and exactly one last acceptance on work items", () => {
+test("plans enforce unique ids and earlier-only after, with acceptance anywhere and several allowed", () => {
   const valid = [shared("dep"), step("work", "todo", { after: ["dep"] }), accept()];
   assert.equal(ItemPlan.safeParse(valid).success, true);
   for (const rows of [
@@ -101,8 +101,12 @@ test("plans enforce unique ids, earlier-only after and exactly one last acceptan
     [step("work", "todo", { after: ["work"] }), accept()],
     [step("dep"), shared("dep"), accept()],
     [shared("same"), card("same"), accept()],
-    [accept(), step()], [accept(), accept()],
   ]) assert.equal(ItemPlan.safeParse(rows).success, false);
+  for (const rows of [[accept(), step("merge")], [accept(), { ...accept(), id: "second-check" }]]) {
+    assert.equal(ItemPlan.safeParse(rows).success, true);
+    assert.equal(Item.safeParse({ title: "Work", group: "Default", updated: T0, rev: 1, plan: rows }).success, true);
+  }
+  assert.equal(ItemPlan.safeParse([accept(), accept()]).success, false, "multiple acceptance rows still need unique ids");
   assert.equal(PlanInput.safeParse([{ item: "dep", own: false }, { id: "work", text: "Work", state: "todo", after: ["dep"] }]).success, true);
   assert.equal(PlanInput.safeParse([{ id: "work", text: "Work", state: "todo", after: ["dep"] }, { item: "dep", own: false }]).success, false);
 });
@@ -158,7 +162,7 @@ test("row ratios exclude dropped steps, cancelled owned work and owned records, 
   assert.deepEqual(r.planRatio("ownedRecord"), { done: 0, total: 0 });
 });
 
-test("after defaults chain only the previous row; acceptance waits for every row", () => {
+test("after defaults chain only the previous row, including acceptance", () => {
   const s = snapshot({ a: { plan: workPlan([shared("dep"), step("independent", "done", { after: [] }), step("next")]) }, dep: {} });
   const rows = rules(s).planRows("a");
   assert.deepEqual(rows.map(row => row.level), [0, 0, 1, 2]);
@@ -166,6 +170,49 @@ test("after defaults chain only the previous row; acceptance waits for every row
   assert.deepEqual(rules(s).planGroups("a"), [{ start: 0, end: 2, level: 0 }]);
   const split = snapshot({ a: { record: true, plan: [step("a"), step("b"), step("c", "todo", { after: [] }), step("d", "todo", { after: [] }), step("e"), step("f", "todo", { after: [] })] } });
   assert.deepEqual(rules(split).planGroups("a"), [{ start: 2, end: 4, level: 0 }]);
+  s.items.a!.plan = [shared("dep"), step("checked", "done", { after: [] }), accept()];
+  assert.deepEqual(rules(s).planRows("a").map(row => row.ready), [true, false, true], "acceptance follows its previous row, not the unrelated wait");
+  assert.deepEqual(rules(s).planRows("a").map(row => row.level), [0, 0, 1]);
+});
+
+test("acceptance readiness and parallel groups follow only its ordinary after rows", () => {
+  const s = snapshot({ a: {}, dep: {} });
+  // Assign stored rows directly so the old acceptance-field schema cannot hide
+  // a frontier bug behind an earlier parser rejection.
+  s.items.a!.plan = [shared("dep"), step("checked", "done", { after: [] }), { ...accept(), after: ["checked"] }, step("merge")];
+  const r = rules(s);
+  assert.deepEqual(r.planRows("a").map(row => row.ready), [true, false, true, false]);
+  assert.deepEqual(r.planRows("a").map(row => row.level), [0, 0, 1, 2]);
+  s.items.a!.plan[2] = { ...accept(), after: ["dep"] };
+  assert.equal(rules(s).planRows("a")[2]!.ready, false, "a named unresolved prerequisite still blocks acceptance");
+  s.items.a!.plan = [step("work"), { ...accept(), after: [] }, { ...accept(), id: "scenario", after: [] }];
+  assert.deepEqual(rules(s).planGroups("a"), [{ start: 0, end: 3, level: 0 }], "acceptance participates in ordinary parallel groups");
+});
+
+test("completed acceptance before delivery does not complete the item or raise a false check", () => {
+  const s = snapshot({ a: {} });
+  s.items.a!.plan = [step("work", "done"), accept("done"), step("merge")];
+  const r = rules(s);
+  assert.equal(r.statusOf("a"), "todo");
+  assert.deepEqual(r.planRatio("a"), { done: 2, total: 3 });
+  assert.deepEqual(r.checks("a"), []);
+  s.items.a!.plan[2] = step("merge", "done");
+  assert.equal(rules(s).statusOf("a"), "done");
+  assert.deepEqual(rules(s).planRatio("a"), { done: 3, total: 3 });
+});
+
+test("only-acceptance and placeholder checks inspect every acceptance scenario", () => {
+  const s = snapshot({ a: {} });
+  s.items.a!.plan = [step("work", "done"), accept("done"), { ...accept(), id: "scenario", text: "（转换时没找到完成条件，待补）" }];
+  assert.deepEqual(texts(s, "a"), ["验收步骤待补", "只差验收：其它行都已完成"]);
+  assert.deepEqual(rules(s).planRatio("a"), { done: 2, total: 3 });
+  s.items.a!.plan.push(step("merge"));
+  assert.deepEqual(texts(s, "a"), ["验收步骤待补"], "unfinished delivery prevents an only-acceptance check");
+  s.items.a!.plan[2] = step("scenario", "dropped", { accept: true });
+  s.items.a!.plan[3] = step("merge", "done");
+  assert.deepEqual(texts(s, "a"), []);
+  assert.equal(rules(s).statusOf("a"), "done");
+  assert.deepEqual(rules(s).planRatio("a"), { done: 3, total: 3 }, "dropped acceptance is excluded like a dropped step");
 });
 
 test("priority flows across owned and shared item rows, including across projects, but not card rows", () => {
@@ -211,11 +258,11 @@ test("plan checks flag structural violations and conversion placeholders, withou
   assert.deepEqual(texts(s, "missing"), ["依赖的条目不存在：gone", "依赖的决策卡不存在：gone-card"]);
   assert.ok(texts(s, "provisional").includes("计划待重写")); assert.equal(rules(s).checks("provisional").find(c => c.text === "计划待重写")!.label, "待重写");
   assert.ok(texts(s, "placeholder").includes("验收步骤待补")); assert.ok(texts(s, "open").includes("拥有它的条目已关闭"));
-  assert.ok(texts(s, "onlyAcceptance").includes("只差验收：其它行都已完成")); assert.ok(texts(s, "acceptedEarly").includes("验收已标完成，但还有行没完成"));
+  assert.ok(texts(s, "onlyAcceptance").includes("只差验收：其它行都已完成")); assert.ok(!texts(s, "acceptedEarly").includes("验收已标完成，但还有行没完成"));
   assert.deepEqual(texts(s, "unconfigured"), ["项目没有配置：Unknown"]);
   assert.ok(texts(s, "rootMissing").includes("没有未完成的条目依赖它，却没写优先级"));
   const corrupt = structuredClone(s); corrupt.items.rootMissing!.plan = [];
-  assert.ok(texts(corrupt, "rootMissing").includes("没有计划：至少要有验收步骤"));
+  assert.ok(texts(corrupt, "rootMissing").includes("没有计划：至少要有一个验收步骤"));
   for (const check of rules(s).checks("missing")) assert.ok(!/可解除阻塞|卡住了，但|标为进行中|正文没写/.test(check.text));
 });
 

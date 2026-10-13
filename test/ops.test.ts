@@ -31,7 +31,6 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.setPlan({ author, id: "a", row: { card: "missing" } }), /依赖的决策卡不存在.*missing.*set_plan.*remove or replace/],
     [() => op.setPlan({ author, id: "other", row: { item: "a", own: true } }), /被多个条目拥有.*current owner area.*move_item/],
     [() => op.setPlan({ author, id: "area", remove: "a" }), /a is open.*move_item or cancel/],
-    [() => op.setPlan({ author, id: "b", row: { id: "accept", accept: true, text: "Accepted", state: "done" } }), /accept.*unresolved rows.*a.*choice.*resolve each row/],
     [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["accept"] } }), /after.*earlier/],
     [() => op.setPlan({ author, id: "a", row: { id: "drop", text: "Dropped work", state: "dropped" } }), /reason.*fix/],
     [() => op.setStatus({ author, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
@@ -488,7 +487,58 @@ test("plans replace, upsert and remove rows while preserving dates, order and no
   assert.deepEqual(store.snapshot().items.a!.plan!.map(row => row.id), ["accept"]);
 });
 
-test("plan validation refuses ambiguous modes, caller dates, invalid after and acceptance completion atomically", async t => {
+test("acceptance may precede merge and an item finishes only after every row resolves", async t => {
+  const { store, op } = await board(t);
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "accept", accept: true, text: "Scenarios pass", state: "done", after: [] },
+    { id: "merge", text: "Merge into main", state: "todo" },
+  ] });
+  const plan = store.snapshot().items.a!.plan;
+  assert.deepEqual(plan.map(row => row.id), ["accept", "merge"]);
+  assert.ok("doneAt" in plan[0]!); assert.equal(plan[0]!.doneAt, later);
+  assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
+  await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge into main", state: "done" } });
+  assert.equal(rules(store.snapshot()).statusOf("a"), "done");
+});
+
+test("multiple acceptance scenarios retain ordinary waits and insert new rows before the first acceptance", async t => {
+  const { store, op } = await board(t);
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "work", text: "Deliver scenarios", state: "done" },
+    { id: "scenario-a", accept: true, text: "Scenario A passes", state: "doing", waits: "CI", after: ["work"] },
+    { id: "scenario-b", accept: true, text: "Scenario B passes", state: "todo", after: ["work"] },
+    { id: "release", text: "Release", state: "todo", after: ["scenario-a", "scenario-b"] },
+  ] });
+  await op.setPlan({ author, id: "a", row: { id: "prepare", text: "Prepare review", state: "todo", after: [] } });
+  assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["work", "prepare", "scenario-a", "scenario-b", "release"]);
+  const scenario = store.snapshot().items.a!.plan.find(row => row.id === "scenario-a")!;
+  assert.ok("text" in scenario); assert.equal(scenario.waits, "CI"); assert.equal(scenario.since, later);
+  await op.setPlan({ author, id: "a", row: { id: "scenario-b", accept: true, text: "Scenario B checked", state: "done", after: ["work"] } });
+  assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["work", "prepare", "scenario-a", "scenario-b", "release"]);
+});
+
+test("acceptance done writes follow ordinary step rules rather than requiring all other rows resolved", async t => {
+  const { store, op } = await board(t);
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "todo", after: [] } });
+  await op.setPlan({ author, id: "a", row: { id: "accept", accept: true, text: "Observed check passes", state: "done" } });
+  assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
+  const work = store.snapshot().items.a!.plan.find(row => row.id === "work")!;
+  assert.ok("state" in work); assert.equal(work.state, "todo");
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "done", after: [] } });
+  assert.equal(rules(store.snapshot()).statusOf("a"), "done");
+});
+
+test("create_item appends accept while allowing more acceptance scenarios in its initial plan", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "scenarios", group: author, title: "All scenarios pass", priority: "P1", accept: "Final scenario passes", plan: [
+    { id: "scenario", accept: true, text: "Initial scenario passes", state: "todo", after: [] },
+    { id: "merge", text: "Merge checked work", state: "todo" },
+  ] });
+  assert.deepEqual(store.snapshot().items.scenarios!.plan.map(row => row.id), ["scenario", "merge", "accept"]);
+  assert.equal(store.snapshot().items.scenarios!.plan.filter(row => "accept" in row && row.accept).length, 2);
+});
+
+test("plan validation refuses ambiguous modes, caller dates, invalid after and missing acceptance atomically", async t => {
   const { store, op, dir } = await board(t); const before = store.snapshot();
   const cases: Array<[Record<string, unknown>, RegExp]> = [
     [{ rows: [], row: { id: "work", text: "Work", state: "todo" } }, /exactly one/],
@@ -497,7 +547,7 @@ test("plan validation refuses ambiguous modes, caller dates, invalid after and a
     [{ row: { id: "work", text: "Work", state: "todo", after: ["accept"] } }, /earlier/],
     [{ rows: [{ id: "same", text: "One", state: "todo" }, { id: "same", accept: true, text: "Accept", state: "todo" }] }, /unique/],
     [{ rows: [] }, /accept/],
-    [{ row: { id: "accept", accept: true, text: "Accept", state: "done" } }, /unresolved/],
+    [{ remove: "accept" }, /at least one acceptance/],
     [{ row: { item: "missing", own: false } }, /依赖的条目不存在/],
     [{ row: { card: "missing" } }, /依赖的决策卡不存在/],
     [{ row: { item: "a", own: false, why: "old reason" } }, /Unrecognized/],
@@ -567,6 +617,26 @@ test("record mode preserves parts and logs removed acceptance; provisional full 
   await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "Accepted", state: "todo" }] });
   const final = store.snapshot(); assert.equal(final.items.a!.provisional, undefined); assert.equal(final.items.a!.log.at(-1)!.text, "重写了计划");
   await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "Accepted", state: "todo" }] }); assert.deepEqual(store.snapshot(), final);
+});
+
+test("record conversion refuses dangling after edges, then removes every acceptance row and logs every scenario text", async t => {
+  const { store, op } = await board(t);
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "first", accept: true, text: "First scenario passes", state: "todo" },
+    { id: "merge", text: "Merge work", state: "todo", after: ["first"] },
+    { id: "second", accept: true, text: "Second scenario passes", state: "todo" },
+  ] });
+  const beforeModeChange = store.snapshot();
+  await assert.rejects(op.updateItem({ author, id: "a", rev: beforeModeChange.items.a!.rev, record: true }), /after must name earlier rows/);
+  assert.deepEqual(store.snapshot(), beforeModeChange, "a refused mode change preserves every document and the data head");
+  await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge work", state: "todo" } });
+  await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, record: true });
+  const record = store.snapshot().items.a!;
+  assert.deepEqual(record.plan.map(row => row.id), ["merge"]);
+  assert.match(record.log.at(-1)!.text, /原验收：First scenario passes；Second scenario passes/);
+  const before = store.snapshot();
+  await assert.rejects(op.setPlan({ author, id: "a", row: { id: "forbidden", accept: true, text: "Record acceptance", state: "todo" } }), /record takes none/);
+  assert.deepEqual(store.snapshot(), before);
 });
 
 test("revision-free plan retries preserve concurrent rows, context and logs", async t => {

@@ -202,8 +202,29 @@ test("MCP plan rows have server dates and compact levels, targets and ownership 
   assert.equal(dated.isError, true); assert.deepEqual(store.snapshot(), before);
 });
 
+test("MCP exposes acceptance anywhere, several scenarios and first-acceptance row insertion", async t => {
+  const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
+  assert.match(client.getInstructions()!, /at least one acceptance step.*several acceptance steps/);
+  assert.doesNotMatch(client.getInstructions()!, /ends with its acceptance/);
+  assert.match(tools.find(tool => tool.name === "set_plan")!.description!, /new rows before the first acceptance step/);
+  assert.match(tools.find(tool => tool.name === "create_item")!.description!, /one acceptance step appended from accept/);
+  const written = await client.callTool({ name: "set_plan", arguments: { author, id: "a", rows: [
+    { id: "scenario-a", accept: true, text: "Scenario A passes", state: "done", after: [] },
+    { id: "scenario-b", accept: true, text: "Scenario B passes", state: "doing", waits: "CI", after: [] },
+    { id: "merge", text: "Merge into main", state: "todo", after: ["scenario-a", "scenario-b"] },
+  ] } });
+  assert.equal(written.isError, undefined, text(written)); assert.match(text(written), /^a · WIP P1/m);
+  const inserted = await client.callTool({ name: "set_plan", arguments: { author, id: "a", row: { id: "prepare", text: "Prepare release", state: "todo", after: [] } } });
+  assert.equal(inserted.isError, undefined, text(inserted));
+  assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["prepare", "scenario-a", "scenario-b", "merge"]);
+  const context = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  assert.match(context, /验收.*Scenario A passes/); assert.match(context, /验收.*Scenario B passes/); assert.match(context, /Merge into main/);
+});
+
 test("writes answer with their produced plan state; refusals and context identify open owned parts", async t => {
   const { client, text, store } = await connected(t);
+  const prerequisites = await client.callTool({ name: "set_plan", arguments: { author, id: "b", row: { id: "accept", accept: true, text: "阻塞证据验收通过", state: "todo", after: ["a", "choice"] } } });
+  assert.equal(prerequisites.isError, undefined, text(prerequisites));
   const write = async (id: string, state: "todo" | "doing" | "done") => {
     const result = await client.callTool({ name: "set_plan", arguments: { author, id, row: { id: "accept", text: "Acceptance passes", accept: true, state } } });
     assert.equal(result.isError, undefined, text(result));
@@ -218,9 +239,7 @@ test("writes answer with their produced plan state; refusals and context identif
   assert.match(await write("b", "done"), /^b · DONE P1/m);
   assert.match(await write("area", "doing"), /^area · WIP P1/m);
   assert.match(await write("area", "done"), /^area · DONE P1/m);
-  // Reopening one accepted row makes its owner open again; acceptance must be
-  // reopened first because completed acceptance cannot precede unresolved parts.
-  await write("area", "todo");
+  // Reopening an owned part makes its owner open even when acceptance stays done.
   await write("a", "todo");
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_status", arguments: { author, id: "area", status: "cancelled", log: "Drop" } });
@@ -233,7 +252,7 @@ test("writes answer with their produced plan state; refusals and context identif
   assert.match(context, /L0.*b \[own\].*阻塞证据 · blocked/);
   const dependent = text(await client.callTool({ name: "context", arguments: { id: "b" } }));
   assert.match(dependent, /⏸ a \[shared @area\].*中文检查 · blocked/);
-  assert.match(dependent, /验收已标完成，但还有行没完成/);
+  assert.doesNotMatch(dependent, /验收已标完成，但还有行没完成/);
   const prs = text(await client.callTool({ name: "search", arguments: { query: "Whitefoot#341" } }));
   assert.equal(prs.split("\n").filter(line => line.includes("without repository")).length, 1);
   assert.match(prs, /also a bare #341 without repository.*item:b/);
