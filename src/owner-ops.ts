@@ -6,7 +6,7 @@ import type { Snapshot } from "./model.ts";
 import { ConflictError } from "./store.ts";
 import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
-import { rules, draftEditable, noteTextProblem } from "./rules.ts";
+import { draftEditable, noteTextProblem } from "./rules.ts";
 import { unreadSteps, commitsSince, inHistory } from "./history.ts";
 import type { DocKind } from "./store.ts";
 
@@ -122,7 +122,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const sentAt = now();
       if (drafts.length) await store.commit({ author: "owner", message: `send ${drafts.length} notes`, puts: drafts.map(([id, n]) => ({ kind: "note", id, expectRev: n.rev, doc: { ...n, state: "sent", sentAt } })) });
       // Item changes can commit while this send waits for the store.
-      const committed = store.snapshot(), r = rules(committed);
+      const committed = store.snapshot(), r = store.derived.rules(committed);
       const sent = drafts.map(([id, n]) => ({ id, target: n.target, kind: n.kind, project: r.projectOf(n.target.startsWith("it:") ? n.target.slice(3) : committed.decisions[n.target.slice(2)]?.item ?? "") }));
       return { sent };
     }),

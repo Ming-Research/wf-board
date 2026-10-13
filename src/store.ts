@@ -14,7 +14,8 @@ import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
-import { rules } from "./rules.ts";
+import { rules, DerivedCache, withSorted } from "./rules.ts";
+import type { ActivityDelta } from "./rules.ts";
 
 export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
@@ -22,7 +23,8 @@ export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
 export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
-export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
+/** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
+export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
 export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
 
 type Doc = Item | Decision | Note | Notice | Glossary;
@@ -40,6 +42,7 @@ export const NUMBERING_MESSAGE = "Number existing items and cards";
 // boundaries, not for every old commit.
 const historicalDocumentLimit = 4096;
 const comparedSnapshotLimit = 4;
+const historicalDiffLimit = 2048;
 type PauseHistoryMarker = { version: 1; head: string; first: string | null };
 
 function pauseMetadata(value: unknown): Item["paused"] {
@@ -150,12 +153,24 @@ function atomicWrite(path: string, value: unknown): void {
   }
 }
 
+/** Deep freeze. A frozen object is skipped: everything this module freezes is
+ * frozen whole, so a frozen object's children are frozen already. */
 function frozen<T>(value: T): T {
-  if (value && typeof value === "object") {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) frozen(child);
     Object.freeze(value);
   }
   return value;
+}
+
+/** A published snapshot is shared, never copied: its documents are frozen when
+ * they enter it, and the snapshot and its collections are frozen here. A write
+ * builds the next snapshot by copying only the collections it changes. */
+function sealed(state: Snapshot): Snapshot {
+  for (const collection of [state.items, state.decisions, state.notes, state.notices, state.glossaries]) Object.freeze(collection);
+  frozen(state.board); frozen(state.owner);
+  if (state.activity) frozen(state.activity);
+  return Object.freeze(state);
 }
 
 /**
@@ -241,15 +256,14 @@ export class Store {
   private nextNum = 1;
   private numbersInHead = false;
   private pauseHistoryPath?: string;
-  // Keep a defensive frozen copy, never expose mutable transaction state. Owner
-  // reads can change without a commit, and startup replaces the activity index.
-  private published?: { state: Snapshot; owner: OwnerState; activity: Snapshot["activity"]; head: string; value: Snapshot };
+  /** Rules shared by every reader of a snapshot, and the activity index kept across writes. */
+  readonly derived = new DerivedCache();
 
   private constructor(dir: string, state: Snapshot) {
     this.dir = dir;
     this.blobs = new BlobReader(dir);
     this.state = state;
-    this.committedOwner = structuredClone(state.owner);
+    this.committedOwner = frozen(structuredClone(state.owner));
   }
 
   private async git(args: string[], author?: string): Promise<string> {
@@ -302,7 +316,7 @@ export class Store {
         migration.ownerFileExists = await stat(join(dir,"state/owner.yaml")).then(()=>true).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return false;throw error;});
         const originalOwner = structuredClone(source.owner), ownerPath = join(dir,"state/owner.yaml");
         const ownerBytes = await readFile(ownerPath).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;});
-        migration.state.owner = structuredClone(result.snapshot.owner);
+        migration.state = { ...migration.state, owner: structuredClone(result.snapshot.owner) };
         try {
           await migration.commit({ author: "总管", message: PLAN_CONVERSION_MESSAGE, board: result.snapshot.board,
             puts: Object.entries(result.snapshot.items).map(([id, doc]) => ({ kind: "item", id, doc, expectRev: source.items[id]!.rev })),
@@ -310,7 +324,7 @@ export class Store {
         } catch(error) {
           // Ordinary commits save pending owner reads on rollback. A failed
           // migration must additionally restore the original owner sidefile.
-          migration.state.owner = originalOwner;
+          migration.state = { ...migration.state, owner: originalOwner };
           if(ownerBytes === undefined)rmSync(ownerPath,{force:true});else writeFileSync(ownerPath,ownerBytes);
           throw error;
         }
@@ -358,12 +372,13 @@ export class Store {
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (invalid.length || !board) throw new ValidationError(invalid);
     checkNumbers(docs, numbers);
+    for (const collection of Object.values(docs)) for (const doc of Object.values(collection)) frozen(doc);
     const store = new Store(dir, { board, ...docs, owner, head: "" });
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
     const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "notices", "glossaries"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
-    store.state.head = (await store.git(["rev-parse", "HEAD"])).trim();
+    store.state = sealed({ ...store.state, head: (await store.git(["rev-parse", "HEAD"])).trim() });
     // Owner state can legitimately be newer than HEAD after a daemon restart.
     const persistedOwner = await store.readAt("state/owner.yaml", store.state.head);
     store.committedOwner = persistedOwner === null ? {} : validated(OwnerState, persistedOwner, "state/owner.yaml");
@@ -463,7 +478,7 @@ export class Store {
     }
     await this.loadPauses(activity, commits);
     activity.writes.sort();
-    this.state.activity = activity;
+    this.state = sealed({ ...this.state, activity });
   }
 
   /** Pause history starts at the first native paused field, not at the board's
@@ -592,14 +607,15 @@ export class Store {
       const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
       if (!!oldSource === !!newSource) continue;
       activity.pauses ??= {};
-      const spans = Object.hasOwn(activity.pauses, id) ? activity.pauses[id]! : (activity.pauses[id] = []);
+      // Copy on write: the previous snapshot shares the earlier spans.
+      const spans = activity.pauses[id] = Object.hasOwn(activity.pauses, id) ? [...activity.pauses[id]!] : [];
       if (newSource) {
         const pause = newItems[newSource]!.paused!;
         const newlyPaused = !oldItems[newSource]?.paused;
         spans.push({ start: newlyPaused ? pause.at : at });
       } else {
         const current = spans.at(-1);
-        if (current && current.end === undefined) current.end = at;
+        if (current && current.end === undefined) spans[spans.length - 1] = { ...current, end: at };
       }
     }
   }
@@ -635,12 +651,9 @@ export class Store {
     return touched;
   }
 
+  /** The current board, shared and frozen; a write publishes a new object and leaves this one unchanged. */
   snapshot(): Snapshot {
-    const s = this.state, previous = this.published;
-    if (previous?.state === s && previous.owner === s.owner && previous.activity === s.activity && previous.head === s.head) return previous.value;
-    const value = frozen(structuredClone(s));
-    this.published = { state: s, owner: s.owner, activity: s.activity, head: s.head, value };
-    return value;
+    return this.state;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -658,7 +671,25 @@ export class Store {
   private async apply(txn: Txn, ownerOnly = false): Promise<{ commit: string; revs: Record<string, number> }> {
     if (!txn.author.trim() || /[<>\r\n\0]/.test(txn.author)) throw new Error("Author must be a nonempty git author name without delimiters");
     if (!txn.message.trim()) throw new Error("Commit message must be nonempty");
-    const next = structuredClone(this.state);
+    // Share the current snapshot: copy only the collections this write changes,
+    // on first use, and insert new documents frozen.
+    const next: Snapshot = { ...this.state };
+    const copied = new Set<DocKind>();
+    const collection = (kind: DocKind): Record<string, Doc> => {
+      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...this.state[collections[kind]] }; }
+      return next[collections[kind]] as Record<string, Doc>;
+    };
+    // Lower-cased ids per collection, built on first use: the letter-case alias check without a scan per put.
+    const lowered = new Map<DocKind, Map<string, string[]>>();
+    const aliases = (kind: DocKind): Map<string, string[]> => {
+      let byLower = lowered.get(kind);
+      if (!byLower) {
+        byLower = new Map();
+        for (const id of Object.keys(next[collections[kind]])) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
+        lowered.set(kind, byLower);
+      }
+      return byLower;
+    };
     const changed: ChangedDoc[] = [];
     const revs: Record<string, number> = {};
     const idCounts = new Map<string, number>();
@@ -684,7 +715,7 @@ export class Store {
       const before = Object.hasOwn(records, put.id) ? records[put.id]! : null;
       // Check before any filesystem mutation, including earlier puts in this
       // transaction: these names alias on the owner's case-insensitive volume.
-      const alias = Object.keys(records).find(id => id !== put.id && id.toLowerCase() === put.id.toLowerCase());
+      const alias = aliases(put.kind).get(put.id.toLowerCase())?.find(id => id !== put.id);
       if (alias) throw new ValidationError([{ path, issues: `ID ${put.id} conflicts with ${alias} (letter case only)` }]);
       try {
         const input: Record<string, unknown> = typeof put.doc === "object" && put.doc !== null && !Array.isArray(put.doc) ? { ...put.doc } : {};
@@ -697,12 +728,13 @@ export class Store {
           } else if (given !== undefined) throw new ValidationError([{ path, issues: "num: only the store issues numbers" }]);
           else if (before === null || txn.numberExisting) input.num = nextNum++;
         }
-        const after = validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path);
+        const after = frozen(validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path));
         if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
           continue;
         }
-        records[put.id] = after;
+        if (!before) { const key = put.id.toLowerCase(), list = aliases(put.kind).get(key); if (list) list.push(put.id); else aliases(put.kind).set(key, [put.id]); }
+        collection(put.kind)[put.id] = after;
         revision(put, after.rev);
         changed.push({ kind: put.kind, id: put.id, before, after });
       } catch (error) {
@@ -711,13 +743,13 @@ export class Store {
       }
     }
     for (const del of txn.deletes ?? []) {
-      const records = next[collections[del.kind]] as Record<string, Doc>;
+      const records = collection(del.kind);
       changed.push({ kind: del.kind, id: del.id, before: records[del.id]!, after: null });
       delete records[del.id];
     }
     if (txn.board !== undefined) {
       try {
-        next.board = validated(Board, txn.board, "board.yaml");
+        next.board = frozen(validated(Board, txn.board, "board.yaml"));
         if (!isDeepStrictEqual(next.board, this.state.board)) changed.push({ kind: "board", id: "board", before: this.state.board, after: next.board });
       } catch (error) {
         if (!(error instanceof ValidationError)) throw error;
@@ -728,7 +760,8 @@ export class Store {
     const ownerChanged = this.ownerPending();
     // Ordinary no-ops don't produce a commit just to save a pending cursor.
     if (!changed.length && !(ownerOnly && ownerChanged) && !txn.planConversionReport) return { commit: this.state.head, revs };
-    const ownerAtCommit = structuredClone(this.state.owner);
+    // Owner state is frozen and replaced, never changed in place.
+    const ownerAtCommit = this.state.owner;
     if (ownerChanged) changed.push({ kind: "owner", id: "owner", before: this.ownerInHead ? this.committedOwner : null, after: ownerAtCommit });
     const paths = changed.map(c => c.kind === "board" ? "board.yaml" : c.kind === "owner" ? "state/owner.yaml" : docPath(c.kind, c.id));
     const reportPath = "import/plan-conversion.yaml";
@@ -757,7 +790,8 @@ export class Store {
       // Owner writes arriving during git work stay out of the staged snapshot.
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
-      event = frozen(structuredClone({ commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed }));
+      // Documents in `changed` are already frozen snapshot documents.
+      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -784,16 +818,23 @@ export class Store {
       this.writing = false;
     }
     if (changed.some(c => c.kind !== "owner")) {
-      next.activity ??= { writes: [], items: {} };
-      next.activity.writes.push(event.at);
-      next.activity.writes.sort();
-      this.noteActivity(next.activity, event.at, this.changedItems(changed, next));
-      this.notePauses(next.activity, this.state.items, next.items, changed, event.at);
+      const previous = this.state.activity ?? { writes: [], items: {} };
+      // Copy on write: the previous snapshot keeps its own activity.
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}) };
+      this.noteActivity(activity, event.at, this.changedItems(changed, next));
+      this.notePauses(activity, this.state.items, next.items, changed, event.at);
+      next.activity = activity;
+      const delta = event.activity;
+      delta.write = event.at;
+      for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
+      for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
       }
     }
+    sealed(next);
+    frozen(event);
     if (this.pauseHistory?.head === this.state.head) {
       const introduced = changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused);
       this.savePauseHistory({ version: 1, head: next.head, first: this.pauseHistory.first ?? (introduced ? next.head : null) });
@@ -818,14 +859,14 @@ export class Store {
   }
 
   setOwner(state: OwnerState): void {
-    const owner = validated(OwnerState, state, "state/owner.yaml");
-    const before = this.state.owner;
-    this.state.owner = owner;
+    const owner = frozen(validated(OwnerState, state, "state/owner.yaml"));
+    const before = this.state;
+    this.state = sealed({ ...this.state, owner });
     try {
       if (!this.writing) this.writeOwner();
       else { this.ownerFileExists = true; this.deferredOwnerWrite = true; }
     }
-    catch (error) { this.state.owner = before; throw error; }
+    catch (error) { this.state = before; throw error; }
   }
 
   flushOwner(author: string): Promise<string | null> {
@@ -894,10 +935,14 @@ export class Store {
     return hash;
   }
 
+  private readonly diffs = new Map<string, Promise<string>>();
+  /** Two commits and a path always name the same text, so a diff is kept by those keys: the page asks for every unread
+   * step's documents on each load, and git spawns once per new pair rather than once per request. */
   async diff(kind: DocKind, id: string, from: string, to = "HEAD"): Promise<string> {
+    const path = docPath(kind, id);
     const a = await this.resolveCommit(from);
     const b = await this.resolveCommit(to);
-    return this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", docPath(kind, id)]);
+    return cachedPromise(this.diffs, `${a}..${b}:${path}`, historicalDiffLimit, () => this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", path]));
   }
 
   private readonly historicalDocuments = new Map<string, Promise<unknown | null>>();
