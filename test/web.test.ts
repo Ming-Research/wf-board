@@ -2632,22 +2632,30 @@ test("等你 panel shortens a long card question at 40 characters", async () => 
 
 test("record labels render in the page and stay outside status counts", async () => {
   const s = snapshot(); s.items.child!.record = true; delete s.items.child!.status;
-  const p = await page(s, []);
-  const row = p.all().find(e => e.id === "it-child")!;
+  const p = await page(s, []); await expand(p);
+  const row = rowOf(p);
   assert.ok(row.querySelectorAll(".st").some(e => e.innerHTML === "记录"));
   assert.ok(!row.querySelectorAll(".st").some(e => /TODO|WIP/.test(e.innerHTML)));
+  const counts = summaryText(p).find(e => e.className === "sum-stats")!.children.map(e => e.innerHTML);
+  assert.equal(counts.length, 3);
+  assert.match(counts[0]!, /进行中 0$/);
+  assert.match(counts[1]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
+  assert.match(counts[2]!, /完成 0$/);
 });
 
 test("page refreshes the stalled check when active time crosses the threshold without another write", async () => {
   const s = snapshot(), began = Date.parse(at);
   let now = began + 2 * 60 * 60 * 1000 - 1;
   s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
-  const p = await page(s, [], null, undefined, {now: () => now});
-  const checkText = () => p.all().map(e => e.innerHTML + e.title).join(" ");
-  assert.ok(!checkText().includes("活跃时间"));
+  const p = await page(s, [], null, undefined, {now: () => now}); await expand(p); await p.flush();
+  const checkText = (id = "child") => rowOf(p, id).querySelectorAll(".checktag").map(e => e.title).join("\n");
+  assert.ok(!checkText().includes("活跃时间"), "the visible leaf is not stalled one millisecond before two active hours");
+  const callsBeforeTick = p.calls.length;
   now++;
   p.intervals.forEach(fn => fn()); await p.flush();
-  assert.ok(checkText().includes("活跃时间"));
+  assert.ok(checkText().includes("进行中但 2 小时（活跃时间）没有动静"), "the timer refreshes the visible leaf's check at exactly two active hours");
+  assert.ok(!checkText("area").includes("活跃时间"), "a parent with a work child is not a stalled leaf");
+  assert.equal(p.calls.length, callsBeforeTick, "the timer updates checks without another server request or write");
 });
 
 function noteButton(p: Awaited<ReturnType<typeof page>>, id: string, label: string) {

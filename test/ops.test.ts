@@ -663,7 +663,7 @@ test("create_item with children moves existing items under a new parent in one c
   }
   const make = { author, key: "group", title: "Group", parent: "area", parentWhy: "Part" };
   await refused(() => op.createItem({ ...make, children: [{ id: "a", why: "x" }, { id: "a", why: "y" }] }), /children: name each item once/);
-  await refused(() => op.createItem({ ...make, status: "wip", children: [{ id: "a", why: "x" }] }), /status: an item created with children takes its status from them/);
+  await refused(() => op.createItem({ ...make, status: "wip", children: [{ id: "a", why: "x" }] }), /^Error: status: an item created with work children takes its status from them; omit status$/);
   await refused(() => op.createItem({ ...make, children: [{ id: "area", why: "x" }] }), /children: area contains the new item's parent area/);
   await refused(() => op.createItem({ ...make, children: [{ id: "missing", why: "x" }] }), /children missing: choose an existing item/);
   await refused(() => op.createItem({ author, key: "box", title: "Box", group: "Whitefoot", priority: "P1", children: [{ id: "a", why: "x" }, { id: "b", why: "y" }] }), /sourceStatus: area loses its last sub-item/);
