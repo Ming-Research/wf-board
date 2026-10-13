@@ -471,7 +471,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return doc;
     }, false, ` ${a.status}`),
     setPause: a => run(a, (s, at) => {
-      if (a.author !== "总管") throw new OpError("author: only 总管 or the owner page may pause or resume an item");
+      if (a.author !== "总管") throw new OpError("author: only 总管 may pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
       const it = requireItem(s, a.id);
       if (it.record) throw new OpError("paused: a record cannot be paused or resumed");
