@@ -2974,3 +2974,37 @@ test("step prose resolves glossary and reference tokens and follows target renam
   await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush();
   assert.match(item(p).querySelector(".item-step")!.innerHTML,/data-ref="it:area">Renamed parent<\/a>/);
 });
+
+function cardSend(p: Awaited<ReturnType<typeof page>>, id = "q") { return descendants(p.all().find(e => e.id === "q-" + id)!).find(e => e.dataset.cardsend === id)!; }
+test("a decision card's send button needs a choice draft and sends only that card's drafts", async () => {
+  const s = snapshot(); s.decisions.q = card();
+  s.notes.cq = {target: "q:q", kind: "comment", text: "On the card", at, state: "draft", rev: 1};
+  s.notes.other = {target: "it:child", kind: "comment", text: "Elsewhere", at, state: "draft", rev: 1};
+  const p = await page(s, []); await expand(p);
+  assert.equal(cardSend(p).textContent, "发送"); assert.equal(cardSend(p).disabled, true, "no choice yet");
+  await option(p, "A").click(); await p.flush();
+  assert.equal(cardSend(p).disabled, false, "a choice draft exists");
+  await option(p, "A").click(); await p.flush();
+  assert.equal(cardSend(p).disabled, true, "withdrawing the choice disables it again");
+  await option(p, "A").click(); await p.flush();
+  await cardSend(p).click(); await p.flush();
+  const sends = p.calls.filter(c => c.path === "/api/send");
+  assert.equal(sends.length, 1);
+  assert.deepEqual((sends[0]!.body as {ids: string[]}).ids.sort(), ["cq", "persisted-draft"], "the other item's draft is not sent");
+});
+test("a draft comment's send button sends only that comment; the batch button still sends everything", async () => {
+  const s = snapshot();
+  s.notes.d = {target: "it:child", kind: "comment", text: "One", at, state: "draft", rev: 1};
+  s.notes.e = {target: "it:child", kind: "comment", text: "Two", at, state: "draft", rev: 1};
+  s.notes.sent = {target: "it:child", kind: "comment", text: "Sent", at, state: "sent", rev: 1};
+  const p = await page(s, [], null, undefined, {notesOpen: {"it:child": true}}); await expand(p);
+  assert.equal(noteButton(p, "sent", "发送"), undefined, "only drafts can be sent");
+  await noteButton(p, "d", "编辑")!.click();
+  assert.equal(noteButton(p, "d", "发送")!.disabled, true, "disabled while the comment is being edited");
+  await noteButton(p, "d", "取消")!.click();
+  assert.equal(noteButton(p, "d", "发送")!.disabled, false);
+  await noteButton(p, "d", "发送")!.click(); await p.flush();
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/send").map(c => c.body), [{ids: ["d"]}]);
+  await p.roots.get("send-all")!.click(); await p.flush();
+  assert.deepEqual(p.calls.filter(c => c.path === "/api/send").map(c => c.body), [{ids: ["d"]}, {}]);
+});

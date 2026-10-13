@@ -1188,7 +1188,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.setAttribute("aria-pressed",String(selected));
         (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || !!(chosen && chosen.state !== "draft");
       });
-      elements(box).filter(e => e.dataset.cardsend === d.id).forEach(e => { (e as HTMLButtonElement).disabled=!connected || sending || chosen?.state !== "draft"; });
+      elements(box).filter(e => e.dataset.cardsend === d.id).forEach(e => { (e as HTMLButtonElement).disabled=!connected || chosen?.state !== "draft"; });
     } else if (kind === "explain") {
       const boxes=[box,...(target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
       for (const host of boxes) {
@@ -1204,7 +1204,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         e.textContent=sent ? ANSWER[kind]!.sent : pending ? ANSWER[kind]!.queued : ANSWER[kind]!.label;
         (e as HTMLButtonElement).disabled=busy || sent || !connected;
       });
-      elements(box).filter(e => e.dataset.asksend === target.slice(3) && e.dataset.askkind === kind).forEach(e => { (e as HTMLButtonElement).disabled=!connected || sending || !pending; });
+      elements(box).filter(e => e.dataset.asksend === target.slice(3) && e.dataset.askkind === kind).forEach(e => { (e as HTMLButtonElement).disabled=!connected || !pending; });
     }
   }
   // Acknowledgements can arrive after a newer SSE revision or deletion.
@@ -1370,10 +1370,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         const del = el("button", "linkbtn", "删除"); del.type = "button"; del.disabled = busy || !connected;
         del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
         who.appendChild(del);
-        const send = el("button", "linkbtn", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected || sending;
-        send.addEventListener("click", () => sendDrafts(() => draftEditable(snapshot.notes[n.id]) ? [n.id] : []));
-        who.appendChild(send);
         if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
+        // Sends this comment alone, below its text; the editor stays as it is.
+        const send = el("button", "cardsend", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected;
+        send.addEventListener("click", () => sendDrafts(() => draftEditable(snapshot.notes[n.id]) ? [n.id] : []));
+        box.appendChild(send);
       }
       wrap.appendChild(box);
     });
@@ -1680,7 +1681,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (kind) {
           const send = el("button", "cardsend", "发送");
           send.type = "button"; send.dataset.asksend = it.id; send.dataset.askkind = kind;
-          send.disabled = !connected || sending || !pendingDraft("it:" + it.id, kind);
+          send.disabled = !connected || !pendingDraft("it:" + it.id, kind);
           send.addEventListener("click", () => sendDrafts(() => notesOf("it:" + it.id).filter(n => n.kind === kind && n.state === "draft").map(n => n.id)));
           a.appendChild(send);
         }
@@ -1968,7 +1969,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       // Sends this card's drafts alone; it stays disabled until a choice is waiting to go out.
       const send = el("button", "cardsend", "发送");
       send.type = "button"; send.dataset.cardsend = d.id;
-      send.disabled = !connected || sending || choiceOf(d)?.state !== "draft";
+      send.disabled = !connected || choiceOf(d)?.state !== "draft";
       send.addEventListener("click", () => sendDrafts(() => notesOf("q:" + d.id).filter(n => n.state === "draft").map(n => n.id)));
       foot.appendChild(send);
       c.appendChild(foot);

@@ -124,6 +124,14 @@ test("POST /api/send with ids wakes only for those notes and refuses a non-draft
   assert.deepEqual((await api("/api/send", {})).data.sent.map((n: {id: string}) => n.id), [one.data.id]);
 });
 
+test("POST /api/send with no body at all is the batch send", async t => {
+  const { url, api } = await server(t);
+  const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
+  const response = await fetch(url + "/api/send", { method: "POST" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(((await response.json()) as {sent: Array<{id: string}>}).sent.map(n => n.id), [one.data.id]);
+});
+
 test("stateful MCP client initializes, lists tools, reuses session and closes it", async t => {
   const { url } = await server(t);
   const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
