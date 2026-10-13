@@ -32,7 +32,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     invalidate();
   }
   let shownStop: string | null = null;
-  // Where the last stop n showed sits on the page, so the walk continues after it once r has read it.
+  // Where the last stop n showed sits on the page, so the walk continues after it once m has read it.
   let shownAt: number[] | null = null;
   // Which new place inside the shown item n reached last.
   let shownMark = 0;
@@ -517,8 +517,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const id = key.startsWith("it:") ? key.slice(3) : null;
     const first = id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
     const c = el("span", "newtag freshchip", String(Math.max(1, n)));
-    c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，r 把这一条标为已阅（子条目不动）"
-      : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 r";
+    c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，m 把这一条标为已阅（子条目不动）"
+      : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 m";
     c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
     if (first !== undefined) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
@@ -540,7 +540,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (key?.startsWith("log:") || key?.startsWith("dep:")) return "item:" + key.slice(4, key.indexOf("@"));
     return null;
   }
-  // What r reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
+  // What m reads: the whole item holding the selection, with everything new inside it (its own changes, its cards and
   // the comments on both) but not its sub-items; a card no item holds; or the deleted document n is showing.
   function selectedUnit() {
     const doc = selectedDocument(); if (!doc) return null;
@@ -597,7 +597,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     freshNavigation++;
     try { await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
-  // n and its reverse step from the stop shown last; once r has read it, from where it stood on the page.
+  // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
@@ -621,7 +621,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
 
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
-  // r, c, e and a act on it, or on the item or card that holds it.
+  // m, c, e and a act on it, or on the item or card that holds it.
   let current: string | null = null;
   function effectiveSelection() { return current ?? (selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
@@ -670,7 +670,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     clearCurrent();
     get("it-"+selectedItem)?.classList.remove("selected");
     rememberSelected(null);
-    // Keep n/N's place, but no logical stop remains selected for r.
+    // Keep n/N's place, but no logical stop remains selected for m.
     shownStop=null;
     releaseLanding();
     detailDirty=true;
@@ -706,7 +706,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!first) return null;
     return first.id.startsWith("q-") ? "q:" + first.id.slice(2) : "it:" + first.id.slice(3);
   }
-  // Shortcuts, listed with their actions in ACTIONS below and in the ☰ menu: n, r, c, e, a, w;
+  // Shortcuts, listed with their actions in ACTIONS below and in the ☰ menu: n, m, c, e, a, w;
   // Backspace or [ goes back after following a dependency; Esc closes lists; gg goes to the top and G to the bottom, as in vi.
   // They stay off only while typing: a focused checkbox or button does not swallow them.
   let lastG = 0;
@@ -793,7 +793,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     { key: "/", label: "按标题搜索所有条目和决策卡", run: () => { openSearch(); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
-    { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
+    { key: "m", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
     { key: "c", label: "评论选中的内容（条目、卡片、某条日志或回复）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) openComment(containerOf(k)!, anchorOf(k)); return !!k; } },
     { key: "e", label: "请 Claude 详细解释（再按一次撤回）", db: true, run: () => { const k = targetOnScreen(); if (k && containerOf(k)) toggleExplain(containerOf(k)!); return !!k; } },
     { key: "a", label: "归档或取消归档（选中的条目，或选中卡片所在的条目；在已归档条目之内则取消上级的归档）", db: true, run: () => { const it = itemOfSelection(); if (it) toggleArchive(it); return !!it; } },
@@ -1728,7 +1728,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         chip.addEventListener("click",go); chip.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
       }
     }
-    // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
+    // The blue line marks what m on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
     if (ownFresh) box.classList.add("fresh");
     // A head click selects the item whose detail is displayed.
