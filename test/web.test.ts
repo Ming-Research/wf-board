@@ -305,7 +305,7 @@ test("a paused item shows its reason and no pause or resume control on any item"
   const s=nativeSnapshot(), original=structuredClone(s.items.area!.plan);
   const p=await page(s,[]); await expand(p,"area");
   assert.equal(item(p,"area").querySelector(".pause-start"),null,"open work has no pause button");
-  assert.equal(item(p,"area").querySelector(".pause-control .sbtn"),null);
+  assert.equal(item(p,"area").querySelector(".pause-control"),null,"an unpaused item leaves no empty row under its title");
   const paused={...s.items.area!,paused:{reason:"等第一版发布",at},rev:2};
   await p.change("b".repeat(40),[{kind:"item",id:"area",after:paused}]); await p.flush();
   assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"◌ PAUSE");

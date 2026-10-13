@@ -1670,21 +1670,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return box;
   }
   function pauseControl(it: ViewItem) {
-    // A completed source may still pause open work below an owned record.
-    // Its existing marker can be cleared; closed work can never gain one.
+    // Read-only: the reason a paused item shows, with its source when inherited. Nothing renders otherwise, so an
+    // unpaused item has no empty row under its title.
     if (it.record || ended(it) && !it.paused) return null;
-    const box = el("div", "pause-control");
     const source = derived.pausedBy(it.id), pause = source ? snapshot.items[source]?.paused : undefined;
-    if (pause) {
-      const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
-      if (source !== it.id) {
-        reason.appendChild(document.createTextNode(" · 由「"));
-        const ancestor = index().byId.get(source!);
-        if (ancestor) reason.appendChild(depLink(ancestor));
-        reason.appendChild(document.createTextNode("」暂停"));
-      }
-      box.appendChild(reason);
+    if (!pause) return null;
+    const box = el("div", "pause-control");
+    const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
+    if (source !== it.id) {
+      reason.appendChild(document.createTextNode(" · 由「"));
+      const ancestor = index().byId.get(source!);
+      if (ancestor) reason.appendChild(depLink(ancestor));
+      reason.appendChild(document.createTextNode("」暂停"));
     }
+    box.appendChild(reason);
     return box;
   }
   function itemComments(it: ViewItem) {
