@@ -1,4 +1,5 @@
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
+import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -131,7 +132,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function blocks(src: unknown) {
     const lines = textLines(src);
     const out: string[] = [];
-    let para: string[] = [], list: {tag:string;items:Array<{text:string}>} | null = null, code: string[] | null = null;
+    let para: string[] = [], list: {tag:string;items:Array<{text:string}>} | null = null, code: string[] | null = null, codeInfo = "";
     const flushPara = () => {
       if (!para.length) return;
       const m = para[0]!.match(/^\*\*([^*]+)\*\*\s*[：:]\s*(.*)$/);
@@ -161,8 +162,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     for (const line of lines) {
       if (!code && /^\s*\|/.test(line)) { flushPara(); flushList(); (table = table || []).push(line); continue; }
       flushTable();
-      if (code) { if (/^\s*```/.test(line)) { out.push('<pre class="code"><code>' + esc(code.join("\n")) + "</code></pre>"); code = null; } else code.push(line); continue; }
-      if (/^\s*```/.test(line)) { flushPara(); flushList(); code = []; continue; }
+      if (code) { if (/^\s*```/.test(line)) { out.push(codeBlock(code, codeInfo)); code = null; } else code.push(line); continue; }
+      if (/^\s*```/.test(line)) { flushPara(); flushList(); code = []; codeInfo = line.replace(/^\s*```/, ""); continue; }
       const ul = line.match(/^\s*[-*]\s+(.*)$/), ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
       if (ul || ol) {
         flushPara();
@@ -175,7 +176,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       flushList();
       para.push(line);
     }
-    if (code) out.push('<pre class="code"><code>' + esc(code.join("\n")) + "</code></pre>");
+    if (code) out.push(codeBlock(code, codeInfo));
     flushTable(); flushPara(); flushList();
     return out.join("");
   }

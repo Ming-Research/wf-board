@@ -1242,6 +1242,21 @@ writes with that message. Reconnection retries every five seconds; writes
 resume and the banner clears only after a live connection and a successful
 snapshot reload restore the page's current state.
 
+Code blocks. A fence's first info word names its language (` ```wf `, ` ```rust `);
+`web/highlight.ts` tokenizes line by line, with no library. `wf` and `whitefoot`
+blocks mark comments (`//`), keywords (the lowercase fixed atoms of the Whitefoot
+grammar), primitive and capitalized type names, numbers (suffixes such as `7_u64`
+included) and strings. Other named languages mark comments (`#` for sh, bash,
+yaml, python, toml; `//` for the C-like languages), strings and numbers only. An
+unlabeled fence, and an unknown language, is plain, so output, logs and LLVM
+attributes stay as written. Highlighting only wraps text in spans, so the text
+content is exactly the source. A block of 3 or more lines shows line numbers from 1,
+blank and comment lines counted; each line is a span whose CSS counter
+`::before` draws the number, so the gutter is neither selectable nor copied.
+Blocks of 1 or 2 lines show none. Long lines scroll horizontally. Change
+marking wraps whole blocks, and glossary links skip text inside code, so
+neither writes markup into a token.
+
 Glossary links. In item heads, steps and log entries, card questions, backgrounds,
 options and rulings, and note texts and replies, a glossary term links to its
 definition. The page has no glossary section. Titles are not linked. Terms

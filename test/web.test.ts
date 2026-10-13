@@ -477,9 +477,37 @@ test("detail: existing fenced code keeps blank lines and contiguous lists and ta
   const p = await page(s,unread(),before); await expand(p);
   const body = markup(item(p));
   assert.ok(!body.includes("old\n\ncode") && !body.includes("Old list") && !body.includes("Old row"),"replaced blocks show only their current form");
-  assert.match(body, /class="chg-add"[^>]*><pre class="code"><code>new\n\ncode<\/code><\/pre>/);
+  assert.match(body, /class="chg-add"[^>]*><pre class="code numbered"><code><span class="l">new<\/span>\n<span class="l"><\/span>\n<span class="l">code<\/span><\/code><\/pre>/);
   assert.match(body, /class="chg-add"[^>]*><ul><li>Keep<\/li><li>New list<\/li><\/ul>/);
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
+});
+
+// The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
+const codeText = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+
+test("detail: wf fence renders numbered highlighted lines whose text is the source, and a 2-line block has no numbers", async () => {
+  const src = 'fn main() {\n  // count <up>\n  let x = 7_u64 & "a\\"b";\n}';
+  const s = snapshot(); s.items.child!.head = "```wf\n" + src + "\n```\n\n```wf\nlet a = 1;\nlet b = 2;\n```";
+  const p = await page(s,unread(),null); await expand(p);
+  const html = markup(item(p)), pres = html.match(/<pre class="code[^"]*"><code>.*?<\/code><\/pre>/gs)!;
+  assert.equal(pres.length,2);
+  assert.ok(pres[0]!.startsWith('<pre class="code numbered">'));
+  assert.deepEqual([...pres[0]!.matchAll(/<span class="l">/g)].length,4,"one numbered line span per source line, 1..4");
+  assert.match(pres[0]!, /<span class="tk-k">fn<\/span>/);
+  assert.match(pres[0]!, /<span class="tk-c">\/\/ count &lt;up&gt;<\/span>/);
+  assert.match(pres[0]!, /<span class="tk-n">7_u64<\/span>/);
+  assert.equal(codeText(pres[0]!.replace(/^<pre[^>]*><code>/,"").replace(/<\/code><\/pre>$/,"")),src);
+  assert.ok(pres[1]!.startsWith('<pre class="code"><code>') && !pres[1]!.includes('class="l"'),"two lines show no gutter");
+  assert.equal(codeText(pres[1]!),"let a = 1;\nlet b = 2;");
+});
+
+test("detail: change marking marks a head whose block holds code and keeps the code intact", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"```wf\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```"};
+  s.items.child!.head = "```wf\nlet a = 1;\nlet b = 2;\nlet c = 4;\n```";
+  const p = await page(s,unread(),before); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /class="chg-add"[^>]*><pre class="code numbered"><code>.*<span class="tk-n">4<\/span>/s);
+  assert.ok(!body.includes("3;"),"the old block is not shown");
 });
 
 test("detail: changed title marks the new title and shows no former title", async () => {
@@ -560,7 +588,7 @@ test("detail: new item keeps rich head and its log stays collapsed without unrea
   const p = await page(s,unread(),null); await expand(p);
   assert.ok(descendants(item(p)).some(e => e.className.includes("item-title") && e.className.includes("chg-add")));
   assert.ok(!markup(item(p)).includes('class="chg-add"'));
-  assert.match(markup(item(p)), /<pre class="code"><code>&lt;unsafe&gt;\n\ncode<\/code><\/pre>/);
+  assert.match(markup(item(p)), /<pre class="code numbered"><code><span class="l">&lt;unsafe&gt;<\/span>\n<span class="l"><\/span>\n<span class="l">code<\/span><\/code><\/pre>/);
   assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry")).length,0);
   await button(p,"▸ 日志").click();
   assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry")).length,2);
