@@ -586,7 +586,7 @@ test("the stalled check carries the visible label 无人推进 while other check
   const r = rules(s, start + 3 * hour), stalled = r.checks("child").find(c => c.text.includes("活跃时间"))!;
   assert.equal(stalled.label, STALLED_LABEL); assert.equal(checkLabel(stalled), "无人推进");
   assert.equal(checkLabel({}), "需核对", "a check without its own label is 需核对");
-  assert.ok(r.checks("child").every(c => c === stalled || checkLabel(c) === "需核对"));
+  assert.ok(r.checks("child").filter(c => c.text !== stalled.text).every(c => checkLabel(c) === "需核对"), "checks() returns copies, so compare by text");
   assert.equal(r.stalledBelow("quiet"), 2, "the folded parent counts child and child2 but not the recently changed fresh");
   assert.equal(r.stalledBelow("child"), 1); assert.equal(r.stalledBelow("fresh"), 0); assert.equal(r.stalledBelow("other"), 0);
 });
