@@ -540,6 +540,57 @@ test("cold unread history compares legacy commits without whole-snapshot convers
   assert.ok("steps" in (await store.show("item", "work", commits[0]!) as object), "audit history stays raw");
 });
 
+test("historical comparison omits only fields a migration retired; raw history keeps them and writes stay strict", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-retired-fields-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const git = promisify(execFile);
+  const run = (args: string[]) => git("git", args, { cwd: dir });
+  const commit = async (name: string, message: string) => {
+    await run(["add", "."]);
+    await run(["-c", `user.name=${name}`, "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message]);
+    return (await run(["rev-parse", "HEAD"])).stdout.trim();
+  };
+  await run(["init", "-b", "main"]);
+  await mkdir(join(dir, "items"));
+  // The imported board as it was before the migrations that dropped area short names, item agents and project agents.
+  const project = { name: "P", migrated: true };
+  const work = { title: "Work", group: "P", status: "todo", priority: "P1", head: "Before", updated: later, rev: 1 };
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [{ ...project, agents: ["p-session"] }] }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session" }));
+  const imported = await commit("migration", "Import the board");
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", rev: 2 }));
+  const edited = await commit("P", "Edit while retired fields remain");
+  // A field no migration retired is unknown content: comparison must refuse it rather than drop it.
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", unlisted: "kept", rev: 3 }));
+  const unknown = await commit("Q", "Write an unknown field");
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [project] }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, head: "After", rev: 4 }));
+  const migrated = await commit("migration", "Drop retired fields");
+  const store = await Store.open(dir, { planConversionHead: migrated });
+  const steps = await unreadSteps(store, imported);
+  const step = steps.find(s => s.id === edited);
+  assert.ok(step, "the edit is an unread step");
+
+  const diff = await stepDiff(store, step, "item", "work");
+  // The normalized view keeps every current field's content and invents nothing for the retired ones.
+  const before = diff.before as Record<string, unknown>, after = diff.after as Record<string, unknown>;
+  assert.equal(before.head, "Before");
+  assert.equal(after.head, "After");
+  assert.ok(Array.isArray(after.plan));
+  for (const doc of [before, after]) for (const key of ["short", "agent"]) assert.ok(!Object.hasOwn(doc, key));
+  assert.deepEqual((await store.comparisonSnapshot(edited)).board.projects, [{ name: "P" }], "the plan conversion drops migrated; agents is omitted");
+  // Raw history still holds the retired fields exactly as written.
+  assert.match(diff.diff, /^ short: W$/m);
+  assert.match(diff.diff, /^ agent: p-session$/m);
+  assert.deepEqual(await store.show("item", "work", edited), { ...work, short: "W", agent: "p-session", head: "After", rev: 2 });
+  assert.match(await store.diff("item", "work", edited, migrated), /^-short: W$/m);
+
+  await assert.rejects(store.comparisonSnapshot(unknown), /items\/work\.yaml: document: Unrecognized key: "unlisted"/);
+  const current = store.snapshot().items.work!;
+  await assert.rejects(store.commit({ author: "P", message: "Write a retired field", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, short: "W" } }] }),
+    /Unrecognized key: "short"/);
+});
+
 test("unread yields between commits even when every historical document is cached", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
   await op.setPlan({ author, id: "a", row: { id: "one", text: "One", state: "todo" } });

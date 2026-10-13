@@ -122,6 +122,25 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   return result.data;
 }
 
+/** Fields that a data-repository migration commit removed from every document, by the document they sat in. Only
+ * whole-board historical comparison omits them, so an old version holding them still normalizes: show() and diff()
+ * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
+ * strict. Dropped by "Drop area short names at the owner's request" (item short), "Drop item agents: responsibility
+ * moves to each project's configuration" (item agent) and "Projects are identified by themselves: drop session names
+ * (agents)" (board project agents). */
+const retiredFields = { item: ["short", "agent"], project: ["agents"] } as const;
+function without(value: unknown, keys: readonly string[]): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+function withoutRetiredFields(path: string, doc: unknown): unknown {
+  if (path.startsWith("items/")) return without(doc, retiredFields.item);
+  if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
+  const { projects } = doc as { projects?: unknown };
+  if (!Array.isArray(projects) || !projects.some(project => without(project, retiredFields.project) !== project)) return doc;
+  return { ...doc, projects: projects.map(project => without(project, retiredFields.project)) };
+}
+
 /** Old records can also carry retired fields; record alone does not identify a format. */
 function retiredItemShape(doc: unknown): boolean {
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
@@ -935,7 +954,7 @@ export class Store {
     return cachedPromise(this.compared, hash, comparedSnapshotLimit, async () => {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
-      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
+      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = withoutRetiredFields(path, await this.readAt(path, hash));
       const loaded = parsePlanData(raw, hash);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;

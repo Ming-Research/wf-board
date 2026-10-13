@@ -1597,6 +1597,14 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
+Older versions can also hold fields that a later data-repository migration
+commit removed from every document: an item's area short name (`short`) and session
+(`agent`), and a project's session names (`agents`). Normalizing a historical
+whole board omits exactly these named fields before the strict old-shape
+schema reads it, so the history and diffs of those versions stay readable;
+the diff text still shows them as written. Any other unknown field still
+refuses the old version instead of being dropped, and current reads and
+writes stay strict.
 
 **Phase 1 mapping, item by item.**
 
