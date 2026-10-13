@@ -3668,3 +3668,13 @@ test("the tag filter shows items carrying any selected tag and their ancestors, 
   assert.equal(rowOf(p, "sibling"), undefined);
   assert.ok(rowOf(p, "child") && rowOf(p, "other"));
 });
+
+test("a tag name is shown as text, not markup, in the chips and the filter button", async () => {
+  const s = taggedSnapshot();
+  s.board.tags = [{ name: "<b>x</b>", meaning: "markup in a name" }];
+  s.items.child!.tags = ["<b>x</b>"];
+  const p = await page(s, []); await expand(p, "child");
+  const chip = rowOf(p, "child").querySelector(".tagchips")!.children[0]!;
+  assert.equal(chip.innerHTML, "&lt;b&gt;x&lt;/b&gt;");
+  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "&lt;b&gt;x&lt;/b&gt; 1"), "the filter button escapes the name");
+});

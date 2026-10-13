@@ -117,6 +117,8 @@ export const Tag = z.object({
 export type Tag = z.infer<typeof Tag>;
 /** Whether a vocabulary tag may be used by an item of this project. */
 export const tagApplies = (tag: Tag, project: string): boolean => tag.projects === undefined || tag.projects.includes(project);
+/** Whether an item of this project must carry a tag: once the vocabulary holds a tag it may use. */
+export const tagsRequired = (tags: readonly Tag[] | undefined, project: string): boolean => (tags ?? []).some(tag => tagApplies(tag, project));
 
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;

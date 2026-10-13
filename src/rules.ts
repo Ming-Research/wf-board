@@ -1,7 +1,7 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
 import type { Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { planRowId, tagApplies } from "./model.ts";
+import { planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the coordinator may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
@@ -462,7 +462,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
-      if (!it.tags?.length && (s.board.tags ?? []).some(tag => tagApplies(tag, it.group))) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
+      if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
       if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
         if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push({ text: `暂停了，但 ${item(waiter.id)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter.id } });

@@ -350,7 +350,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     });
     (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
       const n = state.items.filter(it => groupOf(it) === g && it.tags?.includes(t.name)).length, on = f.tags.includes(t.name);
-      if (n || on) { const b = btn(on, t.name + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
+      if (n || on) { const b = btn(on, esc(t.name) + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
     });
     if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
     return row;
