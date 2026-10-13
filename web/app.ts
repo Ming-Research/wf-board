@@ -1561,7 +1561,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = el("section", "plan"); box.setAttribute("aria-label", "计划和进展");
     const ratio = derived.planRatio(it.id);
     const heading = el("div", "log-head", "计划和进展");
-    if (it.provisional) heading.appendChild(el("span", "checktag", "待重写"));
+    if (it.provisional && !isCancelled(it)) heading.appendChild(el("span", "checktag", "待重写"));
     heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total)); box.appendChild(heading);
     const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
     const ref = (kind: "item" | "card", id: string, title: string) => {
@@ -1594,7 +1594,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (stored.own && target) {
           const meta = el("span", "plan-meta"), childRatio = derived.planRatio(stored.item);
           if (childRatio.total) meta.appendChild(el("span", "steps-ratio", childRatio.done + "/" + childRatio.total));
-          if (target.provisional) meta.appendChild(el("span", "checktag", "待重写"));
+          if (target.provisional && derived.statusOf(stored.item) !== "cancelled") meta.appendChild(el("span", "checktag", "待重写"));
           if (childRatio.total || target.provisional) main.appendChild(meta);
         }
       } else {
@@ -1768,8 +1768,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
-    // One tag per distinct label, each explained by its checks' full texts.
-    for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
+    // One tag per distinct label, each explained by its checks' full texts; a cancelled item shows none.
+    if (!isCancelled(it)) for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
     const stalledBelow = sub.length && !open ? derived.stalledBelow(it.id) : 0;
     if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 1 小时（活跃时间）没有动静";
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (below.fresh[it.id] || 0);
@@ -1815,7 +1815,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const n: Record<string,number> = {};
       leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
-      ["todo", "wip", "blocked", "done"].forEach(k => { if (n[k]) {
+      // Done and cancelled parts are not counted on the row: only what is still open.
+      ["todo", "wip", "blocked"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
         count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);
