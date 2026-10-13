@@ -3,8 +3,19 @@
 // priority comes from dependents, and a parent listing its own cancelled sub-item
 // is not flagged. The verbatim test oracle preserves the old rules independently
 // of this implementation.
-import type { Item, ItemStep, ItemStepInput, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Item, ItemStep, ItemStepInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
 import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
+
+/** Project list order is page order; only the coordinator may place a project after another. */
+export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
+  if (author !== "总管") throw new Error("after: only the coordinator project 总管 may reorder projects");
+  if (after === name) throw new Error("after: a project cannot follow itself");
+  const project = projects.find(p => p.name === name);
+  if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
+  const remaining = projects.filter(p => p.name !== name), index = remaining.findIndex(p => p.name === after);
+  if (index < 0) throw new Error(`after ${after}: choose a configured project with projects`);
+  return [...remaining.slice(0, index + 1), project, ...remaining.slice(index + 1)];
+}
 
 /** Only an unsent note can still be edited or deleted by its author. */
 export function draftEditable(note: Pick<Note, "state"> | undefined): boolean { return note?.state === "draft"; }
@@ -12,6 +23,11 @@ export function draftEditable(note: Pick<Note, "state"> | undefined): boolean { 
 export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | undefined {
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
 }
+
+/** The one rule that log entries never count as owner-unread: owner-facing item comparisons drop the log first. */
+export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { log: _log, ...rest } = doc as T & { log?: unknown }; return rest; }
+/** A change summary naming only the log (as describeChanges words it) is never unread content. */
+export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
 
 const STEP_FIELDS = ["id", "text", "state", "waits", "reason", "doneAt", "since", "droppedAt"] as const;
 function sameStep(a: ItemStep, b: ItemStep): boolean { return STEP_FIELDS.every(field => a[field] === b[field]); }
@@ -33,8 +49,15 @@ export function stampItemStep(input: ItemStepInput, previous: ItemStep | undefin
   return step;
 }
 
+/** The visible tag of a check whose own label is not set. */
+export const CHECK_LABEL = "需核对";
+/** The wip leaf quiet for STALLED_AFTER_MS of active time carries this label instead. */
+export const STALLED_LABEL = "无人推进";
+export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
+  /** Short visible tag; absent means CHECK_LABEL. The text is the full explanation (tooltip). */
+  label?: string;
   target?: { kind: "item" | "card"; id: string };
 }
 
@@ -89,6 +112,8 @@ export interface Rules {
   inArchive(id: string): boolean;
   onCycle(id: string): boolean;
   checks(id: string): Check[];
+  /** Stalled wip leaves in the item's subtree, the item itself included. */
+  stalledBelow(id: string): number;
   stepDays(step: ItemStep): number;
   stepsRatio(id: string): { done: number; total: number };
   stepLine(step: ItemStep): string;
@@ -365,7 +390,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       const open = deps.filter(e => e.open);
       if (leaf && st === "blocked" && deps.length && !open.length) out.push({ text: "可解除阻塞：等的都已完成" });
       if (leaf && st === "blocked" && !deps.length && !needsOwner(id)) out.push({ text: "卡住了，但没写在等什么" });
-      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静" });
+      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静", label: STALLED_LABEL });
       if (leaf && st === "wip" && open.length) out.push({ text: "标为进行中，但还在等别的", target: { kind: open[0]!.kind, id: open[0]!.id } });
       if (st !== undefined && migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
       if (st !== undefined && migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
@@ -374,6 +399,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   }
   return {
     stepDays, stepsRatio, stepLine,
+    stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),

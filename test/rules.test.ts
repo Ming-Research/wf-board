@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, ItemStep, ItemStepInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, changedItemSteps, stepsChanged } from "../src/rules.ts";
+import { rules, changedItemSteps, stepsChanged, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 // Items state a completion condition unless a case is about a head without one.
@@ -576,4 +576,23 @@ test("step freshness compares full values by stable id and separates reorder or 
     assert.deepEqual(changedItemSteps([a, b], [changed, b]), [changed]);
     assert.equal(stepsChanged([a, b], [changed, b]), true);
   }
+});
+
+test("the stalled check carries the visible label 无人推进 while other checks keep 需核对, and parents count stalled leaves below", () => {
+  const s = activeBoard();
+  s.items.child = Item.parse({ title: "Child", parent: "quiet", status: "wip", updated: T0, rev: 1 });
+  s.items.child2 = Item.parse({ title: "Child 2", parent: "quiet", status: "wip", updated: T0, rev: 1 });
+  s.items.fresh = Item.parse({ title: "Fresh", parent: "quiet", status: "wip", updated: timeAt(2.9), rev: 1 });
+  const r = rules(s, start + 3 * hour), stalled = r.checks("child").find(c => c.text.includes("活跃时间"))!;
+  assert.equal(stalled.label, STALLED_LABEL); assert.equal(checkLabel(stalled), "无人推进");
+  assert.equal(checkLabel({}), "需核对", "a check without its own label is 需核对");
+  assert.ok(r.checks("child").every(c => c === stalled || checkLabel(c) === "需核对"));
+  assert.equal(r.stalledBelow("quiet"), 2, "the folded parent counts child and child2 but not the recently changed fresh");
+  assert.equal(r.stalledBelow("child"), 1); assert.equal(r.stalledBelow("fresh"), 0); assert.equal(r.stalledBelow("other"), 0);
+});
+
+test("log entries never count as owner-unread: one rule drops the log and names log-only change summaries", () => {
+  assert.deepEqual(withoutLog({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
+  assert.deepEqual(["+2 log", "log changed"].map(isLogChange), [true, true]);
+  assert.deepEqual(["steps changed", "head changed", "+2 logs here"].map(isLogChange), [false, false, false]);
 });

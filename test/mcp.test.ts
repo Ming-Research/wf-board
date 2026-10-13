@@ -112,6 +112,36 @@ test("R2 R4 R5 MCP exposes transition and replacement fields and unscored confid
   assert.match(context, /confidence Unscored grounds/); assert.doesNotMatch(context, /undefined\/5/);
 });
 
+test("project MCP after parameters reorder existing and newly created projects with coordinator-only placement", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Project order test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tools = (await client.listTools()).tools;
+  for (const name of ["create_project", "update_project"]) {
+    const tool = tools.find(tool => tool.name === name)!;
+    assert.ok(tool.inputSchema.properties!.after);
+    assert.ok(!tool.inputSchema.required?.includes("after"));
+    assert.match(tool.description!, /总管.*after/);
+  }
+  const moved = await client.callTool({ name: "update_project", arguments: { author: "总管", name: "Whitefoot", after: "Firn" } });
+  assert.equal(moved.isError, undefined);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管"]);
+  const created = await client.callTool({ name: "create_project", arguments: { author: "总管", name: "New", after: "Firn" } });
+  assert.equal(created.isError, undefined);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管"]);
+  for (const [name, args] of [
+    ["update_project", { author: "Firn", name: "Firn", after: "New" }],
+    ["create_project", { author: "Firn", name: "Refused", after: "New" }],
+    ["update_project", { author: "总管", name: "Firn", after: "Missing" }],
+  ] as const) {
+    const before = store.snapshot(), result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.match((result.content as Array<{ text: string }>).map(c => c.text).join("\n"), /after.*(总管|configured)/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+});
+
 test("project MCP onboarding, requests, triage, close and coordinator reads use the configured contracts", async t => {
   const {store,op}=await board(t), server=createMcpServer({store,ops:op,now:()=>"2026-10-12T00:00:00Z"});
   const client=new Client({name:"Project test",version:"1"}), [st,ct]=InMemoryTransport.createLinkedPair();

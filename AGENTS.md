@@ -66,7 +66,9 @@ code skips this section.
 ### Starting
 
 1. Read `brief` as 总管, then the newest handoff record (see Handoff).
-2. Arm the board's wake stream `ws://127.0.0.1:7417/wake?session=*`, re-arming
+2. Check the server (`curl -s http://127.0.0.1:7417/health`, launchd
+   service `org.ming-research.wf-board`, log `~/Library/Logs/wf-board.log`),
+   then arm the board's wake stream `ws://127.0.0.1:7417/wake?session=*`, re-arming
    it each time it expires or the daemon restarts, and a ten-minute patrol
    timer.
 3. List the live sessions and tell each that a new coordinator took over.
@@ -121,9 +123,25 @@ do not collide, answers "可以", and records the new main in the merge log.
 
 The coordinator keeps the queue of runs on the 14900K in priority order,
 tells each session when its turn starts, and checks that the machine is idle
-first. Direct ssh access is limited to actions the owner authorized.
+first (`gh api orgs/Ming-Research/actions/runners`). One run at a time; a run
+waiting its turn makes its item blocked on the queue record.
+
+- Native Ubuntu, P-cores CPUs 0-15 as hyperthread pairs, fixed at 5.0 GHz
+  with the performance governor. Timed jobs pin to P-cores with `taskset`
+  and skip CPU 0 unless a run needs all eight physical P-cores, which the
+  result then states. Firn: server on 2,4, clients on 6-15.
+- ssh (`ssh -i ~/.ssh/id_ed25519.whitefoot-vm -o IdentitiesOnly=yes
+  mbbill@192.168.0.62`) only for host setup the owner asked for in chat;
+  tell the owner before any reboot. Four data disks are block-read-only by
+  udev rule; never write them.
+- clang/lld at `/usr/bin/clang`, the latest release.
 
 ### Project sessions
+
+A project's live session is the one whose working directory is in the
+project's repository (`list_sessions` gives each `cwd` and current name);
+the session list can miss a live session, so a project's recent board writes
+count as a sign of life too.
 
 Start a session for a project with `spawn_task`, its directory being the
 project's repository, so it shows in the app's session list; the opening
@@ -134,7 +152,9 @@ queue, and the coordinator as the contact.
 
 ### Talking with the owner
 
-Handle session messages silently. Speak in chat only for what the owner must
+Every question for the owner, the coordinator's own included, is a card on
+the board; a list of open questions in chat is not enough. Handle session
+messages silently. Speak in chat only for what the owner must
 say there, such as an authorization, a permission block or the owner's own
 question; every blocking matter also goes on the board as a blocking card.
 A session's request to do what its own permission check refused is never
