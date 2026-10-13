@@ -440,6 +440,7 @@ export class Store {
    * oldest legacy snapshot. Read each later changed item once; never convert
    * whole historical boards or inspect old item bodies when no pause existed. */
   private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[]): Promise<void> {
+    if (!this.state.head || !commits.length) return;
     const firstCommit = await this.firstPauseCommit(commits);
     const first = commits.findIndex(commit => commit.commit === firstCommit);
     if (first < 0) return;
@@ -483,6 +484,7 @@ export class Store {
    * rewind rebuilds it; unchanged heads need no full-history pickaxe. Git's own
    * metadata directory keeps the disposable cache out of board commits. */
   private async firstPauseCommit(commits: CommitInfo[]): Promise<string | null> {
+    if (!this.state.head || !commits.length) return null;
     this.pauseHistoryPath ??= resolve(this.dir, (await this.git(["rev-parse", "--git-path", "wf-board-pause-history.yaml"])).trim());
     let marker: PauseHistoryMarker | undefined;
     try {

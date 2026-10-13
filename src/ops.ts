@@ -70,7 +70,7 @@ function newKey(s: Snapshot, key: string): void {
   if (Object.hasOwn(s.items, key) || Object.hasOwn(s.decisions, key)) throw new OpError(`key ${key}: already used; choose a new item or decision key`);
 }
 
-interface Work { coordinatorOwnership?: boolean; moved?: string[]; id: string; kind: Put["kind"] | "board"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
+interface Work { moved?: string[]; id: string; kind: Put["kind"] | "board"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -145,9 +145,9 @@ function ownGlossary(s: Snapshot, author: string): Glossary {
   if (!GlossaryId.safeParse(author).success) throw new OpError(`author ${author}: a project whose name contains a slash or starts with a dot cannot keep a glossary file`);
   return s.glossaries[author] ?? { terms: [], rev: 1 };
 }
-function ownedItem(s: Snapshot, id: string, author: string, field = "id", coordinator = false): Item {
+function ownedItem(s: Snapshot, id: string, author: string, field = "id"): Item {
   const it = requireItem(s, id, field);
-  if (!(coordinator && author === "总管")) requireOwnership(s, rules(s).projectOf(id), author, id);
+  requireOwnership(s, rules(s).projectOf(id), author, id);
   return it;
 }
 function ownedNote(s: Snapshot, id: string, author: string): { note: Note; item: string } {
@@ -206,7 +206,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
             if (!("item" in row && row.own) || beforeRules.parentOf(row.item) === owner) continue;
             const target = next.items[row.item];
             if (!target?.request || !beforeRules.isRequest(row.item)) continue;
-            if (!(work.coordinatorOwnership && a.author === "总管")) requireOwnership(s, target.group, a.author, row.item);
+            requireOwnership(s, target.group, a.author, row.item);
             const doc = { ...target, updated: at, log: [...target.log, { at, by: a.author, text: `分拣：放到「${ownerDoc.title}」的计划` }] };
             delete doc.request;
             next.items[row.item] = doc;
@@ -226,11 +226,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         afterRules = rules(next);
         const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
-        // Pause permission applies to every derived consequence, including
-        // descendants not written by this operation, rather than just markers.
+        // Pause permission covers open work resumed through any indirect effect,
+        // including unwritten descendants. Closing work is allowed when its
+        // explicit marker stays intact; reopening will restore that pause.
         if (a.author !== "总管") for (const id of checked) {
           const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
-          if (!clearedMarker && (!beforeRules.isPaused(id) || afterRules.isPaused(id))) continue;
+          const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
+          if (!clearedMarker && !resumedWork) continue;
           const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
           throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or 总管 can resume it`);
         }
@@ -244,7 +246,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           }
           for (const row of old?.plan ?? []) {
             if (!("item" in row && row.own) || work.moved?.includes(row.item) || !beforeRules.isOpenWork(row.item)) continue;
-            if (work.coordinatorOwnership && a.author === "总管" && beforeRules.isPaused(row.item)) continue;
             if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
           }
         }
@@ -282,8 +283,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   const itemPut = (id: string, doc: Item): Put => ({ kind: "item", id, doc: parse(Item, doc), expectRev: doc.rev });
   const entry = (author: string, at: string, text: string) => ({ at, by: author, text });
-  function edit(a: { author: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = "", coordinator = false): Promise<Result> {
-    return run(a, async (s, at) => ({ id: a.id, kind: "item", coordinatorOwnership: coordinator, message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author, "id", coordinator), s, at))] }), overwrite);
+  function edit(a: { author: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = ""): Promise<Result> {
+    return run(a, async (s, at) => ({ id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author), s, at))] }), overwrite);
   }
   function acceptId(rows: readonly { id?: string; item?: string; card?: string }[]): string {
     const ids = new Set(rows.map(row => row.id ?? row.item ?? row.card));
@@ -309,19 +310,19 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (r.isBacklog(id)) throw new OpError(`priority: ${id} is record-owned work and cannot store priority; priority derives from open shared dependents`);
     if (!r.isRoot(id)) throw derivedPriority(id, openDependents(r, id));
   }
-  function attach(s: Snapshot, puts: Put[], at: string, author: string, owner: string, id: string, after?: string[], coordinator = false): void {
-    ownedItem(s, owner, author, "owner", coordinator); const doc = docOf(s, puts, owner);
+  function attach(s: Snapshot, puts: Put[], at: string, author: string, owner: string, id: string, after?: string[]): void {
+    ownedItem(s, owner, author, "owner"); const doc = docOf(s, puts, owner);
     if (rules(s).projectOf(owner) !== docOf(s, puts, id).group) throw new OpError("owner: ownership must stay within the same project");
     putDoc(puts, itemPut(owner, { ...doc, plan: insert(doc.plan ?? [], { id, item: id, own: true, ...(after === undefined ? {} : { after }) }), updated: at,
       log: [...doc.log, entry(author, at, `计划拥有「${titleOf(s, puts, id)}」`)] }));
   }
-  function transfer(s: Snapshot, puts: Put[], at: string, author: string, id: string, owner?: string, after?: string[], coordinator = false): void {
+  function transfer(s: Snapshot, puts: Put[], at: string, author: string, id: string, owner?: string, after?: string[]): void {
     const old = rules(s).parentOf(id);
     if (old && old !== owner) {
-      ownedItem(s, old, author, "owner", coordinator); const doc = docOf(s, puts, old);
+      ownedItem(s, old, author, "owner"); const doc = docOf(s, puts, old);
       putDoc(puts, itemPut(old, { ...doc, plan: removeRow(doc.plan ?? [], id), updated: at, log: [...doc.log, entry(author, at, `计划不再拥有「${titleOf(s, puts, id)}」；${owner ? `移到「${titleOf(s, puts, owner)}」` : "移到顶层"}`)] }));
     }
-    if (owner) attach(s, puts, at, author, owner, id, after, coordinator);
+    if (owner) attach(s, puts, at, author, owner, id, after);
     else if (after !== undefined) throw new OpError("after: requires owner");
     const doc = docOf(s, puts, id), moved = { ...doc, updated: at, log: [...doc.log, entry(author, at, doc.request && owner ? `分拣：放到「${titleOf(s, puts, owner)}」的计划` : `${old ? `从「${titleOf(s, puts, old)}」` : "从顶层"}${owner ? `移到「${titleOf(s, puts, owner)}」的计划` : "移到顶层"}`)] };
     delete moved.request;
@@ -416,7 +417,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = { ...it, plan, updated: at };
       if (a.rows !== undefined && it.provisional) { delete doc.provisional; doc.log = [...it.log, entry(a.author, at, "重写了计划")]; }
       return doc;
-    }, false, "", true),
+    }),
     setTargets: a => edit(a, "set_targets", (it, _s, at) => {
       if ([a.targets, a.target, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_targets: provide exactly one of targets, target or remove");
       const previous = it.targets ?? [];
@@ -438,7 +439,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return isDeepStrictEqual(targets, previous) ? it : { ...it, targets, updated: at };
     }),
     updateItem: a => run(a, async (s, at) => {
-      const it = ownedItem(s, a.id, a.author, "id", true); await revision("item", a.id, a.rev, it);
+      const it = ownedItem(s, a.id, a.author); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
       if (a.priority !== undefined) priorityAllowed(s, a.id);
@@ -457,7 +458,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         doc.log.push(entry(a.author, at, "改为工作条目：状态由计划推导"));
       } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record to work; edit acceptance with set_plan");
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
-      return { id: a.id, kind: "item", message: `update_item ${a.id}`, coordinatorOwnership: true, puts: [itemPut(a.id, doc)] };
+      return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
     }, true),
     setStatus: a => edit(a, "set_status", (it, s, at) => {
       if (it.record) throw new OpError("status: a record has no status");
@@ -468,7 +469,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       if (a.status === "cancelled") { doc.status = "cancelled"; delete doc.request; } else delete doc.status;
       return doc;
-    }, false, ` ${a.status}`, true),
+    }, false, ` ${a.status}`),
     setPause: a => run(a, (s, at) => {
       if (a.author !== "总管") throw new OpError("author: only 总管 or the owner page may pause or resume an item");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
@@ -487,16 +488,16 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)] };
     }, false, true),
     moveItem: a => run(a, (s, at) => {
-      ownedItem(s, a.id, a.author, "id", true);
+      ownedItem(s, a.id, a.author);
       if (a.owner && a.priority) throw new OpError("priority: refused with owner");
-      const puts: Put[] = []; transfer(s, puts, at, a.author, a.id, a.owner, a.after, true);
+      const puts: Put[] = []; transfer(s, puts, at, a.author, a.id, a.owner, a.after);
       if (!a.owner) {
         const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
         const r = rules(next);
         if (r.isRoot(a.id) && !a.priority) throw new OpError("priority: moving to a root requires a priority");
         if (a.priority) { priorityAllowed(next, a.id); const doc = docOf(s, puts, a.id); putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority })); }
       }
-      return { id: a.id, kind: "item", puts, coordinatorOwnership: true, moved: [a.id], message: `move_item ${a.id}` };
+      return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
     }),
     clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
@@ -530,7 +531,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
-      ownedItem(s, card.item, a.author, "id", true);
+      ownedItem(s, card.item, a.author);
       if (card.status !== "open") throw new OpError("status: only an open card can be ruled");
       if (a.choice !== undefined && !card.options.some(o => o.key === a.choice)) throw new OpError("choice: use an option key from this card, or omit choice for a prose ruling");
       const doc = parse(Decision, { ...card, status: "ruled", choice: a.choice, ruling: a.ruling, ruledAt: at, updated: at });

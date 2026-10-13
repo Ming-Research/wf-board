@@ -872,7 +872,7 @@ test("project cancellation and record conversion cannot clear an owner pause", a
   await op.createItem({ author, group: author, key: "pause-cancel", title: "Work", priority: "P1", accept: "Check", plan: [{ id: "doing", text: "Implementation", state: "doing" }] });
   await op.setPause({ author: "总管", id: "pause-cancel", paused: true, reason: "Parked" });
   const paused = store.snapshot().items["pause-cancel"]!, plan = paused.plan, marker = paused.paused;
-  await op.setStatus({ author: "总管", id: "pause-cancel", status: "cancelled", log: "No longer needed" });
+  await op.setStatus({ author, id: "pause-cancel", status: "cancelled", log: "No longer needed" });
   assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "cancelled");
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.paused, marker, "cancellation does not clear the owner's pause");
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
@@ -898,8 +898,8 @@ test("only the coordinator can clear a retained pause after work completes or is
     const id = `pause-closed-${state}`;
     await op.createItem({ author, group: author, key: id, title: "Closed work", priority: "P1", accept: "Check" });
     await op.setPause({ author: "总管", id, paused: true, reason: "Owner paused" });
-    if (state === "done") await op.setPlan({ author: "总管", id, rows: [{ id: "accept", accept: true, text: "Check", state: "done" }] });
-    else await op.setStatus({ author: "总管", id, status: "cancelled", log: "Not needed" });
+    if (state === "done") await op.setPlan({ author, id, rows: [{ id: "accept", accept: true, text: "Check", state: "done" }] });
+    else await op.setStatus({ author, id, status: "cancelled", log: "Not needed" });
     const before = store.snapshot(), plan = before.items[id]!.plan;
     assert.equal(rules(before).statusOf(id), state);
     assert.ok(before.items[id]!.paused, "ordinary closure retains the owner's marker");
@@ -912,7 +912,29 @@ test("only the coordinator can clear a retained pause after work completes or is
   }
 });
 
-test("only the coordinator may move inherited paused work out of its ownership chain", async t => {
+
+test("ordinary coordinator tools refuse cross-project writes without changing memory, disk or HEAD", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const before = store.snapshot(), count = (await store.log()).length;
+  const calls = [
+    () => op.setPlan({ author: "总管", id: "a", row: { id: "accept", accept: true, text: "Changed acceptance", state: "todo" } }),
+    () => op.updateItem({ author: "总管", id: "a", rev: before.items.a!.rev, title: "Changed title" }),
+    () => op.setStatus({ author: "总管", id: "a", status: "cancelled", log: "Not needed" }),
+    () => op.moveItem({ author: "总管", id: "a", owner: "other" }),
+    () => op.ruleCard({ author: "总管", key: "choice", choice: "A", ruling: "Approved" }),
+  ];
+  for (const call of calls) {
+    await assert.rejects(call(), /item a belongs to project Whitefoot; file a request into Whitefoot with create_request instead/);
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal(store.snapshot().head, before.head);
+    assert.equal((await store.log()).length, count);
+  }
+  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
+  assert.equal(rules(store.snapshot()).statusOf("area"), "paused", "set_pause keeps its explicit cross-project authority");
+});
+
+test("moving inherited paused work out requires an authorized resume first", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ author, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
   await op.createItem({ author, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes", plan: [{ id: "work", text: "Implementation", state: "doing" }] });
@@ -920,18 +942,19 @@ test("only the coordinator may move inherited paused work out of its ownership c
   await op.setPause({ author: "总管", id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
   await assert.rejects(op.moveItem({ author, id: "pause-child", owner: "resume-owner" }), /paused.*Paused implementation.*pause-child.*Paused release.*pause-parent.*only the owner or 总管 can resume/);
-  assert.deepEqual(store.snapshot(), before, "refusal keeps memory and every plan row unchanged");
-  assert.deepEqual((await Store.open(dir)).snapshot(), before, "refusal keeps disk and HEAD unchanged");
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.moveItem({ author: "总管", id: "pause-child", owner: "resume-owner" });
-  assert.equal(rules(store.snapshot()).parentOf("pause-child"), "resume-owner");
+  await op.setPause({ author: "总管", id: "pause-parent", paused: false });
+  await op.moveItem({ author, id: "pause-child", owner: "resume-owner" });
   assert.equal(rules(store.snapshot()).statusOf("pause-child"), "wip");
   assert.deepEqual(store.snapshot().items["pause-child"]!.plan, before.items["pause-child"]!.plan);
+  await op.setPause({ author: "总管", id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   await op.moveItem({ author, id: "pause-child", owner: "pause-parent" });
-  assert.equal(rules(store.snapshot()).statusOf("pause-child"), "paused", "a project may move work into the owner's paused chain");
+  assert.equal(rules(store.snapshot()).statusOf("pause-child"), "paused", "moving into a paused chain remains allowed");
 });
 
-test("only the coordinator may remove a paused parent's owning row and resume its child", async t => {
+test("removing a paused parent's owning row cannot resume open child work", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ author, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
   await op.createItem({ author, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes" });
@@ -941,24 +964,38 @@ test("only the coordinator may remove a paused parent's owning row and resume it
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.setPlan({ author: "总管", id: "pause-parent", remove: "pause-child" });
-  assert.equal(rules(store.snapshot()).parentOf("pause-child"), undefined);
-  assert.equal(rules(store.snapshot()).statusOf("pause-child"), "todo");
-  assert.deepEqual(store.snapshot().items["pause-child"]!.plan, before.items["pause-child"]!.plan);
 });
 
-test("only the coordinator may convert inherited paused work to a record", async t => {
+test("coordinator plans still require moving or cancelling their open owned children before removal", async t => {
   const { store, op, dir } = await board(t);
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: "总管", key: "coordinator-parent", group: "总管", title: "Coordinator release", priority: "P1", accept: "Release passes" });
+  await op.createItem({ author: "总管", key: "coordinator-child", owner: "coordinator-parent", title: "Coordinator work", accept: "Work passes" });
+  await op.setPause({ author: "总管", id: "coordinator-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  assert.equal(before.items.a!.paused, undefined, "the child inherits rather than stores its pause");
-  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), /paused.*中文检查.*解释器工作.*area.*only the owner or 总管 can resume/);
+  await assert.rejects(op.setPlan({ author: "总管", id: "coordinator-parent", remove: "coordinator-child" }), /coordinator-child is open; use move_item or cancel it before removing its owned row/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.updateItem({ author: "总管", id: "a", rev: before.items.a!.rev, record: true });
-  assert.equal(store.snapshot().items.a!.record, true);
-  assert.equal(rules(store.snapshot()).statusOf("a"), undefined);
+  await op.moveItem({ author: "总管", id: "coordinator-child", priority: "P1" });
+  assert.equal(rules(store.snapshot()).parentOf("coordinator-child"), undefined);
+  assert.equal(rules(store.snapshot()).statusOf("coordinator-child"), "todo", "the coordinator's own move may resume its work");
+});
+
+test("an inherited pause does not prevent converting work to a record while preserving descendant pause", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createItem({ author, key: "record-descendant", owner: "a", title: "Descendant work", accept: "Result passes" });
+  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
+  const before = store.snapshot(), count = (await store.log()).length;
+  assert.equal(before.items.a!.paused, undefined);
+  await op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true });
+  const after = store.snapshot();
+  assert.equal(after.items.a!.record, true);
+  assert.equal(rules(after).statusOf("a"), undefined, "a record has no open work status to resume");
+  assert.deepEqual(after.items.area!.paused, before.items.area!.paused);
+  assert.equal(rules(after).statusOf("record-descendant"), "paused");
+  assert.deepEqual(after.items["record-descendant"], before.items["record-descendant"]);
+  assert.equal((await store.log()).length, count + 1);
+  assert.deepEqual((await Store.open(dir)).snapshot(), after);
 });
 
 test("pause permission follows unwritten descendants when their record owner moves", async t => {
@@ -971,59 +1008,60 @@ test("pause permission follows unwritten descendants when their record owner mov
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.moveItem({ author: "总管", id: "pause-record", owner: "other" });
+  await op.setPause({ author: "总管", id: "area", paused: false });
+  await op.moveItem({ author, id: "pause-record", owner: "other" });
   assert.equal(rules(store.snapshot()).statusOf("pause-descendant"), "todo");
-  assert.deepEqual(store.snapshot().items["pause-descendant"], before.items["pause-descendant"], "the resumed descendant was never written");
+  assert.deepEqual(store.snapshot().items["pause-descendant"], before.items["pause-descendant"], "the descendant's plan is never rewritten by the move");
 });
 
-test("project cancellation or completing a plan cannot bypass an owner's pause", async t => {
+test("project cancellation and plan completion preserve an owner's retained pause in one commit", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "pause-close", group: author, title: "Paused work", priority: "P1", accept: "Result passes" });
-  await op.setPause({ author: "总管", id: "pause-close", paused: true, reason: "Owner chose to wait" });
-  const before = store.snapshot(), count = (await store.log()).length;
-  const calls = [
-    () => op.setStatus({ author, id: "pause-close", status: "cancelled", log: "Not needed" }),
-    () => op.setPlan({ author, id: "pause-close", rows: [{ id: "accept", accept: true, text: "Result passes", state: "done" }] }),
-  ];
-  for (const call of calls) {
-    await assert.rejects(call(), /paused.*Paused work.*pause-close.*only the owner or 总管 can resume/);
-    assert.deepEqual(store.snapshot(), before);
-    assert.deepEqual((await Store.open(dir)).snapshot(), before);
-    assert.equal((await store.log()).length, count);
+  for (const status of ["done", "cancelled"] as const) {
+    const id = `paused-close-${status}`;
+    await op.createItem({ author, key: id, group: author, title: "Paused work", priority: "P1", accept: "Result passes" });
+    await op.setPause({ author: "总管", id, paused: true, reason: "Owner chose to wait" });
+    const before = store.snapshot(), count = (await store.log()).length;
+    const result = status === "done"
+      ? await op.setPlan({ author, id, rows: [{ id: "accept", accept: true, text: "Result passes", state: "done" }] })
+      : await op.setStatus({ author, id, status: "cancelled", log: "Not needed" });
+    const after = store.snapshot();
+    assert.equal(rules(after).statusOf(id), status);
+    assert.deepEqual(after.items[id]!.paused, before.items[id]!.paused);
+    if (status === "cancelled") assert.deepEqual(after.items[id]!.plan, before.items[id]!.plan);
+    assert.equal((await store.log()).length, count + 1);
+    assert.equal(result.commit, after.head);
+    assert.deepEqual((await Store.open(dir)).snapshot(), after);
   }
-  await op.setPlan({ author: "总管", id: "pause-close", rows: [{ id: "accept", accept: true, text: "Result passes", state: "done" }] });
-  assert.equal(rules(store.snapshot()).statusOf("pause-close"), "done");
-  assert.deepEqual(store.snapshot().items["pause-close"]!.paused, before.items["pause-close"]!.paused, "coordinator completion keeps the historical marker");
 });
 
-test("converting closed work to a record cannot erase its retained owner pause", async t => {
+test("converting closed work to a record requires clearing its retained owner pause first", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ author, key: "pause-closed-record", group: author, title: "Closed paused work", priority: "P1", accept: "Result passes" });
   await op.setPause({ author: "总管", id: "pause-closed-record", paused: true, reason: "Owner chose to wait" });
-  const paused = store.snapshot().items["pause-closed-record"]!;
-  await store.commit({ author: "Fixture", message: "Seed retained closed pause", puts: [{ kind: "item", id: "pause-closed-record", expectRev: paused.rev, doc: { ...paused, status: "cancelled" } }] });
+  await op.setStatus({ author, id: "pause-closed-record", status: "cancelled", log: "Not needed" });
   const before = store.snapshot(), count = (await store.log()).length, item = before.items["pause-closed-record"]!;
-  assert.equal(rules(before).isPaused("pause-closed-record"), false, "cancelled wins over the retained marker");
+  assert.equal(rules(before).isPaused("pause-closed-record"), false);
   await assert.rejects(op.updateItem({ author, id: "pause-closed-record", rev: item.rev, record: true }), /paused.*Closed paused work.*pause-closed-record.*only the owner or 总管 can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.updateItem({ author: "总管", id: "pause-closed-record", rev: item.rev, record: true });
+  await op.setPause({ author: "总管", id: "pause-closed-record", paused: false });
+  await op.updateItem({ author, id: "pause-closed-record", rev: store.snapshot().items["pause-closed-record"]!.rev, record: true });
   assert.equal(store.snapshot().items["pause-closed-record"]!.record, true);
   assert.equal(store.snapshot().items["pause-closed-record"]!.paused, undefined);
 });
 
-test("ruling a card cannot complete an unwritten paused dependent without coordinator authority", async t => {
+test("a project card ruling may complete an unwritten paused dependent without clearing its marker", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ author, key: "pause-card-dependent", group: author, title: "Paused card dependent", priority: "P1", accept: "Result passes", plan: [{ card: "choice" }] });
   await op.setPlan({ author, id: "pause-card-dependent", row: { id: "accept", accept: true, text: "Result passes", state: "done" } });
   await op.setPause({ author: "总管", id: "pause-card-dependent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.ruleCard({ author, key: "choice", choice: "A", ruling: "Approved" }), /paused.*Paused card dependent.*pause-card-dependent.*only the owner or 总管 can resume/);
-  assert.deepEqual(store.snapshot(), before);
-  assert.deepEqual((await Store.open(dir)).snapshot(), before);
-  assert.equal((await store.log()).length, count);
-  await op.ruleCard({ author: "总管", key: "choice", choice: "A", ruling: "Approved" });
-  assert.equal(rules(store.snapshot()).statusOf("pause-card-dependent"), "done");
-  assert.deepEqual(store.snapshot().items["pause-card-dependent"], before.items["pause-card-dependent"], "card resolution derives completion without rewriting the paused item");
+  const result = await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Approved" });
+  const after = store.snapshot();
+  assert.equal(rules(after).statusOf("pause-card-dependent"), "done");
+  assert.deepEqual(after.items["pause-card-dependent"], before.items["pause-card-dependent"], "card resolution leaves the retained pause and entire unwritten item intact");
+  assert.equal((await store.log()).length, count + 1);
+  assert.equal(result.commit, after.head);
+  assert.deepEqual((await Store.open(dir)).snapshot(), after);
 });
