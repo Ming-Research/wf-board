@@ -210,7 +210,8 @@ test("project wake routing reaches matching project sockets and the coordinator 
   const sockets=["Whitefoot","Whitefoot","Firn","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
   t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
   const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
-  sockets.forEach((s,i)=>s.on("message",data=>frames[i]!.push(JSON.parse(data.toString()))));
+  // Fixture items may carry board checks; this test counts request and note events only.
+  sockets.forEach((s,i)=>s.on("message",data=>{ const frame=JSON.parse(data.toString()); if (frame.event!=="check") frames[i]!.push(frame); }));
   const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",priority:"P0",why:"Need it"});
   await op.appendLog({author,id:made.id,text:"Seen"});
   const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
@@ -233,7 +234,7 @@ test("project HTTP handlers route committed requests and sent notes without a li
   const frames: Array<Array<Record<string,unknown>>> = [];
   t.mock.method(WebSocketServer.prototype,"handleUpgrade", (...args: Parameters<InstanceType<typeof WebSocketServer>["handleUpgrade"]>) => {
     const received: Array<Record<string,unknown>> = []; frames.push(received);
-    const ws = Object.assign(new EventEmitter(),{readyState:WebSocket.OPEN,send:(data:string)=>received.push(JSON.parse(data)),terminate(){},ping(){}});
+    const ws = Object.assign(new EventEmitter(),{readyState:WebSocket.OPEN,send:(data:string)=>{ const frame=JSON.parse(data); if (frame.event!=="check") received.push(frame); },terminate(){},ping(){}});
     args[3](ws as unknown as WebSocket,args[0]);
   });
   function request(path:string,method="POST") {
@@ -340,7 +341,7 @@ test("a committed check wakes once, not again on unrelated commits, and again af
   assert.deepEqual(own.frames, [expected]);
   assert.deepEqual(other.frames, [], "other projects' sockets do not receive it");
   await op.appendLog({ author, id: "c", text: "Unrelated progress" });
-  await op.appendLog({ author, id: "other", text: "Progress elsewhere" });
+  await op.appendLog({ author: "Firn", id: "other", text: "Progress elsewhere" });
   await star.sync();
   assert.equal(star.frames.length, 1, "still-flagged check is not announced again");
   await store.commit({ author, message: "Remove item", deletes: [{ kind: "item", id: "c", expectRev: store.snapshot().items.c!.rev }] });
@@ -355,7 +356,7 @@ test("active time alone (one hour) raises one stalled event on the timer, and a 
   let clock = start + 60 * 60 * 1000 - 1;
   const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
     const s = structuredClone(store.snapshot());
-    s.items.w = { title: "没人推进的叶子", group: "Whitefoot", priority: "P1", status: "wip", updated: new Date(start).toISOString(), head: "**完成条件**：某项检查通过" } as unknown as Item;
+    s.items.w = { title: "没人推进的叶子", group: "Whitefoot", priority: "P1", status: "wip", updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" } as unknown as Item;
     s.activity = { writes: Array.from({ length: 2 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
     store.snapshot = () => structuredClone(s);
   } });
