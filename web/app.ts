@@ -12,6 +12,12 @@ interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDeci
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", cancelled: "DROP", record: "记录" };
+  // An item's status shows as the same glyph its plan rows use; only a record, which has no status, keeps a text tag.
+  const GLYPH: Record<string,string> = { done: "✓", wip: "●", todo: "○", blocked: "⏸", cancelled: "✗" };
+  function statusMark(st: string, extra = ""): string {
+    return GLYPH[st] ? '<span class="sg ' + st + extra + '" title="' + esc(STATUS[st] || st) + '">' + GLYPH[st] + "</span>"
+      : '<span class="st ' + st + extra + '">' + esc(STATUS[st] || st) + "</span>";
+  }
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
@@ -1001,7 +1007,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A dependency in another project names that project; within the project no label is needed.
     const where = groupOf(d) !== groupOf(from) ? groupOf(d) || "其他" : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
-      '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>"
+      statusMark(st)
       + '<span class="prio ' + (pr ? pr.toLowerCase() : "none") + '">' + (pr || "P?") + "</span>"
       + (where ? '<span class="where">' + inline(where) + "</span>" : "")
       + '<span class="t">' + inline(d.title) + "</span>" + (extra ? '<span class="where">' + extra + "</span>" : ""));
@@ -1025,7 +1031,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const out: Found[] = [];
       for (const it of state.items) {
         const st = statusOf(it) ?? "record", parent = upItem(it);
-        out.push({ kind: "item", key: it.id, title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>" });
+        out.push({ kind: "item", key: it.id, title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: statusMark(st) });
       }
       for (const d of state.decisions) {
         const home = index().byId.get(d.item);
@@ -1591,15 +1597,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           if (target.provisional) meta.appendChild(el("span", "checktag", "待重写"));
           if (childRatio.total || target.provisional) main.appendChild(meta);
         }
-        if (!stored.own) {
-          const owner = derived.parentOf(stored.item), project = target?.group || "";
-          const sub = el("div", "plan-sub");
-          if (owner) {
-            sub.appendChild(document.createTextNode((project !== it.group ? project + " · " : "") + "共用 · 归属在「"));
-            sub.appendChild(ref("item", owner, snapshot.items[owner]?.title || owner)); sub.appendChild(document.createTextNode("」"));
-          } else sub.appendChild(document.createTextNode("共用 · " + project + " 顶层"));
-          row.appendChild(sub);
-        }
       } else {
         const card = snapshot.decisions[stored.card];
         main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
@@ -1759,7 +1756,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // that document and use the same current reference targets for comparison.
     const beforeRules = before ? rules({ ...snapshot, items: { ...snapshot.items, [it.id]: before } }) : undefined;
     const beforeStatus = beforeRules?.statusOf(it.id) ?? (before ? "record" : undefined);
-    head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(STATUS[st] || st)));
+    const chg = before && beforeStatus !== st ? " chg-add" : "";
+    const mark = GLYPH[st] ? el("span", "sg " + st + chg, GLYPH[st]) : el("span", "st " + st + chg, esc(STATUS[st] || st));
+    if (GLYPH[st]) mark.title = STATUS[st]!;
+    head.appendChild(mark);
     const pr = priorityOf(it);
     head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
