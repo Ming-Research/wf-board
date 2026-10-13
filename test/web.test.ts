@@ -129,7 +129,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     createElement: (tag: string) => {
       const e = new Element(tag);
       e.bubbleClick=true;
-      e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,stopPropagation() { go=false; },preventDefault() {}},true); return go; };
+      e.captureClick=at=> { let go=true; dispatch("click",{isTrusted:true,target:e,...at,defaultPrevented:false,stopPropagation() { go=false; },preventDefault() { this.defaultPrevented=true; }},true); return go; };
       e.geometry = () => { const inDetail=detail.contains(e), r=inDetail ? options.detailGeometry?.(e,all) ?? {top:50,height:100} : options.geometry?.(e,all) ?? {top:50,height:100}; const top=r.top-(inDetail ? detail.scrollTop : 0); measurements.push({id:e.id,top,height:r.height}); return {top,height:r.height,bottom:top+r.height,left:inDetail ? 1000 : 0,width:900}; };
       return e;
     },
@@ -367,16 +367,27 @@ test("detail: changed title marks the new title and shows no former title", asyn
 });
 
 test("detail: removed dependency and link are not shown while changed priority status and ask are marked", async () => {
-  const s = snapshot(), before = {...s.items.child!,status:"todo",priority:"P2",ask:{text:"Old ask"},deps:[{id:"area",why:"Old reason"}],links:[{label:"Old link",url:"https://example.com/old"}]};
+  const s = nativeSnapshot(); s.items.area!.plan=planWork([]);
+  const before = {...s.items.child!,priority:"P2" as const,ask:{text:"Old ask"},plan:planWork([sharedRow("area"),planStep("work","Work","todo",{after:[]})]),links:[{label:"Old link",url:"https://example.com/old"}]};
   s.items.child!.ask = {text:"New ask"};
   const p = await page(s,unread(),before); await expand(p);
   const all = descendants(item(p));
-  assert.ok(!markup(item(p)).includes("Old reason"),"a removed dependency row is not rendered");
+  assert.ok(!item(p).querySelectorAll(".plan-row").some(e => e.id === planRowDomId("child","area")),"a removed dependency row is not rendered");
   assert.ok(!all.some(e => e.tagName === "A" && e.innerHTML === "Old link"),"a removed link is not rendered");
   assert.ok(!markup(item(p)).includes("Old ask") && !markup(item(p)).includes("chg-del"),"the former ask is not rendered");
   assert.ok(all.some(e => e.className.includes("prio") && e.className.includes("chg-add") && e.innerHTML === "P1"));
   assert.ok(all.some(e => e.className.includes("st ") && e.className.includes("chg-add") && e.innerHTML === "WIP"));
   assert.ok(all.some(e => e.className.includes("ask") && e.className.includes("chg-add") && markup(e).includes("New ask")));
+});
+
+test("an unread owned item's unchanged derived priority is not marked as a priority edit", async () => {
+  const s=nativeSnapshot(), before={...s.items.child!,head:"Old head"}; delete before.priority;
+  s.items.child!.head="New head";
+  const p=await page(s,unread(),before); await expand(p);
+  const priority=item(p).querySelector(".item-head")!.querySelector(".prio"); assert.ok(priority);
+  assert.equal(priority.innerHTML,"P1","the child still inherits its owner's priority");
+  assert.ok(!priority.classList.contains("chg-add"),"an ignored written priority difference is not a displayed priority change");
+  assert.match(markup(item(p)),/chg-add[^]*New head/,"the actual unread head edit is still marked");
 });
 
 test("detail: removed link is not shown and an added non-HTTPS link has no active href", async () => {
@@ -563,7 +574,8 @@ test("n reaches hidden completed items in page order, and r reads the selected i
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
   p.key("r"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 2 条在下面的子条目里/,"r says where the new content is");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after r, n goes on to the next stop on the page");
-  p.key("n"); await p.flush(); assert.ok(detailItem(p,"other").className.includes("cur"),"the hidden completed item remains the next unread stop");
+  p.key("n"); await p.flush(); const completed=detailItem(p,"other"); assert.ok(completed,"the hidden completed item's detail is rendered");
+  assert.ok(completed.className.includes("cur"),"the hidden completed item remains the next unread stop");
   assert.ok(!rowOf(p,"other"),"unread navigation leaves its node hidden");
 });
 
@@ -1342,7 +1354,7 @@ test("replies on a completed item leave its node hidden while its plan row stays
   p.emit("b".repeat(40),[{kind:"note",id:"reply",after:{target:"it:child",kind:"comment",text:"Question",reply:"Answered",at,state:"done",repliedAt:"2026-10-13T00:00:00Z",rev:1}}]); await p.flush();
   assert.ok(!rowOf(p,"child")); assert.equal(planRow(p,"area","child").querySelector(".g")!.innerHTML,"✓");
   await planRow(p,"area","child").querySelector(".plan-link")!.click(); await p.flush();
-  assert.ok(detailItem(p,"child")); assert.ok(!rowOf(p,"child")); assert.match(markup(detailItem(p,"child")),/Answered/);
+  const child=detailItem(p,"child"); assert.ok(child); assert.ok(!rowOf(p,"child")); assert.match(markup(child),/Answered/);
 });
 
 test("unread navigation waits for its scheduled frame before measuring", async () => {
@@ -2244,7 +2256,8 @@ test("hidden closed item references open detail and Back returns without changin
     if (state === "cancelled") s.items.child!.status="cancelled";
     const p=await page(s,[],null,undefined,{storage}); await expand(p,"area");
     await planRow(p,"area","child").querySelector(".plan-link")!.click(); await p.flush();
-    assert.ok(detailItem(p,"child").className.includes("cur")); assert.ok(!rowOf(p,"child"));
+    const child=detailItem(p,"child"); assert.ok(child,"the hidden child's detail is rendered");
+    assert.ok(child.className.includes("cur")); assert.ok(!rowOf(p,"child"));
     assert.ok(!storage.has("board-filters2"),"following a plan row does not switch the closed status filter on");
     p.key("Backspace"); await p.flush(); assert.ok(detailItem(p,"area"));
     const reloaded=await page(s,[],null,undefined,{storage:new Map<string,string>([...storage,["board-selected","child"]])});
@@ -2264,10 +2277,11 @@ test("hidden completed and cancelled items retain unread item, card and reply st
     assert.ok(!rowOf(p,"child")); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
     const chip=rowOf(p,"area").querySelector(".freshchip")!; assert.ok(chip,"a hidden child's unread content still reaches its visible owner");
     await chip.click(); await p.flush();
-    assert.ok(detailItem(p,"child")); assert.ok(!rowOf(p,"child"));
-    const target=kind === "item" ? detailItem(p,"child") : p.document.getElementById(kind === "decision" ? "q-q" : "note-n")!;
+    const child=detailItem(p,"child"); assert.ok(child); assert.ok(!rowOf(p,"child"));
+    const target=kind === "item" ? child : p.document.getElementById(kind === "decision" ? "q-q" : "note-n");
+    assert.ok(target,"the unread target is rendered inside the hidden item's detail");
     assert.ok(target.className.includes("cur"));
-    if (kind === "item") assert.match(markup(detailItem(p,"child")),/chg-add[^]*Changed/,"baseline marks load without a tree node");
+    if (kind === "item") assert.match(markup(child),/chg-add[^]*Changed/,"baseline marks load without a tree node");
     p.key("r"); await p.flush();
     assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:stepId}]);
     assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));
@@ -3025,7 +3039,7 @@ test("plan rows refresh when shared ownership, child reference labels or card bl
   assert.match(markup(planRow(p,"area","child")),/Renamed prerequisite[^]*Renamed ruling/);
   await p.change("f".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,blocks:"Release waits"}}]); await p.flush();
   assert.match(markup(planRow(p,"area","q")),/阻塞/);
-  assert.equal(planRow(p,"area","q").querySelector(".waittag")!.attributes.title,"Release waits");
+  assert.match(markup(planRow(p,"area","q")),/<span class="waittag" title="Release waits">阻塞<\/span>/,"the exact blocking tag and its tooltip update together");
 });
 
 test("every resolved plan row stays visible in stored order on initial paint and reload despite stale folding storage", async t => {

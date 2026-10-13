@@ -203,7 +203,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
-  function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).map(e => e.kind === "item" ? index().byId.get(e.id)! : index().byId.get(snapshot.decisions[e.id]!.item)!).filter(Boolean); }
+  function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).flatMap(e => {
+    const id = e.kind === "item" ? e.id : snapshot.decisions[e.id]?.item;
+    const target = id ? index().byId.get(id) : undefined;
+    return target ? [target] : [];
+  }); }
   function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w)); }
   function outDeps(it: ViewItem) { return openDeps(it).filter(d => !derived.ancestors(d.id).includes(it.id)); }
   function outWaiters(it: ViewItem) { return openWaiters(it).filter(w => !derived.ancestors(it.id).includes(w.id)); }
@@ -1742,9 +1746,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const head = el("button", "item-head");
     head.type = "button";
 
-    head.appendChild(el("span", "st " + st + (before && (!!before.record !== !!it.record || it.status !== undefined && before.status !== it.status) ? " chg-add" : ""), esc(STATUS[st] || st)));
+    // The baseline is a document; status and priority are derived. Restore
+    // that document and use the same current reference targets for comparison.
+    const beforeRules = before ? rules({ ...snapshot, items: { ...snapshot.items, [it.id]: before } }) : undefined;
+    const beforeStatus = beforeRules?.statusOf(it.id) ?? (before ? "record" : undefined);
+    head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(STATUS[st] || st)));
     const pr = priorityOf(it);
-    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (before && it.priority !== undefined && before.priority !== it.priority ? " chg-add" : ""), pr || "P?"));
+    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (it.plan.length) {
       const ratio = derived.planRatio(it.id);
