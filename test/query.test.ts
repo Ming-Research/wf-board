@@ -377,7 +377,9 @@ test("brief counts owned records as completed and cancelled owned items as dropp
   const r = rules(s), progress = q.brief(s, r, author).progress.find(row => row.id === "queue");
   assert.ok(progress);
   assert.deepEqual(progress.plan, ["✓ 2 项已完成", "✗ 2 项已放弃", "L0 ‖ ○ pending Next work"]);
-  assert.equal(q.context(s, r, "queue").plan.length, 5, "context retains every row");
+  const context = q.context(s, r, "queue");
+  assert.ok(context.kind === "item");
+  assert.equal(context.plan.length, 5, "context retains every row");
 });
 
 test("context warns about non-adjacent same-level rows without sorting them", async t => {
