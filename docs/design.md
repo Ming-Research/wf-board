@@ -680,24 +680,22 @@ follow the existing tokens with no new colours:
 | ○ (todo colour) | todo step, owned item not started |
 | ⏸ (block colour) | waiting: shared item open, open card, blocked owned item |
 | ✗ (muted, struck text) | dropped step, cancelled owned item |
-| ◆ | acceptance step, coloured by its own state |
 
 - **Step row.** `● 写解析器 · 3 天 · 等 CI` — text, then elapsed days for a
   doing step, `等 <waits>` when set, `10-12` (month-day) for a done step, the
   reason after a dropped step.
-- **Owned item row.** The child's title as a link (click selects it, Back
-  returns), a status chip, the child's own ratio `2/5`, and on a second,
-  smaller muted line the child's current activity: its doing steps
-  (`● 跑 CI · 2 天`), or when none, what it waits on (`⏸ 等「Whitefoot 能读出对端地址」`),
-  or its next ready row (`下一步：○ 写测试`).
-- **Shared item row.** ⏸ or ✓, the target's title as a link with its status
-  chip, and the marker 「共用 · 归属在 <owner title>」 (or 「共用 · <project>
+- **Owned item row.** The glyph carries the child's status, then its
+  priority chip, its title as a link (click selects it, Back returns) and its
+  own ratio `2/5`, on one line; there is no status chip and no second line.
+- **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
+  link, and the marker 「共用 · 归属在 <owner title>」 (or 「共用 · <project>
   顶层」 for a top item) in muted text; a target in another project shows the
   project name first, all on the row's second line.
 - **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
   show today) and the question, linking to the card.
 - **Acceptance row.** Always last, separated by a thin rule, labelled 验收 in
-  a small tag, full text (it may wrap), ◆ in its state's colour.
+  a small tag, full text (it may wrap), with the same glyphs as a step
+  (○ ● ✓); the tag and the rule set it apart, not a glyph of its own.
 - **Parallel groups.** Each row's level is 0 when it comes after nothing and
   otherwise one more than the highest level among the rows it comes after
   (default: the previous row). Walking the rows in stored order, a maximal run
@@ -722,14 +720,13 @@ progress with completed and dropped parts:
  ✗ 旧解析方案 · 已由新解析器替代
  ┌ 可同时进行
  │● 写解析器 · 3 天 · 等 CI
- │● Halo 的协程能挂起                     [WIP] 2/5
- │    ● 跑 Lua 测试集 · 1 天
+ │● [P0] Halo 的协程能挂起 2/5
  └○ 改写文档
- ⏸ Whitefoot 能读出对端地址                 [TODO]
+ ⏸ [P0] Whitefoot 能读出对端地址
      Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」
  ○ 发布说明
  ─────────────────────────────────────────────────────────
- ◆ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
+ ○ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
          CI 上连跑 3 次全部通过
  ─────────────────────────────────────────────────────────
  [评论这个条目]  评论 2 条，1 条有回复 ▸
@@ -746,16 +743,15 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
   <div class="plan-group" role="group" aria-label="可同时进行">
     <div class="plan-group-label">可同时进行</div>
     <div class="plan-row wip"><span class="g">●</span>写解析器 · 3 天 · 等 CI</div>
-    <div class="plan-row wip own"><span class="g">●</span><a>Halo 的协程能挂起</a>
-      <span class="st wip">WIP</span> <span class="steps-ratio">2/5</span>
-      <div class="plan-sub">● 跑 Lua 测试集 · 1 天</div></div>
+    <div class="plan-row wip own"><span class="g">●</span><span class="prio p0">P0</span>
+      <a>Halo 的协程能挂起</a> <span class="steps-ratio">2/5</span></div>
     <div class="plan-row todo"><span class="g">○</span>改写文档</div>
   </div>
-  <div class="plan-row blocked shared"><span class="g">⏸</span><a>Whitefoot 能读出对端地址</a>
-    <span class="st todo">TODO</span>
+  <div class="plan-row blocked shared"><span class="g">⏸</span><span class="prio p0">P0</span>
+    <a>Whitefoot 能读出对端地址</a>
     <div class="plan-sub">Whitefoot · 共用 · 归属在「firn 需要的每项 Whitefoot 能力」</div></div>
   <div class="plan-row todo"><span class="g">○</span>发布说明</div>
-  <div class="plan-row accept todo"><span class="g">◆</span><span class="tag">验收</span>
+  <div class="plan-row accept todo"><span class="g">○</span><span class="tag">验收</span>
     四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，CI 上连跑 3 次全部通过</div>
 </section>
 <style>
@@ -860,7 +856,7 @@ coordinate among themselves; sessions may be renamed freely.
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
-`<glyph>` as on the page (✓ ● ○ ⏸ ✗ ◆); an item row adds `[own]` or
+`<glyph>` as on the page (✓ ● ○ ⏸ ✗); an item row adds `[own]` or
 `[shared @<owner key>]`, the target's title and status, and for an owned item
 its current doing step; a card row adds the card's status; `‖` marks rows of
 a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成` for
