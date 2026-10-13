@@ -3044,7 +3044,11 @@ test("the native plan mockup shows glyphs, parallel groups, owned activity, shar
   assert.match(markup(planRow(p,"area","child").querySelector(".plan-sub")!),/Run Lua checks — 2 天，等 CI/);
   assert.match(markup(planRow(p,"area","dependency").querySelector(".plan-sub")!),/Other · 共用 · 归属在「[^]*Other owner/);
   assert.equal(planRow(p,"area","q").querySelector(".plan-link")!.dataset.ref,"q:q");
-  assert.ok(planRow(p,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
+  // The 待重写 tag on an owned row is the target's own: a provisional parent does not mark a rewritten child.
+  assert.ok(!planRow(p,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
+  s.items.child!.provisional=true;
+  const q=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(q,"area");
+  assert.ok(planRow(q,"area","child").querySelectorAll(".checktag").some(e=>e.innerHTML === "待重写"));
   const plan=item(p,"area").querySelector(".plan")!; assert.ok(plan.querySelector(".checktag")!.innerHTML === "待重写");
   const rows=plan.querySelectorAll(".plan-row"); assert.ok(rows.at(-1)!.classList.contains("accept")); assert.match(markup(rows.at(-1)!),/验收[^]*Checks pass/);
   assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"1/7","the dropped step is excluded and acceptance counts");
