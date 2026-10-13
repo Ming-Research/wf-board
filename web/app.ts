@@ -777,7 +777,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
     { key: "Enter", show: "Enter", label: "查看选中的条目", run: () => toggleFocused() },
-    { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你处理", run: () => { stepStop(1); return true; } },
+    { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你的事（阻塞在前）", run: () => { stepStop(1); return true; } },
     { key: "/", label: "按标题搜索所有条目和决策卡", run: () => { openSearch(); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },

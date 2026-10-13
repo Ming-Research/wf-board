@@ -2611,3 +2611,12 @@ test("要你知道 lists unread notices newest first, 已读 hides one through t
   await p.change("h".repeat(40),[{kind:"notice",id:"n4",after:{text:"又一条",author:"Firn",at,rev:1}}]); await p.flush();
   assert.match(section()!.children[0]!.innerHTML,/要你知道 1/);
 });
+
+test("等你 panel shortens a long card question at 40 characters", async () => {
+  const s=snapshot(), q40="问".repeat(40), q41=q40+"题";
+  s.decisions.a40={...card(),question:q40,blocks:"停着甲"}; s.decisions.a41={...card(),question:q41,blocks:"停着乙"};
+  const p=await page(s,[]), rows=p.all().find(e=>e.id === "wait-panel")!.children.filter(e=>e.className === "waitrow");
+  const row=(blocks:string)=>rows.find(e=>e.innerHTML.includes(blocks))!;
+  assert.ok(row("停着甲").innerHTML.includes(q40) && !row("停着甲").innerHTML.includes("…"),"exactly 40 characters stays whole");
+  assert.ok(row("停着乙").innerHTML.includes(q40+"…") && !row("停着乙").innerHTML.includes(q41),"41 characters is cut to 40 with an ellipsis");
+});
