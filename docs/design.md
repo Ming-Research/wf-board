@@ -2064,6 +2064,8 @@ new item), so incremental re-renders happen in between.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix
-reversed (that commit's hunks undone in a copy served from a temporary
-directory), where it must report the bug. A witness whose hunks no longer
-match the current file fails and is retired on purpose.
+reversed in a copy served from a temporary directory, where it must report
+the bug. A fix is reversed by undoing its commit's hunks, or, where later
+work rewrote the lines around it, by a targeted edit that removes just the
+fix. A witness whose edits no longer match the current file fails and is
+updated or retired on purpose.
