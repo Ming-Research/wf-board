@@ -1562,19 +1562,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const link = el("a", "plan-link itemref", esc(plain(title))); link.href = "#"; link.dataset.ref = (kind === "item" ? "it:" : "q:") + id;
       return link;
     };
-    // What an owned item is doing now, as the line under its row: its doing steps, else what it waits for, else what
-    // can start next. Each part carries its own plan glyph instead of a label, so the line reads like a plan row.
-    const nextActivity = (id: string): Array<{ glyph: string; text: string }> => {
-      if (derived.statusOf(id) === "cancelled") return [];
-      const childRows = derived.planRows(id), doing = childRows.filter(row => "text" in row.row && row.row.state === "doing");
-      if (doing.length) return doing.map(row => ({ glyph: row.glyph, text: "text" in row.row ? derived.stepLine(row.row) : "" }));
-      const title = (row: typeof rows[number]) => "item" in row.row ? snapshot.items[row.row.item]?.title || row.row.item
-        : "card" in row.row ? snapshot.decisions[row.row.card]?.question || row.row.card : row.row.text;
-      const waiting = childRows.filter(row => row.ready && row.state === "waiting");
-      if (waiting.length) return waiting.map(row => ({ glyph: "⏸", text: plain(title(row)) }));
-      const next = childRows.find(row => row.ready);
-      return next ? [{ glyph: next.glyph, text: plain(title(next)) }] : [];
-    };
     const renderRow = (value: typeof rows[number]) => {
       const stored = value.row, accept = "accept" in stored && stored.accept;
       const row = el("div", "plan-row " + stateClass(value) + (accept ? " accept" : "") + (fon("progress") && changed.has(stored.id) ? " newbar" : ""));
@@ -1591,11 +1578,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         else if (stored.state === "dropped") text += " · " + stored.reason;
         main.appendChild(el("span", "plan-text rich", linkTerms(blocks(text), terms)));
       } else if ("item" in stored) {
-        // An item row looks like the item's own head in the tree: status, priority, title, ratio and tags on one line.
-        const target = snapshot.items[stored.item], st = derived.statusOf(stored.item) ?? (target?.record ? "record" : "todo");
+        // An item row looks like the item's own head in the tree: the row glyph carries its status, then priority,
+        // title, ratio and tags on one line.
+        const target = snapshot.items[stored.item];
         const pr = target ? derived.priorityOf(stored.item) : undefined;
         row.classList.add("item-line", stored.own ? "own" : "shared");
-        main.appendChild(el("span", "st " + st, STATUS[st] || st));
         main.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none"), pr || "P?"));
         const link = ref("item", stored.item, target?.title || stored.item); link.classList.add("item-title"); main.appendChild(link);
         if (stored.own && target) {
@@ -1604,18 +1591,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           if (target.provisional) meta.appendChild(el("span", "checktag", "待重写"));
           if (childRatio.total || target.provisional) main.appendChild(meta);
         }
-        if (stored.own) {
-          const activity = target ? nextActivity(stored.item) : [];
-          if (activity.length) {
-            const sub = el("div", "plan-sub");
-            for (const part of activity) {
-              const line = el("div", "plan-activity"); line.title = part.text;
-              line.appendChild(el("span", "ag", esc(part.glyph))); line.appendChild(el("span", "at", inline(part.text)));
-              sub.appendChild(line);
-            }
-            row.appendChild(sub);
-          }
-        } else {
+        if (!stored.own) {
           const owner = derived.parentOf(stored.item), project = target?.group || "";
           const sub = el("div", "plan-sub");
           if (owner) {

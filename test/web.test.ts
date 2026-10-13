@@ -3134,7 +3134,7 @@ test("plan prose resolves glossary and reference tokens and follows target renam
   await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush(); assert.match(text(),/data-ref="it:area">Renamed parent<\/a>/);
 });
 
-test("the native plan mockup shows glyphs, parallel groups, owned activity, shared ownership and final acceptance", async () => {
+test("the native plan mockup shows glyphs, parallel groups, glyph-only item status, shared ownership and final acceptance", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other"});
   s.items.child!.plan=planWork([planStep("ci","Run Lua checks","doing",{waits:"CI"})]);
   s.items.host={...s.items.area!,title:"Other owner",group:"Other",plan:planWork([ownedRow("dependency")])};
@@ -3145,7 +3145,9 @@ test("the native plan mockup shows glyphs, parallel groups, owned activity, shar
   const p=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(p,"area");
   assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","○","◆"]);
   const group=item(p,"area").querySelector(".plan-group")!; assert.equal(group.attributes.role,"group"); assert.equal(group.attributes["aria-label"],"可同时进行");
-  assert.match(markup(planRow(p,"area","child").querySelector(".plan-sub")!),/Run Lua checks — 2 天，等 CI/);
+  const owned=planRow(p,"area","child");
+  assert.equal(owned.querySelector(".plan-sub"),null,"an owned item row has no activity line under it");
+  assert.equal(owned.querySelector(".st"),null,"the row glyph carries the item's status, so no status chip");
   assert.match(markup(planRow(p,"area","dependency").querySelector(".plan-sub")!),/Other · 共用 · 归属在「[^]*Other owner/);
   assert.equal(planRow(p,"area","q").querySelector(".plan-link")!.dataset.ref,"q:q");
   // The 待重写 tag on an owned row is the target's own: a provisional parent does not mark a rewritten child.
