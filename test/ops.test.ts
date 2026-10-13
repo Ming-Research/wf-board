@@ -1127,8 +1127,8 @@ test("targets refuse missing or empty text, invalid ids, caller dates and ambigu
     [{ author, id: "a", target: goalNumbers, targets: [] }, /exactly one/],
     [{ author, id: "a", target: goalNumbers, remove: "style" }, /exactly one/],
     [{ author, id: "a", targets: [], remove: "style" }, /exactly one/],
-    [{ author, id: "a", target: { ...goalNumbers, date: later } } as Args, /Unrecognized key/],
-    [{ author, id: "a", targets: [{ ...goalNumbers, date: later }] } as Args, /Unrecognized key/],
+    [{ author, id: "a", target: { ...goalNumbers, date: later } } as unknown as Args, /Unrecognized key/],
+    [{ author, id: "a", targets: [{ ...goalNumbers, date: later }] } as unknown as Args, /Unrecognized key/],
     [{ author: " ", id: "a", target: goalNumbers }, /author/],
     [{ author, id: "missing", target: goalNumbers }, /existing item/],
   ];
