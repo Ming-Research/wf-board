@@ -874,7 +874,7 @@ test("pause history rescans only an unindexed suffix and distrusts a negative ma
   await writeFile(markerPath, `version: 1\nhead: ${store.snapshot().head}\nfirst: null\n`);
   await internals.loadActivity();
   assert.equal(scans.length, 2, "current pauses contradict a negative cache and force recovery");
-  assert.equal(store.snapshot().activity!.pauses!.root.length, 2);
+  assert.equal(store.snapshot().activity!.pauses!.root!.length, 2);
 });
 
 test("an unwritable disposable pause marker cannot turn a committed pause into a failure", async t => {
