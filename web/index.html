@@ -151,6 +151,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan > .log-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .plan > .log-head > .steps-ratio { margin-left: auto; }
 .plan-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; padding: 2px 0; overflow-wrap: anywhere; font-size: 13.5px; }
+.plan-row.cardrow { cursor: pointer; }
 .plan-row > .g { grid-row: 1 / span 3; align-self: start; text-align: center; }
 .plan-row.done > .g { color: var(--done); }
 .plan-row.wip > .g { color: var(--wip); }
