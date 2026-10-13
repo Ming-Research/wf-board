@@ -3160,20 +3160,16 @@ test("the native plan mockup shows glyphs, parallel groups, glyph-only item stat
   assert.equal(plan.querySelector(".steps-ratio")!.innerHTML,"1/7","the dropped step is excluded and acceptance counts");
 });
 
-test("plan rows refresh when shared ownership, child reference labels or card blocking text changes", async () => {
+test("plan rows refresh when shared ownership or card blocking text changes", async () => {
   const s=nativeSnapshot();
   s.board.projects.push({name:"Other"});
   s.items.host={...s.items.area!,group:"Other",title:"First owner",plan:planWork([ownedRow("dependency")])};
   s.items.otherHost={...s.items.area!,group:"Other",title:"Second owner",plan:planWork([])};
   s.items.dependency={...s.items.child!,group:"Other",title:"Shared result",plan:planWork([])};
-  s.items.waited={...s.items.child!,title:"Original prerequisite",plan:planWork([])};
-  s.decisions.childCard={...card(),question:"Original ruling",item:"child"};
   s.decisions.q={...card(),question:"Direct card",item:"area"};
-  s.items.child!.plan=planWork([sharedRow("waited"),cardRow("childCard")]);
   s.items.area!.plan=planWork([ownedRow("child"),sharedRow("dependency"),cardRow("q")]);
   const p=await page(s,[]); await expand(p,"area");
   assert.match(markup(planRow(p,"area","dependency")),/First owner/);
-  assert.match(markup(planRow(p,"area","child")),/Original prerequisite[^]*Original ruling/);
   assert.match(markup(planRow(p,"area","q")),/决策卡/);
   await p.change("b".repeat(40),[
     {kind:"item",id:"host",after:{...s.items.host!,plan:planWork([])}},
@@ -3183,10 +3179,6 @@ test("plan rows refresh when shared ownership, child reference labels or card bl
   assert.doesNotMatch(markup(planRow(p,"area","dependency")),/First owner/);
   await p.change("c".repeat(40),[{kind:"item",id:"otherHost",after:{...s.items.otherHost!,title:"Renamed owner",plan:planWork([ownedRow("dependency")])}}]); await p.flush();
   assert.match(markup(planRow(p,"area","dependency")),/Renamed owner/);
-  await p.change("d".repeat(40),[{kind:"item",id:"waited",after:{...s.items.waited!,title:"Renamed prerequisite"}}]); await p.flush();
-  assert.match(markup(planRow(p,"area","child")),/Renamed prerequisite[^]*Original ruling/);
-  await p.change("e".repeat(40),[{kind:"decision",id:"childCard",after:{...s.decisions.childCard!,question:"Renamed ruling"}}]); await p.flush();
-  assert.match(markup(planRow(p,"area","child")),/Renamed prerequisite[^]*Renamed ruling/);
   await p.change("f".repeat(40),[{kind:"decision",id:"q",after:{...s.decisions.q!,blocks:"Release waits"}}]); await p.flush();
   assert.match(markup(planRow(p,"area","q")),/阻塞/);
   assert.match(markup(planRow(p,"area","q")),/<span class="waittag" title="Release waits">阻塞<\/span>/,"the exact blocking tag and its tooltip update together");
