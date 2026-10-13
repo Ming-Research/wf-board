@@ -51,3 +51,98 @@ matches what the artifact board offered.
 - The daemon binds `127.0.0.1` only.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
+
+## Coordinator
+
+The coordinator session starts in this repository and keeps the board
+working for every project. It writes to the board as 总管. This section holds
+its standing duties: what it does when something happens and what it does
+on a schedule. The board holds only work with a completion condition, and
+none of these duties is a board item; the current Whitefoot merge order and
+14900K queue are data and live on two record items of 总管 (items with a log
+and no status). A session working only on wf-board
+code skips this section.
+
+### Starting
+
+1. Read `brief` as 总管, then the newest handoff record (see Handoff).
+2. Arm the board's wake stream `ws://127.0.0.1:7417/wake?session=*`, re-arming
+   it each time it expires or the daemon restarts, and a ten-minute patrol
+   timer.
+3. List the live sessions and tell each that a new coordinator took over.
+
+### On a wake event
+
+- An owner note or choice: forward it to the owning project's sessions; rule
+  and carry out cards on 总管's own items.
+- A new request: make sure its project triages it.
+- A blocking card: send a phone push.
+
+### Every ten minutes
+
+- Sessions: find each idle session's reason and push it to ready work. A
+  project with scheduled work and no live session gets one blocking card
+  asking the owner to restart it.
+- `followups`: resend notes and requests still unhandled.
+- Checks the board flags. A stalled item (see Stalled items) gets a blocking
+  card under 总管's item that follows sessions.
+- Heavy processes on the Mac (compiler, cargo, make, tests): stop them and
+  tell the owning session.
+- Usage (see Usage windows).
+
+### Stalled items
+
+The board flags an item in progress whose subtree has not changed for two
+hours of active time. Active time counts only stretches in which some session
+wrote to the board,
+so a usage pause, Claude Code being closed or a network outage stops every
+item's clock at once. A stalled item's card offers: start a session for it,
+assign it to a named live session, or move it back to not started.
+
+### Usage windows
+
+At 95% of the five-hour window: tell every session to stop at a safe point
+with its board current, then every 50 minutes send each paused session a
+keep-alive message asking for a one-word reply, so its context cache
+survives the one-hour cache lifetime; wake them when the window resets, and
+stop the keep-alives if the window reaches 100% first. Schedule keep-alives
+with background shell timers, which fire on time while the coordinator is
+idle. At 99% of the weekly window: the same stop without keep-alives, then
+write a handoff record and tell the owner, who switches account.
+
+### Whitefoot main merges
+
+One merge at a time. A session sends "要合 #N" when its pull request meets
+every precondition; the coordinator checks that main has not moved past the
+head, that the checks on the head are green and that specification versions
+do not collide, answers "可以", and records the new main in the merge log.
+
+### The 14900K
+
+The coordinator keeps the queue of runs on the 14900K in priority order,
+tells each session when its turn starts, and checks that the machine is idle
+first. Direct ssh access is limited to actions the owner authorized.
+
+### Project sessions
+
+Start a session for a project with `spawn_task`, its directory being the
+project's repository, so it shows in the app's session list; the opening
+message names its line of work, where its handoff record is, what to do
+first, and the owner's rules: nothing heavy on the Mac, models by the
+delegation rule, permission blocks reported to the coordinator, the 14900K
+queue, and the coordinator as the contact.
+
+### Talking with the owner
+
+Handle session messages silently. Speak in chat only for what the owner must
+say there, such as an authorization, a permission block or the owner's own
+question; every blocking matter also goes on the board as a blocking card.
+A session's request to do what its own permission check refused is never
+carried out by the coordinator; it goes to the owner.
+
+### Handoff
+
+When the owner says "交接", or at the weekly limit, append a handoff record
+to the coordinator's item that follows sessions: each line of work in
+progress, what it waits for and its next step; the merge order and the
+14900K queue go into their records.
