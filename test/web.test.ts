@@ -1219,8 +1219,11 @@ test("older SSE notes cannot overwrite an acknowledged draft or resurrect its de
 
 test("reply unarchives an item into its visible project tree", async () => {
   const s=snapshot(), frames=new Frames(); s.owner.archived.child="2026-10-12T00:00:00Z";
-  const p=await page(s,[],null,undefined,{frames}); await expand(p,"area"); assert.ok(!p.all().some(e=>e.id === "it-child"),"the archived child is hidden although its parent is unfolded");
+  const p=await page(s,[],null,undefined,{frames}); assert.ok(!p.all().some(e=>e.id === "it-child"),"the archived child is hidden");
+  assert.equal(rowOf(p,"area").querySelector(".caret")!.disabled,true,"the parent has no visible sub-item to unfold while its only child is archived");
   p.emit("b".repeat(40),[{kind:"note",id:"reply",after:{target:"it:child",kind:"comment",text:"Question",reply:"Answered",at,state:"done",repliedAt:"2026-10-13T00:00:00Z",rev:1}}]); await p.flush();
+  const caret=rowOf(p,"area").querySelector(".caret")!; assert.equal(caret.disabled,false,"the reply restores a visible sub-item under the parent");
+  await caret.click(); await p.flush();
   assert.ok(p.all().some(e=>e.id === "it-child"),"reply restores previously archived subtree");
 });
 
@@ -2113,16 +2116,34 @@ test("an operation error shows in the bottom hint for three seconds and leaves t
   assert.equal(banner.hidden,true);
 });
 
-test("a archives only done items: an open item makes no archive call and shows the reason", async () => {
+test("a archives only done or cancelled items: an open item makes no archive call and shows the reason", async () => {
   const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
   const p=await page(s,unread("item","area"),null,undefined,{response:archive});
   p.key("n"); await p.flush(); p.key("a"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive"),[],"a wip parent is not archived");
-  assert.equal(p.roots.get("hint")!.hidden,false); assert.equal(p.roots.get("hint")!.textContent,"只有完成的条目能归档");
+  assert.equal(p.roots.get("hint")!.hidden,false); assert.equal(p.roots.get("hint")!.textContent,"只有完成或取消的条目能归档");
   const d=snapshot(); d.items.child!.status="done";
   const q=await page(d,unread("item","area"),null,undefined,{response:archive});
   q.key("n"); await q.flush(); q.key("a"); await q.flush();
   assert.deepEqual(q.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}],"a parent whose sub-items are all done archives");
+});
+
+test("a archives a cancelled item", async () => {
+  const s=snapshot(), archive=(path:string)=> path === "/api/archive" ? reply({ok:true}) : undefined;
+  s.items.child!.status="cancelled";
+  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
+  p.key("n"); await p.flush(); p.key("a"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}],"a parent whose sub-items are all cancelled archives");
+  assert.notEqual(p.roots.get("hint")!.textContent,"只有完成或取消的条目能归档");
+});
+
+test("an archived cancelled item shows under 已归档 and not under 取消", async () => {
+  const s=snapshot(); s.items.child!.status="cancelled";
+  const archive=(path:string,input:unknown)=> { if (path !== "/api/archive") return undefined; const {id,on}=input as {id:string;on:boolean}; if (on) s.owner.archived[id]="2999-01-01T00:00:00Z"; else delete s.owner.archived[id]; return reply({ok:true}); };
+  const p=await page(s,unread("item","area"),null,undefined,{response:archive});
+  p.key("n"); await p.flush(); p.key("a"); await p.flush();
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/archive").map(c=>c.body),[{id:"area",on:true}]);
+  assert.ok(!p.all().some(e=>e.id === "it-area"),"the archived cancelled item leaves the default tree");
 });
 
 test("a on an item inside an archived subtree un-archives the nearest archived ancestor", async () => {
