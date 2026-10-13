@@ -6,14 +6,14 @@ import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { board, author, later } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
-test("SDK client discovers exactly thirty-one described tools, reads/writes fresh state and receives tool errors", async t => {
+test("SDK client discovers exactly thirty-two described tools, reads/writes fresh state and receives tool errors", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Test agent", version: "1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
-  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups", "glossary", "set_term", "delete_term", "post_notice"].sort());
+  assert.deepEqual(tools.map(t => t.name).sort(), ["search", "context", "graph", "overview", "list", "notes", "prs", "changes", "history", "diff", "create_item", "append_log", "set_steps", "update_item", "set_status", "move_item", "clear_ask", "write_card", "rule_card", "reply_note", "close_note", "create_project", "update_project", "create_request", "triage_request", "projects", "brief", "followups", "glossary", "set_term", "delete_term", "post_notice"].sort());
   for (const tool of tools) {
     assert.ok(tool.description && tool.description.length > 30);
     for (const [key, value] of Object.entries(tool.inputSchema.properties ?? {})) assert.ok((value as { description?: string }).description, `${tool.name}.${key} describes its parameter`);
@@ -244,4 +244,34 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   assert.ok(!(await context()).includes("活跃时间"));
   clock++;
   assert.ok((await context()).includes("活跃时间"));
+});
+
+
+test("MCP set_steps exposes date-free edits and context and brief format current progress compactly", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op, now: () => "2026-10-13T02:03:04Z" });
+  const client = new Client({ name: "Steps client", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tools = (await client.listTools()).tools, tool = tools.find(tool => tool.name === "set_steps")!;
+  assert.ok(tool); assert.equal(Object.hasOwn(tool.inputSchema.properties!, "rev"), false);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "remove", "step", "steps"]);
+  const stepSchema = tool.inputSchema.properties!.step as { properties: Record<string, unknown> };
+  assert.deepEqual(Object.keys(stepSchema.properties).sort(), ["id", "reason", "state", "text", "waits"]);
+  const readText = (value: Awaited<ReturnType<typeof client.callTool>>) => (value.content as Array<{ text: string }>).map(c => c.text).join("\n");
+  const result = await client.callTool({ name: "set_steps", arguments: { author, id: "a", steps: [
+    { id: "tests", text: "Tests pass", state: "done" },
+    { id: "review", text: "Review complete", state: "doing", waits: "CI" },
+    { id: "merge", text: "Owner merges", state: "todo" },
+    { id: "old", text: "Old experiment", state: "dropped", reason: "Replaced" },
+  ] } });
+  assert.equal(result.isError, undefined); assert.match(readText(result), /set_steps a/);
+  const context = readText(await client.callTool({ name: "context", arguments: { id: "a", log: 0 } }));
+  assert.match(context, /steps:\n  ✓ Tests pass \(10-11\)\n  ● Review complete — 2 天，等 CI\n  ○ Owner merges\n  ✗ Old experiment — Replaced/);
+  const brief = JSON.parse(readText(await client.callTool({ name: "brief", arguments: { project: author } })));
+  assert.deepEqual(brief.todo.find((item: { id: string }) => item.id === "a").steps, ["✓ Tests pass (10-11)", "● Review complete — 2 天，等 CI", "○ Owner merges", "✗ Old experiment — Replaced"]);
+  const before = store.snapshot();
+  const ambiguous = await client.callTool({ name: "set_steps", arguments: { author, id: "a", steps: [], remove: "tests" } });
+  assert.equal(ambiguous.isError, true); assert.match(readText(ambiguous), /exactly one/); assert.deepEqual(store.snapshot(), before);
+  const dated = await client.callTool({ name: "set_steps", arguments: { author, id: "a", step: { id: "mine", text: "Result", state: "doing", since: later } } });
+  assert.equal(dated.isError, true); assert.deepEqual(store.snapshot(), before);
 });

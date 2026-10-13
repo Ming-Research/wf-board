@@ -155,7 +155,7 @@ test("wake: a blocking card or an ask emits a blocking event once; a non-blockin
 
 test("posting a notice makes no unread step and no entry in changes", async t => {
   const { store, op } = await board(t), before = store.snapshot().head;
-  const control = await op.appendLog({ author, id: "a", text: "control change" });
+  const control = await op.setSteps({ author, id: "a", step: { id: "progress", state: "todo", text: "control change" } });
   assert.equal((await unreadSteps(store, before)).length, 1, "a real change after the cursor is unread");
   assert.ok((await changes(store, store.snapshot(), before)).length > 0);
   const mid = store.snapshot().head;

@@ -333,14 +333,17 @@ test("detail: baseline is first unread before and after is current snapshot rath
   assert.ok(!markup(item(p)).includes("chg-add") && !markup(item(p)).includes("Intermediate"));
 });
 
-test("detail: new item marks only its title and keeps rich head and duplicate new log markings", async () => {
+test("detail: new item keeps rich head and its log stays collapsed without unread marks", async () => {
   const s = snapshot(); s.items.child!.head = "**Goal**：Body\n\n- List\n\n```\n<unsafe>\n\ncode\n```";
   s.items.child!.log = [{at,text:"same"},{at,text:"same"}];
   const p = await page(s,unread(),null); await expand(p);
   assert.ok(descendants(item(p)).some(e => e.className.includes("item-title") && e.className.includes("chg-add")));
   assert.ok(!markup(item(p)).includes('class="chg-add"'));
   assert.match(markup(item(p)), /<pre class="code"><code>&lt;unsafe&gt;\n\ncode<\/code><\/pre>/);
-  assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry") && e.className.includes("fresh")).length,2);
+  assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry")).length,0);
+  await button(p,"▸ 日志").click();
+  assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry")).length,2);
+  assert.equal(descendants(item(p)).filter(e => e.className.includes("log-entry") && e.className.includes("fresh")).length,0);
 });
 
 test("detail: card marks current question background option and ruling and shows no removed option or former question", async () => {
@@ -402,15 +405,24 @@ test("filtered parent n stop opens its body and selects its own item", async () 
   assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:stepId}]);
 });
 
-test("unread logs expand with preceding entries highlight duplicate appends and stay open after reading", async () => {
-  const s = snapshot(); s.items.area!.deps = [];
-  const old = [{at,text:"duplicate"},{at,text:"old two"},{at,text:"old three"}];
-  s.items.area!.log = [...old,{...old[0]!},{at,text:"new two"},{at,text:"new three"}];
-  const p = await page(s,unread("item","area"),{...s.items.area,log:old}); p.key("n"); await setImmediate();
-  const rows = () => p.all().filter(e => e.id.startsWith("log-area-"));
-  assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,3);
-  p.key("r"); await setImmediate(); await setImmediate();
-  assert.equal(rows().length,5); assert.equal(rows().filter(e => e.className.includes("fresh")).length,0);
+test("log append remains collapsed and never makes an item unread, including legacy unread summaries", async () => {
+  const s = snapshot(), before = {...s.items.area!};
+  s.items.area!.log = [{at,text:"Old history"},{at,text:"New log entry"}];
+  const legacy = [{...unread("item","area")[0]!,docs:[{kind:"item",id:"area",summary:"+1 log",pieces:{log:1,reply:0,other:0}}]}];
+  const p = await page(s,legacy,before); await expand(p,"area");
+  assert.equal(item(p,"area").querySelectorAll(".log-entry").length,0);
+  assert.ok(!item(p,"area").className.includes("fresh"));
+  assert.ok(!p.all().some(e => /^新 |^进展 /.test(e.innerHTML)));
+  p.key("n"); await p.flush();
+  assert.equal(p.calls.filter(c => c.path.startsWith("/api/step")).length,0,"log-only changes have no unread baseline or navigation stop");
+  await button(p,"▸ 日志").click();
+  assert.equal(item(p,"area").querySelectorAll(".log-entry").length,2);
+  assert.equal(item(p,"area").querySelectorAll(".log-entry.fresh").length,0);
+  await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,rev:2,log:[...s.items.area!.log,{at,text:"Later log entry"}]}}]); await p.flush();
+  assert.equal(item(p,"area").querySelectorAll(".log-entry").length,3,"explicitly opened log retains its view");
+  assert.ok(!item(p,"area").className.includes("fresh"));
+  await button(p,"▾ 日志").click();
+  assert.equal(item(p,"area").querySelectorAll(".log-entry").length,0);
 });
 
 test("a drag that leaves text selected in a row neither folds nor follows it; a click still does", async () => {
@@ -451,7 +463,7 @@ test("n reaches items in page order, skips archived ones, and r reads the select
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Archived",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"}); s.owner.archived = {other:at};
-  const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"+1 log"}]}]);
+  const p = await page(s,[{id,commits:[id],author:"Session A",at,docs:[{kind:"item",id:"child",summary:"status todo→wip"},{kind:"item",id:"other",summary:"status wip→done"},{kind:"item",id:"area",summary:"head changed"}]}]);
   await wideCaret(p).click(); await p.flush();
   p.key("r"); assert.ok(!p.calls.some(c => c.path === "/api/read"));
   // The page shows the parent above its child, so n reaches the parent first although the step lists the child first.
@@ -475,14 +487,14 @@ test("inside a changed item n visits each new place in turn before the next item
     return {top:y, height:e.className.split(" ").includes("item") ? 6000 : 20};
   };
   const s = snapshot();
-  s.items.child!.log = [{at, by:"Session A", text:"First new entry"}, {at:"2026-10-11T02:00:00Z", by:"Session A", text:"Second new entry"}];
-  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", log:[]}, undefined, {detailGeometry:geometry});
+  s.items.child!.steps = [{id:"first",state:"todo",text:"First new step"},{id:"second",state:"todo",text:"Second new step"}];
+  const p = await page(s, unread("item","child"), {...s.items.child!, status:"todo", steps:[]}, undefined, {detailGeometry:geometry});
   const before = p.detailScrolls.length;
   p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush(); p.key("n"); await p.flush();
   const visits = p.detailScrolls.slice(before);
   assert.ok(item(p).className.includes("cur"), "n stays inside the changed item");
   assert.equal(visits.length, 4);
-  assert.ok(visits[0]! < visits[1]! && visits[1]! < visits[2]!, "a changed status and two new log entries, down the page: " + visits.join(", "));
+  assert.ok(visits[0]! < visits[1]! && visits[1]! < visits[2]!, "a changed status and two new steps, down the page: " + visits.join(", "));
   assert.equal(visits[3], visits[0], "after its last place, n goes on to the next stop, here the same item again");
   const created = await page(snapshot(), unread("item","child"), null, undefined, {detailGeometry:geometry});
   const start = created.detailScrolls.length;
@@ -494,7 +506,7 @@ test("inside a changed item n visits each new place in turn before the next item
 test("n walks the page from top to bottom, one stop per changed document, and goes on from a read item", async () => {
   const s = snapshot(), [a,b,c] = ["a","b","c"].map(x => x.repeat(40)) as [string,string,string];
   s.items.plain = {title:"Plain",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
-  const doc = (id:string) => ({kind:"item" as const,id,summary:"+1 log",pieces:{log:1,reply:0,other:0}});
+  const doc = (id:string) => ({kind:"item" as const,id,summary:"head changed",pieces:{progress:0,reply:0,other:1}});
   // Commit order is plain, child, area, area again; the page order is area, its child, then plain.
   const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]},{id:c,commits:[c],author:"Session A",at,docs:[doc("area")]}]);
   await wideCaret(p).click(); await p.flush();
@@ -554,9 +566,11 @@ test("project page omits session assignments and shows inbox requests, including
 
 test("新 counts items: one per item however many changes, a parent adding the items below it, in one chip", async () => {
   const s = snapshot(), id = "f".repeat(40);
+  s.items.child!.steps = [{id:"c1",text:"First child part",state:"todo"},{id:"c2",text:"Second child part",state:"todo"},{id:"c3",text:"Third child part",state:"todo"}];
+  s.items.area!.steps = [{id:"a1",text:"First parent part",state:"todo"},{id:"a2",text:"Second parent part",state:"todo"}];
   const p = await page(s, [{ id, commits: [id], author: "Session A", at, docs: [
-    { kind: "item", id: "child", summary: "head changed, +3 log", pieces: { log: 3, reply: 0, other: 1 } },
-    { kind: "item", id: "area", summary: "+2 log", pieces: { log: 2, reply: 0, other: 0 } },
+    { kind: "item", id: "child", summary: "head changed, steps changed", pieces: { progress: 3, reply: 0, other: 1 } },
+    { kind: "item", id: "area", summary: "steps changed", pieces: { progress: 2, reply: 0, other: 0 } },
   ] }]);
   const buttons = p.all().filter(e => e.tagName === "BUTTON").map(e => e.innerHTML);
   assert.ok(buttons.includes("新 2 ›"), "two items have something new: " + buttons.join(" | "));
@@ -575,7 +589,7 @@ test("新 counts items: one per item however many changes, a parent adding the i
 
 test("a note being typed keeps its focus, text and caret across a live re-render", async () => {
   const id = "f".repeat(40);
-  const p = await page(snapshot(), [{ id, commits: [id], author: "Session A", at, docs: [{ kind: "item", id: "area", summary: "+1 log", pieces: { log: 1, reply: 0, other: 0 } }] }]);
+  const p = await page(snapshot(), [{ id, commits: [id], author: "Session A", at, docs: [{ kind: "item", id: "area", summary: "head changed", pieces: { progress: 0, reply: 0, other: 1 } }] }]);
   // n selects the changed item; c opens a note on the selection.
   p.key("n"); await setImmediate();
   p.key("c"); await setImmediate();
@@ -786,7 +800,7 @@ function cssContract(html:string) {
   assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
   // The owner does not want removed content shown, struck through in red or otherwise.
   assert.ok(!/chg-del|title-was/.test(html),"no red deleted-text styling");
-  for (const sel of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
+  for (const sel of [".item.fresh",".card.fresh",".item-step.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
   for (const sel of [".waittag",".sbtn.s-block"]) assert.ok(has(sel,/background:\s*var\(--blockwait\)/),sel+" is the filled purple chip");
@@ -806,7 +820,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
   await t.test("red deleted text comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-del { text-decoration: line-through; }\n</style>"))); });
   await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
-  for (const selector of [".item.fresh",".card.fresh",".log-entry.fresh",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
+  for (const selector of [".item.fresh",".card.fresh",".item-step.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
@@ -1499,6 +1513,7 @@ test("r reads all selected document steps from item card note and log clicks", a
     s.notes.n={target:"it:child",kind:"comment",text:"Question",at,state:"done",reply:"Answer",rev:1};
     const id=kind === "item" ? "child" : kind === "decision" ? "q" : "n";
     const p=await page(s,[...unread("item","area"),...unread(kind,id,first),...unread(kind,id,last)],null,undefined,{notesOpen:{"it:child":true}}); await expand(p);
+    if (selection === "log") await button(p,"▸ 日志").click();
     const box=selection === "item" ? item(p) : selection === "decision" ? p.all().find(e=>e.id === "q-q")! : selection === "note" ? p.all().find(e=>e.id === "note-n")! : p.all().find(e=>e.dataset.sel?.startsWith("log:child@"))!;
     await box.click(); p.key("r"); await p.flush();
     assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:last}]);
@@ -1566,8 +1581,8 @@ test("pending document read hides a coalesced step until acknowledgement splits 
 
 
 test("r reads every selected document kind even when the fresh filter hides its latest step", async () => {
-  const s=snapshot(), first="e".repeat(40), last="f".repeat(40); s.items.child!.log=[{at,text:"Progress"}];
-  const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"+1 log",pieces:{log:1,reply:0,other:0}}]},...unread("item","child",last)];
+  const s=snapshot(), first="e".repeat(40), last="f".repeat(40); s.items.child!.steps=[{id:"progress",text:"Progress",state:"todo"}];
+  const fresh=[...unread("item","area"),{...unread("item","child",first)[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:1,reply:0,other:0}}]},...unread("item","child",last)];
   const p=await page(s,fresh); await expand(p); await button(p,"进展 1").click();
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"));
   p.key("r"); await p.flush();
@@ -1862,22 +1877,23 @@ test("wide detail owns the selected body cards comments and unique DOM ids", asy
 });
 
 test("wide n selects the stop's item and scrolls the right pane to its first fresh mark", async () => {
-  const s=snapshot(), before={...s.items.child!,log:[]}; s.items.child!.log=[{at,text:"Fresh entry"}];
-  const p=await page(s,unread(),before,undefined,{detailGeometry:e=>({top:e.className.includes("log-entry") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
+  const s=snapshot(), before={...s.items.child!,steps:[]}; s.items.child!.steps=[{id:"fresh",state:"todo",text:"Fresh step"}];
+  const p=await page(s,unread(),before,undefined,{detailGeometry:e=>({top:e.className.includes("item-step") ? 1800 : 50,height:e.id === "detail-it-child" ? 2400 : 100})});
   p.key("n"); await p.flush();
   assert.ok(detailItem(p,"child"),"n selects the item in the detail pane");
   assert.ok(rowOf(p,"child").className.includes("cur"),"n unfolds ancestors and highlights the target tree row");
   assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"fresh mark navigation uses the independently scrolled pane");
-  assert.ok(p.measurements.some(m=>m.id === "log-child-0" && m.top>1000),"the fresh log entry supplies the landing geometry");
-  const landed=p.document.getElementById("log-child-0")!.getBoundingClientRect();
+  assert.ok(p.measurements.some(m=>m.id === "step-child-fresh" && m.top>1000),"the fresh step supplies the landing geometry");
+  const landed=p.document.getElementById("step-child-fresh")!.getBoundingClientRect();
   assert.ok(landed.top>=0 && landed.bottom<=p.roots.get("item-detail")!.clientHeight,"the first fresh mark lands inside the right pane viewport");
   assert.ok(p.scrollY<1000,"the detail's distant mark does not scroll the tree to that offset");
 });
 
 test("wide r on a selected detail log entry reads its item and leaves sub-items unread", async () => {
-  const s=snapshot(); s.items.area!.log=[{at,text:"Parent fresh log"}];
+  const s=snapshot(); s.items.area!.log=[{at,text:"Parent history"}]; s.items.area!.head="Unread head";
   const p=await page(s,[...unread("item","area"),...unread()]);
   await selectWide(p);
+  await button(p,"▸ 日志").click();
   const log=detailItem(p)?.querySelector(".log-entry"); assert.ok(log,"the log entry is in the selected detail");
   await log.click(); p.key("r"); await p.flush();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:area",through:stepId}]);
@@ -2215,6 +2231,7 @@ test("glossary links: only the first occurrence of a term in an item's head and 
   s.items.child!.head = "否决线定了。否决线再提一次。否决单独出现。";
   s.items.child!.log = [{ at, by: "Project", text: "否决线在进展里不再链接；孪生对照第一次出现，孪生对照第二次不链接" }];
   const p = await page(s, []); await expand(p);
+  await button(p,"▸ 日志").click();
   const body = descendants(item(p)), head = body.find(e => e.className === "rich")!, log = body.find(e => e.className === "log-entry")!;
   assert.equal(head.innerHTML, '<p><a class="term" href="' + anchor("Project", "否决线") + '">否决线</a>定了。否决线再提一次。<a class="term" href="' + anchor("Project", "否决") + '">否决</a>单独出现。</p>',
     "the second 否决线 is not linked, and neither is the 否决 inside it");
@@ -2398,6 +2415,7 @@ test("a reference token renders the target's current title as a link and a missi
   s.notes.n = { target: "it:child", kind: "comment", text: "看 [[it:area]] 和 [[q:q]]，还有 [[it:gone]]、[[q:gone]] 与 `[[it:area]]`\n\n| 列 |\n| --- |\n| [[it:other]] |", at, state: "done", reply: "回复 [[it:area]]", repliedAt: at, rev: 1 };
   s.items.child!.log = [{ at, by: "Project", text: "见 [[it:area]]" }]; s.items.child!.head = "头部 [[it:area]]";
   const p = await page(s, [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  await button(p,"▸ 日志").click();
   const area = '<a class="itemref" href="#" data-ref="it:area">Parent</a>';
   const note = markup(p.all().find(e => e.id === "note-n")!);
   assert.ok(note.includes("看 " + area), "the item link");
@@ -2546,7 +2564,8 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
 });
 test("top controls: 未读 labels the second row with 进展, 其他 and 全部已阅; 评论回复 sits in the first row; the view row has no label", async () => {
   const s=snapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
-  const docs=[{kind:"item",id:"child",summary:"+1 log",pieces:{log:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{log:0,reply:1,other:0}}];
+  s.items.child!.steps=[{id:"p",text:"Progress",state:"todo"}];
+  const docs=[{kind:"item",id:"child",summary:"head changed, steps changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
   const labels=rows.map(r=>r.children[0]?.className === "sum-k" ? r.children[0]!.innerHTML : "");
@@ -2742,4 +2761,83 @@ test("a sent transition closes a draft editor and a late save cannot restore the
   await saving; await p.flush();
   assert.match(markup(p.document.getElementById("note-d")!), /Newest sent text/);
   assert.equal(noteButton(p, "d", "编辑"), undefined);
+});
+
+test("item steps show all states, elapsed days and a ratio excluding dropped; every log starts collapsed", async () => {
+  const s=snapshot(); s.items.child!.head="Stable head";
+  s.items.child!.steps=[
+    {id:"done",text:"Deliver parser #42",state:"done",doneAt:"2026-10-06T12:00:00Z"},
+    {id:"doing",text:"Validate replies",state:"doing",since:"2026-10-06T12:00:00Z",waits:"CI"},
+    {id:"todo",text:"Publish evidence",state:"todo"},
+    {id:"drop",text:"Old approach",state:"dropped",reason:"Superseded",droppedAt:"2026-10-07T12:00:00Z"},
+  ];
+  s.items.child!.log=[{at,text:"Detailed investigation"}];
+  const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
+  const lines=item(p).querySelectorAll(".item-step").map(e=>e.innerHTML);
+  assert.deepEqual(lines,["✓ Deliver parser #42 (10-06)","● Validate replies — 6 天，等 CI","○ Publish evidence","✗ Old approach — Superseded"]);
+  assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/3");
+  assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/3");
+  const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "item-steps"), logs=body.children.findIndex(e=>e.className === "log");
+  assert.ok(progress >= 0 && logs === progress+1,"progress occupies the former log position and history follows it");
+  assert.equal(item(p).querySelector(".log-toggle")!.attributes["aria-expanded"],"false");
+  assert.equal(item(p).querySelectorAll(".log-entry").length,0);
+  await button(p,"▸ 日志").click();
+  assert.equal(item(p).querySelectorAll(".log-entry").length,1);
+  assert.match(markup(item(p)),/Detailed investigation/);
+  await expand(p,"area");
+  assert.equal(item(p,"area").querySelector(".item-steps"),null,"old items need no steps field");
+  assert.equal(item(p,"area").querySelector(".log-toggle")!.attributes["aria-expanded"],"false","even an item without steps or log has the collapsed section");
+  await button(p,"▸ 日志").click(); assert.match(markup(item(p,"area")),/暂无日志/);
+});
+
+test("added and edited steps mark only their own lines until r reads them and progress filter walks them", async () => {
+  const s=snapshot();
+  const baseline={...s.items.child!,steps:[{id:"same",text:"Unchanged",state:"todo" as const},{id:"edit",text:"Earlier",state:"todo" as const}]};
+  s.items.child!.steps=[{id:"new",text:"Added",state:"todo"},{id:"same",text:"Unchanged",state:"todo"},{id:"edit",text:"Changed",state:"doing",since:at,waits:"Review"}];
+  const history=[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:2,reply:0,other:0}}]}];
+  const p=await page(s,history,baseline,undefined,{now:()=>Date.parse(at)}); await expand(p); await p.flush();
+  const marked=()=>item(p).querySelectorAll(".item-step.newbar").map(e=>e.id);
+  assert.deepEqual(marked(),["step-child-new","step-child-edit"],"insertion does not mark unchanged neighbors whose index shifted");
+  assert.ok(rowOf(p).className.includes("fresh"));
+  assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+  await button(p,"进展 1").click(); p.key("n"); await p.flush();
+  assert.ok(rowOf(p).className.includes("cur"));
+  p.key("r"); await p.flush();
+  assert.deepEqual(marked(),[]);
+  assert.ok(!rowOf(p).className.includes("fresh"));
+  assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:stepId}]);
+});
+
+test("step removal and reordering keep item progress unread without highlighting unchanged lines", async t => {
+  for (const change of ["remove","reorder"] as const) await t.test(change,async()=> {
+    const s=snapshot(), baseline={...s.items.child!,steps:[{id:"a",text:"A",state:"todo" as const},{id:"b",text:"B",state:"todo" as const}]};
+    s.items.child!.steps=change === "remove" ? [baseline.steps[1]!] : [...baseline.steps].reverse();
+    const p=await page(s,[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"steps changed",pieces:{progress:1,reply:0,other:0}}]}],baseline); await expand(p); await p.flush();
+    assert.ok(rowOf(p).className.includes("fresh")); assert.ok(p.all().some(e=>e.innerHTML === "进展 1"));
+    assert.equal(item(p).querySelectorAll(".item-step.newbar").length,0);
+    assert.deepEqual(item(p).querySelectorAll(".item-step").map(e=>e.id),s.items.child!.steps!.map(step=>"step-child-"+step.id));
+  });
+});
+
+test("record steps show a zero denominator when all dropped and doing days refresh without writes", async () => {
+  const s=snapshot(); s.items.child!.record=true; delete s.items.child!.status;
+  s.items.child!.steps=[{id:"old",text:"Retired",state:"dropped",reason:"No longer needed",droppedAt:at}];
+  let now=Date.parse(at)+24*60*60*1000-1;
+  const p=await page(s,[],null,undefined,{now:()=>now}); await expand(p); await p.flush();
+  assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"0/0");
+  await p.change("b".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,rev:2,steps:[{id:"work",text:"Collect evidence",state:"doing",since:at}]}}]); await p.flush();
+  assert.equal(item(p).querySelector(".item-step")!.innerHTML,"● Collect evidence — 0 天");
+  const calls=p.calls.length; now++; p.intervals.forEach(fn=>fn()); await p.flush();
+  assert.equal(item(p).querySelector(".item-step")!.innerHTML,"● Collect evidence — 1 天");
+  assert.equal(p.calls.length,calls,"day display refresh is local");
+});
+
+test("step prose resolves glossary and reference tokens and follows target renames", async () => {
+  const s=glossaries(snapshot()); s.items.child!.steps=[{id:"ref",text:"否决线 [[it:area]]",state:"doing",since:at,waits:"[[it:area]]"}];
+  const p=await page(s,[]); await expand(p);
+  assert.deepEqual(termLinks(item(p).querySelector(".item-step")!.innerHTML),[["否决线",anchor("Project","否决线")]]);
+  assert.match(item(p).querySelector(".item-step")!.innerHTML,/data-ref="it:area">Parent<\/a>/);
+  await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Renamed parent"}}]); await p.flush();
+  assert.match(item(p).querySelector(".item-step")!.innerHTML,/data-ref="it:area">Renamed parent<\/a>/);
 });

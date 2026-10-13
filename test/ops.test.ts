@@ -823,3 +823,117 @@ test("an imported record with a missing parent can become work while retaining t
   assert.equal(store.snapshot().items["orphan-record"]!.status, "todo");
   assert.ok(rules(store.snapshot()).checks("orphan-record").some(c => c.text === "上级条目不存在：absent"));
 });
+
+
+test("steps upsert, replace and remove keep stable order and make one commit per call", async t => {
+  const { store, op } = await board(t);
+  const baseline = store.snapshot().head, before = store.snapshot().items.a!;
+  await op.setSteps({ author, id: "a", step: { id: "check", text: "Checks pass #341", state: "doing", waits: "CI" } });
+  await op.setSteps({ author, id: "a", step: { id: "review", text: "Review complete", state: "todo" } });
+  await op.setSteps({ author, id: "a", step: { id: "check", text: "Checks pass", state: "done" } });
+  assert.deepEqual(store.snapshot().items.a!.steps!.map(step => step.id), ["check", "review"]);
+  assert.equal(store.snapshot().items.a!.steps![0]!.doneAt, later);
+  assert.equal(store.snapshot().items.a!.steps![0]!.since, later, "done retains previous doing timestamp");
+  await op.setSteps({ author, id: "a", steps: [
+    { id: "review", text: "Review complete", state: "doing" },
+    { id: "check", text: "Checks pass", state: "done" },
+    { id: "publish", text: "Owner merges", state: "todo" },
+  ] });
+  assert.deepEqual(store.snapshot().items.a!.steps!.map(step => step.id), ["review", "check", "publish"]);
+  await op.setSteps({ author, id: "a", remove: "review" });
+  assert.deepEqual(store.snapshot().items.a!.steps!.map(step => step.id), ["check", "publish"]);
+  await op.setSteps({ author, id: "a", steps: [] });
+  assert.deepEqual(store.snapshot().items.a!.steps, []);
+  const current = store.snapshot().items.a!;
+  assert.equal(current.status, before.status); assert.equal(current.head, before.head); assert.deepEqual(current.log, before.log);
+  const commits = await store.log({ since: baseline });
+  assert.equal(commits.length, 6); assert.ok(commits.every(commit => commit.message === "set_steps a"));
+});
+
+test("steps stamp each state transition, preserve same-state dates and retain date history", async t => {
+  const { store } = await board(t);
+  let clock = "2026-10-12T00:00:00Z";
+  const op = ops(store, () => clock), step = { id: "build", text: "Build passes", state: "todo" as const };
+  const write = async (state: "todo" | "doing" | "done" | "dropped", text = step.text) => {
+    await op.setSteps({ author, id: "a", step: { ...step, text, state, ...(state === "dropped" ? { reason: "Superseded" } : {}) } });
+    return store.snapshot().items.a!.steps![0]!;
+  };
+  assert.deepEqual(await write("todo"), step);
+  const firstDoing = await write("doing"); assert.equal(firstDoing.since, clock);
+  clock = "2026-10-13T00:00:00Z";
+  assert.equal((await write("doing", "Build and check pass")).since, firstDoing.since);
+  const done = await write("done"); assert.equal(done.doneAt, clock); assert.equal(done.since, firstDoing.since);
+  clock = "2026-10-14T00:00:00Z";
+  await op.setSteps({ author, id: "a", steps: [{ ...step, state: "done" }] });
+  assert.equal(store.snapshot().items.a!.steps![0]!.doneAt, done.doneAt, "replacement preserves same-state dates by stable id");
+  const secondDoing = await write("doing"); assert.equal(secondDoing.since, clock); assert.equal(secondDoing.doneAt, done.doneAt);
+  clock = "2026-10-15T00:00:00Z";
+  const dropped = await write("dropped"); assert.equal(dropped.droppedAt, clock);
+  clock = "2026-10-16T00:00:00Z";
+  assert.equal((await write("dropped", "Build omitted")).droppedAt, dropped.droppedAt);
+  const todo = await write("todo");
+  assert.equal(todo.since, secondDoing.since); assert.equal(todo.doneAt, done.doneAt); assert.equal(todo.droppedAt, dropped.droppedAt);
+  const redone = await write("done"); assert.equal(redone.doneAt, clock, "entering done again stamps a new completion date");
+  await op.setSteps({ author, id: "a", steps: [{ id: "initial-done", text: "Done from birth", state: "done" }, { id: "initial-drop", text: "Not needed", state: "dropped", reason: "Replaced" }] });
+  assert.equal(store.snapshot().items.a!.steps![0]!.doneAt, clock); assert.equal(store.snapshot().items.a!.steps![1]!.droppedAt, clock);
+});
+
+test("steps refuse missing dropped reasons, invalid or duplicate ids, dates and ambiguous operations atomically", async t => {
+  const { store, op } = await board(t), before = store.snapshot();
+  const valid = { id: "step", text: "Delivers result", state: "todo" as const };
+  const cases: Array<[Parameters<Ops["setSteps"]>[0], RegExp]> = [
+    [{ author, id: "a", step: { ...valid, state: "dropped" } }, /reason/],
+    [{ author, id: "a", step: { ...valid, state: "dropped", reason: "  " } }, /reason/],
+    [{ author, id: "a", step: { ...valid, id: "../bad" } }, /id/],
+    [{ author, id: "a", step: { ...valid, id: "a".repeat(41) } }, /id/],
+    [{ author, id: "a", steps: [valid, valid] }, /unique/],
+    [{ author, id: "a", remove: "missing" }, /existing step/],
+    [{ author, id: "a" }, /exactly one/],
+    [{ author, id: "a", step: valid, steps: [] }, /exactly one/],
+    [{ author, id: "a", step: { ...valid, since: later } } as Parameters<Ops["setSteps"]>[0], /Unrecognized key/],
+  ];
+  for (const [args, error] of cases) { await assert.rejects(op.setSteps(args), error); assert.deepEqual(store.snapshot(), before); }
+});
+
+test("steps enforce project ownership and support records without deriving work status", async t => {
+  const { store, op } = await board(t);
+  const before = store.snapshot();
+  await assert.rejects(op.setSteps({ author: "Firn", id: "a", step: { id: "foreign", text: "Change", state: "todo" } }), /belongs to project Whitefoot/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.createItem({ author, key: "record-with-steps", title: "Merge queue", record: true, group: author, priority: "P1" });
+  await op.setSteps({ author, id: "record-with-steps", step: { id: "first", text: "First approved merge", state: "done" } });
+  const s = store.snapshot(); assert.equal(s.items["record-with-steps"]!.steps![0]!.doneAt, later);
+  assert.equal(s.items["record-with-steps"]!.status, undefined); assert.equal(rules(s).statusOf("record-with-steps"), undefined);
+});
+
+test("revision-free step writes retry real conflicts and retain concurrent steps, head and logs", async t => {
+  const { store, op } = await board(t), original = store.commit.bind(store);
+  let raced = false;
+  t.mock.method(store, "commit", async (txn: Txn) => {
+    if (!raced) {
+      raced = true; const current = store.snapshot().items.a!;
+      await original({ author, message: "Concurrent progress", puts: [{ kind: "item", id: "a", expectRev: current.rev,
+        doc: { ...current, head: "Concurrent stable head", steps: [{ id: "other", text: "Other work", state: "doing", since: at }], log: [...current.log, { at, by: author, text: "Concurrent detail" }] } }] });
+    }
+    return original(txn);
+  });
+  await op.setSteps({ author, id: "a", step: { id: "mine", text: "My work", state: "todo" } });
+  assert.ok(raced);
+  const it = store.snapshot().items.a!;
+  assert.deepEqual(it.steps!.map(step => step.id), ["other", "mine"]);
+  assert.equal(it.head, "Concurrent stable head"); assert.equal(it.log.at(-1)!.text, "Concurrent detail");
+});
+
+
+test("moving work into a todo parent with steps preserves its own progress and requires an own-work child", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.setSteps({ author, id: "other", step: { id: "own", text: "Parent own result", state: "todo" } });
+  const before = store.snapshot();
+  await assert.rejects(op.moveItem({ author, id: "a", parent: "other", parentWhy: "Needs its result" }), /parentOwnWork/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.moveItem({ author, id: "a", parent: "other", parentWhy: "Needs its result", parentOwnWork: { key: "other-own-steps", title: "Parent own work" } });
+  const s = store.snapshot();
+  assert.deepEqual(s.items.other!.steps, before.items.other!.steps, "step ownership stays with its original item");
+  assert.equal(s.items["other-own-steps"]!.status, "todo");
+  assert.equal(s.items.a!.parent, "other");
+});
