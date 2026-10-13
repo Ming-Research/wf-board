@@ -421,7 +421,7 @@ coordinate among themselves; sessions may be renamed freely.
 
 | Tool | Answers | Returns |
 |---|---|---|
-| `search(query, filters)` | Where is X mentioned? | Hits across item heads, steps and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
+| `search(query, filters)` | Where is X mentioned? | Hits across item heads, steps, targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
 | `context(id, log?)` | What is this and how did it get here? | The item and compact step and target lines; its ancestors with status; its sub-items summarized; its deps and its dependents, each with the why and status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The dependency and parent tree around the item as an indented list with whys, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |

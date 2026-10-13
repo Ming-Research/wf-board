@@ -330,7 +330,7 @@ test("MCP set_targets exposes date-free goal edits, all modes and compact contex
   for (const args of [
     {}, { targets: [], target }, { targets: [], remove: "style" }, { target, remove: "style" },
     { target: { ...target, date: later } }, { targets: [{ ...target, date: later }] },
-    { target: { ...target, current: " " } }, { target: { id: "missing", goal: "Goal", target: "1", current: "2" } },
+    { target: { ...target, current: " " } }, { target: { id: "no-baseline", goal: "Goal", target: "1", current: "2" } },
   ]) {
     const refused = await client.callTool({ name: "set_targets", arguments: { author, id: "a", ...args } });
     assert.equal(refused.isError, true); assert.deepEqual(store.snapshot(), before);

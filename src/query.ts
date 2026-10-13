@@ -40,6 +40,7 @@ function fields(s: Snapshot, kind: Kind, id: string): Field[] {
     const it = s.items[id]!;
     return [{ field: "id", text: id, rank: 0 }, { field: "title", text: it.title, rank: 0 }, ...["head", "data"] .map(field => ({ field, text: it[field as "head" | "data"] ?? "", rank: 1 })),
       { field: "ask", text: it.ask?.text ?? "", rank: 1 }, ...(it.steps ?? []).map(step => ({ field: `step.${step.id}`, text: [step.text, step.waits, step.reason].filter(Boolean).join(" "), rank: 1 })),
+      ...(it.targets ?? []).map(target => ({ field: `target.${target.id}`, text: [target.goal, target.target, target.current, target.baseline].join(" "), rank: 1 })),
       ...it.log.map((l, i) => ({ field: `log[${i}]`, text: `${l.at} ${l.by ?? ""} ${l.text}`, rank: 2, time: l.at, index: i }))];
   }
   if (kind === "card") {
