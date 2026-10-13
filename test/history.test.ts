@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -13,7 +13,7 @@ import type { Step } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { Store } from "../src/store.ts";
+import { Store, NUMBERING_MESSAGE } from "../src/store.ts";
 import type { ItemTarget } from "../src/model.ts";
 
 test("cursor range, single-document grouping, author boundaries and endpoint diff", async t => {
@@ -62,6 +62,29 @@ test("commits that change no item, card or note are not steps", async t => {
   const b = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "after settings" } });
   const steps = await unreadSteps(store, cursor);
   assert.deepEqual(steps.map(s => s.commits), [[a.commit], [b.commit]]);
+});
+
+test("the one-time numbering commit is never an unread step", async t => {
+  const { dir, store, op } = await board(t);
+  const git = async (...args: string[]) => (await promisify(execFile)("git", args, { cwd: dir })).stdout.trim();
+  // A board as the previous version wrote it: no num fields and no counter.
+  for (const path of ["items/area", "items/other", "items/a", "items/b", "decisions/choice", "decisions/ruled"].map(p => p + ".yaml")) {
+    await writeFile(join(dir, path), (await readFile(join(dir, path), "utf8")).replace(/^num: \d+\n/m, ""));
+  }
+  await git("rm", "-q", "numbers.yaml");
+  await git("-c", "user.name=P", "-c", "user.email=p@example.invalid", "commit", "-qam", "Before numbers");
+  // The owner has read everything up to here; the numbering commit comes after the cursor.
+  const cursor = await git("rev-parse", "HEAD");
+  const reopened = await Store.open(dir);
+  const numbering = (await reopened.log({ since: cursor }))[0]!;
+  assert.equal(numbering.message, NUMBERING_MESSAGE);
+  assert.ok(numbering.files.includes("items/a.yaml") && numbering.files.includes("decisions/choice.yaml"), "the numbering commit touches item and card files");
+  assert.deepEqual(await unreadSteps(reopened, cursor), [], "numbering alone leaves nothing unread");
+  // A real change after numbering is still unread, and the numbering commit is not part of it.
+  const after = await ops(reopened, () => later).setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "after numbering" } });
+  const steps = await unreadSteps(reopened, cursor);
+  assert.deepEqual(steps.map(s => s.commits), [[after.commit]]);
+  void store; void op;
 });
 
 test("unread steps are reused until HEAD or the cursor moves", async t => {
