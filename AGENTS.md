@@ -79,6 +79,8 @@ code skips this section.
   and carry out cards on 总管's own items.
 - A new request: make sure its project triages it.
 - A blocking card: send a phone push.
+- A check event (an item newly flagged 无人推进 or 需核对): tell the item's
+  project session, or ask the owner to restart one.
 
 ### Every ten minutes
 

@@ -13,9 +13,10 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 
-async function server(t: Parameters<typeof board>[0]) {
+async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
+  extra.prepare?.(fixture);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }), now: extra.now, checkIntervalMs: extra.checkIntervalMs });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -314,4 +315,65 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   await owner.send();
   assert.equal((await api({id, rev: store.snapshot().notes[id]!.rev, text: "Too late"})).status, 400);
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
+});
+
+// A blocked root with no dependency and no ask carries the check below; its other fields satisfy every other rule.
+const BLOCKED_TEXT = "卡住了，但没写在等什么";
+const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", status: "blocked", updated: later, head: "**完成条件**：某项检查通过" } });
+async function wakeSocket(t: { after(fn: () => void): void }, url: string, session: string) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session));
+  t.after(() => socket.terminate()); await once(socket, "open");
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
+  return { frames, sync };
+}
+
+test("a committed check wakes once, not again on unrelated commits, and again after it clears and returns", async t => {
+  const { url, store, op } = await server(t);
+  const star = await wakeSocket(t, url, "*"), own = await wakeSocket(t, url, "Whitefoot"), other = await wakeSocket(t, url, "Firn");
+  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
+  await star.sync(); await own.sync(); await other.sync();
+  const expected = { event: "check", item: "c", project: "Whitefoot", title: "卡住的条目", label: "需核对", text: BLOCKED_TEXT };
+  assert.deepEqual(star.frames, [expected]);
+  assert.deepEqual(own.frames, [expected]);
+  assert.deepEqual(other.frames, [], "other projects' sockets do not receive it");
+  await op.appendLog({ author, id: "c", text: "Unrelated progress" });
+  await op.appendLog({ author, id: "other", text: "Progress elsewhere" });
+  await star.sync();
+  assert.equal(star.frames.length, 1, "still-flagged check is not announced again");
+  await store.commit({ author, message: "Remove item", deletes: [{ kind: "item", id: "c", expectRev: store.snapshot().items.c!.rev }] });
+  await store.commit({ author, message: "Block item again", puts: [blockedItem("c")] });
+  await star.sync();
+  assert.deepEqual(star.frames, [expected, expected], "a check that disappeared and reappeared is announced again");
+});
+
+test("active time alone raises one stalled event on the timer, and a restart announces nothing", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const start = Date.parse("2026-10-11T03:00:00Z");
+  let clock = start + 2 * 60 * 60 * 1000 - 1;
+  const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
+    const s = structuredClone(store.snapshot());
+    s.items.w = { title: "没人推进的叶子", group: "Whitefoot", priority: "P1", status: "wip", updated: new Date(start).toISOString(), head: "**完成条件**：某项检查通过" } as typeof s.items.w;
+    s.activity = { writes: Array.from({ length: 4 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
+    store.snapshot = () => structuredClone(s);
+  } });
+  const star = await wakeSocket(t, url, "*");
+  t.mock.timers.tick(1000); await star.sync();
+  assert.deepEqual(star.frames.filter(f => f.item === "w"), [], "2 hours of active time not yet reached");
+  clock++;
+  t.mock.timers.tick(1000); await star.sync();
+  const stalled = star.frames.filter(f => f.item === "w");
+  assert.equal(stalled.length, 1);
+  assert.deepEqual(stalled[0], { event: "check", item: "w", project: "Whitefoot", title: "没人推进的叶子", label: "无人推进", text: "进行中但 2 小时（活跃时间）没有动静" });
+  t.mock.timers.tick(5000); await star.sync();
+  assert.equal(star.frames.filter(f => f.item === "w").length, 1, "later timer ticks do not repeat it");
+  // A restarted server over the same state seeds from it silently, including the standing stalled check.
+  const again = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }), now: () => clock, checkIntervalMs: 1000 });
+  again.listen(0, "127.0.0.1"); await once(again, "listening");
+  t.after(() => new Promise<void>(resolve => again.close(() => resolve())));
+  const address = again.address(); assert.ok(address && typeof address !== "string");
+  const restarted = await wakeSocket(t, `http://127.0.0.1:${address.port}`, "*");
+  t.mock.timers.tick(5000); await restarted.sync();
+  assert.deepEqual(restarted.frames, [], "standing checks are not announced after a restart");
 });

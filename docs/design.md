@@ -718,6 +718,15 @@ open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
 set or changed. A card without `blocks` produces none, so the coordinator can
 push a phone notification for blocking waits only.
 
+A check produces `{event:"check", item, project, title, label, text}` when
+an open item gains it: `label` is 无人推进 for a stalled leaf and 需核对 for
+any other check, and `text` is the check's explanation. The server keeps the
+set of (item, check text) pairs flagged and emits only pairs not in the
+previous set, after each committed change and on a one-minute timer, since
+a stalled leaf appears with active time alone. A pair that disappears and
+returns emits again. The set is seeded at start without emitting, so a
+restart announces nothing.
+
 A newly created request also produces one event:
 `{event:"request", item, title, project, by}`. The store's committed
 change is the event source, so updates and retries do not announce a request
