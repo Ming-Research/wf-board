@@ -493,13 +493,14 @@ right-side status-colored leaf counts alongside its keyboard actions.
 A card's header tag is a purple 阻塞 (tooltip: its `blocks` text) for a
 blocking card and a red 决策卡 otherwise; an item's ask row carries 阻塞.
 
-The summary groups four concerns into separate rows, with no new row labels.
+The summary groups four concerns into separate rows. The unread row has no visible label.
 Row 1: purple 阻塞 N › (blocking waits, asks included) and red 决策卡 M ›
 (waiting cards without `blocks`), each hidden at 0, followed by the existing
 等你 panel. Row 2: the 要你知道 list, absent when no notice is unread.
-Row 3, labelled 未读: blue 新 N › immediately followed on the same flex line
-by 进展, 其他 and 评论回复, each hidden at 0 unless selected, then 清除筛选
+Row 3: blue 新 N ›, a thin vertical divider using the theme's rule color,
+then 进展, 其他 and 评论回复, each hidden at 0 unless selected, then 清除筛选
 (only while a filter is on) and 全部已阅. Controls wrap as width requires.
+The divider is decorative and appears only between 新 and following controls.
 Progress means step-list changes; logs do not count as new.
 Row 4: 全部折叠, 展开第一层, the status legend and the per-project links.
 The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
