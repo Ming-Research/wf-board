@@ -3,7 +3,7 @@ import type { Store, DocKind, CommitInfo } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
-import { changedItemSteps, stepsChanged } from "./rules.ts";
+import { changedItemSteps, stepsChanged, withoutLog } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
@@ -21,7 +21,7 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
   // Inspect the item itself: log text and the agent-facing summary never decide owner visibility.
   const withoutProgress = (item: unknown) => {
     if (item === null) return null;
-    const { log: _log, steps: _steps, ...rest } = item as Item;
+    const { steps: _steps, ...rest } = withoutLog(item as Item);
     return rest;
   };
   const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";
@@ -32,8 +32,7 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
 function ownerSummary(before: unknown, after: unknown, kind: DocKind): string {
   const omitLog = (doc: unknown) => {
     if (kind !== "item" || doc === null) return doc;
-    const { log: _log, ...rest } = doc as Item;
-    return rest;
+    return withoutLog(doc as Item);
   };
   return describeChanges(omitLog(before), omitLog(after), kind);
 }

@@ -550,6 +550,19 @@ test("a project lists its own roots first, then a rule and the roots other proje
   assert.equal(descendants(section("Other")).filter(e=>e.className==="shared-sep").length,0,"a project with none shows no rule");
 });
 
+test("project page follows board project list order on load and live reorder, with new projects last", async () => {
+  const s = snapshot();
+  s.board.projects = [{ name: "Z first" }, ...s.board.projects, { name: "A last" }];
+  const p = await page(s, []);
+  const names = () => p.all().filter(e => e.className === "group").map(e => e.dataset.group);
+  assert.deepEqual(names(), ["Z first", "Project", "A last"], "project names are not sorted alphabetically or by item priority");
+  const reordered = { ...s.board, projects: [s.board.projects[2]!, s.board.projects[0]!, s.board.projects[1]!] };
+  await p.change("b".repeat(40), [{ kind: "board", id: "board", after: reordered }]); await p.flush();
+  assert.deepEqual(names(), ["A last", "Z first", "Project"]);
+  await p.change("c".repeat(40), [{ kind: "board", id: "board", after: { ...reordered, projects: [...reordered.projects, { name: "New" }] } }]); await p.flush();
+  assert.deepEqual(names(), ["A last", "Z first", "Project", "New"]);
+});
+
 test("project page omits session assignments and shows inbox requests, including empty projects", async () => {
   const s=snapshot(); s.board.projects.push({name:"Empty"});
   s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
@@ -2675,6 +2688,21 @@ test("page refreshes the stalled check when active time crosses the threshold wi
   assert.ok(checkText().includes("进行中但 2 小时（活跃时间）没有动静"), "the timer refreshes the visible leaf's check at exactly two active hours");
   assert.ok(!checkText("area").includes("活跃时间"), "a parent with a work child is not a stalled leaf");
   assert.equal(p.calls.length, callsBeforeTick, "the timer updates checks without another server request or write");
+});
+
+test("a stalled leaf shows 无人推进 beside its title with the full explanation as tooltip, and a folded parent shows the count", async () => {
+  const s = snapshot(), began = Date.parse(at);
+  s.activity = { writes: Array.from({length: 4}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  const p = await page(s, [], null, undefined, {now: () => began + 2 * 60 * 60 * 1000});
+  // Other checks (here the missing completion condition) keep their own 需核对 tag; only the stalled tags are asserted on.
+  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对");
+  const folded = tags("area");
+  assert.deepEqual(folded.map(e => e.innerHTML), ["无人推进 1"], "the folded parent counts its stalled leaf");
+  await expand(p);
+  const leaf = tags("child");
+  assert.deepEqual(leaf.map(e => e.innerHTML), ["无人推进"], "the stalled leaf shows its own label, not 需核对");
+  assert.equal(leaf[0]!.title, "进行中但 2 小时（活跃时间）没有动静");
+  assert.deepEqual(tags("area").map(e => e.innerHTML), [], "an open parent shows no count");
 });
 
 function noteButton(p: Awaited<ReturnType<typeof page>>, id: string, label: string) {

@@ -1,10 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
 import { Key, Item, ItemStepInput, ItemStepsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
 import type { Dep, Link, Option, Priority, Snapshot, Status } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules, stampItemStep } from "./rules.ts";
+import { rules, stampItemStep, projectOrderAfter } from "./rules.ts";
 import { describeChanges } from "./query.ts";
 
 export class OpError extends Error {}
@@ -12,8 +13,8 @@ export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }> }
 type Source = { sourceStatus?: Status; sourcePriority?: Priority };
 export interface Ops {
-  createProject(a: { author: string; name: string; repo?: string }): Promise<Result>;
-  updateProject(a: { author: string; name: string; repo?: string; migrated?: boolean }): Promise<Result>;
+  createProject(a: { author: string; name: string; repo?: string; after?: string }): Promise<Result>;
+  updateProject(a: { author: string; name: string; repo?: string; migrated?: boolean; after?: string }): Promise<Result>;
   createRequest(a: { author: string; project: string; key: string; title: string; head: string; priority?: Priority; why: string; from?: string }): Promise<Result>;
   triageRequest(a: { author: string; id: string; parent?: string; parentWhy?: string; parentOwnWork?: { key: string; title: string }; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; id: string; log: string }): Promise<Result>;
@@ -88,6 +89,11 @@ function requireProject(s: Snapshot, name: string) {
   const project = s.board.projects.find(p => p.name === name);
   if (!project) throw new OpError(`project ${name}: choose a configured project with projects`);
   return project;
+}
+function projectOrder(projects: Board["projects"], a: { author: string; name: string; after?: string }): Board["projects"] {
+  if (a.after === undefined) return projects;
+  try { return projectOrderAfter(projects, a.name, a.after, a.author); }
+  catch (error) { throw new OpError((error as Error).message); }
 }
 function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
   if (!s.board.projects.some(p => p.name === author)) throw new OpError(`${prefix}author ${author}: choose a configured project (${s.board.projects.map(p => p.name).join(", ")}); call projects and use the project whose repo matches your repository`);
@@ -267,13 +273,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   return {
     createProject: a => run(a, s => {
       if (s.board.projects.some(p => p.name === a.name)) throw new OpError(`project ${a.name}: already exists`);
-      const board = parse(Board, { ...s.board, projects: [...s.board.projects, { name: a.name, ...(a.repo === undefined ? {} : { repo: a.repo }) }] });
-      return { id: a.name, kind: "board", board, puts: [], message: `create_project ${a.name} ${a.author}` };
+      const projects = [...s.board.projects, { name: a.name, ...(a.repo === undefined ? {} : { repo: a.repo }) }];
+      const board = parse(Board, { ...s.board, projects: projectOrder(projects, a) });
+      return { id: a.name, kind: "board", board, puts: [], message: `create_project ${a.name} ${a.author}${a.after === undefined ? "" : ` after ${a.after}`}` };
     }, false, true),
     updateProject: a => run(a, (s, at) => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.migrated === undefined || a.repo !== undefined) {
+      if (a.repo !== undefined || a.migrated === undefined && a.after === undefined) {
         if (a.author !== a.name && a.author !== "总管") throw new OpError(`project ${a.name}: only that project or 总管 may update its repo`);
         if (typeof a.repo !== "string") throw new OpError("repo: provide the repository identifier");
       }
@@ -282,7 +289,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (a.migrated !== true) throw new OpError("migrated: a migration cannot be undone; only true is accepted");
         if (project.migrated) throw new OpError(`migrated: project ${a.name} is already migrated`);
       }
-      const board = parse(Board, { ...s.board, projects: s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }), ...(a.migrated ? { migrated: true } : {}) } : p) });
+      const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }), ...(a.migrated ? { migrated: true } : {}) } : p);
+      const board = parse(Board, { ...s.board, projects: projectOrder(projects, a) });
       // Migrating keeps only roots' stored priorities, so none can return when a non-root later becomes a root.
       const puts: Put[] = [], dropped: Result["dropped"] = [];
       if (a.migrated) {
@@ -294,7 +302,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           puts.push(itemPut(id, doc)); dropped.push({ id, priority: it.priority });
         }
       }
-      return { id: a.name, kind: "board", board, puts, dropped, message: `update_project ${a.name}${a.migrated ? " migrated" : ""}` };
+      return { id: a.name, kind: "board", board, puts, dropped, message: `update_project ${a.name}${a.migrated ? " migrated" : ""}${a.after === undefined ? "" : ` after ${a.after}`}` };
     }),
     createRequest: a => run(a, (s, at) => {
       requireAuthor(s, a.author);
@@ -401,7 +409,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const updated = stampItemStep(input, previous[i], at);
         if (i < 0) steps.push(updated); else steps[i] = updated;
       }
-      return { ...it, steps, updated: at };
+      // Identical steps leave the item untouched, even `updated`, so the store writes no commit.
+      return isDeepStrictEqual(steps, previous) ? it : { ...it, steps, updated: at };
     }),
     updateItem: a => run(a, async (s, at) => {
       const it = ownedItem(s, a.id, a.author);
@@ -415,10 +424,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (value === null) delete doc[key];
         else if (value !== undefined) Object.assign(doc, { [key]: value });
       }
+      const becameRecord = a.record === true && !it.record, becameWork = a.record === false && !!it.record;
+      if (becameRecord && !rules(s).isStatusLeaf(a.id)) throw new OpError(`record: ${a.id} has work sub-items; a record has no status, so move them away or keep it a work item`);
       if (doc.record) delete doc.status;
       else if (it.record && rules(s).isStatusLeaf(a.id)) doc.status = "todo";
       const validated = parse(Item, doc);
       if (changedHead) validated.log.push(entry(a.author, at, `改了 head：${a.reason}`));
+      if (becameRecord) validated.log.push(entry(a.author, at, "改为记录条目：不再有状态"));
+      if (becameWork) validated.log.push(entry(a.author, at, "改为工作条目：状态为待做"));
       const puts: Put[] = [itemPut(a.id, validated)], r = rules(s);
       const splitParent = !!it.record && !validated.record && !!it.parent && !!r.item(it.parent) && !r.item(it.parent)!.record && r.isStatusLeaf(it.parent);
       if (a.parentOwnWork && !splitParent) throw new OpError("parentOwnWork: only when record: false introduces the first work child of a work-status leaf");

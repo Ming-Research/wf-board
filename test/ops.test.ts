@@ -416,6 +416,79 @@ test("project creation accepts any author and repo updates require the project o
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
+test("总管 reorders and creates projects after an existing project in one commit, while omitted after preserves defaults", async t => {
+  const { store, op, dir } = await board(t);
+  const names = () => store.snapshot().board.projects.map(p => p.name);
+  const initial = store.snapshot();
+  let count = (await store.log()).length;
+  await op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "Whitefoot", "总管"]);
+  assert.deepEqual(store.snapshot().items, initial.items);
+  assert.equal((await store.log()).length, ++count);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files, ["board.yaml"]);
+  await op.updateProject({ author: "总管", name: "总管", repo: "Org/Coordinator", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "总管", "Whitefoot"]);
+  assert.equal(store.snapshot().board.projects[1]!.repo, "Org/Coordinator");
+  assert.equal((await store.log()).length, ++count);
+  await op.createProject({ author: "总管", name: "Inserted", repo: "Org/Inserted", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot"]);
+  assert.deepEqual(store.snapshot().board.projects[1], { name: "Inserted", repo: "Org/Inserted" });
+  assert.equal((await store.log()).length, ++count);
+  await op.createProject({ author: "Any caller", name: "Last" });
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Last"]);
+  assert.equal((await store.log()).length, ++count);
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Last"]);
+  assert.equal((await store.log()).length, ++count);
+  await op.updateProject({ author: "总管", name: "Firn", after: "Last" });
+  assert.deepEqual(names(), ["Inserted", "总管", "Whitefoot", "Last", "Firn"]);
+  assert.equal((await store.log()).length, ++count);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
+test("project after rejects noncoordinators, unknown projects and self placement atomically", async t => {
+  const { store, op, dir } = await board(t), before = store.snapshot(), count = (await store.log()).length;
+  const cases: Array<[() => Promise<unknown>, RegExp]> = [
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), /after: only.*总管/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /after: only.*总管/],
+    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or 总管 may update its repo/],
+    [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), /after: only.*总管/],
+    [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), /after: only.*总管/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed", after: "Missing" }), /after Missing.*configured/],
+    [() => op.createProject({ author: "总管", name: "New", after: "Missing" }), /after Missing.*configured/],
+    [() => op.updateProject({ author: "总管", name: "Missing", after: "Firn" }), /project Missing.*configured/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Whitefoot" }), /after.*cannot follow itself/],
+    [() => op.createProject({ author: "总管", name: "New", after: "New" }), /after.*cannot follow itself/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot" }), /repo.*provide/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn", migrated: true }), /migrated: only.*总管/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn", migrated: false }), /migration cannot be undone/],
+  ];
+  for (const [call, message] of cases) {
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+});
+
+test("project repo, migration and after placement share one commit", async t => {
+  const { store, op, dir } = await board(t, { unmigrated: true }), count = (await store.log()).length;
+  const before = store.snapshot();
+  await assert.rejects(op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed", migrated: true, after: "Missing" }), /after Missing.*configured/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  assert.equal((await store.log()).length, count);
+  await op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed", migrated: true, after: "总管" });
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "总管", "Whitefoot"]);
+  assert.deepEqual(store.snapshot().board.projects[2], { name: "Whitefoot", repo: "Org/Changed", migrated: true });
+  assert.equal(store.snapshot().items.a!.priority, undefined);
+  assert.equal(store.snapshot().items.b!.priority, undefined);
+  assert.match(store.snapshot().items.a!.log.at(-1)!.text, /迁移到依赖结构/);
+  assert.equal((await store.log()).length, count + 1);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["board.yaml", "items/a.yaml", "items/b.yaml"]);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
 test("unconfigured request authors are refused before creating an inbox item", async t => {
   const { store, op, dir } = await board(t), before = store.snapshot();
   await assert.rejects(op.createRequest({ author: "Outsider", project: "Firn", key: "unknown-request", title: "Request", head: "Evidence", priority: "P1", why: "Need" }), /author.*configured project.*Whitefoot.*Firn.*call projects.*repo.*repository/);
@@ -774,7 +847,23 @@ test("records create and update without status, refuse set_status, and restore w
   await op.updateItem({ author, id: "record", rev: store.snapshot().items.record!.rev, record: true });
   assert.equal(store.snapshot().items.record!.status, undefined);
   assert.equal(store.snapshot().items.record!.head, "Queue");
-  assert.equal(store.snapshot().items.record!.log.length, 2);
+  const log = store.snapshot().items.record!.log;
+  assert.equal(log.length, 4);
+  assert.deepEqual(log.filter(e => e.by === author && /^改为/.test(e.text)).map(e => e.text), ["改为工作条目：状态为待做", "改为记录条目：不再有状态"]);
+});
+
+test("record: true refuses an item with work children or another project's item and logs only real conversions", async t => {
+  const { store, op } = await board(t);
+  await op.createItem({ author, key: "leaf", parent: "area", title: "Leaf", parentWhy: "Part of area" });
+  await op.createItem({ author, key: "kid", parent: "leaf", title: "Kid", parentWhy: "Needed", parentOwnWork: { key: "leaf-own", title: "Leaf own" } });
+  const before = store.snapshot();
+  await assert.rejects(op.updateItem({ author, id: "leaf", rev: before.items.leaf!.rev, record: true }), /record: leaf has work sub-items/);
+  assert.deepEqual(store.snapshot(), before);
+  await assert.rejects(op.updateItem({ author: "Firn", id: "leaf-own", rev: before.items["leaf-own"]!.rev, record: true }), /Firn|project|own/i);
+  assert.deepEqual(store.snapshot(), before);
+  const rev = store.snapshot().items.kid!.rev;
+  await op.updateItem({ author, id: "kid", rev, record: false });
+  assert.equal(store.snapshot().items.kid!.log.length, before.items.kid!.log.length, "record: false on a work item changes nothing and logs nothing");
 });
 
 test("record children preserve a work leaf's status and records can parent work without own-work stubs", async t => {
@@ -876,6 +965,23 @@ test("steps stamp each state transition, preserve same-state dates and retain da
   const redone = await write("done"); assert.equal(redone.doneAt, clock, "entering done again stamps a new completion date");
   await op.setSteps({ author, id: "a", steps: [{ id: "initial-done", text: "Done from birth", state: "done" }, { id: "initial-drop", text: "Not needed", state: "dropped", reason: "Replaced" }] });
   assert.equal(store.snapshot().items.a!.steps![0]!.doneAt, clock); assert.equal(store.snapshot().items.a!.steps![1]!.droppedAt, clock);
+});
+
+test("a set_steps call that leaves the steps identical changes nothing, not even updated, and writes no commit", async t => {
+  const { store } = await board(t);
+  let clock = "2026-10-12T00:00:00Z";
+  const op = ops(store, () => clock), step = { id: "build", text: "Build passes", state: "todo" as const };
+  await op.setSteps({ author, id: "a", step });
+  const before = store.snapshot(), commits = (await store.log()).length;
+  clock = "2026-10-13T00:00:00Z";
+  for (const args of [{ step }, { steps: [step] }]) {
+    const result = await op.setSteps({ author, id: "a", ...args });
+    assert.equal(result.commit, before.head);
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal((await store.log()).length, commits);
+  }
+  await op.setSteps({ author, id: "a", step: { ...step, text: "Build and tests pass" } });
+  assert.equal((await store.log()).length, commits + 1, "a real change still writes one commit");
 });
 
 test("steps refuse missing dropped reasons, invalid or duplicate ids, dates and ambiguous operations atomically", async t => {

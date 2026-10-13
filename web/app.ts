@@ -1,4 +1,4 @@
-import { rules, draftEditable, noteTextProblem, changedItemSteps } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemSteps, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import type { Target } from "./find.ts";
@@ -252,7 +252,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const changes = doc.summary.split(", ");
     const reply = changes.includes("new reply") || changes.includes("reply changed");
     for (const change of changes) {
-      if (/^(\+\d+ log|log changed)$/.test(change)) continue;
+      if (isLogChange(change)) continue;
       else if (change === "steps changed") kinds.add("progress");
       else if (/^(new reply|reply changed)$/.test(change)) kinds.add("reply");
       else if (!(doc.kind === "note" && reply && change === "state changed")) kinds.add("other");
@@ -1692,7 +1692,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
-    if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
+    // One tag per distinct label, each explained by its checks' full texts.
+    for (const label of new Set(ck.map(checkLabel))) head.appendChild(el("span", "checktag", esc(label))).title = ck.filter(c => checkLabel(c) === label).map(c => c.text).join("\n");
+    const stalledBelow = sub.length && !open ? derived.stalledBelow(it.id) : 0;
+    if (stalledBelow) head.appendChild(el("span", "checktag stalledbelow", esc(STALLED_LABEL) + " " + stalledBelow)).title = stalledBelow + " 个进行中的下级条目 2 小时（活跃时间）没有动静";
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
     if (freshCount) head.appendChild(freshChip("it:" + it.id, freshCount, ownFresh));
     const pc = pendingChip("it:" + it.id);
@@ -1994,7 +1997,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const label=(kind:string,key:string) => kind === "item" ? [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key)] : [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status];
       const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
       const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),deps,waiters,it.steps?.map(step => derived.stepLine(step))]);
+      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.writtenPriorityOf(id),derived.raisedBy(id),derived.checks(id),derived.stalledBelow(id),deps,waiters,it.steps?.map(step => derived.stepLine(step))]);
       const current={signature,archived:inArchive(it),cancelled:isCancelled(it),shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
       next.set(id,current);
       if (!previous) continue;

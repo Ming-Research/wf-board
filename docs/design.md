@@ -177,16 +177,21 @@ log:
   `step` upserts one complete step by id (retaining its position or appending
   it), or `remove` deletes an id. A replacement preserves matching steps'
   dates by id. Duplicate ids are refused. The operation enforces project
-  ownership, retries concurrent writes and produces one data commit per
-  call. `src/rules.ts` computes completed/total over non-dropped steps and
+  ownership and retries concurrent writes. A call that changes the steps
+  produces one data commit; a call whose resulting steps equal the current ones
+  changes nothing, not even `updated`, and writes no commit. `src/rules.ts` computes completed/total over non-dropped steps and
   whole elapsed 24-hour days since `since`, clamped to zero. An all-dropped
   nonempty list shows `0/0`. Compact lines use ✓ done with its month/day,
   ● doing with its elapsed days and wait, ○ todo, and ✗ dropped with its reason.
 - **Record items.** `record: true` makes an item a record with a head, optional steps and log,
   and no status; creation and `update_item` can set it. `set_status` refuses
-  records. Setting the field to true removes a stored status; setting it to
-  false restores TODO if the item has no work children, otherwise its status
-  is derived. Records keep their parent, dependencies and priority rules,
+  records. Setting the field to true on a work leaf of the author's own
+  project removes its stored status and is refused when the item has work
+  children or belongs to another project; setting it to false restores TODO
+  if the item has no work children, otherwise its status is derived. A real
+  conversion in either direction appends a server-stamped log line saying the
+  item became a record or a work item; a call that leaves the mode unchanged
+  logs nothing. Records keep their parent, dependencies and priority rules,
   and can hold children without inventing an own-work child. Status roll-up
   ignores record children: an ordinary item whose children are all records
   still holds its own status. Records never enter status queues, satisfy an
@@ -251,6 +256,10 @@ log:
   Item revisions, log entries, cards and notes on the item reset its last
   change. Records and items in other statuses are never flagged.
   `src/rules.ts` defines the durations and the check for both MCP and the page.
+  Each check may carry a short visible `label` defined with it: this one is
+  `无人推进`, shown beside the item title in place of `需核对` with the full
+  text as tooltip; checks without a label keep `需核对`. A folded parent whose
+  subtree holds stalled leaves shows `无人推进 N` beside its title.
   The store reconstructs an optional snapshot activity index from existing
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
@@ -727,11 +736,19 @@ At a repository root, a session calls `projects`, picks the project whose
 `repo` matches its repository’s GitHub remote (the coordinator uses
 `总管`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
-`create_project` configures `{name, repo?}` and accepts any author string.
-`update_project(author, name, repo)` sets or changes a repository: a project
+The page displays configured projects in `board.yaml`'s project list order.
+`create_project` configures `{name, repo?}` and accepts any author string
+when appending the project last. Its optional `after` names an existing
+project to place the new project immediately after; only `总管` may supply it.
+`update_project(author, name, repo?, migrated?, after?)` sets or changes a repository: a project
 may change its own repo, and the coordinator project `总管` may change any
-project’s repo. Both run in the same operations queue as item writes,
-including prospective board checks.
+project’s repo. Only `总管` may set `after` to move a project immediately
+after another configured project; omitting it preserves the current order.
+An unknown `after` or moving a project after itself is refused. An order-only
+update needs no `repo` or `migrated`. Ordering is defined in `src/rules.ts`.
+Each call combines repository, ordering and migration changes in one data
+commit. Both run in the same operations queue as item writes, including
+prospective board checks.
 
 Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
