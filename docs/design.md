@@ -493,12 +493,16 @@ right-side status-colored leaf counts alongside its keyboard actions.
 A card's header tag is a purple 阻塞 (tooltip: its `blocks` text) for a
 blocking card and a red 决策卡 otherwise; an item's ask row carries 阻塞.
 
-The summary has no row labels except 未读. Row 1: purple 阻塞 N ›
-(blocking waits, asks included), red 决策卡 M › (waiting cards without
-`blocks`), blue 新 ›, 评论回复; each hidden at 0. Under it, the 等你 panel
-and the 要你知道 list. Row 2, labelled 未读: 进展, 其他, 清除筛选 (only
-while a filter is on) and 全部已阅. Row 3: 全部折叠, 展开第一层 and the status
-legend. The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
+The summary groups four concerns into separate rows, with no new row labels.
+Row 1: purple 阻塞 N › (blocking waits, asks included) and red 决策卡 M ›
+(waiting cards without `blocks`), each hidden at 0, followed by the existing
+等你 panel. Row 2: the 要你知道 list, absent when no notice is unread.
+Row 3, labelled 未读: blue 新 N › immediately followed on the same flex line
+by 进展, 其他 and 评论回复, each hidden at 0 unless selected, then 清除筛选
+(only while a filter is on) and 全部已阅. Controls wrap as width requires.
+Progress means step-list changes; logs do not count as new.
+Row 4: 全部折叠, 展开第一层, the status legend and the per-project links.
+The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
 
 The 等你 panel sits under row 1 and shows only while a blocking wait exists:
 one row per blocking card or ask with a purple dot, the project, the `blocks`
@@ -507,7 +511,7 @@ then by how long it has waited (card creation time; an ask's item update
 time). A click jumps like the `/` search and remembers the place for Back. A
 line 另有 M 张决策卡不挡工作 follows when M > 0.
 
-The 要你知道 list sits under the panel and shows the unread notices, newest
+The 要你知道 list occupies its own row after the waits and shows the unread notices, newest
 first, with time, author, text and a link to the item; 已读 marks one read
 (`/api/notice-read`, with `{id}` or `{all: true}`; the owner's own marking
 is not news). With none unread the list is absent. Notices take part in the
@@ -518,8 +522,10 @@ top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
 or scroll margins for a bar. The existing send-box top button remains.
 
 A vertical divider resizes the left column with pointer dragging. Its width is saved per viewer in browser
-localStorage. Both columns retain useful minimum widths: 300 CSS pixels for
-the tree and 380 for detail. The page may overflow narrower viewports.
+localStorage. At desktop widths, the tree retains a minimum width of 300 CSS
+pixels and detail 380. In viewports of 704 CSS pixels or less, both columns
+shrink equally to fit without horizontal page scrolling; header controls and
+project links wrap, and long notice text breaks within its row.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed

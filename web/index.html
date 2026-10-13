@@ -99,10 +99,9 @@ header.top { padding-block: 26px 14px; display: flex; flex-direction: column; ga
 h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 0; text-wrap: balance; font-weight: 700; }
 .goal { margin: 0; max-width: 68ch; }
 .meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
-/* The summary has two rows: what asks for the owner's action, as buttons of one size and shape coloured by meaning,
-   then the counts as quiet text. */
-.summary { display: flex; flex-direction: column; gap: 8px; }
-.sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* Four concerns: owner waits, unread notices, unread navigation and filters, then tools, legend and project links. */
+.summary, .header-wait { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .sbtn { font: inherit; font-size: 13px; line-height: 1.5; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sbtn:focus-visible { border-radius: 999px; }
 .sbtn.s-wait { background: var(--ask); border-color: var(--ask); color: var(--surface); font-weight: 600; }
@@ -176,8 +175,8 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .editor button { font: inherit; font-size: 13px; padding: 2px 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--accent); }
 .editor .save { background: var(--accent); color: var(--surface); }
 .editor .cancel { background: transparent; color: var(--accent); }
-.nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
-.nav a { color: var(--accent); text-decoration: none; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; min-width: 0; }
+.nav a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
 h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700; text-wrap: balance; }
 .group { display: flex; flex-direction: column; gap: 2px; }
 .group-head { font-family: var(--font-head); font-size: 20px; margin: 0; font-weight: 700; padding-bottom: 4px; border-bottom: 2px solid var(--accent); text-wrap: balance; }
@@ -328,6 +327,14 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 .keymenu-row { font: inherit; font-size: 13.5px; display: flex; gap: 10px; align-items: baseline; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 8px; color: var(--ink); cursor: pointer; }
 .keymenu-row:hover { background: var(--accent-soft); }
 .keymenu-row kbd { font-family: var(--font-mono); font-size: 12px; min-width: 7.5em; color: var(--accent); }
+@media (max-width: 704px) {
+  body.wide .wrap { min-width: 0; grid-template-columns: minmax(0, 1fr) 8px minmax(0, 1fr); }
+  body.wide .page-left, body.wide #item-detail { overflow-x: hidden; }
+  .header-wait, .noticepanel { overflow-wrap: anywhere; }
+  .waitrow, .notice > * { min-width: 0; max-width: 100%; }
+  .summary .sbtn { max-width: 100%; white-space: normal; }
+  .summary .readconfirm { min-width: 0; flex-wrap: wrap; }
+}
 @media (max-width: 560px) {
   h1 { font-size: 23px; }
   .tree .tree { padding-left: 10px; margin-left: 4px; }
@@ -362,8 +369,9 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
     <h1 id="goal-title">进度板</h1>
     <p class="goal" id="goal">正在读取看板数据。如果一直停在这句，说明当前视图读不到看板数据。</p>
     <div class="meta" id="meta"></div>
-    <div class="summary" id="summary"></div>
-    <nav class="nav" id="nav" aria-label="板块"></nav>
+    <div class="summary" id="summary">
+      <nav class="nav" id="nav" aria-label="板块"></nav>
+    </div>
   </header>
 
   <div id="areas"></div>

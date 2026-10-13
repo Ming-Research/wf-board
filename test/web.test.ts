@@ -87,7 +87,9 @@ interface PageOptions {
 async function page(snapshot: Snapshot, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  roots.get("nav")!.className = "nav";
+  roots.get("summary")!.appendChild(roots.get("nav")!);
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
   // The left list pane scrolls the list; its scroll events arrive after the scroll, as a browser's do.
@@ -97,7 +99,7 @@ async function page(snapshot: Snapshot, unread: unknown[], before: unknown = nul
   Object.defineProperty(detail,"scrollHeight",{get:()=>options.scrollHeight?.() ?? 10000});
   const listMax=()=>(options.scrollHeight?.() ?? 10000)-1000;
   const body = new Element("body"), wrap = new Element("div");
-  const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body]) walk(e); return out; };
+  const all = (): Element[] => { const out: Element[] = []; function walk(e: Element) { out.push(e); e.children.forEach(walk); } for (const e of [...roots.values(),body].filter(e=>!e.parentElement)) walk(e); return out; };
   const calls: Array<{path: string; body?: unknown}> = [];
   const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [], detailScrolls: number[] = [];
   const renders:unknown[]=[]; let scrollPosition=0, selected=false;
@@ -2555,7 +2557,8 @@ function waitSnapshot(): Snapshot {
 const summaryText=(p:Awaited<ReturnType<typeof page>>)=>descendants(p.roots.get("summary")!);
 test("top controls: purple 阻塞 and red 决策卡 counters lead their row, with no 待看 or 视图 label", async () => {
   const p=await page(waitSnapshot(),[]), sum=p.roots.get("summary")!;
-  const row1=sum.children[0]!;
+  assert.equal(sum.children[0]!.id,"wait-row");
+  const row1=sum.children[0]!.children[0]!;
   assert.deepEqual(row1.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"],"hot ask and two blocking cards; one plain card");
   assert.equal(row1.children[0]!.className,"sbtn s-block"); assert.equal(row1.children[1]!.className,"sbtn s-wait");
   const text=summaryText(p).map(e=>e.innerHTML+e.textContent).join("|");
@@ -2575,20 +2578,30 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
   // The walk follows board order (area before hot), blocking waits first: the first stop is the older card on child.
   assert.ok(q.all().some(e=>e.id === "detail-it-child") && !q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is a blocking card on child, which opens in the detail");
 });
-test("top controls: 未读 labels the second row with 进展, 其他 and 全部已阅; 评论回复 sits in the first row; the view row has no label", async () => {
-  const s=snapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
+test("top controls: waits, notices, unread navigation and filters, then tools and project links occupy four rows", async () => {
+  const s=waitSnapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
+  s.notices.news={text:"A notice",author:"Project",at,rev:1};
   s.items.child!.steps=[{id:"p",text:"Progress",state:"todo"}];
   const docs=[{kind:"item",id:"child",summary:"head changed, steps changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
   const labels=rows.map(r=>r.children[0]?.className === "sum-k" ? r.children[0]!.innerHTML : "");
-  assert.deepEqual(rows.map(r=>r.className),["sum-row","sum-row","sum-row"]);
-  assert.deepEqual(labels,["","未读",""]);
-  assert.ok(rows[0]!.children.some(e=>e.innerHTML === "评论回复 1") && rows[0]!.children.some(e=>e.innerHTML.startsWith("新 ")));
-  assert.equal(rows[1]!.children.map(e=>e.innerHTML).filter(h=>/^(进展|其他)/.test(h)).length,2);
-  assert.ok(rows[1]!.children.some(e=>e.innerHTML === "全部已阅"));
-  assert.deepEqual(rows[2]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
-  assert.equal(rows[2]!.children.at(-1)!.className,"sum-stats","the status legend shares the view row");
+  assert.deepEqual(rows.map(r=>r.id),["wait-row","notices","unread-row","tools-row"]);
+  assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","noticepanel","sum-row","sum-row"]);
+  assert.deepEqual(labels,["","","未读",""]);
+  assert.deepEqual(rows[0]!.children[0]!.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"]);
+  assert.equal(rows[0]!.children[1]!.id,"wait-panel");
+  assert.deepEqual(rows[2]!.children.map(e=>e.innerHTML),["未读","新 1 ›","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation immediately precedes its filters in one flex row");
+  assert.deepEqual(rows[3]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
+  assert.equal(rows[3]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
+  const nav=p.roots.get("nav")!, links=[...nav.children];
+  assert.equal(rows[3]!.children[3],nav,"the existing project navigation shares the tools row");
+  assert.deepEqual(links.map(e=>e.innerHTML),["Project"]);
+  await p.change("e".repeat(40),[{kind:"notice",id:"news",after:{...s.notices.news!,read:at,rev:2}}]); await p.flush();
+  assert.equal(p.document.getElementById("nav"),nav,"rebuilding the header preserves the navigation element");
+  assert.equal(nav.parentElement!.id,"tools-row");
+  assert.deepEqual(nav.children,links,"header-only notice changes retain the existing project links");
+  assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"],"no empty notice row remains after the last notice is read");
 });
 test("tree chips are numbers: purple counts blocking waits, red counts non-blocking cards, own and below, hidden at zero", async () => {
   const s=waitSnapshot(); s.decisions.plain!.item="child"; s.decisions.old!.item="child"; delete s.decisions.newer;
@@ -2617,7 +2630,8 @@ test("等你 panel: blocking waits by priority then oldest, one row each, the pl
   assert.match(rows[1]!.innerHTML,/waitdot/); assert.match(rows[1]!.innerHTML,/Project/); assert.match(rows[1]!.innerHTML,/旧的问题/);
   assert.equal(panel.children.at(-1)!.innerHTML,"另有 1 张决策卡不挡工作");
   const summary=p.roots.get("summary")!;
-  assert.ok(summary.children.indexOf(panel) > summary.children.findIndex(e=>e.children.some(c=>c.innerHTML.startsWith("阻塞"))),"the panel sits under row 1");
+  assert.equal(panel.parentElement,summary.children[0],"the panel remains part of the waits row");
+  assert.equal(panel.parentElement!.children[0]!.children[0]!.innerHTML,"阻塞 3 ›","the counter buttons precede the panel");
   await rows[1]!.click(); await p.flush();
   assert.ok(p.all().find(e=>e.id === "detail-it-child"),"the click selects the card's item");
   const back=p.document.getElementById("backbtn")!; assert.equal(back.hidden,false,"the jump is remembered");
@@ -2642,7 +2656,7 @@ test("要你知道 lists unread notices newest first, 已读 hides one through t
   assert.ok(!markup(section()!).includes("已读的"));
   assert.ok(rows[0]!.children.some(e=>e.className.includes("notice-item")),"a notice with an item links to it");
   const kids=p.roots.get("summary")!.children;
-  assert.ok(kids.includes(section()!) && kids.indexOf(section()!) < kids.length-1,"the list is a direct child of the summary, above the view row");
+  assert.ok(kids.includes(section()!) && kids.indexOf(section()!) < kids.findIndex(e=>e.id === "tools-row"),"the notice list is its own summary row, above the tools");
   await rows[0]!.children.find(e=>e.className.includes("notice-read"))!.click();
   assert.deepEqual(p.calls.filter(c=>c.path === "/api/notice-read").map(c=>c.body),[{id:"n2"}]);
   await p.change("f".repeat(40),[{kind:"notice",id:"n2",after:{...s.notices.n2!,read:at,rev:2}}]); await p.flush();
