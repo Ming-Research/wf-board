@@ -131,7 +131,7 @@ const DONE_WHEN = /^#{1,6}[ \t].*(完成条件|怎样算完成)|\*\*[^*\n]*(完�
  * Array/object results are defensive copies; item() returns the snapshot's item.
  * Missing items have no metadata; tree queries still include dangling children.
  */
-export const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
+export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
 export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
@@ -390,7 +390,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       const open = deps.filter(e => e.open);
       if (leaf && st === "blocked" && deps.length && !open.length) out.push({ text: "可解除阻塞：等的都已完成" });
       if (leaf && st === "blocked" && !deps.length && !needsOwner(id)) out.push({ text: "卡住了，但没写在等什么" });
-      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 2 小时（活跃时间）没有动静", label: STALLED_LABEL });
+      if (leaf && st === "wip" && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
       if (leaf && st === "wip" && open.length) out.push({ text: "标为进行中，但还在等别的", target: { kind: open[0]!.kind, id: open[0]!.id } });
       if (st !== undefined && migrated(id) && !ended(id) && !DONE_WHEN.test(it.head || "")) out.push({ text: "正文没写完成条件" });
       if (st !== undefined && migrated(id) && !ended(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
