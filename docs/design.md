@@ -416,8 +416,9 @@ tree, status, priority and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the owner page or the coordinator (`author: 总管`)
-sets or clears it through `set_pause`; project agents cannot set it through
+the server's time. Only the coordinator (`author: 总管`) sets or clears it through
+`set_pause`, at the owner's request in a comment (the page has no pause or
+resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
 cancelled work is refused. This marker never changes plan rows.
 
@@ -747,8 +748,8 @@ old model required are the common case.
 
 The detail column of a selected item reads, top to bottom:
 
-1. the head row: status, priority, title, ratio, chips (unchanged), and under
-   it one line 属于「owner title」 (a link), or 顶层 · 项目名 for a top item;
+1. the head row: status, priority, title, ratio, chips (unchanged); the left
+   tree already shows the owner, so the detail has no ownership line;
 2. 目标, the target-number table (unchanged), when the item has targets;
 3. 计划和进展, the plan, with this item's own cards unfolded under their rows;
 4. the head (问题 / 为什么 / 做法) and the `data` line;
@@ -977,7 +978,7 @@ item and card writes retain the normal project ownership checks.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `总管` or the owner page; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared; the page posts `{id, paused, reason?}` to `/api/pause`, with the server assigning the coordinator author |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `总管`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
@@ -1099,7 +1100,7 @@ project links wrap, and long notice text breaks within its row.
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
-属于 line, 目标, 计划和进展 with its unfolded cards, head text and data,
+目标, 计划和进展 with its unfolded cards, head text and data,
 被依赖, the comment entry and comment list, collapsed 日志, ask, the open and
 shown ruled cards the plan does not name, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
 the tree highlight and the detail selection and collapses the right column.

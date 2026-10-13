@@ -83,9 +83,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let treeWidth: number | null = null;
   try { const stored=Number(localStorage.getItem("board-tree-width")); if (Number.isFinite(stored) && stored > 0) treeWidth=stored; } catch {}
   let selectedItem: string | null = null;
-  let pauseEditing: string | null = null;
-  const pauseReasons = new Map<string,string>();
-  const pauseBusy = new Set<string>();
   try { selectedItem = localStorage.getItem("board-selected"); } catch {}
   let selectionRestored = false, detailDirty = true;
   function rememberSelected(id: string | null) {
@@ -1677,10 +1674,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // Its existing marker can be cleared; closed work can never gain one.
     if (it.record || ended(it) && !it.paused) return null;
     const box = el("div", "pause-control");
-    const button = (cls: string, text: string, title: string, onClick: () => void) => {
-      const control = el("button", "sbtn s-plain " + cls, text); control.type = "button"; control.title = title;
-      control.addEventListener("click", onClick); return control;
-    };
     const source = derived.pausedBy(it.id), pause = source ? snapshot.items[source]?.paused : undefined;
     if (pause) {
       const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
@@ -1688,46 +1681,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         reason.appendChild(document.createTextNode(" · 由「"));
         const ancestor = index().byId.get(source!);
         if (ancestor) reason.appendChild(depLink(ancestor));
-        reason.appendChild(document.createTextNode("」暂停，请在该条目恢复"));
+        reason.appendChild(document.createTextNode("」暂停"));
       }
       box.appendChild(reason);
-    }
-    // Inherited pauses are resumed at their source; clearing a child's local
-    // marker never clears an ancestor's pause.
-    const write = async (paused: boolean, reason?: string) => {
-      if (!connected) { showDisconnected(); return; }
-      if (pauseBusy.has(it.id)) return;
-      pauseBusy.add(it.id); renderNow("item:" + it.id);
-      try {
-        await api("/api/pause", {id:it.id,paused,...reason ? {reason} : {}});
-        if (pauseEditing === it.id) pauseEditing = null;
-        pauseReasons.delete(it.id);
-      } catch (error) { showError(error); }
-      finally { pauseBusy.delete(it.id); renderNow("item:" + it.id); }
-    };
-    if (it.paused) {
-      const resume = button("pause-resume", "恢复", "恢复此条目的计划，保留所有计划行", () => write(false));
-      resume.disabled = pauseBusy.has(it.id); box.appendChild(resume);
-    } else if (pauseEditing === it.id) {
-      const input = el("input", "pause-input"); input.type = "text";
-      input.value = pauseReasons.get(it.id) || "";
-      input.placeholder = "暂停原因"; input.setAttribute("aria-label", "暂停原因");
-      input.disabled = pauseBusy.has(it.id);
-      input.addEventListener("input", () => pauseReasons.set(it.id,input.value));
-      const confirm = button("pause-confirm", "确认暂停", "暂停此条目及其下级，保留计划", () => {
-        const reason = input.value.trim();
-        if (!reason) { showError(new Error("请填写暂停原因")); input.focus(); return; }
-        return write(true,reason);
-      });
-      confirm.disabled = pauseBusy.has(it.id);
-      const cancel = button("pause-cancel", "取消", "", () => { pauseEditing = null; pauseReasons.delete(it.id); renderNow("item:"+it.id); });
-      cancel.disabled = pauseBusy.has(it.id);
-      box.appendChild(input); box.appendChild(confirm); box.appendChild(cancel);
-    } else if (!source) {
-      box.appendChild(button("pause-start", "暂停", "由主人暂停此条目及其下级，保留计划", () => {
-        pauseEditing = it.id; renderNow("item:" + it.id);
-        itemBox(it.id)?.querySelector<HTMLInputElement>(".pause-input")?.focus();
-      }));
     }
     return box;
   }
@@ -1935,10 +1891,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
       const body = el("div", "body");
-      const owner=upItem(it), ownership=el("div","item-owner");
-      if (owner) { ownership.appendChild(document.createTextNode("属于「")); ownership.appendChild(depLink(owner)); ownership.appendChild(document.createTextNode("」")); }
-      else ownership.appendChild(document.createTextNode("顶层 · "+it.group));
-      body.appendChild(ownership);
       const terms = itemTerms(it.id);
       const targets = targetsSection(it, before); if (targets) body.appendChild(targets);
       const plan = planSection(it, before, terms); if (plan) body.appendChild(plan);
