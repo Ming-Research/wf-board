@@ -152,7 +152,7 @@ test("row ratios exclude dropped steps, cancelled owned work and owned records, 
   const s = snapshot({ item: { plan: workPlan([step("done", "done"), step("dropped", "dropped"), own("cancelled"), own("ownedRecord"), shared("sharedRecord"), shared("cancelled-shared")]) }, cancelled: { status: "cancelled" }, ownedRecord: { record: true }, sharedRecord: { record: true }, "cancelled-shared": { status: "cancelled" } });
   const r = rules(s);
   assert.deepEqual(r.planRatio("item"), { done: 2, total: 4 });
-  assert.deepEqual(r.planRows("item").map(row => row.glyph), ["✓", "✗", "✗", "✓", "✓", "⏸", "◆"]);
+  assert.deepEqual(r.planRows("item").map(row => row.glyph), ["✓", "✗", "✗", "✓", "✓", "⏸", "○"]);
   assert.equal(r.statusOf("item"), "blocked");
   assert.ok(texts(s, "item").includes("依赖的条目已取消"));
   assert.deepEqual(r.planRatio("ownedRecord"), { done: 0, total: 0 });

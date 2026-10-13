@@ -3022,7 +3022,7 @@ test("plan steps show all states, elapsed days and acceptance; comments precede 
   const s=nativeSnapshot(); s.items.child!.head="Stable head";
   s.items.child!.plan=planWork([planStep("done","Deliver parser #42","done",{doneAt:"2026-10-06T12:00:00Z"}),planStep("doing","Validate replies","doing",{since:"2026-10-06T12:00:00Z",waits:"CI"}),planStep("todo","Publish evidence"),planStep("drop","Old approach","dropped",{reason:"Superseded"})]); s.items.child!.log=[{at,text:"Detailed investigation"}];
   const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
-  assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","●","○","✗","◆"]);
+  assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","●","○","✗","○"]);
   assert.match(markup(planRow(p,"child","done")),/Deliver parser #42 · 10-06/); assert.match(markup(planRow(p,"child","doing")),/Validate replies · 6 天 · 等 CI/); assert.match(markup(planRow(p,"child","drop")),/Old approach · Superseded/);
   assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/4"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
   const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), comments=body.children.findIndex(e=>e.className === "item-comments"), prose=body.children.findIndex(e=>e.className === "rich"), logs=body.children.findIndex(e=>e.className === "log");
@@ -3143,7 +3143,7 @@ test("the native plan mockup shows glyphs, parallel groups, glyph-only item stat
   s.items.area!.provisional=true;
   s.items.area!.plan=planWork([planStep("done","Delivered parser","done"),planStep("drop","Old approach","dropped"),planStep("writing","Write parser","doing",{after:[]}),ownedRow("child"),sharedRow("dependency"),cardRow("q"),planStep("notes","Release notes","todo",{after:[]})]);
   const p=await page(s,[],null,undefined,{now:()=>Date.parse(at)+2*24*60*60*1000}); await expand(p,"area");
-  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","○","◆"]);
+  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","✗","●","●","⏸","⏸","○","○"]);
   const group=item(p,"area").querySelector(".plan-group")!; assert.equal(group.attributes.role,"group"); assert.equal(group.attributes["aria-label"],"可同时进行");
   const owned=planRow(p,"area","child");
   assert.equal(owned.querySelector(".plan-sub"),null,"an owned item row has no activity line under it");
@@ -3201,7 +3201,7 @@ test("every resolved plan row stays visible in stored order on initial paint and
     for (const p of [await page(s,[],null,undefined,{storage}),await page(s,[],null,undefined,{storage})]) {
       assert.ok(detailItem(p,"child"),"the selected plan is present on its first paint, with no plan controls pressed");
       assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
-      assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✓","✗","✓","✗","✓","✓","◆"]);
+      assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✓","✗","✓","✗","✓","✓","○"]);
       assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
       assert.deepEqual(item(p).querySelector(".plan-group")!.querySelectorAll(".plan-row").map(row=>row.id),expected.slice(0,-1));
       assert.match(markup(planRow(p,"child","drop")),/Dropped step[^]*Replaced/);
@@ -3252,7 +3252,7 @@ test("complete plans render without storage and phone CSS retains the glyph gutt
   for (let reload=0;reload<2;reload++) {
     const p=await page(s,[],null,undefined,{storageUnavailable:true}); await expand(p);
     assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
-    assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✗","✓","◆"]);
+    assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✗","✓","○"]);
     assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
   }
   const source=await readFile("web/app.ts","utf8"); assert.ok(!source.includes("board-plan-open"),"the retired choice has no reader or writer");

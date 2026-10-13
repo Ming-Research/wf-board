@@ -50,7 +50,7 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   assert.deepEqual(c.ancestors.map(it => it.id), ["area"]);
   assert.ok(c.plan[0]!.includes("child-low") && c.plan[0]!.includes("[own]"));
   assert.ok(c.plan[1]!.includes("child-high") && c.plan[1]!.includes("[own]"));
-  assert.ok(c.plan.at(-1)!.includes("◆") && c.plan.at(-1)!.includes("验收"));
+  assert.ok(c.plan.at(-1)!.includes("○") && c.plan.at(-1)!.includes("验收"));
   assert.deepEqual(c.dependents.map(d => d.id), ["b"], "owner belongs in its chain, shared waiter is separate");
   for (const removed of ["children", "deps", "steps", "migrated", "raisedBy"]) assert.equal(Object.hasOwn(c, removed), false);
   const open = c.cards.find(card => card.key === "choice")!;
@@ -351,7 +351,7 @@ test("context and brief show plan levels, parallel marks, acceptance and resolve
   assert.ok("plan" in context);
   assert.match(context.plan[0]!,/^L0 ‖ ✓ compile /);
   assert.match(context.plan[1]!,/^L0 ‖ ● review /); assert.match(context.plan[1]!,/2 天.*Review committee/);
-  assert.match(context.plan.at(-1)!,/◆ accept .*验收/);
+  assert.match(context.plan.at(-1)!,/○ accept .*验收/);
   const brief=q.brief(s,r,author),current=brief.wip.find(row=>row.id==="a")!;
   assert.ok(current.plan!.includes("✓ 1 项已完成"),"brief counts only the done row as completed");
   assert.ok(current.plan!.includes("✗ 1 项已放弃"),"brief counts the dropped row separately");

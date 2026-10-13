@@ -244,7 +244,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       const derived = rowState(row, seen);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
-      const glyph = accept ? "◆" : derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
+      const glyph = derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
       const entry = { row, ...derived, ready, level, glyph };
       out.push(entry); byId.set(row.id, entry);
     }
