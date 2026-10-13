@@ -147,7 +147,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan > .log-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .plan > .log-head > .steps-ratio { margin-left: auto; }
 .plan-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; padding: 2px 0; overflow-wrap: anywhere; font-size: 13.5px; }
-.plan-row > .g { grid-row: 1 / span 3; text-align: center; }
+.plan-row > .g { grid-row: 1 / span 3; align-self: start; text-align: center; }
 .plan-row.done > .g { color: var(--done); }
 .plan-row.wip > .g { color: var(--wip); }
 .plan-row.blocked > .g { color: var(--block); }
@@ -161,6 +161,28 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
 .plan-row.accept { border-top: 1px solid var(--rule); margin-top: 6px; padding-top: 6px; }
 .plan-row .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+/* An item row reads like the item's head in the tree: compact status and priority chips, then the title as plain
+   text that turns into a link on hover, then its ratio and tags. What the item is doing now sits under it, one line
+   per part, each led by its plan glyph and cut to the width. */
+.plan-row.item-line { padding: 3px 0; }
+.plan-row.item-line > .plan-main { line-height: 1.55; }
+.plan-row.item-line .st { font-size: 10px; padding: 0 4px; min-width: calc(5ch + 8px); line-height: 1.6; margin-right: 5px; vertical-align: 1px; }
+.plan-row.item-line .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; margin-right: 6px; vertical-align: 1px; }
+.plan-row.item-line .prio.none { display: none; }
+.plan-row.item-line .item-title { font-size: 13.5px; font-weight: 500; }
+.plan-row.item-line .plan-meta { display: inline; margin-left: 8px; white-space: nowrap; }
+.plan-row.item-line .plan-meta > * + * { margin-left: 6px; }
+.plan-row.item-line .checktag { font-size: 11px; padding: 0 5px; vertical-align: 1px; }
+.plan-link { color: var(--ink); text-decoration: none; }
+.plan-link:hover { color: var(--accent); text-decoration: underline; }
+.plan-row.done .plan-link, .plan-row.dropped .plan-link { color: var(--muted); }
+.plan-row.dropped .plan-link { text-decoration: line-through; }
+.plan-sub .plan-link { color: inherit; }
+.plan-row.item-line > .plan-sub { margin: 1px 0 0 2px; padding-left: 8px; border-left: 1px solid var(--rule); }
+.plan-activity { display: flex; gap: 5px; min-width: 0; white-space: nowrap; }
+.plan-activity > .ag { flex: none; width: 1em; text-align: center; }
+.plan-activity > .at { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.plan-activity > .at p { display: inline; }
 .item-owner { color: var(--muted); font-size: 12.5px; }
 .item-comments { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .item-comments > .notes { padding-left: 0; flex: 1 1 100%; }
