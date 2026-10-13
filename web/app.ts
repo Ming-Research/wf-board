@@ -1465,23 +1465,26 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     meta.innerHTML = "";
 
     const sum = get("summary");
+    const nav = get("nav");
+    nav.remove(); // Keep the project links and their element while rebuilding the summary around them.
     sum.innerHTML = "";
-    // Three rows, then the quiet status counts beside the view buttons. Row 1: what needs the owner (阻塞, 决策卡, 新,
-    // 评论回复), with the 等你 panel and the 要你知道 list under it. Row 2 (未读): the other kinds of new things, the
-    // filter reset and 全部已阅. Row 3: fold buttons and the status legend.
+    // One concern per row: owner waits, unread notices, new-content navigation and filters, then tools and links.
+    const waitingRow = el("div", "header-row header-wait"); waitingRow.id = "wait-row";
     const acts = el("div", "sum-row"), unreadRow = el("div", "sum-row"), view = el("div", "sum-row"), stats = el("div", "sum-stats");
+    unreadRow.id = "unread-row"; view.id = "tools-row";
     const sbtn = (cls: string, text: string, title: string, onClick: () => void) => { const b = el("button", "sbtn " + cls, text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", onClick); return b; };
     const blocking = stops().filter(blockingStop).length, plainCards = stops().length - blocking;
     if (blocking) acts.appendChild(sbtn("s-block", "阻塞 " + blocking + " ›", "工作停着等你，从第一条开始", () => goStop(0)));
     if (plainCards) acts.appendChild(sbtn("s-wait", "决策卡 " + plainCards + " ›", "不挡工作的决策卡，从第一张开始", () => goStop(blocking)));
     // Counts are items, as the chips count them; n visits each new place inside them.
     const fresh = countOf(freshStops());
-    if (fresh) acts.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
+    if (fresh) unreadRow.appendChild(sbtn("s-new", "新 " + fresh + " ›", "新内容和新回复，从第一条开始（n）", () => goFresh(0)));
     // Which kinds of new things count, picked like the project filters; each shows how many items have that kind.
     const everyFresh = allFreshStops();
-    FRESH_KINDS.forEach(([kind, label, title]) => {
+    ["progress", "other", "reply"].forEach(key => {
+      const [kind, label, title] = FRESH_KINDS.find(([kind]) => kind === key)!;
       const n = countOf(everyFresh.filter(st => st.kinds.includes(kind))), on = freshSel.includes(kind);
-      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); (kind === "reply" ? acts : unreadRow).appendChild(b); }
+      if (n || on) { const b = sbtn("s-plain" + (on ? " s-on" : ""), label + " " + n, title + "（可多选）", () => toggleFresh(kind)); unreadRow.appendChild(b); }
     });
     if (freshSel.length) unreadRow.appendChild(sbtn("s-plain", "清除筛选", "", () => setFreshSel([])));
     if (steps.length && connected) {
@@ -1526,8 +1529,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       .filter(([k]) => (k !== "cancelled" && k !== "blocked") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
     view.appendChild(stats);
-    if (acts.children.length) sum.appendChild(acts);
-    const panel = waitPanel(); if (panel) sum.appendChild(panel);
+    view.appendChild(nav);
+    if (acts.children.length) waitingRow.appendChild(acts);
+    const panel = waitPanel(); if (panel) waitingRow.appendChild(panel);
+    if (waitingRow.children.length) sum.appendChild(waitingRow);
     const known = noticePanel(); if (known) sum.appendChild(known);
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
@@ -2157,7 +2162,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail");
   let drag: {pointer:number;x:number;width:number} | null = null;
   function applyTreeWidth() {
-    // The grid may overflow a phone; both columns retain their useful minimums.
+    // Desktop columns retain their useful minimums; narrow-screen CSS lets both columns shrink to fit.
     const maximum=Math.max(300,Math.floor(wrap.getBoundingClientRect().width-8-380));
     const width=Math.round(Math.max(300,Math.min(maximum,treeWidth ?? (wrap.getBoundingClientRect().width-8)/2.3)));
     wrap.style.setProperty("--tree-width",width+"px");
