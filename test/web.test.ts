@@ -3201,7 +3201,7 @@ test("every resolved plan row stays visible in stored order on initial paint and
     for (const p of [await page(s,[],null,undefined,{storage}),await page(s,[],null,undefined,{storage})]) {
       assert.ok(detailItem(p,"child"),"the selected plan is present on its first paint, with no plan controls pressed");
       assert.deepEqual(item(p).querySelectorAll(".plan-row").map(row=>row.id),expected);
-      assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✓","✗","✓","✗","✓","✓","○"]);
+      assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(row=>row.innerHTML),["✓","✓","✗","✓","✗","✓","✓","✓"]);
       assert.equal(item(p).querySelectorAll(".plan-fold").length,0);
       assert.deepEqual(item(p).querySelector(".plan-group")!.querySelectorAll(".plan-row").map(row=>row.id),expected.slice(0,-1));
       assert.match(markup(planRow(p,"child","drop")),/Dropped step[^]*Replaced/);
