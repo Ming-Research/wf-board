@@ -11,6 +11,118 @@ import { board, at, later, author } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 
+test("creation, revision, dependency, status, movement and card checks name a fix and leave the board unchanged", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const create = { author, key: "new", owner: "area", title: "New", accept: "New result passes" };
+  const card = { author, key: "new-card", item: "a", question: "Choose?", background: "Why", options: [{ key: "A", text: "A" }] };
+  const cases: Array<[() => Promise<unknown>, RegExp]> = [
+    [() => op.createItem({ ...create, key: "../escape" }), /key.*use/],
+    [() => op.createItem({ ...create, key: "a" }), /key.*new/],
+    [() => op.createItem({ ...create, key: "choice" }), /key.*new/],
+    [() => op.createItem({ ...create, owner: undefined, priority: "P1" }), /group.*requires/],
+    [() => op.createItem({ ...create, owner: "missing" }), /owner.*existing/],
+    [() => op.createItem({ ...create, accept: undefined }), /accept.*required/],
+    [() => op.createItem({ ...create, plan: [{ item: "missing", own: false }] }), /依赖的条目不存在.*missing.*set_plan.*remove or replace/],
+    [() => op.createItem({ ...create, plan: [{ card: "missing" }] }), /依赖的决策卡不存在.*missing.*set_plan.*remove or replace/],
+    [() => op.updateItem({ author, id: "a", rev: 0, title: "Bad" }), /rev.*positive.*context/],
+    [() => op.updateItem({ author, id: "a", rev: 1, head: "Changed" }), /reason.*explain.*head/],
+    [() => op.updateItem({ author, id: "a", rev: 1, links: [{ label: "Invalid", url: "invalid" }] }), /links.*fix/],
+    [() => op.updateItem({ author, id: "a", rev: 1, order: 2 }), /order.*only top items.*plan/],
+    [() => op.setPlan({ author, id: "a", row: { card: "missing" } }), /依赖的决策卡不存在.*missing.*set_plan.*remove or replace/],
+    [() => op.setPlan({ author, id: "other", row: { item: "a", own: true } }), /被多个条目拥有.*current owner area.*move_item/],
+    [() => op.setPlan({ author, id: "area", remove: "a" }), /a is open.*move_item or cancel/],
+    [() => op.setPlan({ author, id: "b", row: { id: "accept", accept: true, text: "Accepted", state: "done" } }), /accept.*unresolved rows.*a.*choice.*resolve each row/],
+    [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["accept"] } }), /after.*earlier/],
+    [() => op.setPlan({ author, id: "a", row: { id: "drop", text: "Dropped work", state: "dropped" } }), /reason.*fix/],
+    [() => op.setStatus({ author, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
+    [() => op.setStatus({ author, id: "other", status: "blocked", log: "Wait" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
+    [() => op.setStatus({ author, id: "area", status: "cancelled", log: "Drop" }), /owned items.*a.*b.*cancel or move each part first/],
+    [() => op.setStatus({ author, id: "a", status: "open", log: "Resume" }), /only a cancelled item can be reopened/],
+    [() => op.moveItem({ author, id: "a", owner: "a" }), /依赖成环.*set_plan or move_item.*remove/],
+    [() => op.moveItem({ author, id: "area", owner: "a" }), /依赖成环.*set_plan or move_item.*remove/],
+    [() => op.moveItem({ author, id: "a", owner: "missing" }), /owner.*existing/],
+    [() => op.moveItem({ author, id: "a", owner: "other", priority: "P2" }), /priority.*refused with owner/],
+    [() => op.writeCard({ ...card, key: "a" }), /key.*new/],
+    [() => op.writeCard({ ...card, key: "choice" }), /key.*new/],
+    [() => op.writeCard({ ...card, options: [] }), /options.*fix/],
+    [() => op.writeCard({ ...card, options: [{ key: "A", text: "A" }, { key: "A", text: "B" }] }), /options.key.*unique/],
+    [() => op.writeCard({ ...card, options: [{ key: "A", text: "A", recommended: true }, { key: "B", text: "B", recommended: true }] }), /recommended.*at most one/],
+    [() => op.writeCard({ ...card, confidence: { score: 6, reason: "Evidence" } }), /confidence.score.*fix/],
+    [() => op.writeCard({ ...card, key: "ruled", rev: 1 }), /status.*open card.*create a new card/],
+    [() => op.ruleCard({ author, key: "ruled", ruling: "Again" }), /status.*open card/],
+    [() => op.ruleCard({ author, key: "choice", choice: "C", ruling: "Bad option" }), /choice.*option key.*omit choice/],
+    [() => op.appendLog({ author: "bad\nname", id: "a", text: "Bad author" }), /author.*newlines/],
+  ];
+  for (const [call, message] of cases) {
+    const before = store.snapshot(), count = (await store.log()).length;
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before,"a refusal leaves the complete in-memory board untouched");
+    assert.deepEqual((await Store.open(dir)).snapshot(), before,"a refusal leaves every stored document and owner state untouched");
+    assert.equal(store.snapshot().head,before.head); assert.equal((await store.log()).length,count,"a refusal makes no commit");
+  }
+});
+
+test("each operation records its effects, author and single atomic commit", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  async function committed(call: () => Promise<Result>, message: string, files: string[], kind: "item" | "decision" | "note", id: string) {
+    const count = (await store.log()).length, previous = store.snapshot().head, result = await call(), after = store.snapshot(), log = await store.log({ limit: 1 });
+    const doc = kind === "item" ? after.items[id]! : kind === "decision" ? after.decisions[id]! : after.notes[id]!;
+    assert.equal((await store.log()).length,count+1,"all document effects enter one atomic commit");
+    assert.notEqual(after.head,previous); assert.equal(result.commit,after.head); assert.equal(result.commit,log[0]!.commit);
+    assert.deepEqual(result,{commit:after.head,id,rev:doc.rev,summary:message},"the result names the revision and commit actually produced");
+    assert.equal(log[0]!.author,author); assert.equal(log[0]!.message,message);
+    assert.deepEqual(log[0]!.files.slice().sort(),files.slice().sort(),"the commit contains every effect and no unrelated document");
+    assert.deepEqual(await store.show(kind,id,result.commit),doc,"the returned revision is stored in that exact commit");
+    assert.deepEqual((await Store.open(dir)).snapshot(),after,"all atomic effects survive reopen");
+  }
+  const itemCommit = (call: () => Promise<Result>, message: string, files=["items/new.yaml"]) => committed(call,message,files,"item","new");
+  await itemCommit(() => op.createItem({ author, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml"]);
+  assert.deepEqual(store.snapshot().items.area!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
+  const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"todo");
+  assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"accept",accept:true,text:"New result passes",state:"todo"}]);
+  await itemCommit(() => op.appendLog({ author, id: "new", text: "Evidence" }),"append_log new");
+  assert.deepEqual(store.snapshot().items.new!.log[0],{at:later,by:author,text:"Evidence"});
+  await itemCommit(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", links: [{label:"PR",url:"https://github.com/Ming-Research/Whitefoot/pull/1"}], data: null }),"update_item new");
+  const revised=store.snapshot().items.new!; assert.equal(revised.head,"Revised"); assert.equal(revised.title,"Revised title"); assert.equal(revised.data,undefined); assert.equal(Object.hasOwn(revised,"agent"),false);
+  assert.deepEqual(revised.plan,created.plan); assert.deepEqual(revised.log.at(-1),{at:later,by:author,text:"改了 head：Scope settled"});
+  await committed(() => op.updateItem({author,id:"other",rev:store.snapshot().items.other!.rev,order:2}),"update_item other",["items/other.yaml"],"item","other");
+  assert.equal(store.snapshot().items.other!.order,2,"top-item order remains editable while owned order is the plan's");
+  await itemCommit(() => op.setPlan({ author, id: "new", row: {card:"choice",after:[]} }),"set_plan new");
+  assert.deepEqual(store.snapshot().items.new!.plan.map(row=>row.id),["work","choice","accept"]);
+  await itemCommit(() => op.setTargets({ author, id: "new", target: goalNumbers }),"set_targets new");
+  assert.deepEqual(store.snapshot().items.new!.targets,[{...goalNumbers,date:later}]);
+  await itemCommit(() => op.setPlan({ author, id: "new", row: {id:"work",text:"Deliver result",state:"doing"} }),"set_plan new");
+  assert.equal(rules(store.snapshot()).statusOf("new"),"wip");
+  await itemCommit(() => op.setPlan({ author, id: "new", row: {id:"work",text:"Deliver result",state:"done"} }),"set_plan new");
+  assert.equal(rules(store.snapshot()).statusOf("new"),"blocked");
+  const waiting=store.snapshot().items.new!;
+  await store.commit({author:"Fixture",message:"Legacy ask",puts:[{kind:"item",id:"new",expectRev:waiting.rev,doc:{...waiting,ask:{text:"Approve",url:"https://example.com/approve",chat:true}}}]});
+  const beforeCancel=store.snapshot().items.new!;
+  await itemCommit(() => op.setStatus({ author, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled");
+  assert.equal(rules(store.snapshot()).statusOf("new"),"cancelled"); assert.deepEqual(store.snapshot().items.new!.plan,beforeCancel.plan); assert.deepEqual(store.snapshot().items.new!.ask,beforeCancel.ask);
+  assert.deepEqual(store.snapshot().items.new!.log.at(-1),{at:later,by:author,text:"Superseded"});
+  await itemCommit(() => op.setStatus({ author, id: "new", status: "open", log: "Resume" }),"set_status new open");
+  assert.equal(store.snapshot().items.new!.status,undefined); assert.equal(rules(store.snapshot()).statusOf("new"),"blocked");
+  await itemCommit(() => op.clearAsk({ author, id: "new", log: "Owner approved" }),"clear_ask new");
+  assert.equal(store.snapshot().items.new!.ask,undefined); assert.equal(store.snapshot().items.new!.log.at(-1)!.text,"Owner approved");
+  await itemCommit(() => op.moveItem({ author, id: "new", owner: "other" }),"move_item new",["items/new.yaml","items/area.yaml","items/other.yaml"]);
+  const moved=store.snapshot(); assert.equal(rules(moved).parentOf("new"),"other"); assert.ok(!moved.items.area!.plan.some(row=>row.id === "new"));
+  assert.deepEqual(moved.items.other!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
+  assert.match(moved.items.area!.log.at(-1)!.text,/Revised title.*其他项目/); assert.match(moved.items.other!.log.at(-1)!.text,/Revised title/); assert.match(moved.items.new!.log.at(-1)!.text,/解释器工作.*其他项目/);
+  const cardCommit=(call: () => Promise<Result>,message:string,key="new-card")=>committed(call,message,["decisions/"+key+".yaml"],"decision",key);
+  await cardCommit(() => op.writeCard({author,key:"new-card",item:"new",question:"Choose?",background:"Evidence",options:[{key:"A",text:"A",recommended:true}],confidence:{score:3,reason:"Exploratory"}}),"write_card new-card");
+  const originalAt=store.snapshot().decisions["new-card"]!.at;
+  await cardCommit(() => op.writeCard({author,key:"new-card",rev:1,item:"new",question:"Choose revised?",background:"More evidence",options:[{key:"B",text:"B"}]}),"write_card new-card");
+  assert.equal(store.snapshot().decisions["new-card"]!.at,originalAt);
+  await cardCommit(() => op.ruleCard({author,key:"new-card",choice:"B",ruling:"Owner picked B"}),"rule_card new-card");
+  assert.equal(store.snapshot().decisions["new-card"]!.choice,"B"); assert.equal(store.snapshot().decisions["new-card"]!.ruledAt,later);
+  await cardCommit(() => op.ruleCard({author,key:"choice",choice:"A",ruling:"Required result settled"}),"rule_card choice","choice");
+  await itemCommit(() => op.setPlan({author,id:"new",row:{id:"accept",accept:true,text:"New result passes",state:"done"}}),"set_plan new");
+  assert.equal(rules(store.snapshot()).statusOf("new"),"done");
+  await committed(() => op.replyNote({author,id:"note-1",reply:"Answer"}),"reply_note note-1",["notes/note-1.yaml"],"note","note-1");
+  assert.deepEqual(store.snapshot().notes["note-1"],{target:"it:a",kind:"comment",text:"中文意见 Whitefoot #341",at,sentAt:at,state:"done",reply:"Answer",repliedAt:later,repliedBy:author,rev:2});
+});
+
 test("stale item/card revisions summarize intervening changes and never overwrite", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   await op.appendLog({ author, id: "a", text: "Concurrent evidence" });
@@ -432,8 +544,8 @@ test("record-owned backlog work refuses priority even with external dependents, 
   await op.moveItem({ author, id: "a", owner: "backlog" });
   await op.createRequest({ author: "Firn", project: author, key: "request", title: "Need", head: "Witness", accept: "Pass", why: "Need", from: "other" });
   await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: false, after: [] } });
-  const r = rules(store.snapshot()); assert.equal(r.isRoot("a"), false); assert.equal(r.priorityOf("a"), "");
-  await assert.rejects(op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, priority: "P2" }), /backlog.*no priority.*root/);
+  const r = rules(store.snapshot()); assert.equal(r.isRoot("a"), false); assert.equal(r.priorityOf("a"), "P1");
+  await assert.rejects(op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, priority: "P2" }), /record-owned.*cannot store priority.*open shared dependents/);
   await assert.rejects(op.setStatus({ author, id: "area", status: "cancelled", log: "Superseded" }), /owned items.*b/);
   await op.setStatus({ author, id: "b", status: "cancelled", log: "Superseded" });
   await op.setStatus({ author, id: "area", status: "cancelled", log: "Parts disposed" });

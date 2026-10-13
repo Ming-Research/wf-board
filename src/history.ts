@@ -1,5 +1,8 @@
 import { PLAN_CONVERSION_MESSAGE } from "./convert-plans.ts";
 import { stringify } from "yaml";
+import { setImmediate } from "node:timers/promises";
+import { changedItemSteps, stepsChanged } from "./legacy-rules.ts";
+import type { Item as LegacyItem } from "./legacy-model.ts";
 import type { Store, DocKind, CommitInfo } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
@@ -18,13 +21,15 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
   }
   if (kind === "decision") return { progress: 0, reply: 0, other: visible ? 1 : 0 };
   const oldPlan = (before as Item | null)?.plan, newPlan = (after as Item | null)?.plan;
+  const oldSteps = (before as LegacyItem | null)?.steps, newSteps = (after as LegacyItem | null)?.steps;
   const oldTargets = (before as Item | null)?.targets, newTargets = (after as Item | null)?.targets;
   const progress = (planChanged(oldPlan, newPlan) ? Math.max(1, changedItemPlan(oldPlan, newPlan).length) : 0)
+    + (stepsChanged(oldSteps, newSteps) ? Math.max(1, changedItemSteps(oldSteps, newSteps).length) : 0)
     + (targetsChanged(oldTargets, newTargets) ? Math.max(1, changedItemTargets(oldTargets, newTargets).length) : 0);
   // Inspect the item itself: log text and the agent-facing summary never decide owner visibility.
   const withoutProgress = (item: unknown) => {
     if (item === null) return null;
-    const { plan: _plan, targets: _targets, ...rest } = withoutLog(item as Item);
+    const { plan: _plan, steps: _steps, targets: _targets, ...rest } = withoutLog(item as Item & { steps?: unknown });
     return rest;
   };
   const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";
@@ -145,6 +150,9 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
   const steps: Step[] = [];
   let previous: Step | undefined;
   for (const [position, commit] of commits.entries()) {
+    // Cached blobs and summaries can otherwise chain only microtasks and starve
+    // page/MCP requests throughout a long cold history walk.
+    await setImmediate();
     // An owner action breaks consecutiveness even though it is not a step.
     if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE) { previous = undefined; continue; }
     const docs: Step["docs"] = commit.files.flatMap(file => {
@@ -164,8 +172,7 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
       const key = "commit|" + commit.commit + "|" + doc.kind + "|" + doc.id;
       let hit = cache.get(key);
       if (!hit) {
-        const before = commit.parents[0] ? await store.showCompared(doc.kind, doc.id, commit.parents[0]) : null;
-        const after = await store.showCompared(doc.kind, doc.id, commit.commit);
+        const { before, after } = await store.comparisonDocuments(doc.kind, doc.id, commit.parents[0] ?? null, commit.commit);
         const summary = ownerSummary(before, after, doc.kind);
         hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
         cache.set(key, hit);
@@ -183,16 +190,19 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
   }
   // Cache coalesced endpoints separately from individual commit visibility. A new head
   // only describes its new commits and the stops it creates or extends.
-  for (const step of steps) for (const doc of step.docs) {
-    const key = (step.parent ?? "") + "|" + step.id + "|" + doc.kind + "|" + doc.id;
-    let hit = cache.get(key);
-    if (!hit) {
-      const { before, after } = await endpoints(store, step, doc.kind, doc.id);
-      const summary = ownerSummary(before, after, doc.kind);
-      hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
-      cache.set(key, hit);
+  for (const step of steps) {
+    await setImmediate();
+    for (const doc of step.docs) {
+      const key = (step.parent ?? "") + "|" + step.id + "|" + doc.kind + "|" + doc.id;
+      let hit = cache.get(key);
+      if (!hit) {
+        const { before, after } = await store.comparisonDocuments(doc.kind, doc.id, step.parent, step.id);
+        const summary = ownerSummary(before, after, doc.kind);
+        hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
+        cache.set(key, hit);
+      }
+      doc.summary = hit.summary; doc.pieces = { ...hit.pieces };
     }
-    doc.summary = hit.summary; doc.pieces = { ...hit.pieces };
   }
   // A document whose change holds nothing the owner can see (times, revisions, a status that became derived) is not unread.
   for (const step of steps) step.docs = step.docs.filter(doc => hasPieces(doc.pieces));

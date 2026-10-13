@@ -10,7 +10,9 @@ import { Item as LegacyItem, Board as LegacyBoard } from "../src/legacy-model.ts
 import type { Snapshot as LegacySnapshot } from "../src/legacy-model.ts";
 import { convertPlans, removeArchives, extractAcceptance, MISSING_ACCEPT, CLOSED_ACCEPT, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "../src/convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "../src/verify-plans.ts";
+import { derivePlanOracle } from "../src/plan-conversion-oracle.ts";
 import { rules } from "../src/rules.ts";
+import { rules as legacyRules } from "../src/legacy-rules.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
 import { ops } from "../src/ops.ts";
 import { Store, readPlanData } from "../src/store.ts";
@@ -53,10 +55,52 @@ test("manual wip does not promote old steps or fabricate new work",()=>{
  source.items.root=item({status:"wip"});const added=checked(source);assert.equal(added.snapshot.items.root!.plan.length,1);assert.ok(added.report.statusChanges.some(change=>change.old==="wip"&&change.new==="todo"&&change.cause==="manual progress removed"));
 });
 
-test("record-owned open work receives no priority even with an external dependent; closed record children keep theirs",()=>{
+test("record-owned work receives shared open priority, but no priority from its record owner",()=>{
  const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"backlog"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.closed=item({parent:"root",group:undefined,status:"done",priority:"P2"});source.items.waiter=item({group:"Q",priority:"P0",steps:[{id:"prepare",text:"Prepare",state:"todo"}],deps:[{id:"work",why:"result"}]});
- const result=checked(source),r=rules(result.snapshot);assert.equal(r.priorityOf("work"),"");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(r.isRoot("work"),false);assert.equal(r.priorityOf("closed"),"P2");
- assert.ok(result.report.priorityChanges.some(change=>change.item==="work"&&change.cause==="moved into backlog"));assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
+ const result=checked(source),r=rules(result.snapshot);assert.equal(r.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(r.isRoot("work"),false);assert.equal(r.priorityOf("closed"),"P2");
+ const change=result.report.priorityChanges.find(change=>change.item==="work");assert.ok(change);assert.equal(change.cause,"shared plan dependents");assert.match(change.detail,/共用.*waiter.*P0/);assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
+ const wronglySuppressed=structuredClone(result);wronglySuppressed.report.priorityChanges.find(change=>change.item==="work")!.new="";assert.ok(verifyPlans(source,wronglySuppressed).some(error=>error.includes("difference report")));
+ source.items.waiter=item({group:"Q",priority:"P0",status:"cancelled",deps:[{id:"work",why:"Result no longer needed"}]});
+ const idle=checked(source);assert.equal(rules(idle.snapshot).priorityOf("work"),"");assert.equal(rules(idle.snapshot).isRoot("work"),false);assert.ok(idle.report.priorityChanges.some(change=>change.item==="work"&&change.cause==="moved into backlog"));
+});
+
+test("conversion retains a root's stored seed when its old displayed priority was empty",()=>{
+ const source=snapshot();source.board=LegacyBoard.parse({title:"Unmigrated",projects:[{name:"P",migrated:false}]});
+ source.items.root=item({priority:"P0",deps:[{id:"child",why:"Needed work"}]});source.items.child=item({parent:"root",priority:undefined});
+ assert.equal(legacyRules(source).priorityOf("root"),"");
+ const result=checked(source);assert.equal(rules(result.snapshot).isRoot("root"),true);assert.equal(result.snapshot.items.root!.priority,"P0");assert.equal(rules(result.snapshot).priorityOf("root"),"P0");assert.equal(rules(result.snapshot).priorityOf("child"),"P0");
+ assert.ok(!result.snapshot.items.root!.log.some(entry=>entry.text.includes("优先级改由依赖它的条目决定")));
+ assert.ok(result.report.priorityChanges.some(change=>change.item==="root"&&change.old===""&&change.new==="P0"&&change.cause==="root priority retained"&&change.detail.includes("原来写的 P0")));
+ assert.equal(result.report.byCause.priority["root priority retained"],1);assert.match(result.report.summary,/根保留旧显示未体现的存储优先级 1 处/);
+ const lostSeed=structuredClone(result);delete lostSeed.snapshot.items.root!.priority;assert.ok(verifyPlans(source,lostSeed).some(error=>error.includes("root seed")));
+ const inventedRetirement=structuredClone(result);inventedRetirement.snapshot.items.root!.log.push({at,by:"总管",text:"迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 P0 不再使用"});inventedRetirement.report.counts.newLogs++;assert.ok(verifyPlans(source,inventedRetirement).some(error=>error.includes("unprescribed conversion logs")));
+});
+
+test("converted cancellation leaves acceptance open when reopened and other rows resolve",async t=>{
+ const source=snapshot();source.items.root=item({status:"cancelled",steps:[{id:"work",text:"Produce the result",state:"todo"}]});
+ const result=checked(source),acceptance=result.snapshot.items.root!.plan.at(-1);assert.ok(acceptance&&"text"in acceptance);assert.equal(acceptance.state,"todo");assert.equal(acceptance.reason,undefined);assert.equal(acceptance.droppedAt,undefined);
+ const incorrectlyDropped=structuredClone(result),badAccept=incorrectlyDropped.snapshot.items.root!.plan.at(-1);assert.ok(badAccept&&"text"in badAccept);badAccept.state="dropped";badAccept.reason="条目已取消";badAccept.droppedAt=at;assert.ok(verifyPlans(source,incorrectlyDropped).some(error=>error.includes("acceptance state")));
+ const dir=await mkdtemp(join(tmpdir(),"wf-board-reopen-conversion-"));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const store=await Store.open(dir,{init:true,board:{title:"Reopened conversion",projects:[{name:"P"}]}});
+ await store.commit({author:"P",message:"Synthetic converted cancelled item",puts:[{kind:"item",id:"root",expectRev:null,doc:result.snapshot.items.root!}]});
+ const write=ops(store,()=>"2026-10-13T02:00:00Z");await write.setStatus({author:"P",id:"root",status:"open",log:"Resume the cancelled work"});
+ await write.setPlan({author:"P",id:"root",row:{id:"work",text:"Produce the result",state:"done"}});
+ assert.equal(rules(store.snapshot()).statusOf("root"),"todo");const reopenedAcceptance=store.snapshot().items.root!.plan.at(-1);assert.ok(reopenedAcceptance&&"text"in reopenedAcceptance);assert.equal(reopenedAcceptance.state,"todo");
+ await write.setPlan({author:"P",id:"root",row:{id:acceptance.id,text:acceptance.text,accept:true,state:"done"}});assert.equal(rules(store.snapshot()).statusOf("root"),"done");
+});
+
+test("independent oracle evaluates shared diamond targets once and keeps cyclic walks path-sensitive",()=>{
+ const converted=checked(snapshot()).snapshot,base=converted.items.root!;converted.items={};let planReads=0;
+ for(let level=0;level<14;level++)for(const side of ["a","b"]){
+   const id=`${side}-${level}`,plan:typeof base.plan=level===13?[]:[{id:`a-${level+1}`,item:`a-${level+1}`,own:false,after:[]},{id:`b-${level+1}`,item:`b-${level+1}`,own:false,after:[]}];
+   plan.push({id:"accept",text:"Result accepted",state:"todo",accept:true});
+   converted.items[id]=new Proxy({...base,plan},{get(target,key,receiver){if(key==="plan")planReads++;return Reflect.get(target,key,receiver);}});
+ }
+ const oracle=derivePlanOracle(converted);assert.equal(oracle.statusOf("a-0"),"blocked");assert.equal(oracle.statusOf("b-0"),"blocked");assert.equal(oracle.statusOf("a-13"),"todo");
+ assert.ok(planReads<=Object.keys(converted.items).length*3,`shared targets were repeatedly expanded: ${planReads} plan reads`);
+ converted.items={a:{...base,plan:[{id:"b",item:"b",own:true,after:[]},{id:"accept",text:"Accepted",state:"todo",accept:true}]},b:{...base,plan:[{id:"a",item:"a",own:true,after:[]},{id:"work",text:"Actual work",state:"doing",since,after:[]},{id:"accept",text:"Accepted",state:"todo",accept:true}]}};
+ const cyclic=derivePlanOracle(converted);assert.equal(cyclic.statusOf("a"),"wip");assert.equal(cyclic.statusOf("b"),"wip");
+ assert.equal(cyclic.rows("a")[0]!.state,"progress");assert.equal(cyclic.rows("b")[0]!.state,"waiting");assert.equal(cyclic.rows("a")[0]!.state,"progress");
 });
 
 test("acceptance extraction rejects ambiguous/inline matches, keeps fenced text and exact unrelated head text",()=>{

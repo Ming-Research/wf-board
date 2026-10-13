@@ -61,5 +61,5 @@ matches what the artifact board offered.
   and the last acceptance step. Status comes from the plan; `set_status`
   only cancels or reopens an item. `move_item` changes the item's owner.
 - Records have no acceptance step and pass no priority. Open work owned by
-  a record is backlog work: it has no priority until moved under a root's
-  plan, even when another item waits for it.
+  a record stores no priority, but derives the highest priority from open
+  shared dependents, or none without them. Record ownership passes none.

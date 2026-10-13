@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stringify } from "yaml";
+import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, later } from "./helpers.ts";
 import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
@@ -454,4 +459,121 @@ test("done and cancelled items retain unread changes and readable endpoint diffs
     assert.ok(diff.before && diff.after);
     assert.match(diff.diff, /Completion evidence clarified|Cancellation scope clarified/);
   }
+});
+
+
+test("legacy unread pieces preserve manual status, ownership and dependency edits separately from steps", () => {
+  const before = LegacyItem.parse({ title: "Legacy work", group: "P", status: "todo", priority: "P1", updated: later, rev: 1 });
+  for (const patch of [{ status: "wip" }, { parent: "owner" }, { deps: [{ id: "need", why: "Needed result" }] }]) {
+    const after = { ...before, ...patch, rev: 2 };
+    assert.deepEqual(piecesOf(before, after, "item", describeChanges(before, after, "item")), { progress: 0, reply: 0, other: 1 });
+  }
+  const after = { ...before, steps: [{ id: "work", text: "Own progress", state: "todo" }], rev: 2 };
+  assert.deepEqual(piecesOf(before, after, "item", describeChanges(before, after, "item")), { progress: 1, reply: 0, other: 0 });
+  assert.deepEqual(piecesOf(before, { ...before, log: [{ at: later, by: "P", text: "Historical detail" }], rev: 2 }, "item", "metadata changed"), { progress: 0, reply: 0, other: 0 });
+});
+
+test("cold unread history compares legacy commits without whole-snapshot conversions", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-history-plans-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const git = promisify(execFile);
+  const run = (args: string[]) => git("git", args, { cwd: dir });
+  const commit = async (name: string, message: string) => {
+    await run(["add", "."]);
+    await run(["-c", `user.name=${name}`, "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message]);
+    return (await run(["rev-parse", "HEAD"])).stdout.trim();
+  };
+  await run(["init", "-b", "main"]);
+  await mkdir(join(dir, "items"));
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Legacy history", projects: [{ name: "P", migrated: true }] }));
+  const original = LegacyItem.parse({ title: "Work", group: "P", status: "todo", priority: "P1", head: "**完成条件**：Checks pass", updated: later, rev: 1 });
+  await writeFile(join(dir, "items/work.yaml"), stringify(original));
+  // Unchanged items make the expensive wrong algorithm do board-sized work for
+  // each document-sized change; the assertion counts conversions, not time.
+  for (let i = 0; i < 24; i++) await writeFile(join(dir, `items/other-${i}.yaml`), stringify(original));
+  const cursor = await commit("P", "Legacy baseline"), commits: string[] = [];
+  for (let i = 0; i < 16; i++) {
+    await writeFile(join(dir, "items/work.yaml"), stringify({ ...original, rev: i + 2, steps: [{ id: "one", text: `Progress ${i}`, state: "todo" }] }));
+    commits.push(await commit(i % 2 ? "P" : "Historical session", `Legacy progress ${i}`));
+  }
+  const migrated = await Store.open(dir, { planConversionHead: commits.at(-1)! });
+  const migration = migrated.snapshot().head;
+  const store = await Store.open(dir); // no warm comparison cache from the conversion
+  const normalize = store.comparisonSnapshot.bind(store);
+  let conversions = 0;
+  t.mock.method(store, "comparisonSnapshot", (at: string) => { conversions++; return normalize(at); });
+  const steps = await unreadSteps(store, cursor);
+  assert.deepEqual(steps.map(step => step.id), commits);
+  assert.ok(steps.every(step => step.docs.length === 1 && step.docs[0]!.pieces.progress === 1 && step.docs[0]!.pieces.other === 0));
+  assert.equal(conversions, 0, "same-format history must never normalize an entire snapshot");
+  assert.ok(steps.every(step => !step.commits.includes(migration)));
+  const crossing = await store.comparisonDocuments("item", "work", commits.at(-1)!, migration);
+  assert.equal(conversions, 1, "one legacy endpoint normalization for a comparison spanning conversion");
+  assert.deepEqual((crossing.before as { plan: unknown }).plan, (crossing.after as { plan: unknown }).plan, "conversion itself has no fabricated plan progress");
+  const diff = await stepDiff(store, steps[0]!, "item", "work");
+  assert.ok(diff.before && typeof diff.before === "object" && "plan" in diff.before);
+  assert.ok(diff.after && typeof diff.after === "object" && "plan" in diff.after);
+  assert.match(diff.diff, /Progress 0/);
+  assert.ok("steps" in (await store.show("item", "work", commits[0]!) as object), "audit history stays raw");
+});
+
+test("unread yields between commits even when every historical document is cached", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  await op.setPlan({ author, id: "a", row: { id: "one", text: "One", state: "todo" } });
+  await op.setPlan({ author, id: "b", row: { id: "two", text: "Two", state: "todo" } });
+  const commits = await commitsSince(store, cursor, store.snapshot().head);
+  const comparisons = new Map<string, Awaited<ReturnType<typeof store.comparisonDocuments>>>();
+  for (const commit of commits) for (const file of commit.files) {
+    const match = /^items\/(.+)\.yaml$/.exec(file);
+    if (match) comparisons.set(commit.commit, await store.comparisonDocuments("item", match[1]!, commit.parents[0]!, commit.commit));
+  }
+  let calls = 0, served = false;
+  t.mock.method(store, "comparisonDocuments", async (_kind: Parameters<typeof store.comparisonDocuments>[0], _id: string, _from: string | null, to: string) => {
+    calls++;
+    if (calls === 1) setImmediate(() => { served = true; });
+    if (calls === 2) assert.equal(served, true, "another request's event-loop turn must run before the next cached commit");
+    const result = comparisons.get(to);
+    assert.ok(result);
+    return result;
+  });
+  assert.equal((await unreadSteps(store, cursor)).length, 2);
+  assert.ok(calls >= 2);
+});
+
+
+test("legacy record-to-work history stays raw, while omitted-plan native records stay native", async t => {
+  for (const legacy of [true, false]) await t.test(legacy ? "legacy record" : "native omitted-plan record", async t => {
+    const dir = await mkdtemp(join(tmpdir(), "wf-board-record-history-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const git = promisify(execFile);
+    const run = (args: string[]) => git("git", args, { cwd: dir });
+    const commit = async (message: string) => {
+      await run(["add", "."]);
+      await run(["-c", "user.name=P", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message]);
+      return (await run(["rev-parse", "HEAD"])).stdout.trim();
+    };
+    await run(["init", "-b", "main"]);
+    await mkdir(join(dir, "items"));
+    await writeFile(join(dir, "board.yaml"), stringify({ title: "Record history", projects: [{ name: "P", ...(legacy ? { migrated: true } : {}) }] }));
+    const common = { title: "Record becomes work", group: "P", head: "**完成条件**：Checks pass", updated: later, rev: 1 };
+    const record = legacy ? LegacyItem.parse({ ...common, record: true }) : { ...common, record: true };
+    await writeFile(join(dir, "items/work.yaml"), stringify(record));
+    const cursor = await commit("Record before work");
+    const work = legacy ? LegacyItem.parse({ ...common, status: "todo", priority: "P1", rev: 2 })
+      : { ...common, priority: "P1", rev: 2, plan: [{ id: "accept", text: "Checks pass", accept: true, state: "todo" }] };
+    await writeFile(join(dir, "items/work.yaml"), stringify(work));
+    const changed = await commit("Record becomes work");
+    const store = await Store.open(dir, legacy ? { planConversionHead: changed } : {});
+    let conversions = 0;
+    const normalize = store.comparisonSnapshot.bind(store);
+    t.mock.method(store, "comparisonSnapshot", (at: string) => { conversions++; return normalize(at); });
+    const steps = await unreadSteps(store, cursor);
+    assert.deepEqual(steps.map(step => step.id), [changed]);
+    assert.deepEqual(steps[0]!.docs[0]!.pieces, { progress: legacy ? 0 : 1, reply: 0, other: 1 }, "only native work creation actually adds an acceptance row");
+    assert.equal(conversions, 0, "a record-to-work transition is not a format conversion");
+    const pair = await store.comparisonDocuments("item", "work", cursor, changed);
+    assert.deepEqual(pair.before, record);
+    assert.deepEqual(pair.after, work);
+    assert.equal(conversions, 0);
+  });
 });

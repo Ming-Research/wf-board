@@ -499,16 +499,17 @@ record) shows the check 没有计划：至少要有验收步骤.
   owned item under an open owner is never a root. An open item owned by a
   closed item shows 拥有它的条目已关闭 (it can only arise from data written
   before the cancellation refusal).
-  An open work item owned by a record is not a root, stores and derives no
-  priority, and is exempt from the missing-root-priority check.
+  An open work item owned by a record is not a root, stores no priority,
+  and is exempt from the missing-root-priority check. It derives priority
+  from open shared dependents, or none when no open dependent needs it.
 - **Backlog.** A project's backlog is a record whose plan owns the items it
-  holds. Records pass no priority (below), so backlog items show no priority,
-  matching "no commitment"; moving an item out of the backlog under a root's
+  holds. Records pass no priority (below), so backlog items without open
+  shared dependents show no priority; moving an item out under a root's
   plan gives it the root's priority. This replaces the present practice of a
   P2 root named 待选工作, which gave every backlog item P2.
   Setting priority on an open item owned by a record is refused with an
-  explanation that backlog items carry no priority until moved under a
-  root's plan; shared waiters do not override this rule.
+  explanation that record-owned work cannot store priority and takes its
+  priority from open shared dependents. Record ownership supplies no seed.
 - **Cycles.** Item rows, owned and shared together, may not form a cycle; a
   write that closes one is refused, and a stored cycle shows 依赖成环 as
   today. Owned rows alone therefore form a forest. `after` cannot form a cycle
@@ -523,8 +524,9 @@ projects and transitively. A closed item keeps the priority that reached it
 and passes none on; card rows carry none; a cycle that no open outside
 dependent reaches has none. One change: a record passes no priority, because
 a record is not work. Before, a record counted as an open dependent; three
-records exist (the 14900K queue among them); open work owned by a record
-shows no priority, even when another item's shared row waits for it.
+records exist (the 14900K queue among them). Open work owned by a record
+still takes the highest priority from open shared dependents, and shows
+none only when no open dependent needs it; the record supplies none.
 A root stores `priority`; every write that makes an item a non-root, or
 writes a non-root, drops its stored priority in the same commit and logs
 `不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
@@ -556,6 +558,8 @@ Archiving does not exist: there is no archive field, API, button or shortcut.
 Done and cancelled items are hidden as their own tree and list nodes by
 default; the project's 完成 or 取消 status filter shows them. 完成 includes
 all done items, while 7 天内完成 remains a recent-completion shortcut.
+Closed owners with open descendants remain visible as dimmed tree paths,
+so their open work stays reachable.
 Their rows in every plan always show the state glyph, title and link;
 following a link opens the hidden item's detail without changing filters.
 Unread changes on a closed item, its cards and replies remain in 新 and the
@@ -797,7 +801,8 @@ overturn it.
    come is a problem for the waiting project to settle. Alternative: count it
    resolved like a cancelled owned item.
 2. **Records pass no priority, and a backlog is a record.** Proceeding on:
-   yes, so backlog items show no priority. Alternative: keep backlogs as P2
+   yes; record-owned work derives priority from open shared dependents,
+   or none without them. Alternative: keep backlogs as P2
    roots; then every backlog item ranks P2, as now.
 3. **Retiring legacy priority.** Proceeding on: the plan conversion migrates
    Whitefoot-kit, 总管 and 网站 and removes the legacy path, because plans make
@@ -858,7 +863,9 @@ A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
 `<glyph>` as on the page (✓ ● ○ ⏸ ✗ ◆); an item row adds `[own]` or
 `[shared @<owner key>]`, the target's title and status, and for an owned item
 its current doing step; a card row adds the card's status; `‖` marks rows of
-a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成`. Plans
+a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成` for
+done rows (including owned records) and `✗ M 项已放弃` for dropped steps
+and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
@@ -1395,9 +1402,10 @@ writing; after the owner approves the report, the daemon applies the same
 function at startup as a store migration, like the 跨项目 → 总管 rename,
 in one commit authored by `总管`, and refuses to start if the data has
 changed since the approved dry run (the dry run records the data commit it
-read). The unread history converts each pre-conversion baseline with the same
-function before comparing, so the conversion itself marks nothing new and
-only real later changes show; the conversion commit is not a history step.
+read). Unread history compares legacy commits directly and converts only
+endpoints spanning the schema change, caching historical documents and
+yielding between commits. Normalized page baselines use the same converter;
+the conversion itself marks nothing new and is not a history step.
 `npm run convert:plans -- --data <copy> --dry-run --report <file>` writes the
 report outside the data directory and leaves the copy untouched. The report
 records `sourceHead`, the exact data commit. After the owner approves it,
@@ -1446,8 +1454,8 @@ need them have finished; raw audit `show` and `diff` remain unchanged.
    inside a paragraph, the converter leaves the head unchanged, uses the
    placeholder and reports it (report: ambiguous condition); it never picks
    one. Its state is done (dated at the item's last update) when the old
-   derived status was done, dropped with the reason 条目已取消 when
-   cancelled, todo otherwise.
+   derived status was done, todo otherwise, including cancelled items so
+   reopening still requires acceptance.
 5. **Deriving each status.** The new plan determines the status under the
    approved rules. Old ordinary steps keep their states, text, dates and
    sequence; no step is added, promoted, dropped or given new waits just to
@@ -1463,10 +1471,13 @@ need them have finished; raw audit `show` and `diff` remain unchanged.
    every non-root loses its stored priority with the log line
    `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as
    the former project migration did; the `migrated` field leaves `board.yaml`.
-   Roots seed their stored priority from their old displayed value; every
+   Roots seed their stored priority from their old displayed value, falling
+   back to their stored value when the display was empty; roots never get
+   the non-root priority-retirement log. Every
    project's priority now propagates along all item rows under the approved
    rule, including formerly unmigrated projects and closed children gaining
-   an owner. Open record-owned work carries none. Every old-versus-new
+   an owner. Records pass none; their owned work still receives priority
+   from open shared dependents. Every old-versus-new
    displayed-priority difference is listed with id, project, title and cause
    (for example, propagation from an owner, moving into backlog or losing
    rootness); the difference alone is not an error. The independent oracle

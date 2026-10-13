@@ -175,12 +175,16 @@ test("priority flows across owned and shared item rows, including across project
   assert.equal(r.isRoot("mid"), false); assert.equal(r.isRoot("far"), false); assert.equal(r.isRoot("root"), true);
 });
 
-test("open record-owned work receives no priority even from shared work and retains none of its stored priority", () => {
+test("record-owned work receives shared dependents priority, never the record or its stored priority", () => {
   const s = snapshot({ queue: { record: true, priority: "P0", plan: [own("run"), own("closed")] }, run: { priority: "P1", plan: workPlan([shared("beyond")]) }, closed: { priority: "P1", plan: workPlan([], "done") }, beyond: { priority: undefined }, urgent: { priority: "P0", plan: workPlan([shared("run")]) } });
   const r = rules(s);
-  assert.equal(r.isBacklog("run"), true); assert.equal(r.isRoot("run"), false); assert.equal(r.priorityOf("run"), ""); assert.equal(r.priorityOf("beyond"), "");
+  assert.equal(r.isBacklog("run"), true); assert.equal(r.isRoot("run"), false); assert.equal(r.priorityOf("run"), "P0"); assert.equal(r.priorityOf("beyond"), "P0");
   assert.ok(!texts(s, "run").includes("没有未完成的条目依赖它，却没写优先级"));
   assert.equal(r.isBacklog("closed"), false); assert.equal(r.isRoot("closed"), true); assert.equal(r.priorityOf("closed"), "P1");
+  s.items.urgent!.plan = workPlan([], "done");
+  const noWaiter = rules(s);
+  assert.equal(noWaiter.priorityOf("run"), ""); assert.equal(noWaiter.priorityOf("beyond"), "");
+  assert.equal(noWaiter.isRoot("run"), false);
   s.items.queue!.plan = [own("closed")]; s.items.urgent!.plan = workPlan([own("run")]);
   const moved = rules(s); assert.equal(moved.isBacklog("run"), false); assert.equal(moved.priorityOf("run"), "P0"); assert.equal(moved.priorityOf("beyond"), "P0");
 });
@@ -323,4 +327,37 @@ test("log entries never count as owner-unread: one rule drops the log and names 
   assert.deepEqual(withoutLog({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
   assert.deepEqual(["+2 log", "log changed"].map(isLogChange), [true, true]);
   assert.deepEqual(["steps changed", "head changed", "+2 logs here"].map(isLogChange), [false, false, false]);
+});
+
+
+test("nested shared diamonds evaluate each acyclic target once per snapshot", () => {
+  const items: Record<string, Partial<Item>> = { leaf: { plan: workPlan([], "done") } };
+  for (let level = 0; level < 10; level++) for (const side of ["a", "b"]) {
+    const targets = level ? [`a${level - 1}`, `b${level - 1}`] : ["leaf"];
+    items[`${side}${level}`] = { plan: workPlan(targets.map(id => shared(id)), "done") };
+  }
+  const s = snapshot(items), leaf = s.items.leaf!.plan[0]!;
+  assert.ok("state" in leaf);
+  let reads = 0;
+  Object.defineProperty(leaf, "state", { get() { reads++; return "done"; }, configurable: true });
+  const r = rules(s);
+  assert.equal(r.statusOf("a9"), "done");
+  assert.equal(r.statusOf("b9"), "done");
+  assert.equal(r.planRows("a9")[0]!.state, "resolved");
+  assert.ok(reads <= 4, `the shared leaf must not be re-walked along each path: ${reads} state reads`);
+  Object.defineProperty(leaf, "state", { value: "todo", writable: true, configurable: true });
+  assert.equal(rules(s).statusOf("a9"), "blocked", "a new snapshot recomputes target state");
+});
+
+test("status target memoization never caches a cycle fallback as a target result", () => {
+  const s = snapshot({
+    a: { plan: workPlan([own("b"), step("working", "doing")]) },
+    b: { plan: workPlan([own("a")]) },
+    outside: { plan: workPlan([own("b")]) },
+  });
+  for (const first of ["a", "b", "outside"]) {
+    const r = rules(s);
+    assert.equal(r.statusOf(first), "wip");
+    for (const id of ["a", "b", "outside"]) assert.equal(r.statusOf(id), "wip", `${first} must not poison ${id}`);
+  }
 });

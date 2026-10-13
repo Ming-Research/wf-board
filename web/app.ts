@@ -190,7 +190,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
-  function visible(it: ViewItem) { return !ended(it); }
+  function openWorkAncestors() {
+    return cached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
+  }
+  // Closed owners remain a path to open work, including through other closed owners.
+  function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
@@ -268,7 +272,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
-  // Completed and cancelled nodes show only under their status filters; their plan rows always show.
+  // Closed nodes show under their status filters or as a path to open work; their plan rows always show.
   let filters: Record<string, {status:string[];dep:string}> = {};
   try { filters = JSON.parse(localStorage.getItem("board-filters2") || "{}") || {}; } catch (e) {}
   function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k))} : { status: [], dep: "" }; }
@@ -291,7 +295,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function anyFiltering() { return Object.keys(filters).some(filtering); }
   function matches(it: ViewItem) {
     const f = groupFilter(groupOf(it));
-    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : visible(it);
+    const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !ended(it);
     const d = DEP_FILTERS.find(x => x[0] === f.dep);
     return st && (!d || d[3](it));
   }
@@ -1735,7 +1739,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
     const st = statusOf(it) ?? "record";
-    const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
+    const context = filtering(groupOf(it)) ? !filterMatches().hit.has(it.id) : !detail && ended(it);
+    const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (context ? " ctx" : ""));
     box.id = (detail ? "detail-it-" : "it-") + it.id;
     if (detail) box.dataset.sel = "it:"+it.id;
     if (!detail && selectedItem === it.id) box.classList.add("selected");

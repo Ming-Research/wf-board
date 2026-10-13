@@ -2249,6 +2249,45 @@ test("completed and cancelled nodes default to hidden and the status filters sho
   assert.ok(planRow(p,"area","child") && planRow(p,"area","gone"),"filter reset never removes plan rows from selected detail");
 });
 
+test("closed owners remain dimmed default paths to open descendants and leave when the last descendant closes", async t => {
+  for (const ownerState of ["done","cancelled"] as const) await t.test(ownerState,async()=> {
+    const s=nativeSnapshot();
+    s.items.leaf={...s.items.child!,title:"Open descendant",plan:planWork([])};
+    s.items.closedChild={...s.items.child!,title:"Already completed descendant",plan:planWork([],"done")};
+    s.items.middle={...s.items.child!,title:"Closed intermediate owner",status:"cancelled",plan:planWork([ownedRow("leaf"),ownedRow("closedChild")])};
+    s.items.child={...s.items.child!,title:"Closed child owner",status:"cancelled",plan:planWork([ownedRow("middle")])};
+    s.items.area!.plan=planWork([ownedRow("child")],ownerState === "done" ? "done" : "todo");
+    if (ownerState === "cancelled") s.items.area!.status="cancelled";
+    s.items.closedRoot={...s.items.closedChild!,title:"Closed root without open descendants"};
+    assert.equal(rules(s).statusOf("area"),ownerState,"a done owner resolves its cancelled child even with pre-refusal open descendants");
+    const storage=new Map<string,string>();
+    const p=await page(s,[],null,undefined,{storage});
+    for (const id of ["area","child","middle"]) {
+      const row=rowOf(p,id); assert.ok(row,"each closed owner is retained in the default path");
+      assert.ok(row.classList.contains("ctx"),"the closed path uses existing dimmed context styling");
+      assert.ok(row.classList.contains(id === "area" ? ownerState : "cancelled"),"visibility never changes its status");
+      const caret=row.querySelector(".caret"); assert.ok(caret); assert.equal(caret.disabled,false,"the default path can be unfolded");
+      await caret.click(); await p.flush();
+    }
+    const leaf=rowOf(p,"leaf"); assert.ok(leaf,"the open descendant stays reachable through every closed owner");
+    assert.ok(!leaf.classList.contains("ctx"));
+    assert.ok(!rowOf(p,"closedChild") && !rowOf(p,"closedRoot"),"closed work without open descendants stays hidden");
+    await leaf.querySelector(".item-head")!.click(); await p.flush();
+    assert.ok(detailItem(p,"leaf"),"the open descendant remains selectable from its tree node");
+    assert.ok(!storage.has("board-filters2"),"showing the ownership path needs no status filter choice");
+    const todo=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "未开始 1"); assert.ok(todo); await todo.click(); await p.flush();
+    assert.ok(rowOf(p,"leaf") && rowOf(p,"area").classList.contains("ctx"),"an explicit open filter also retains the dimmed path");
+    await button(p,"清除筛选").click(); await p.flush();
+    assert.ok(rowOf(p,"leaf"),"clearing filters returns to the reachable default tree");
+    const after={...s.items.leaf!,plan:planWork([],"done"),updated:"2026-10-12T01:02:03Z",rev:2};
+    await p.change("e".repeat(40),[{kind:"item",id:"leaf",after}]); await p.flush();
+    for (const id of ["area","child","middle","leaf","closedChild","closedRoot"]) assert.ok(!rowOf(p,id),"closing the last open descendant removes the closed default path");
+    assert.ok(detailItem(p,"leaf"),"hiding tree nodes does not discard the selected closed item's detail");
+    const done=p.all().find(e=>e.tagName === "BUTTON" && /^完成 \d/.test(e.innerHTML)); assert.ok(done); await done.click(); await p.flush();
+    assert.ok(rowOf(p,"leaf") && rowOf(p,"area") && rowOf(p,"child") && rowOf(p,"middle"),"the completed filter restores the same ownership path after closure");
+  });
+});
+
 test("hidden closed item references open detail and Back returns without changing the filter choice", async t => {
   for (const state of ["done","cancelled"] as const) await t.test(state,async()=> {
     const s=nativeSnapshot(), storage=new Map<string,string>();

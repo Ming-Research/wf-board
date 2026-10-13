@@ -132,8 +132,10 @@ function dependency(s: Snapshot, r: Rules, kind: "item" | "card", id: string) {
 /** Stored order is kept; levels expose parallelism without silently sorting the plan. */
 export function planLines(s: Snapshot, r: Rules, id: string, fold = false): string[] {
   const rows = r.planRows(id), groups = r.planGroups(id), lines: string[] = [];
-  const resolved = rows.filter(p => p.state === "resolved" && !("item" in p.row && p.row.own && s.items[p.row.item]?.record));
-  if (fold && resolved.length) lines.push(`✓ ${resolved.length} 项已完成`);
+  const resolved = rows.filter(p => p.state === "resolved");
+  const done = resolved.filter(p => !p.dropped).length, dropped = resolved.filter(p => p.dropped).length;
+  if (fold && done) lines.push(`✓ ${done} 项已完成`);
+  if (fold && dropped) lines.push(`✗ ${dropped} 项已放弃`);
   for (const [i, p] of rows.entries()) {
     if (fold && (p.state === "resolved" || p.excluded)) continue;
     const row = p.row, parallel = groups.some(g => g.start <= i && i < g.end);

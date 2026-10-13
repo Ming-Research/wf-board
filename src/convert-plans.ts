@@ -91,19 +91,22 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
       for (let suffix = 2; used.has(acceptId); suffix++) acceptId = `accept-${suffix}`;
       const closed = oldStatus === "done" || oldStatus === "cancelled";
       append({ id: acceptId, text: extraction.text ?? (closed ? CLOSED_ACCEPT : MISSING_ACCEPT), accept: true,
-        state: oldStatus === "done" ? "done" : oldStatus === "cancelled" ? "dropped" : "todo",
-        ...(oldStatus === "done" ? { doneAt: original.updated } : oldStatus === "cancelled" ? { reason: "条目已取消", droppedAt: original.updated } : {}) });
+        state: oldStatus === "done" ? "done" : "todo",
+        ...(oldStatus === "done" ? { doneAt: original.updated } : {}) });
     }
     const converted = { ...rest, group: previous.groupOf(id), ...(extraction.head === undefined ? {} : { head: extraction.head }), plan, ...(plan.length ? { provisional: true as const } : {}), ...(oldStatus === "cancelled" ? { status: "cancelled" as const } : {}) };
     if (deps.length) converted.log.push({ at, by: "总管", text: "转换前的依赖说明：\n" + deps.map(dep => { const target = "id" in dep ? dep.id : dep.card; const title = "id" in dep ? old.items[target]?.title : old.decisions[target]?.question; return `- 「${title ?? target}」（${target}）：${dep.why}`; }).join("\n") });
     snapshot.items[id] = converted;
   }
   const ids = Object.keys(old.items);
-  // Stored priorities seed roots with the old displayed value, not an ignored old field.
+  // Roots retain the displayed seed, or their stored seed when the legacy display was empty.
   let current = rules(snapshot);
   for (const id of ids) {
     const item=snapshot.items[id]!, oldPriority=previous.priorityOf(id);
-    if (current.isRoot(id) && oldPriority) item.priority=oldPriority as Priority;
+    if (current.isRoot(id)) {
+      const seed=oldPriority||old.items[id]!.priority;
+      if(seed)item.priority=seed as Priority;
+    }
     else if (old.items[id]!.priority) item.log.push({at,by:"总管",text:`迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${old.items[id]!.priority} 不再使用`});
   }
   current = rules(snapshot);
@@ -131,16 +134,16 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
     const oldPriority=previous.priorityOf(id), newPriority=current.priorityOf(id);
     if(oldPriority!==newPriority){
       const unlisted = !!source.parent && !old.items[source.parent]?.deps.some(dep=>"id"in dep&&dep.id===id);
-      const cause=current.isBacklog(id)?"moved into backlog":!previous.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";
-      const detail=current.isBacklog(id)?"记录拥有的未完成工作不存储或继承优先级。"
+      const cause=current.isRoot(id)?"root priority retained":current.isBacklog(id)?newPriority?"shared plan dependents":"moved into backlog":!previous.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";
+      const detail=current.isRoot(id)?"根保留原来写的优先级；旧显示为空不删除存储值。":current.isBacklog(id)?newPriority?"记录拥有的工作不存储优先级；共用它的未完成条目传入最高优先级，记录本身不传入。":"记录拥有的工作没有带优先级的未完成引用；记录本身不传入优先级。"
         : !previous.migrated(id)?"原来的叶条目优先级规则退役；现在从未完成计划的引用推导。"
         : unlisted?"原来未列在依赖中的子条目现在有拥有行，优先级从未完成计划推导。":"优先级取未完成计划中直接或间接引用它的条目的最高值。";
       const dependents=current.dependents(id).filter(dependent=>current.isOpenWork(dependent.id));
       const winning=dependents.filter(dependent=>newPriority?current.priorityOf(dependent.id)===newPriority:true);
       const owner=current.parentOf(id);
-      const evidence=current.isBacklog(id)&&owner?`记录「${snapshot.items[owner]?.title??owner}」（${owner}）拥有它。`
+      const evidence=current.isBacklog(id)&&!newPriority&&owner?`记录「${snapshot.items[owner]?.title??owner}」（${owner}）拥有它。`
         : winning.length?winning.slice(0,3).map(dependent=>`${dependent.own?"拥有":"共用"}它的「${snapshot.items[dependent.id]?.title??dependent.id}」（${dependent.id}）为 ${current.priorityOf(dependent.id)||"无优先级"}`).join("；")+(winning.length>3?`；另有 ${winning.length-3} 个同值引用`:"")
-        : "没有带优先级的未完成引用；根只取转换前的显示值。";
+        : current.isRoot(id)?`根保留转换前的显示值；显示为空时保留原来写的 ${source.priority??"无优先级"}。`:"没有带优先级的未完成引用。";
       const explanation=`${detail} ${evidence}`;
       report.priorityChanges.push({...identity,old:oldPriority,new:newPriority,cause,detail:explanation});
       note(id,"priority changed",`${oldPriority || "none"} → ${newPriority || "none"}：${explanation}`);
@@ -198,7 +201,7 @@ export function removeArchives(source: Snapshot, options: { at: string; planConv
 /** Called again after independent verification so the report never claims unverified preservation. */
 export function updatePlanSummary(report: PlanConversionReport, verified = false): void {
   const result=verified&&!report.errors.length?"独立校验确认原有条目、步骤、日期、日志、决策卡、评论和目标均已保留。":verified?`独立校验发现 ${report.errors.length} 个结构或保留错误，不能应用转换。`:"等待独立保留校验。";
-  const labels: Record<string,string>={"doing rows count":"原有进行中行现在决定状态","unfinished plan rows":"已标完成的计划仍有未完成行","manual progress removed":"不再沿用手写进行中状态","waiting frontier":"下一步只有等待行","ready frontier":"计划存在可开始的行","pending ask":"仍在等待旧的 owner 请求","moved into backlog":"记录拥有的未完成工作不继承优先级","legacy priority retired":"旧的优先级规则退役","owned row added":"补齐原来未列出的拥有行","open plan dependents":"按未完成计划的引用传播优先级"};
+  const labels: Record<string,string>={"doing rows count":"原有进行中行现在决定状态","unfinished plan rows":"已标完成的计划仍有未完成行","manual progress removed":"不再沿用手写进行中状态","waiting frontier":"下一步只有等待行","ready frontier":"计划存在可开始的行","pending ask":"仍在等待旧的 owner 请求","moved into backlog":"记录拥有的工作没有带优先级的未完成引用","shared plan dependents":"记录拥有的工作从共用引用获得优先级","root priority retained":"根保留旧显示未体现的存储优先级","legacy priority retired":"旧的优先级规则退役","owned row added":"补齐原来未列出的拥有行","open plan dependents":"按未完成计划的引用传播优先级"};
   const mainCauses=(counts:Record<string,number>)=>Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([cause,count])=>`${labels[cause]??cause} ${count} 处`).join("；")||"没有变化";
   const manual=report.statusChanges.filter(change=>change.old === "wip" && change.cause === "manual progress removed");
   const todo=manual.filter(change=>change.new === "todo").length;

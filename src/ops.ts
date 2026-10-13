@@ -200,14 +200,21 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           const was = old?.plan?.find(row => "accept" in row && row.accept);
           if (accept && "state" in accept && accept.state === "done" && (!was || !("state" in was) || was.state !== "done" || !isDeepStrictEqual(accept, was))) {
             const open = afterRules.planRows(id).filter(p => p.row.id !== accept.id && p.state !== "resolved");
-            if (open.length) throw new OpError(`accept: unresolved rows ${open.map(p => p.row.id).join(", ")}`);
+            if (open.length) throw new OpError(`accept: unresolved rows ${open.map(p => p.row.id).join(", ")}; resolve each row before marking acceptance done`);
           }
         }
         const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有验收步骤)/;
         for (const id of Object.keys(next.items)) {
           const oldChecks = new Set(beforeRules.checks(id).map(c => JSON.stringify(c)));
           for (const check of afterRules.checks(id)) {
-            if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}`);
+            if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
+              const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
+                : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
+                : check.text.startsWith("没有计划") ? "use set_plan to add the final acceptance step"
+                : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
+                : "use move_item to place the item under exactly one same-project owner";
+              throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
+            }
           }
         }
         try {
@@ -253,7 +260,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   function priorityAllowed(s: Snapshot, id: string): void {
     const r = rules(s);
-    if (r.isBacklog(id)) throw new OpError(`priority: ${id} is backlog work; backlog items carry no priority until moved under a root's plan`);
+    if (r.isBacklog(id)) throw new OpError(`priority: ${id} is record-owned work and cannot store priority; priority derives from open shared dependents`);
     if (!r.isRoot(id)) throw derivedPriority(id, openDependents(r, id));
   }
   function attach(s: Snapshot, puts: Put[], at: string, author: string, owner: string, id: string, after?: string[]): void {
