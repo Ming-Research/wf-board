@@ -33,13 +33,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
   }
-  async function body(req: IncomingMessage): Promise<unknown> {
+  async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
     let data = "";
     req.setEncoding("utf8");
     for await (const chunk of req) {
       data += chunk.toString();
       if (data.length > 1024 * 1024) throw new OpError("Request body exceeds 1 MiB");
     }
+    if (empty !== undefined && !data.trim()) return empty;
     try { return JSON.parse(data); } catch { throw new OpError("Invalid JSON body"); }
   }
   function args<T>(value: unknown): T {
@@ -101,7 +102,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, await (Object.hasOwn(input, "id") ? ownerOps.editDraft(args(input)) : ownerOps.setDraft(args(input)))); return;
       }
       if (path === "/api/send") {
-        const result = await ownerOps.send();
+        const result = await ownerOps.send(args(await body(req, {})));
         json(res, 200, result); return;
       }
       if (path === "/api/archive") { ownerOps.archive(args(await body(req))); json(res, 200, { ok: true }); return; }

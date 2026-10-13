@@ -705,6 +705,13 @@ mark a note handled. It stays `sent` until a project agent replies with
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
 
+`/api/send` also takes `{ids:[...]}` to send only those drafts, with the same
+effects and wake events as the batch send for each; an id that is unknown or
+not a draft refuses the whole request and sends nothing. The page uses it for
+the "发送" button after a decision card (enabled once the card has a choice
+draft, sending that card's drafts) and under a saved draft comment; the send
+box still sends every draft.
+
 A blocking wait produces `{event:"blocking", kind:"card"|"ask", key, item,
 project, text}` (a card event also carries `question`): when a card is created
 open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
