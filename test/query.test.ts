@@ -486,3 +486,8 @@ test("paused items have explicit list, overview and project counts and are absen
   assert.ok("pausedBy" in context);
   assert.deepEqual(context.pausedBy, { id: "area", title: "解释器工作", reason: "After the next release", at: later });
 });
+
+test("describeChanges ignores a changed num, as it does rev and updated", () => {
+  assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "T", num: 9 }, "item"), "metadata changed", "a num-only difference names no field");
+  assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "U", num: 9 }, "item"), "title changed");
+});
