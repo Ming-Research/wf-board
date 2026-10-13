@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { setTimeout } from "node:timers/promises";
 import { parse } from "yaml";
 import { Item } from "../src/model.ts";
-import { Store, ConflictError, ValidationError, type ChangedDoc } from "../src/store.ts";
+import { Store, ConflictError, ValidationError, type ChangedDoc, type CommitInfo } from "../src/store.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -802,6 +802,31 @@ test("pause replay tolerates historical schema changes and logs unreadable item 
   }, "readable ownership and pause timestamps survive unknown fields and malformed plans");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /Skipping unreadable pause history item .*:items\/unreadable\.yaml/);
+});
+
+test("empty pause history returns before git path, cache or revision queries", async t => {
+  type Activity = NonNullable<ReturnType<Store["snapshot"]>["activity"]>;
+  const commit: CommitInfo = { commit: "a".repeat(40), parents: [], at, author: "Fixture", message: "Synthetic history", files: [] };
+  for (const [head, commits] of [["", [commit]], [commit.commit, []], ["", []]] as Array<[string, CommitInfo[]]>) {
+    const store = Object.create(Store.prototype) as Store;
+    const internals = store as unknown as {
+      state: { head: string; activity?: Activity };
+      git(args: string[]): Promise<string>;
+      firstPauseCommit(commits: CommitInfo[]): Promise<string | null>;
+      loadPauses(activity: Activity, commits: CommitInfo[]): Promise<void>;
+      loadActivity(): Promise<void>;
+    };
+    internals.state = { head };
+    const gitCalls = t.mock.method(internals, "git", async () => { throw new Error("Empty pause history must not query git"); });
+    assert.equal(await internals.firstPauseCommit(commits), null);
+    const activity: Activity = { writes: [], items: {} };
+    await internals.loadPauses(activity, commits);
+    assert.deepEqual(activity, { writes: [], items: {} });
+    t.mock.method(store, "log", async () => []);
+    await internals.loadActivity();
+    assert.deepEqual(internals.state.activity, { writes: [], items: {} });
+    assert.equal(gitCalls.mock.callCount(), 0, "neither the marker path nor an empty git revision is queried");
+  }
 });
 
 test("pause history marker skips repeat pickaxe scans on never-paused boards and survives restart", async t => {

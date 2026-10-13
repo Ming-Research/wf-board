@@ -509,17 +509,18 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. Any non-coordinator write that changes an item from effectively paused
-to not paused is refused, naming its pause source and requiring the owner or
-`总管` to resume it. This includes moves out of a paused chain, removal of
-ownership rows, inherited-pause record conversion, completion and cancellation;
-unwritten descendants are checked too. Clearing an inactive explicit marker
-also requires that authority. Moving work into a paused chain is allowed.
-`总管` may perform these changes across projects through plan, ownership,
-record and status operations or a card ruling; project ownership and the
-other plan-validity rules still apply to ordinary project authors.
-Coordinator removal of an owned row may release paused work directly;
-ordinary removal of an open owned row still requires moving or cancelling it.
+pause. A non-coordinator write that changes an item from effectively paused
+to open, not-paused work is refused, naming its pause source and requiring
+the owner or `总管` to resume it. This covers moves out of a paused chain
+and ownership changes affecting unwritten descendants. Done and cancellation
+are closure, not resume: a project's author may complete or cancel paused
+work, keeping its marker. Becoming a record is also not open work, but
+clearing an explicit marker, including an inactive one, still requires the
+owner or `总管`. Moving work into a paused chain is allowed.
+Only a project edits its own items and cards. The coordinator's cross-project
+pause authority applies to `set_pause` alone; it does not bypass ownership
+for plan, record, movement, status or card-ruling writes. Removing an open
+owned row still requires moving or cancelling its target first.
 
 #### Ownership, the tree, roots and top items
 
@@ -925,11 +926,8 @@ and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
-The coordinator pause-administration exception under Status applies to
-`set_plan`, `update_item`, `move_item`, `set_status` and `rule_card`; it does
-not grant unrelated tools cross-project authority. In the table below,
-project ownership and the normal restriction on removing open owned rows
-have that exception for coordinator-directed changes to paused work.
+Only `set_pause` has coordinator cross-project pause authority. All other
+item and card writes retain the normal project ownership checks.
 
 | Tool | Does | Checks |
 |---|---|---|
