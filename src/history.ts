@@ -3,9 +3,9 @@ import type { Store, DocKind, CommitInfo } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
-import { changedItemSteps, stepsChanged, withoutLog } from "./rules.ts";
+import { changedItemSteps, stepsChanged, changedItemTargets, targetsChanged, withoutLog } from "./rules.ts";
 
-/** Owner-visible pieces: added or changed progress steps, replies, and one for any other
+/** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
 export interface Pieces { progress: number; reply: number; other: number }
 export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary: string): Pieces {
@@ -17,11 +17,13 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
   }
   if (kind === "decision") return { progress: 0, reply: 0, other: visible ? 1 : 0 };
   const oldSteps = (before as Item | null)?.steps, newSteps = (after as Item | null)?.steps;
-  const progress = stepsChanged(oldSteps, newSteps) ? Math.max(1, changedItemSteps(oldSteps, newSteps).length) : 0;
+  const oldTargets = (before as Item | null)?.targets, newTargets = (after as Item | null)?.targets;
+  const progress = (stepsChanged(oldSteps, newSteps) ? Math.max(1, changedItemSteps(oldSteps, newSteps).length) : 0)
+    + (targetsChanged(oldTargets, newTargets) ? Math.max(1, changedItemTargets(oldTargets, newTargets).length) : 0);
   // Inspect the item itself: log text and the agent-facing summary never decide owner visibility.
   const withoutProgress = (item: unknown) => {
     if (item === null) return null;
-    const { steps: _steps, ...rest } = withoutLog(item as Item);
+    const { steps: _steps, targets: _targets, ...rest } = withoutLog(item as Item);
     return rest;
   };
   const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";

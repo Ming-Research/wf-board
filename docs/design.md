@@ -159,7 +159,7 @@ log:
   a schema on read and write.
 - `rev` counts writes to the file. A write that replaces content names the
   `rev` it read and fails on a mismatch with the current content in the
-  error. Log appends and `set_steps` carry no caller `rev`: the operations
+  error. Log appends, `set_steps` and `set_targets` carry no caller `rev`: the operations
   queue retries against the latest item while preserving unrelated concurrent writes.
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
@@ -183,7 +183,27 @@ log:
   whole elapsed 24-hour days since `since`, clamped to zero. An all-dropped
   nonempty list shows `0/0`. Compact lines use ✓ done with its month/day,
   ● doing with its elapsed days and wait, ○ todo, and ✗ dropped with its reason.
-- **Record items.** `record: true` makes an item a record with a head, optional steps and log,
+- **Item target numbers.** Optional ordered `targets` give one row per goal,
+  rather than one row per measurement. Each row has a stable `id` with the
+  same pattern as step ids, and required nonempty `goal`, `target`, `current`
+  and `baseline` text naming the goal, its target value, current value and
+  comparison baseline (for example main, Chromium on the same machine and
+  page, Redis or PUC Lua). `date` is a server-stamped ISO UTC timestamp:
+  creation and changes to `current` stamp it; other edits preserve it.
+  Callers never provide dates. Work and record items may have targets;
+  existing items without the field have none. A project session measures a
+  goal and overwrites its current value; there is no measurement history
+  list and no separate duration or throughput statistics.
+  `set_targets` accepts exactly one mode: `targets` replaces the ordered
+  list, `target` upserts one complete row by stable id, retaining its
+  position or appending it, and `remove` deletes an id. Replacement matches
+  rows by id to preserve dates unless the current value changes. Duplicate
+  ids are refused. Project ownership, concurrent-write retries, one atomic
+  commit and no-op behavior match `set_steps`: identical results change
+  neither the item nor its revision and write no commit. Target changes
+  count as owner-unread progress. Context and brief format each goal as one
+  line: `goal: current (vs baseline) → target, YYYY-MM-DD`.
+- **Record items.** `record: true` makes an item a record with a head, optional steps, targets and log,
   and no status; creation and `update_item` can set it. `set_status` refuses
   records. Setting the field to true on a work leaf of the author's own
   project removes its stored status and is refused when the item has work
@@ -331,7 +351,7 @@ log:
   `n` walks page order, top to bottom: an item, its comments, then each of its
   cards and that card's comments, with documents the page does not place last,
   oldest first. Inside a changed item it visits each new place in turn (a
-  changed status, title or body block, a new or changed step, an added dependency or
+  changed status, title or body block, a new or changed step or target row, an added dependency or
   link); a new item is one stop at its start. After `r`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
   `r` reads the whole item holding the selection, however selected: its own
@@ -344,24 +364,24 @@ log:
   intact. Added or changed blocks carry no colour of their own (the item's blue
   line says it holds something new, and `n` lands on the first of them);
   removed content is not shown anywhere: no removed block, former title,
-  dependency, link, ask or card option. Multi-paragraph card questions use the same
+  dependency, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
   status, priority and request rows, and added or changed dependency and link
   rows, are not coloured either.
-  New items and cards carry no per-block marks; added steps still mark their own lines. No green background is used
+  New items and cards carry no per-block marks; added steps and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
   own carries a blue line beside its whole body, marking exactly what `r` on it
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `r` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
   selected item's body and comments appear in the detail column, with a short blue line beside its headline.
-  The 新 chip counts what is new inside. Added or changed step lines, new notes
+  The 新 chip counts what is new inside. Added or changed step lines and target rows, new notes
   and replies, and added dependency and link rows use the same blue bar. Steps
-  compare by stable id against the item before its first unread change, so
-  inserting or removing a neighboring step does not mark an unchanged line.
-  Reordering or removal still marks the item unread without displaying removed
-  lines. Reading the item clears its step marks. The 进展 unread filter selects
-  step changes; head changes, cards and other changes remain in 其他. Logs
+  and targets compare by stable id against the item before its first unread
+  change, so inserting or removing a neighboring row does not mark an unchanged
+  row. Reordering or removal still marks the item unread without displaying
+  removed rows. Reading the item clears its step and target marks. The 进展
+  unread filter selects step and target changes; head changes, cards and other changes remain in 其他. Logs
   never mark the item new, never enter unread counts or stepping, and never
   receive unread bars, including appended or edited log entries. A log-only
   commit does not extend an unread change or move its comparison baseline.
@@ -402,7 +422,7 @@ coordinate among themselves; sessions may be renamed freely.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, steps and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item and compact step lines; its ancestors with status; its sub-items summarized; its deps and its dependents, each with the why and status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `context(id, log?)` | What is this and how did it get here? | The item and compact step and target lines; its ancestors with status; its sub-items summarized; its deps and its dependents, each with the why and status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The dependency and parent tree around the item as an indented list with whys, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
@@ -428,10 +448,11 @@ restructuring forms below (`create_item` with `children`, `move_item` without
 |---|---|---|
 | `create_item(parent, key, title, head, priority, deps, parent_why, parent_own_work, links, record?, children?, source_status?, source_priority?)` | Adds an item and lists it in the parent's deps with `parent_why`; when a work child is added to an ordinary parent with no work children, its own work and status move into the `parent_own_work` sub-item in the same commit, since its status then becomes derived; adding a record or adding under a record does not split the parent; the sub-item takes no priority, and a root parent keeps its own. `children: [{id, why}]` moves those existing items under the new item in the same commit and lists them in its deps with their whys, so it is a parent from birth with no own-work stub; each old parent follows `move_item`'s source rules, with `source_status` and `source_priority` | Key is new and well formed; deps exist and carry a why; an area's priority set; a sub-item's priority refused, since it comes from the items depending on it; children are distinct items of the author's project, not the new item's parent or its ancestors; omit `status` when adopting any work child, while adopting only records preserves a work item's initial status; records never take `status` |
 | `set_steps(id, steps? / step? / remove?)` | Replaces the ordered steps, upserts a complete step by stable id, or removes one | Exactly one mode; project ownership; no caller revision; server-stamped state dates; dropped requires reason; one commit with concurrent-write retry |
+| `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?, parent_own_work?)` | Changes title, head, deps, links, priority or record mode | A changed head requires `reason`, which becomes a log entry; deps keep their why; priority only on a root, otherwise refused naming the items it comes from; converting a record into its parent's first work child requires `parent_own_work` to preserve the parent's status |
 | `set_status(id, status, log)` | Changes a leaf's status with a log line | Only on work leaves, never records; blocked needs an open dep or an ask; cancelled and done need the log line |
-| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents; moving work into an ordinary destination with no work children preserves its own work in a new child, while moving a record or moving under a record needs no own-work child; an ordinary destination with no work children and no work of its own (todo, no steps, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; an ordinary source losing its last non-record child requires its new work leaf status; records take no source status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
+| `move_item(id, new_parent?, parent_why?, parent_own_work?, source_status?, source_priority?, priority?)` | Reparents; moving work into an ordinary destination with no work children preserves its own work in a new child, while moving a record or moving under a record needs no own-work child; an ordinary destination with no work children and no work of its own (todo, no steps or targets, no log entry beyond its creation entry) needs no `parent_own_work` and becomes a parent, keeping its stored priority as a root. Without `new_parent` the item leaves its parent and becomes a root area of its own project, keeping its dependents | No cycle; updates both parents' deps; an ordinary source losing its last non-record child requires its new work leaf status; records take no source status; `source_priority` only on a root source; without `new_parent`, `priority` is required and no other open item may depend on the item, else the refusal names them; `priority` is refused with `new_parent` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
@@ -522,7 +543,7 @@ the tree and 380 for detail. The page may overflow narrower viewports.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
-by 被依赖, head text, data, 依赖, 进展 steps, collapsed 日志, ask, open cards, shown ruled cards,
+by 被依赖, head text, data, 依赖, 进展 steps, 目标 table, collapsed 日志, ask, open cards, shown ruled cards,
 checks and refs, then the item's comment list. 被依赖 and 依赖 leave out
 cancelled items, except a dependency row marked as added. With no selection the column says
 “点左边的条目标题，在这里看正文”. All change marks, fresh lines, notes and
@@ -674,8 +695,11 @@ The item's progress is its ordered steps, shown under 进展 where the log used
 to appear, with its non-dropped done ratio beside the title. Each line uses
 the shared rules formatter for its marker, date, days, wait or dropped reason.
 Doing-day counts refresh with the page's existing minute timer without a server
-write. 日志 follows 进展 (or occupies that position when the item has no steps)
-and is collapsed by default for every item, including items with an empty log.
+write. When targets exist, a small 目标 table follows the steps with columns
+目标 / 当前 / 目标值 / 比较对象 / 日期. Each row is one goal; the date shows
+YYYY-MM-DD. The table is hidden for items without targets and wraps at phone
+width. 日志 follows the progress sections (or occupies their position when
+neither exists) and is collapsed by default for every item, including items with an empty log.
 One click opens the complete history and another closes it. Log entries retain
 their existing comment anchors and reference links; manually opening history
 does not make it unread.
@@ -792,9 +816,9 @@ cancelled items are not open requests.
 sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, WIP leaves, the next ten TODO leaves by priority,
 outstanding work requested from other projects, and the project's glossary
-terms. Relevant item rows include compact step lines. `brief.progress` adds
-`{id, title, steps}` rows for nonarchived records and WIP or blocked items with
-own steps that are not already represented in the inbox, checks, WIP, TODO or
+terms. Relevant item rows include compact step and target lines. `brief.progress` adds
+`{id, title, steps?, targets?}` rows for nonarchived records and WIP or blocked items with
+own steps or targets that are not already represented in the inbox, checks, WIP, TODO or
 outgoing rows. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list includes open requests with `request.by === project` and open items
 targeted by its items’ cross-project dependencies, so triage does not hide

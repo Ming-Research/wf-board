@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Decision, Item, ItemStep, ItemStepInput, Note } from "../src/model.ts";
+import { Decision, Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, changedItemSteps, stepsChanged, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, changedItemSteps, stepsChanged, changedItemTargets, targetsChanged, targetLine, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 // Items state a completion condition unless a case is about a head without one.
@@ -575,6 +575,44 @@ test("step freshness compares full values by stable id and separates reorder or 
   for (const changed of [{ ...a, text: "Revised A" }, { ...a, waits: "CI" }, { ...a, since: T1 }, { ...a, doneAt: T1 }, { ...a, reason: "Changed context" }]) {
     assert.deepEqual(changedItemSteps([a, b], [changed, b]), [changed]);
     assert.equal(stepsChanged([a, b], [changed, b]), true);
+  }
+});
+
+test("target schemas require all text and stored dates while preserving prose and old items", () => {
+  const input = { id: "style", goal: "  apollo11 style time  ", target: "  ≤ 1 倍 Chromium  ", current: "  12 倍 Chromium  ", baseline: "  Chromium 同机同页  " };
+  assert.equal(Object.hasOwn(Item.parse({ title: "Old", updated: T0, rev: 1 }), "targets"), false);
+  assert.deepEqual(ItemTargetInput.parse(input), input, "schema reads preserve prose exactly");
+  assert.equal(ItemTarget.safeParse(input).success, false, "stored targets need a measurement date");
+  const stored = { ...input, date: T0 };
+  assert.deepEqual(ItemTarget.parse(stored), stored);
+  assert.equal(ItemTargetInput.safeParse(stored).success, false, "callers cannot provide dates");
+  assert.equal(ItemTarget.safeParse({ ...input, date: "2026-10-10" }).success, false, "stored dates use server UTC timestamps");
+  for (const field of ["goal", "target", "current", "baseline"] as const) {
+    for (const value of [undefined, "", " \n "]) assert.equal(ItemTargetInput.safeParse({ ...input, [field]: value }).success, false, `${field} must be present and nonempty`);
+  }
+  assert.equal(Item.safeParse({ title: "Bad", updated: T0, rev: 1, targets: [stored, stored] }).success, false, "duplicate stable ids are refused on read too");
+});
+
+test("target lines are compact and target numbers do not derive work or record status", () => {
+  const target = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页", date: T0 };
+  assert.equal(targetLine(target), "apollo11 样式计算耗时: 12 倍 Chromium (vs Chromium 同机同页) → ≤ 1 倍 Chromium, 2026-10-10");
+  assert.equal(targetLine({ ...target, goal: "  apollo11\n样式计算耗时  ", current: " 12\t倍 Chromium ", baseline: "Chromium\n同机同页", target: "≤ 1\r\n倍 Chromium" }), targetLine(target));
+  const s = snapshot({ item: { targets: [target] }, record: { record: true, targets: [target] } }), r = rules(s);
+  assert.equal(r.statusOf("item"), "todo"); assert.equal(r.statusOf("record"), undefined);
+});
+
+test("target freshness compares full values by stable id and separates reorder or removal from changed rows", () => {
+  const a = { id: "a", goal: "A", target: "1× main", current: "2× main", baseline: "main", date: T0 }, b = { ...a, id: "b", goal: "B" };
+  assert.deepEqual(changedItemTargets(undefined, [a, b]), [a, b]);
+  assert.deepEqual(changedItemTargets([a, b], [b, a]), []);
+  assert.equal(targetsChanged([a, b], [b, a]), true);
+  assert.deepEqual(changedItemTargets([a, b], [b]), []);
+  assert.equal(targetsChanged([a, b], [b]), true);
+  assert.equal(targetsChanged(undefined, []), false);
+  assert.equal(targetsChanged([a, b], [{ ...a }, { ...b }]), false);
+  for (const changed of [{ ...a, goal: "Revised A" }, { ...a, target: "≤ 1× main" }, { ...a, current: "1× main" }, { ...a, baseline: "Chrome" }, { ...a, date: T1 }, { ...a, id: "new" }]) {
+    assert.deepEqual(changedItemTargets([a, b], [changed, b]), [changed]);
+    assert.equal(targetsChanged([a, b], [changed, b]), true);
   }
 });
 

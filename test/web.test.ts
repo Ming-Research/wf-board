@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { rules } from "../src/rules.ts";
-import type { Snapshot, Decision, Note } from "../src/model.ts";
+import type { Snapshot, Decision, Note, ItemTarget } from "../src/model.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM and modeled geometry. No browser or listener
 // is needed: the harness checks controls, frame scheduling and synthetic layout/scrolling.
@@ -2816,6 +2816,72 @@ test("item steps show all states, elapsed days and a ratio excluding dropped; ev
   assert.equal(item(p,"area").querySelector(".item-steps"),null,"old items need no steps field");
   assert.equal(item(p,"area").querySelector(".log-toggle")!.attributes["aria-expanded"],"false","even an item without steps or log has the collapsed section");
   await button(p,"▸ 日志").click(); assert.match(markup(item(p,"area")),/暂无日志/);
+});
+
+const goalNumber = (id: string, current = "12 倍 Chromium"): ItemTarget => ({id, goal: "apollo11 样式计算 " + id, target: "≤ 1 倍 Chromium", current, baseline: "Chromium 同机同页", date: at});
+
+test("goal numbers show a five-column table after steps for work and record items and hide absent or empty lists", async t => {
+  for (const record of [false, true]) await t.test(record ? "record" : "work", async () => {
+    const s=snapshot();
+    if (record) { s.items.child!.record=true; delete s.items.child!.status; }
+    s.items.child!.steps=[{id:"part",text:"Measure goal",state:"todo"}];
+    s.items.child!.targets=[{...goalNumber("style"),goal:"<script>goal</script>"},goalNumber("layout","2 倍 Chromium")];
+    const p=await page(s,[]); await expand(p);
+    const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "item-steps"), targets=body.children.findIndex(e=>e.className === "item-targets"), log=body.children.findIndex(e=>e.className === "log");
+    assert.ok(progress >= 0 && targets === progress+1 && log === targets+1,"targets follow steps and precede history");
+    const table=item(p).querySelector(".targets-table")!;
+    assert.equal(table.querySelector("caption")!.innerHTML,"目标");
+    assert.deepEqual(table.querySelectorAll("th").map(e=>[e.innerHTML,e.attributes.scope]),["目标","当前","目标值","比较对象","日期"].map(label=>[label,"col"]));
+    const rows=table.querySelectorAll(".item-target");
+    assert.equal(rows.length,2,"one row per goal");
+    assert.deepEqual(rows[0]!.children.map(e=>e.innerHTML),["&lt;script&gt;goal&lt;/script&gt;","12 倍 Chromium","≤ 1 倍 Chromium","Chromium 同机同页","2026-10-11"]);
+    assert.deepEqual(rows[0]!.children.map(e=>e.dataset.label),["目标","当前","目标值","比较对象","日期"],"phone cells keep their column labels");
+    assert.equal(rows[1]!.children[1]!.innerHTML,"2 倍 Chromium");
+    await expand(p,"area"); assert.equal(item(p,"area").querySelector(".item-targets"),null,"legacy items need no targets field");
+    const empty=snapshot(); empty.items.child!.targets=[];
+    const emptyPage=await page(empty,[]); await expand(emptyPage);
+    assert.equal(item(emptyPage).querySelector(".item-targets"),null,"an explicitly empty list is hidden");
+  });
+});
+
+test("added and edited goal rows mark only their own rows and progress navigation lands on each before r reads them", async () => {
+  const s=snapshot(), baseline={...s.items.child!,targets:[goalNumber("same"),goalNumber("edit")]};
+  s.items.child!.targets=[goalNumber("new"),goalNumber("same"),{...goalNumber("edit","6 倍 Chromium"),date:"2026-10-12T12:00:00Z"}];
+  const history=[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"targets changed",pieces:{progress:2,reply:0,other:0}}]}];
+  const p=await page(s,history,baseline,undefined,{detailGeometry:e=>({top:e.id === "target-child-new" ? 1800 : e.id === "target-child-edit" ? 2300 : 50,height:e.id === "detail-it-child" ? 4000 : 100})});
+  await expand(p); await p.flush();
+  const marked=()=>item(p).querySelectorAll(".item-target.newbar").map(e=>e.id);
+  assert.deepEqual(marked(),["target-child-new","target-child-edit"],"insertion does not mark a shifted unchanged row");
+  assert.ok(p.all().some(e=>e.innerHTML === "进展 1"));
+  assert.ok(!p.all().some(e=>e.innerHTML === "其他 1"),"goal rows count only as progress");
+  await button(p,"进展 1").click(); p.key("n"); await p.flush();
+  assert.ok(p.measurements.some(m=>m.id === "target-child-new" && m.top>1000),"navigation uses the first goal row's geometry");
+  assert.ok(p.roots.get("item-detail")!.scrollTop>1000,"the changed row lands in the detail pane");
+  p.key("n"); await p.flush();
+  assert.ok(p.measurements.some(m=>m.id === "target-child-edit"),"the next navigation visits the edited row");
+  p.key("r"); await p.flush();
+  assert.deepEqual(marked(),[]); assert.ok(!rowOf(p).className.includes("fresh"));
+  assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:"item:child",through:stepId}]);
+});
+
+test("target removals and reordering remain unread progress without marking unchanged rows", async t => {
+  for (const change of ["remove","remove all","reorder"] as const) await t.test(change,async()=> {
+    const s=snapshot(), baseline={...s.items.child!,targets:[goalNumber("a"),goalNumber("b")]};
+    s.items.child!.targets=change === "remove" ? [baseline.targets[1]!] : change === "remove all" ? [] : [...baseline.targets].reverse();
+    const p=await page(s,[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"targets changed",pieces:{progress:1,reply:0,other:0}}]}],baseline); await expand(p); await p.flush();
+    assert.ok(rowOf(p).className.includes("fresh")); assert.ok(p.all().some(e=>e.innerHTML === "进展 1"));
+    assert.equal(item(p).querySelectorAll(".item-target.newbar").length,0);
+    assert.deepEqual(item(p).querySelectorAll(".item-target").map(e=>e.id),s.items.child!.targets!.map(target=>"target-child-"+target.id));
+    await button(p,"进展 1").click(); p.key("n"); await p.flush(); assert.ok(rowOf(p).className.includes("cur"));
+  });
+});
+
+test("legacy unread summaries classify target changes as progress", async () => {
+  const s=snapshot(); s.items.child!.targets=[goalNumber("fresh")];
+  const p=await page(s,[{...unread()[0]!,docs:[{kind:"item",id:"child",summary:"targets changed"}]}],{...s.items.child!,targets:[]}); await expand(p); await p.flush();
+  assert.ok(p.all().some(e=>e.innerHTML === "进展 1"));
+  assert.ok(!p.all().some(e=>e.innerHTML === "其他 1"));
+  await button(p,"进展 1").click(); assert.ok(rowOf(p).className.includes("fresh"));
 });
 
 test("added and edited steps mark only their own lines until r reads them and progress filter walks them", async () => {

@@ -145,6 +145,14 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .item-steps { margin-top: 14px; }
 .item-step { padding: 3px 8px; font-size: 13px; }
 .steps-ratio { font-size: 12px; color: var(--muted); }
+.item-targets { margin-top: 14px; }
+.targets-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+.targets-table caption { text-align: left; margin-bottom: 4px; }
+.targets-table th, .targets-table td { padding: 5px 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--rule); }
+.targets-table th { color: var(--muted); font-weight: 400; }
+.targets-table th:first-child { width: 28%; }
+.item-target.newbar > td:first-child { position: relative; padding-left: 10px; }
+.item-target.newbar > td:first-child::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 .log-head { font-family: var(--font-head); font-weight: 700; font-size: 14px; }
 .log-entry { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); }
 /* The blue bar of anything new is one straight line, drawn on its own and kept clear of rounded corners so it never
@@ -332,6 +340,14 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
   h1 { font-size: 23px; }
   .tree .tree { padding-left: 10px; margin-left: 4px; }
   .body { padding-left: .4em; }
+  .targets-table, .targets-table tbody { display: block; }
+  .targets-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .targets-table .item-target { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
+  .targets-table td { display: flex; flex-direction: column; border-bottom: 0; }
+  .targets-table td:first-child { grid-column: 1 / -1; }
+  .targets-table td::before { content: attr(data-label); color: var(--muted); font-size: 11px; }
+  .item-target.newbar > td:first-child::before { content: attr(data-label); position: static; width: auto; border-radius: 0; background: none; }
+  .item-target.newbar { border-left: 3px solid var(--fresh); }
 }
 /* A passing hint sits at the bottom, out of the reader's line, and leaves by itself. */
 #hint { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 40; font-size: 13px; padding: 4px 14px; border-radius: 999px; background: var(--ink, #222); color: var(--surface, #fff); opacity: .9; pointer-events: none; }

@@ -1,11 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, ItemStepInput, ItemStepsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
-import type { Dep, Link, Option, Priority, Snapshot, Status } from "./model.ts";
+import { Key, Item, ItemStepInput, ItemStepsInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term } from "./model.ts";
+import type { Dep, ItemTarget, Link, Option, Priority, Snapshot, Status } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules, stampItemStep, projectOrderAfter } from "./rules.ts";
+import { rules, stampItemStep, stampItemTarget, projectOrderAfter } from "./rules.ts";
 import { describeChanges } from "./query.ts";
 
 export class OpError extends Error {}
@@ -21,6 +21,7 @@ export interface Ops {
   createItem(a: { author: string; key: string; parent?: string; title: string; head?: string; record?: boolean; priority?: Priority; status?: Status; deps?: Dep[]; parentWhy?: string; parentOwnWork?: { key: string; title: string }; links?: Link[]; data?: string; group?: string; order?: number; children?: Array<{ id: string; why: string }> } & Source): Promise<Result>;
   appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
   setSteps(a: { author: string; id: string; steps?: ItemStepInput[]; step?: ItemStepInput; remove?: string }): Promise<Result>;
+  setTargets(a: { author: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; record?: boolean; parentOwnWork?: { key: string; title: string }; reason?: string; deps?: Dep[]; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; id: string; status: Status; log: string }): Promise<Result>;
   moveItem(a: { author: string; id: string; parent?: string; parentWhy?: string; parentOwnWork?: { key: string; title: string }; priority?: Priority } & Source): Promise<Result>;
@@ -68,9 +69,9 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 interface Work { id: string; kind: Put["kind"] | "board"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
-/** A leaf with no work of its own: still todo, no steps, and only its optional create_request log. */
+/** A leaf with no work of its own: still todo, no steps or targets, and only its optional create_request log. */
 const noOwnWork = (it: Item): boolean => (it.status ?? "todo") === "todo" &&
-  !it.steps?.length &&
+  !it.steps?.length && !it.targets?.length &&
   (!it.log.length || it.log.length === 1 && it.log[0]!.at === it.created && it.log[0]!.text.startsWith(`${it.log[0]!.by} 提出：`));
 /** The document this operation already wrote for an item, else the snapshot's. */
 function docOf(s: Snapshot, puts: Put[], id: string, field = "id"): Item {
@@ -411,6 +412,26 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       // Identical steps leave the item untouched, even `updated`, so the store writes no commit.
       return isDeepStrictEqual(steps, previous) ? it : { ...it, steps, updated: at };
+    }),
+    setTargets: a => edit(a, "set_targets", (it, _s, at) => {
+      if ([a.targets, a.target, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_targets: provide exactly one of targets, target or remove");
+      const previous = it.targets ?? [];
+      let targets: ItemTarget[];
+      if (a.remove !== undefined) {
+        const id = parse(StepId, a.remove);
+        if (!previous.some(target => target.id === id)) throw new OpError(`remove ${id}: choose an existing target id`);
+        targets = previous.filter(target => target.id !== id);
+      } else if (a.targets !== undefined) {
+        const inputs = parse(ItemTargetsInput, a.targets);
+        const byId = new Map(previous.map(target => [target.id, target]));
+        targets = inputs.map(input => stampItemTarget(input, byId.get(input.id), at));
+      } else {
+        const input = parse(ItemTargetInput, a.target), i = previous.findIndex(target => target.id === input.id);
+        targets = previous.slice();
+        const updated = stampItemTarget(input, previous[i], at);
+        if (i < 0) targets.push(updated); else targets[i] = updated;
+      }
+      return isDeepStrictEqual(targets, previous) ? it : { ...it, targets, updated: at };
     }),
     updateItem: a => run(a, async (s, at) => {
       const it = ownedItem(s, a.id, a.author);

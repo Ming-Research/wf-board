@@ -49,5 +49,6 @@ matches what the artifact board offered.
   `Ming-Research/wf-board-data`). Only the daemon writes it; tests use
   temporary directories.
 - The daemon binds `127.0.0.1` only.
+- Use `set_targets` for each goal's target value, current value and comparison baseline, updating the current value after measuring.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.

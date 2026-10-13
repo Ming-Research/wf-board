@@ -3,7 +3,7 @@
 // priority comes from dependents, and a parent listing its own cancelled sub-item
 // is not flagged. The verbatim test oracle preserves the old rules independently
 // of this implementation.
-import type { Item, ItemStep, ItemStepInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import type { Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
 import { legacyPriority, rankOfPriority } from "./legacy-priority.ts";
 
 /** Project list order is page order; only the coordinator may place a project after another. */
@@ -47,6 +47,26 @@ export function stampItemStep(input: ItemStepInput, previous: ItemStep | undefin
   const date = input.state === "done" ? "doneAt" : input.state === "doing" ? "since" : input.state === "dropped" ? "droppedAt" : undefined;
   if (date && (previous?.state !== input.state || !step[date])) step[date] = at;
   return step;
+}
+
+const TARGET_FIELDS = ["id", "goal", "target", "current", "baseline", "date"] as const;
+function sameTarget(a: ItemTarget, b: ItemTarget): boolean { return TARGET_FIELDS.every(field => a[field] === b[field]); }
+/** Highlight added or changed goals by stable id, independently of list position. */
+export function changedItemTargets(before: readonly ItemTarget[] = [], after: readonly ItemTarget[] = []): ItemTarget[] {
+  const previous = new Map(before.map(target => [target.id, target]));
+  return after.filter(target => { const old = previous.get(target.id); return !old || !sameTarget(old, target); });
+}
+/** A reorder or removal still counts as progress even when no current row changed. */
+export function targetsChanged(before: readonly ItemTarget[] = [], after: readonly ItemTarget[] = []): boolean {
+  return before.length !== after.length || before.some((target, i) => !sameTarget(target, after[i]!));
+}
+/** Stamp new goals or changed current values, retaining the date on other edits. */
+export function stampItemTarget(input: ItemTargetInput, previous: ItemTarget | undefined, at: string): ItemTarget {
+  return { ...input, date: previous?.current === input.current ? previous.date : at };
+}
+export function targetLine(target: ItemTarget): string {
+  const compact = (text: string): string => text.replace(/\s+/g, " ").trim();
+  return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
 /** The visible tag of a check whose own label is not set. */
