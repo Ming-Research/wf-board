@@ -143,6 +143,89 @@ test("status derives from all plan rows and distinguishes the frontier from late
   assert.deepEqual(r.planRows("completedParts").map(row => [row.state, row.dropped, row.excluded]), [["resolved", false, false], ["resolved", true, true], ["open", false, false]]);
 });
 
+test("pause schema retains its reason and server time and refuses records or malformed pauses", () => {
+  const base = { title: "Work", group: "Default", updated: T0, rev: 1, plan: workPlan() };
+  assert.deepEqual(Item.parse({ ...base, paused: { reason: "Owner deferred this release", at: T1 } }).paused, { reason: "Owner deferred this release", at: T1 });
+  for (const paused of [{ reason: "", at: T1 }, { reason: " \n ", at: T1 }, { reason: "Deferred" }, { reason: "Deferred", at: "yesterday" }, { reason: "Deferred", at: T1, author: "Forged" }]) {
+    assert.equal(Item.safeParse({ ...base, paused }).success, false);
+  }
+  assert.equal(Item.safeParse({ ...base, record: true, plan: [], paused: { reason: "Deferred", at: T1 } }).success, false);
+});
+
+test("pause inherits only through same-project ownership and resuming preserves every plan state", () => {
+  const s = snapshot({
+    root: { plan: workPlan([own("doing"), own("todo"), own("finished"), own("cancelled"), own("record"), own("foreign"), shared("external")]) },
+    doing: { plan: workPlan([step("work", "doing"), own("nested")]) }, nested: {}, todo: {},
+    finished: { plan: workPlan([], "done") }, cancelled: { status: "cancelled" },
+    record: { record: true, plan: [own("underRecord")] }, underRecord: {},
+    foreign: { group: "Second", plan: workPlan([step("work", "doing")]) }, external: { group: "Second" },
+  });
+  const before = rules(s), statuses = Object.fromEntries(Object.keys(s.items).map(id => [id, before.statusOf(id)]));
+  const plans = Object.fromEntries(Object.entries(s.items).map(([id, it]) => [id, structuredClone(it.plan)]));
+  // Assign after parsing so an old schema failure cannot hide a derivation regression.
+  s.items.root!.paused = { reason: "Release postponed", at: T1 };
+  const paused = rules(s);
+  for (const id of ["root", "doing", "nested", "todo", "underRecord"]) {
+    assert.equal(paused.statusOf(id), "paused", id);
+    assert.equal(paused.pausedBy(id), "root", id);
+    assert.equal(paused.isOpenWork(id), true, "paused work remains open for ownership checks");
+  }
+  assert.equal(paused.statusOf("finished"), "done");
+  assert.equal(paused.statusOf("cancelled"), "cancelled");
+  assert.equal(paused.statusOf("record"), undefined);
+  assert.equal(paused.statusOf("foreign"), "wip", "invalid cross-project ownership cannot transmit pause");
+  assert.equal(paused.statusOf("external"), "todo", "shared references cannot transmit pause");
+  s.items.nested!.paused = { reason: "Independent pause", at: T2 };
+  delete s.items.root!.paused;
+  assert.equal(rules(s).statusOf("nested"), "paused", "resuming an ancestor preserves a child's own pause");
+  assert.equal(rules(s).pausedBy("nested"), "nested");
+  delete s.items.nested!.paused;
+  const resumed = rules(s);
+  for (const [id, it] of Object.entries(s.items)) {
+    assert.deepEqual(it.plan, plans[id], id);
+    assert.equal(resumed.statusOf(id), statuses[id], id);
+  }
+});
+
+test("closed rows win over explicit pause and paused child rows wait for the owner", () => {
+  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: { plan: workPlan([step("work", "doing")]) }, done: { plan: workPlan([], "done") }, cancelled: { status: "cancelled" } });
+  for (const id of ["child", "done", "cancelled"]) s.items[id]!.paused = { reason: "Owner pause", at: T1 };
+  const r = rules(s);
+  assert.equal(r.statusOf("parent"), "blocked");
+  assert.equal(r.statusOf("child"), "paused");
+  assert.equal(r.statusOf("done"), "done"); assert.equal(r.statusOf("cancelled"), "cancelled");
+  assert.equal(r.isPaused("done"), false); assert.equal(r.isPaused("cancelled"), false);
+  assert.deepEqual(r.planRows("parent").map(row => [row.state, row.ready, row.glyph]), [["waiting", true, "◌"], ["open", false, "○"]]);
+  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 parent 在等它", target: { kind: "item", id: "parent" } }]);
+});
+
+test("paused roots retain their priority and rootness but propagate none to owned or shared work", () => {
+  const s = snapshot({ root: { priority: "P2", plan: workPlan([own("child"), shared("foreign")]) }, child: { plan: workPlan([shared("further")]) }, foreign: { group: "Second" }, further: { group: "Second" } });
+  s.items.root!.paused = { reason: "Owner postponed release", at: T1 };
+  const r = rules(s);
+  assert.equal(r.isRoot("root"), true); assert.equal(r.priorityOf("root"), "P2");
+  for (const id of ["child", "foreign", "further"]) {
+    assert.equal(r.isRoot(id), false, "pausing a dependent does not promote its targets to roots");
+    assert.equal(r.priorityOf(id), "", id);
+  }
+  delete s.items.root!.paused;
+  const resumed = rules(s);
+  for (const id of ["root", "child", "foreign", "further"]) assert.equal(resumed.priorityOf(id), "P2", id);
+});
+
+test("unpaused shared P0 dependents flag conflicts on paused targets and still give them priority", () => {
+  const s = snapshot({ paused: { group: "Second", plan: workPlan([shared("beyond")]) }, beyond: { group: "Second" }, urgent: { priority: "P0", plan: workPlan([shared("paused")]) }, other: { plan: workPlan([shared("paused")]) }, closed: { status: "cancelled", plan: workPlan([shared("paused")]) } });
+  s.items.paused!.paused = { reason: "Stopped", at: T1 };
+  s.items.other!.paused = { reason: "Also stopped", at: T1 };
+  const r = rules(s);
+  assert.equal(r.priorityOf("paused"), "P0", "pause does not hide priority supplied by unpaused work");
+  assert.equal(r.priorityOf("beyond"), "", "the paused target cannot pass its incoming priority onward");
+  assert.deepEqual(r.checks("paused").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 urgent 在等它", target: { kind: "item", id: "urgent" } }]);
+  assert.equal(r.checks("urgent").some(check => check.label === "暂停冲突"), false, "the warning belongs to the paused target");
+  s.items.urgent!.paused = { reason: "Owner also stopped waiter", at: T2 };
+  assert.equal(rules(s).checks("paused").some(check => check.label === "暂停冲突"), false);
+});
+
 test("cards and missing targets wait, and a sent choice does not resolve an open card row", () => {
   const s = snapshot({ waiter: { plan: workPlan([card("q")]) }, missing: { plan: workPlan([shared("gone")]) }, missingCard: { plan: workPlan([card("gone-card")]) } }, { q: { item: "waiter" } }, { choice: { target: "q:q", kind: "choice", state: "sent" } });
   const r = rules(s);
@@ -308,6 +391,34 @@ function activeBoard(): Snapshot {
   s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0, other: timeAt(3) } }; return s;
 }
 const hasStalled = (s: Snapshot, id = "quiet", hours = 3) => rules(s, start + hours * hour).checks(id).some(c => c.label === STALLED_LABEL);
+
+test("inherited pause suppresses stalled checks but retains form checks", () => {
+  const s = activeBoard();
+  s.items.root = Item.parse({ title: "Root", group: "Default", updated: T0, rev: 1, plan: workPlan([own("quiet")]) });
+  s.items.quiet!.provisional = true;
+  assert.equal(hasStalled(s), true);
+  s.items.root!.paused = { reason: "Owner stopped this project", at: timeAt(0.25) };
+  const r = rules(s, start + 3 * hour);
+  assert.equal(r.checks("quiet").some(check => check.label === STALLED_LABEL), false);
+  assert.equal(r.stalledBelow("root"), 0);
+  assert.equal(r.checks("quiet").some(check => check.text === "计划待重写"), true);
+  s.items.quiet!.plan = [step("work", "doing")];
+  assert.equal(rules(s, start + 3 * hour).checks("quiet").some(check => check.text === "没有计划：至少要有一个验收步骤"), true);
+});
+
+test("resumed inherited work counts active time before and after pause but none during pause", () => {
+  const s = activeBoard();
+  // The child itself never changed: an ancestor paused it at 15 minutes and
+  // resumed it at 150 minutes while other projects kept the board active.
+  s.activity!.pauses = { quiet: [{ start: timeAt(0.25), end: timeAt(2.5) }] };
+  assert.equal(hasStalled(s, "quiet", 3), false, "only 45 active minutes outside the inherited pause");
+  assert.equal(hasStalled(s, "quiet", 3.25 - 1 / hour), false);
+  assert.equal(hasStalled(s, "quiet", 3.25), true, "the pre-pause 15 minutes are retained at the one-hour boundary");
+  s.activity!.pauses.quiet!.push({ start: timeAt(0.5), end: timeAt(2) });
+  assert.equal(hasStalled(s, "quiet", 3.25), true, "overlapping inherited and direct pauses cannot subtract time twice");
+  s.activity!.items.quiet = timeAt(2.75);
+  assert.equal(hasStalled(s, "quiet", 3.25), false, "ordinary item progress still resets the clock after resuming");
+});
 
 test("stalled checks count the union of board-active windows, with an inclusive one-hour threshold", () => {
   const s = activeBoard();

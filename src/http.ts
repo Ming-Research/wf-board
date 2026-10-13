@@ -101,6 +101,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const input = args<Record<string, unknown>>(await body(req));
         json(res, 200, await (Object.hasOwn(input, "id") ? ownerOps.editDraft(args(input)) : ownerOps.setDraft(args(input)))); return;
       }
+      if (path === "/api/pause") {
+        const input = args<{ id: string; paused: boolean; reason?: string; author?: unknown }>(await body(req));
+        if (Object.hasOwn(input, "author")) throw new OpError("author: the owner pause action assigns its own author");
+        for (const key of Object.keys(input)) if (!["id", "paused", "reason"].includes(key)) throw new OpError(`${key}: unknown pause field; timestamps and authors are server-owned`);
+        json(res, 200, await deps.ops.setPause({ author: "总管", id: input.id, paused: input.paused, reason: input.reason })); return;
+      }
       if (path === "/api/send") {
         const result = await ownerOps.send(args(await body(req, {})));
         json(res, 200, result); return;

@@ -377,3 +377,30 @@ test("active time alone (one hour) raises one stalled event on the timer, and a 
   t.mock.timers.tick(5000); await restarted.sync();
   assert.deepEqual(restarted.frames, [], "standing checks are not announced after a restart");
 });
+
+test("owner pause endpoint uses the shared atomic operation and assigns coordinator authority", async t => {
+  const { store, api } = await server(t);
+  const before = store.snapshot(), count = (await store.log()).length;
+  const paused = await api("/api/pause", { id: "area", paused: true, reason: "  Owner paused project  " });
+  assert.equal(paused.status, 200);
+  assert.equal((await store.log()).length, count + 1);
+  assert.equal(paused.data.commit, store.snapshot().head);
+  assert.deepEqual(store.snapshot().items.area!.paused, { reason: "Owner paused project", at: later });
+  assert.deepEqual(store.snapshot().items.area!.log.at(-1), { at: later, by: "总管", text: "暂停：Owner paused project" });
+  for (const id of ["area", "a", "b"]) assert.deepEqual(store.snapshot().items[id]!.plan, before.items[id]!.plan);
+  const checkpoint = store.snapshot();
+  for (const input of [
+    { id: "area", paused: true },
+    { id: "area", paused: "true", reason: "Invalid boolean" },
+    { author: "Whitefoot", id: "area", paused: false },
+    { id: "area", paused: true, reason: "Pause", at: "2000-01-01T00:00:00Z" },
+    { id: "area", paused: false, reason: 123 },
+  ]) {
+    assert.equal((await api("/api/pause", input)).status, 400);
+    assert.deepEqual(store.snapshot(), checkpoint);
+  }
+  const resumed = await api("/api/pause", { id: "area", paused: false });
+  assert.equal(resumed.status, 200); assert.equal(store.snapshot().items.area!.paused, undefined);
+  assert.equal((await store.log()).length, count + 2);
+  assert.deepEqual(store.snapshot().items.area!.log.at(-1), { at: later, by: "总管", text: "恢复" });
+});

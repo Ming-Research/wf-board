@@ -61,6 +61,9 @@ matches what the artifact board offered.
   and at least one acceptance step where the check happens, usually before
   merge or release rows. Status comes from the plan; `set_status`
   only cancels or reopens an item. `move_item` changes the item's owner.
+- Only the owner page or `总管` uses `set_pause` to pause or resume work,
+  with a reason when pausing. It preserves every plan row, applies through
+  same-project ownership, and stops priority propagation and stalled clocks.
 - Records have no acceptance step and pass no priority. Open work owned by
   a record stores no priority, but derives the highest priority from open
   shared dependents, or none without them. Record ownership passes none.

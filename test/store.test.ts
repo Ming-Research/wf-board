@@ -673,6 +673,105 @@ test("activity retains every content revision and deletion across restart, but e
   assert.deepEqual(reopened.snapshot().activity, beforeRead, "the activity index can be recovered solely from git history");
 });
 
+test("effective pause intervals survive resume and restart with sub-second owner times and independent child pauses", async t => {
+  const { store, dir } = await setup(t);
+  const owns = (id: string) => ({ id, item: id, own: true });
+  await store.commit({ author: "Fixture", message: "Nested work", puts: [
+    put("root", { ...item("Root"), plan: [owns("child"), ...item().plan] }),
+    put("child", { ...item("Child"), plan: [owns("leaf"), ...item().plan] }), put("leaf", item("Leaf")),
+  ] });
+  const pausedAt = "2026-10-11T02:00:00.125Z", childAt = "2026-10-11T02:05:00.250Z";
+  const rootResume = "2026-10-11T02:10:00.375Z", childResume = "2026-10-11T02:20:00.500Z";
+  async function pause(id: string, time: string, enabled: boolean) {
+    const current = store.snapshot().items[id]!, doc = structuredClone(current);
+    doc.updated = time;
+    if (enabled) doc.paused = { reason: "Owner chose to wait", at: time }; else delete doc.paused;
+    await store.commit({ author: "总管", message: enabled ? "Pause" : "Resume", puts: [put(id, doc, current.rev)] });
+  }
+  await pause("root", pausedAt, true);
+  const open = { root: [{ start: pausedAt }], child: [{ start: pausedAt }], leaf: [{ start: pausedAt }] };
+  assert.deepEqual(store.snapshot().activity!.pauses, open, "every inherited clock stops at the owner action's time");
+  await pause("child", childAt, true);
+  assert.deepEqual(store.snapshot().activity!.pauses, open, "a nearer pause source does not split an already paused interval");
+  await pause("root", rootResume, false);
+  assert.deepEqual(store.snapshot().activity!.pauses, { ...open, root: [{ start: pausedAt, end: rootResume }] });
+  assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses, store.snapshot().activity!.pauses, "restart recovers still-open inherited pauses");
+  await pause("child", childResume, false);
+  const expected = { root: [{ start: pausedAt, end: rootResume }], child: [{ start: pausedAt, end: childResume }], leaf: [{ start: pausedAt, end: childResume }] };
+  assert.deepEqual(store.snapshot().activity!.pauses, expected);
+  assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses, expected, "the last resume cannot erase historical paused time");
+});
+
+test("moving under and out of an already paused owner freezes only the inherited interval after the move", async t => {
+  const { store, dir } = await setup(t);
+  const owns = (id: string) => ({ id, item: id, own: true });
+  await store.commit({ author: "Fixture", message: "Two owners", puts: [
+    put("active", { ...item("Active"), plan: [owns("child"), ...item().plan] }), put("paused", item("Paused")),
+    put("child", { ...item("Child"), plan: [owns("leaf"), ...item().plan] }), put("leaf", item("Leaf")),
+  ] });
+  const pauseAt = "2026-10-11T03:00:00.125Z", movedInAt = "2026-10-11T03:10:00.250Z", movedOutAt = "2026-10-11T03:20:00.375Z";
+  const owner = store.snapshot().items.paused!;
+  await store.commit({ author: "总管", message: "Pause second owner", puts: [put("paused", { ...owner, paused: { reason: "Deferred", at: pauseAt }, updated: pauseAt }, owner.rev)] });
+  async function move(from: string, to: string, time: string) {
+    const source = store.snapshot().items[from]!, target = store.snapshot().items[to]!;
+    await store.commit({ author: "Fixture", message: "Move work", puts: [
+      put(from, { ...source, updated: time, plan: source.plan.filter(row => !("item" in row && row.item === "child")) }, source.rev),
+      put(to, { ...target, updated: time, plan: [owns("child"), ...target.plan] }, target.rev),
+    ] });
+  }
+  await move("active", "paused", movedInAt);
+  assert.deepEqual(store.snapshot().activity!.pauses!.child, [{ start: movedInAt }], "moving into an old pause does not backdate the child's clock");
+  assert.deepEqual(store.snapshot().activity!.pauses!.leaf, [{ start: movedInAt }]);
+  await move("paused", "active", movedOutAt);
+  const expected = { paused: [{ start: pauseAt }], child: [{ start: movedInAt, end: movedOutAt }], leaf: [{ start: movedInAt, end: movedOutAt }] };
+  assert.deepEqual(store.snapshot().activity!.pauses, expected);
+  assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses, expected);
+});
+
+test("pause replay reads only native items from the first pause onward and never normalizes historical snapshots", async t => {
+  const { store } = await setup(t);
+  await store.commit({ author: "Fixture", message: "Old native work", puts: [put("root", item())] });
+  const beforePause = store.snapshot().head;
+  const internals = store as unknown as {
+    readAt(path: string, commit: string): Promise<unknown | null>;
+    comparisonSnapshot(commit: string): Promise<unknown>;
+    loadActivity(): Promise<void>;
+  };
+  const originalRead = internals.readAt.bind(store), reads: Array<{ path: string; commit: string }> = [];
+  t.mock.method(internals, "readAt", async (path: string, commit: string) => { reads.push({ path, commit }); return originalRead(path, commit); });
+  t.mock.method(internals, "comparisonSnapshot", async () => { throw new Error("Whole historical snapshots must not be normalized for pause clocks"); });
+  await internals.loadActivity();
+  assert.deepEqual(reads, [], "boards without a pause need no historical item bodies");
+  const pausedAt = "2026-10-11T04:00:00.125Z", resumeAt = "2026-10-11T04:10:00.250Z";
+  let root = store.snapshot().items.root!;
+  const pauseCommit = await store.commit({ author: "总管", message: "First pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
+  root = store.snapshot().items.root!;
+  const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumeAt;
+  const resumeCommit = await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
+  reads.length = 0;
+  await internals.loadActivity();
+  assert.deepEqual(store.snapshot().activity!.pauses, { root: [{ start: pausedAt, end: resumeAt }] });
+  assert.deepEqual(reads, [{ path: "items/root.yaml", commit: pauseCommit.commit }, { path: "items/root.yaml", commit: resumeCommit.commit }]);
+  assert.equal(reads.some(read => read.commit === beforePause), false);
+});
+
+test("a failed pause resume cannot alter historical intervals or published state", async t => {
+  const { store } = await setup(t);
+  const pausedAt = "2026-10-11T05:00:00.125Z";
+  await store.commit({ author: "总管", message: "Initially paused work", puts: [put("root", { ...item(), paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt })] });
+  const before = store.snapshot(), root = before.items.root!, resumed = structuredClone(root);
+  delete resumed.paused; resumed.updated = "2026-10-11T05:10:00.250Z";
+  const internals = store as unknown as { git(args: string[], author?: string): Promise<string> };
+  const originalGit = internals.git.bind(store);
+  t.mock.method(internals, "git", async (args: string[], author?: string) => {
+    if (args.includes("commit")) throw new Error("Synthetic commit failure");
+    return originalGit(args, author);
+  });
+  await assert.rejects(store.commit({ author: "总管", message: "Failed resume", puts: [put("root", resumed, root.rev)] }), /Synthetic commit failure/);
+  assert.strictEqual(store.snapshot(), before);
+  assert.deepEqual(store.snapshot().activity!.pauses, { root: [{ start: pausedAt }] });
+});
+
 test("startup leaves identity references alone when no legacy coordinator project is configured", async t => {
   const { store, dir } = await setup(t);
   await store.commit({ author: "Fixture", message: "Historical authors without legacy project", puts: [put("a", { ...item(), group: "Unconfigured", log: [{ at, by: "跨项目", text: "Historical author" }] })] });

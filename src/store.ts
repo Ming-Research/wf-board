@@ -14,6 +14,7 @@ import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
+import { rules } from "./rules.ts";
 
 export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
@@ -368,7 +369,8 @@ export class Store {
   /** Activity is a derived index of the existing history, including replaced and deleted documents. */
   private async loadActivity(): Promise<void> {
     const activity: NonNullable<Snapshot["activity"]> = { writes: [], items: {} };
-    for (const commit of (await this.log()).reverse()) {
+    const commits = (await this.log()).reverse();
+    for (const commit of commits) {
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -401,8 +403,78 @@ export class Store {
       this.noteActivity(activity, commit.at, touched);
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
     }
+    await this.loadPauses(activity, commits);
     activity.writes.sort();
     this.state.activity = activity;
+  }
+
+  /** Pause history starts at the first native paused field, not at the board's
+   * oldest legacy snapshot. Read each later changed item once; never convert
+   * whole historical boards or inspect old item bodies when no pause existed. */
+  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[]): Promise<void> {
+    const markers = new Set((await this.git(["log", "--format=%H", "--no-renames", "-G", "^paused:", "--", "items"])).trim().split(/\s+/));
+    const first = commits.findIndex(commit => markers.has(commit.commit));
+    if (first < 0) return;
+    const initial = commits[first]!;
+    const items: Snapshot["items"] = {};
+    const paths = (await this.git(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
+    for (const path of paths) {
+      const match = /^items\/(.+)\.yaml$/.exec(path);
+      if (match) items[match[1]!] = Item.parse(await this.readAt(path, initial.commit));
+    }
+    const source = rules({ ...this.state, items });
+    for (const id of Object.keys(items)) {
+      const owner = source.pausedBy(id);
+      if (owner) {
+        activity.pauses ??= {};
+        activity.pauses[id] = [{ start: items[owner]!.paused!.at }];
+      }
+    }
+    for (const commit of commits.slice(first + 1)) {
+      const next = { ...items }, changes: ChangedDoc[] = [];
+      for (const path of commit.files) {
+        const match = /^items\/(.+)\.yaml$/.exec(path);
+        if (!match) continue;
+        const id = match[1]!, raw = await this.readAt(path, commit.commit), after = raw === null ? null : Item.parse(raw);
+        changes.push({ kind: "item", id, before: Object.hasOwn(items, id) ? items[id]! : null, after });
+        if (after) next[id] = after; else delete next[id];
+      }
+      if (!changes.length) continue;
+      this.notePauses(activity, items, next, changes, commit.at);
+      for (const change of changes) {
+        if (change.after) items[change.id] = change.after as Item; else delete items[change.id];
+      }
+    }
+  }
+
+  /** Only ownership, identity or a pause marker can alter inherited pause.
+   * Logs and ordinary plan progress avoid a whole-board inheritance walk. */
+  private notePauses(activity: NonNullable<Snapshot["activity"]>, before: Snapshot["items"], after: Snapshot["items"], changed: ChangedDoc[], fallbackAt: string): void {
+    const shape = (value: unknown) => {
+      const it = value as Item | null;
+      return it ? { group: it.group, record: it.record, paused: it.paused, owned: it.plan.filter(row => "item" in row && row.own).map(row => row.id) } : null;
+    };
+    const relevant = changed.filter(change => change.kind === "item" && !isDeepStrictEqual(shape(change.before), shape(change.after)));
+    if (!relevant.length) return;
+    // A move starts inheritance at the move, not at the destination's older
+    // pause. Document times retain sub-second precision that git dates lack.
+    const dates = relevant.flatMap(change => change.after ? [(change.after as Item).updated] : [fallbackAt]);
+    const at = dates.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, dates[0] ?? fallbackAt);
+    const oldRules = rules({ ...this.state, items: before }), newRules = rules({ ...this.state, items: after });
+    for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
+      if (!!oldSource === !!newSource) continue;
+      activity.pauses ??= {};
+      const spans = Object.hasOwn(activity.pauses, id) ? activity.pauses[id]! : (activity.pauses[id] = []);
+      if (newSource) {
+        const pause = after[newSource]!.paused!;
+        const newlyPaused = !before[newSource]?.paused;
+        spans.push({ start: newlyPaused ? pause.at : at });
+      } else {
+        const current = spans.at(-1);
+        if (current && current.end === undefined) current.end = at;
+      }
+    }
   }
 
   private contentPath(file: string): boolean {
@@ -572,6 +644,7 @@ export class Store {
       next.activity.writes.push(event.at);
       next.activity.writes.sort();
       this.noteActivity(next.activity, event.at, this.changedItems(changed, next));
+      this.notePauses(next.activity, this.state.items, next.items, changed, event.at);
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);

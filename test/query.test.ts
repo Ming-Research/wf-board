@@ -99,7 +99,7 @@ test("overview/list/notes filter derived plan status, inherited priority, subtre
   await op.clearAsk({author,id:"a",log:"Handled"});
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
-  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, done: 0, cancelled: 0 });
+  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
@@ -320,7 +320,7 @@ test("project identity read shapes omit agents and outgoing requests use request
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3 }, inbox: 0 }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 }, inbox: 0 }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
@@ -465,4 +465,24 @@ test("default lists omit done and cancelled items, while explicit status filters
   assert.ok(!overview.some(item => ["done-result", "cancelled-result"].includes(item.id)));
   assert.equal(overview.find(item => item.id === "area")!.counts.done, 1, "completion totals still include hidden work");
   assert.equal(overview.find(item => item.id === "area")!.counts.cancelled, 1);
+});
+
+test("paused items have explicit list, overview and project counts and are absent from brief work queues", async t => {
+  const { store, op } = await board(t);
+  await op.clearAsk({ author, id: "a", log: "Owner approval complete" });
+  await op.setPlan({ author, id: "a", row: { id: "doing", text: "Implementation", state: "doing" } });
+  await op.setPause({ author: "总管", id: "area", paused: true, reason: "After the next release" });
+  const s = store.snapshot(), r = rules(s);
+  assert.deepEqual(q.list(s, r, { group: author, status: ["paused"] }).map(row => row.id).sort(), ["a", "area", "b"]);
+  assert.deepEqual(q.list(s, r, { group: author, status: ["wip", "todo", "blocked"] }), []);
+  const area = q.overview(s, r, { group: author, status: ["paused"] })[0]!.areas[0]!;
+  assert.equal(area.counts.paused, 2); assert.equal(area.counts.wip, 0); assert.equal(area.counts.blocked, 0);
+  const project = q.projects(s, r).find(project => project.name === author)!;
+  assert.equal(project.openItems.paused, 3); assert.equal(project.openItems.wip, 0);
+  const brief = q.brief(s, r, author);
+  assert.deepEqual(brief.paused.map(row => row.id).sort(), ["a", "area", "b"]);
+  assert.deepEqual(brief.wip, []); assert.deepEqual(brief.todo, []);
+  const context = q.context(s, r, "a");
+  assert.ok("pausedBy" in context);
+  assert.deepEqual(context.pausedBy, { id: "area", title: "解释器工作", reason: "After the next release", at: later });
 });

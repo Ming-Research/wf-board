@@ -223,6 +223,10 @@ log:
   time. When no one writes, all clocks stop after the last interval ends.
   Item revisions, log entries, cards and notes on the item reset its last
   change. Records and items in other statuses are never flagged.
+  Effective pauses suppress the flag and freeze the clock: the union of
+  historical pause intervals is excluded from active time, including inherited
+  pauses. Resuming preserves a descendant's earlier active time rather than
+  counting the paused interval. A change to the item still resets its clock.
   `src/rules.ts` defines the durations and the check for both MCP and the page.
   Each check may carry a short visible `label` defined with it: this one is
   `无人推进`, shown beside the item title in place of `需核对` with the full
@@ -375,6 +379,12 @@ tree, status, priority and blocking are all derived from it.
 
 #### Rows
 
+An item may also store `paused: { reason, at }`, with a nonblank reason and
+the server's time. Only the owner page or the coordinator (`author: 总管`)
+sets or clears it through `set_pause`; project agents cannot set it through
+item creation or revision. Records cannot carry it, and pausing done or
+cancelled work is refused. This marker never changes plan rows.
+
 A plan is an ordered list of rows, each with an `id` unique in the plan. A row
 is one of four kinds:
 
@@ -426,7 +436,7 @@ Each row is in one derived state, which status and display use:
 | Row | resolved | in progress | waiting | open |
 |---|---|---|---|---|
 | step | done, or dropped with its reason | doing | — | todo |
-| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked | target todo |
+| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo |
 | shared item | target done | — | target open (any status) | — |
 | card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
 | owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
@@ -441,7 +451,8 @@ plan's frontier.
 
 #### Status
 
-A work item's status is derived from its plan; only cancellation is stored.
+A work item's status is derived from its plan and effective pause; cancellation
+and the separate pause marker are stored.
 Cancelling or reopening never changes plan rows, including acceptance states,
 dates and prerequisites. The converter's initial `todo` acceptance for an old
 cancelled item is a conversion mapping, not a reset performed by cancellation.
@@ -450,13 +461,19 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    with the reason). Cancelling is refused while an owned row's target is
    open, naming those items: each part gets its own reason first.
 2. `done` when every row is resolved, every acceptance and delivery row included.
-3. `wip` when any row is in progress: a doing step, or an owned item in
+3. `paused` when this item or any ancestor in its same-project ownership chain
+   has a pause marker. Shared rows never inherit a pause. Done and cancelled
+   win over pause; records have no status. A record in the ownership chain
+   does not interrupt inheritance from a work ancestor.
+4. `wip` when any row is in progress: a doing step, or an owned item in
    progress. A doing step with `waits` (CI, a run on the 14900K, something not
    on the board) is still in progress.
-4. `blocked` when nothing is in progress and either every frontier row is
+5. `blocked` when nothing is in progress and either every frontier row is
    waiting (a shared item still open, an open card, an owned item that is
-   itself blocked) or the item has a pending legacy ask.
-5. `todo` otherwise: some frontier row is a step or an owned item that can be
+   itself blocked or paused) or the item has a pending legacy ask. A paused
+   child is waiting on the owner; a parent that is not paused can therefore
+   be blocked by it, under the ordinary frontier rule.
+6. `todo` otherwise: some frontier row is a step or an owned item that can be
    started.
 
 So a parent is done only when its own steps, acceptance steps and delivery rows are resolved,
@@ -473,6 +490,17 @@ Every work item has a plan with at least one acceptance step, so no work item
 has a stored `todo`, `wip`, `blocked` or `done` any more. An item with an
 empty plan (none exists after conversion; the schema allows it only on a
 record) shows the check 没有计划：至少要有一个验收步骤.
+
+Pause and resume log `暂停：<reason>` and `恢复`, respectively, in the same
+commit as the marker change. Resume clears only this item's marker; another
+paused ancestor or a child's independent pause still applies. Repeating the
+same pause reason or resuming open work without its own marker is a no-op.
+Done and cancellation leave the marker inactive on that item, but open
+descendants still inherit it. An authorized resume can clear this inactive
+marker; reopening a cancelled item without that resume retains the owner's
+pause. Converting work with its own pause marker to a record is refused
+until the owner or coordinator clears it, so a project agent cannot erase
+the owner's pause through a mode change.
 
 #### Ownership, the tree, roots and top items
 
@@ -499,17 +527,18 @@ record) shows the check 没有计划：至少要有一个验收步骤.
   refused: within a project, the item whose plan it is a part of owns it, and
   the others share it.
 - **Roots.** A root is an item that no open work item depends on through any
-  item row, owned or shared, as before. Only a root stores `priority`; an open
+  item row, owned or shared, as before (paused work is still open for ownership
+  and rootness). Only a root stores `priority`; an open
   root without one shows 没有未完成的条目依赖它，却没写优先级, unchanged. An
   owned item under an open owner is never a root. An open item owned by a
   closed item shows 拥有它的条目已关闭 (it can only arise from data written
   before the cancellation refusal).
   An open work item owned by a record is not a root, stores no priority,
   and is exempt from the missing-root-priority check. It derives priority
-  from open shared dependents, or none when no open dependent needs it.
+  from open, not-paused shared dependents, or none without them.
 - **Backlog.** A project's backlog is a record whose plan owns the items it
-  holds. Records pass no priority (below), so backlog items without open
-  shared dependents show no priority; moving an item out under a root's
+  holds. Records pass no priority (below), so backlog items without open,
+  not-paused shared dependents show no priority; moving an item out under an unpaused root's
   plan gives it the root's priority. This replaces the present practice of a
   P2 root named 待选工作, which gave every backlog item P2.
   Setting priority on an open item owned by a record is refused with an
@@ -524,20 +553,25 @@ record) shows the check 没有计划：至少要有一个验收步骤.
 
 Unchanged in substance from the migrated rule, now for every project: a
 root's priority is its stored one; every other item's is the highest among the
-open work items whose plans hold an item row (owned or shared) for it, across
+open, not-paused work items whose plans hold an item row (owned or shared) for it, across
 projects and transitively. A closed item keeps the priority that reached it
 and passes none on; card rows carry none; a cycle that no open outside
 dependent reaches has none. One change: a record passes no priority, because
 a record is not work. Before, a record counted as an open dependent; three
 records exist (the 14900K queue among them). Open work owned by a record
-still takes the highest priority from open shared dependents, and shows
-none only when no open dependent needs it; the record supplies none.
+still takes the highest priority from open, not-paused shared dependents,
+and shows none without them; the record supplies none.
 A root stores `priority`; every write that makes an item a non-root, or
 writes a non-root, drops its stored priority in the same commit and logs
 `不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
 write's result lists the items. So no non-root holds a stored priority, and
 none returns when an item becomes a root again. A closed root shows its own
 stored priority.
+
+Effectively paused work keeps its own stored or derived displayed priority,
+but passes none through its item rows. Only open, not-paused dependents
+contribute priority to their targets. Pausing changes neither ownership nor
+rootness, so it does not discard a root's stored priority.
 
 #### Records
 
@@ -591,6 +625,10 @@ checks:
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 无人推进 (stalled, above) | no |
+| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of an owned or shared row held by open, not-paused work) | no |
+
+Effectively paused items retain all form checks, including provisional plans
+and missing acceptance. They receive no stalled check.
 
 Removed: 上级条目不存在, 上级没有把它列在依赖里, 正文没写完成条件, and the
 three manual-status checks listed under Status.
@@ -683,6 +721,7 @@ follow the existing tokens with no new colours:
 | ● (wip colour) | doing step, owned item in progress |
 | ○ (todo colour) | todo step, owned item not started |
 | ⏸ (block colour) | waiting: shared item open, open card, blocked owned item |
+| ◌ (muted colour) | paused owned or shared item; the row waits on the owner |
 | ✗ (muted, struck text) | dropped step, cancelled owned item |
 
 - **Step row.** `● 写解析器 · 3 天 · 等 CI` — text, then elapsed days for a
@@ -845,17 +884,17 @@ coordinate among themselves; sessions may be renamed freely.
 | `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
-| `overview(group?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status, owner actions waiting, blocked items, flags |
+| `overview(group?, status?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `projects()` | Which project matches this repository? | Project configuration, top items, open items by status and inbox counts |
-| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, outgoing work and its glossary terms; each item row carries its plan's unresolved rows and a count of resolved ones |
+| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project |
 
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
-`<glyph>` as on the page (✓ ● ○ ⏸ ✗); an item row adds `[own]` or
+`<glyph>` as on the page (✓ ● ○ ⏸ ◌ ✗); an item row adds `[own]` or
 `[shared @<owner key>]`, the target's title and status, and for an owned item
 its current doing step; a card row adds the card's status; `‖` marks rows of
 a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成` for
@@ -872,6 +911,7 @@ results, and `context` warns when rows of one level are not adjacent.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `总管` or the owner page; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared; the page posts `{id, paused, reason?}` to `/api/pause`, with the server assigning the coordinator author |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
@@ -908,12 +948,21 @@ narrows completed items by age. Every plan row stays visible regardless of
 these filters. A plan reference, search result or unread stop opens a hidden
 item's detail without changing the filters. Closed items' unread changes,
 including card and reply changes, still reach 新 and the navigation stops.
+Paused work remains visible by default, with a grey `◌ PAUSE` status chip,
+its own 暂停 filter and a separate paused leaf count. Plan item rows use only
+the grey `◌` glyph, distinct from waiting `⏸`. The detail head of open work
+offers 暂停 with a small inline reason field, or 恢复 for its own marker.
+Inherited pauses name and link their nearest source and show its reason;
+resuming a child cannot clear that ancestor. Closed work with an inactive
+own marker offers only 恢复, so the owner can also release open descendants
+under a record without asking an agent to clear the marker. Records have
+no pause control.
 Each item shows only its head row: fold toggle, status, priority, title, tags,
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 A tree row's right-hand counts show only open parts (todo, in progress,
-blocked); done and cancelled parts are not counted there, and a cancelled
+blocked, paused); done and cancelled parts are not counted there, and a cancelled
 item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work

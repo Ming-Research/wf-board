@@ -10,7 +10,7 @@ export const Time = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{
 /** An item or decision key, which is also its file name. */
 export const Key = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);
 
-export const STATUSES = ["todo", "wip", "blocked", "done", "cancelled"] as const;
+export const STATUSES = ["todo", "wip", "blocked", "paused", "done", "cancelled"] as const;
 export const Status = z.enum(STATUSES);
 export type Status = z.infer<typeof Status>;
 
@@ -111,6 +111,8 @@ export const Item = z.object({
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
+  /** Explicit owner/coordinator pause; descendants inherit it through ownership. */
+  paused: z.object({ reason: StepText, at: Time }).strict().optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
   priority: Priority.optional(),
@@ -129,6 +131,7 @@ export const Item = z.object({
   updated: Time,
   rev: z.number().int().positive(),
 }).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
+  .refine(it => !it.record || it.paused === undefined, "A record cannot be paused")
   .refine(it => {
     const count = it.plan.filter(row => "accept" in row && row.accept).length;
     return it.record ? count === 0 : count >= 1;
@@ -267,5 +270,10 @@ export interface Snapshot {
   /** The commit this snapshot reflects. */
   head: string;
   /** Derived from content-write history; never stored as a board document. */
-  activity?: { writes: string[]; items: Record<string, string> };
+  activity?: {
+    writes: string[];
+    items: Record<string, string>;
+    /** Historical effective pauses; inherited pauses stop each descendant's clock. */
+    pauses?: Record<string, Array<{ start: string; end?: string }>>;
+  };
 }

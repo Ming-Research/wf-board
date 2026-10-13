@@ -300,6 +300,128 @@ test("bundled page renders board metadata and the recorded-send count by project
   await p.roots.get("send-all")!.click();
   assert.equal(p.roots.get("send-note")!.textContent, "已发出 3 条：Halo-wf×2 · Firn-wf×1");
 });
+
+test("owner pause asks inline for a reason, retains it on refusal and resumes without editing plan rows", async () => {
+  const s=nativeSnapshot(), original=structuredClone(s.items.area!.plan), hold=deferred<FakeResponse>();
+  let refuse=true;
+  const p=await page(s,[],null,undefined,{response:path=>path === "/api/pause" ? refuse ? hold.promise : reply({}) : undefined});
+  await expand(p,"area");
+  assert.ok(item(p,"area").querySelector(".pause-start"),"open work has an owner pause control");
+  await item(p,"area").querySelector(".pause-start")!.click();
+  let input=item(p,"area").querySelector(".pause-input")!;
+  assert.equal(input.attributes["aria-label"],"暂停原因");
+  await item(p,"area").querySelector(".pause-confirm")!.click();
+  assert.equal(p.calls.filter(call=>call.path === "/api/pause").length,0,"an empty reason never writes");
+  shownInHint(p,/请填写暂停原因/);
+  input.value="  等第一版发布  "; await input.handlers.get("input")![0]!({});
+  const pausing=item(p,"area").querySelector(".pause-confirm")!.click(); await settle();
+  assert.deepEqual(p.calls.find(call=>call.path === "/api/pause")!.body,{id:"area",paused:true,reason:"等第一版发布"});
+  assert.equal(item(p,"area").querySelector(".pause-confirm")!.disabled,true);
+  hold.reject(new Error("Pause refused")); await pausing; await p.flush();
+  shownInHint(p,/Pause refused/);
+  input=item(p,"area").querySelector(".pause-input")!;
+  assert.equal(input.value,"  等第一版发布  ","failure keeps the exact draft reason for retry");
+  assert.equal(item(p,"area").querySelector(".pause-confirm")!.disabled,false);
+  refuse=false; await item(p,"area").querySelector(".pause-confirm")!.click();
+  const paused={...s.items.area!,paused:{reason:"等第一版发布",at},rev:2};
+  await p.change("b".repeat(40),[{kind:"item",id:"area",after:paused}]); await p.flush();
+  assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"◌ PAUSE");
+  assert.match(markup(item(p,"area")),/暂停：等第一版发布/);
+  assert.deepEqual(paused.plan,original);
+  assert.deepEqual(item(p,"area").querySelectorAll(".plan-row").map(row=>row.id),original.map(row=>planRowDomId("area",row.id)));
+  await item(p,"area").querySelector(".pause-resume")!.click();
+  assert.deepEqual(p.calls.filter(call=>call.path === "/api/pause").at(-1)!.body,{id:"area",paused:false});
+  await p.change("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,rev:3}}]); await p.flush();
+  assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"WIP","resume restores the retained doing child");
+  assert.ok(item(p,"area").querySelector(".pause-start"));
+});
+
+test("inherited pause uses a grey glyph, honest counts and filters and points resume at its source", async () => {
+  const s=nativeSnapshot(); s.items.area!.paused={reason:"本轮先停",at};
+  const p=await page(s,[],null,undefined,{response:path=>path === "/api/pause" ? reply({}) : undefined}); await expand(p,"area");
+  const target=planRow(p,"area","child");
+  assert.equal(target.querySelector(".g")!.innerHTML,"◌","paused item rows differ from owner/card waiting glyphs");
+  assert.ok(target.classList.contains("paused"));
+  assert.equal(target.querySelector(".st"),null,"a plan row uses only its state glyph");
+  assert.equal(rowOf(p,"area").querySelector(".counts .st.paused")!.innerHTML,"1");
+  assert.equal(rowOf(p,"area").querySelector(".counts .st.paused")!.attributes["aria-label"],"◌ PAUSE 1");
+  assert.match(markup(p.roots.get("summary")!),/暂停 2/,"overview counts both root and descendant");
+  const filter=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "暂停 2");
+  assert.ok(filter,"the project offers the paused status filter"); await filter.click(); await p.flush();
+  assert.ok(rowOf(p,"area")); assert.ok(rowOf(p,"child"));
+  await expand(p,"child");
+  assert.match(markup(item(p)),/暂停：本轮先停/);
+  assert.match(markup(item(p)),/请在该条目恢复/);
+  assert.equal(item(p).querySelector(".pause-resume"),null,"a child cannot accidentally resume its ancestor");
+  assert.equal(item(p).querySelector(".pause-start"),null,"inherited pause is presented at its source");
+  assert.equal(planRow(p,"child","work").querySelector(".g")!.innerHTML,"●","pause leaves doing step rows unchanged");
+  p.key("/");
+  const search=p.all().find(e=>e.classList.contains("searchrow") && e.innerHTML.includes("Child"));
+  assert.ok(search); assert.match(search.innerHTML,/<span class="st paused">◌ PAUSE<\/span>/);
+  p.key("Escape",p.document.getElementById("search-input")!);
+  await p.change("d".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,paused:{reason:"原因已改",at},rev:2}}]); await p.flush();
+  assert.match(markup(item(p)),/暂停：原因已改/,"ancestor reason updates repaint the selected child even when status stays paused");
+  assert.doesNotMatch(markup(item(p)),/本轮先停/);
+  await p.change("e".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,paused:{reason:"下级也暂停",at},rev:2}}]); await p.flush();
+  assert.match(markup(item(p)),/暂停：下级也暂停/);
+  assert.ok(item(p).querySelector(".pause-resume"),"an additional direct marker can be resumed separately");
+  await item(p).querySelector(".pause-resume")!.click();
+  assert.deepEqual(p.calls.find(call=>call.path === "/api/pause")!.body,{id:"child",paused:false});
+  await p.change("f".repeat(40),[{kind:"item",id:"child",after:{...s.items.child!,rev:3}}]); await p.flush();
+  assert.equal(item(p).querySelector(".item-head .st")!.innerHTML,"◌ PAUSE","clearing the child's own marker leaves the ancestor's pause effective");
+  assert.match(markup(item(p)),/暂停：原因已改/);
+  assert.equal(item(p).querySelector(".pause-resume"),null);
+  const html=await readFile("web/index.html","utf8");
+  assert.match(html,/\.plan-row\.paused > \.g\s*\{\s*color:\s*var\(--muted\)/);
+  assert.match(html,/\.st\.cancelled, \.st\.paused\s*\{\s*color:\s*var\(--muted\)/);
+});
+
+test("record, completed and cancelled heads have no owner pause control", async t => {
+  for (const state of ["record","done","cancelled"] as const) await t.test(state,async()=> {
+    const s=nativeSnapshot();
+    s.items.area!.plan=state === "record" ? [] : planWork([],state === "done" ? "done" : "todo");
+    if (state === "record") s.items.area!.record=true;
+    if (state === "cancelled") s.items.area!.status="cancelled";
+    const p=await page(s,[]); await expand(p,"child");
+    assert.ok(item(p,"child").querySelector(".pause-start"),"the open boundary remains pauseable");
+    await expand(p,"area");
+    assert.equal(item(p,"area").querySelector(".pause-control"),null);
+    assert.equal(p.calls.filter(call=>call.path === "/api/pause").length,0);
+  });
+});
+
+test("a completed pause source remains resumable when open work inherits it through a record", async () => {
+  const s=nativeSnapshot(), childPlan=structuredClone(s.items.child!.plan);
+  s.items.queue={...s.items.area!,title:"Run queue",record:true,plan:[ownedRow("child")]};
+  s.items.area!.plan=[ownedRow("queue"),planAcceptance("done")];
+  s.items.area!.paused={reason:"先停这一轮",at};
+  const rootPlan=structuredClone(s.items.area!.plan);
+  const storage=new Map([["board-open",JSON.stringify({area:true,queue:true})]]);
+  const p=await page(s,[],null,undefined,{storage,response:path=>path === "/api/pause" ? reply({}) : undefined});
+  await expand(p,"child");
+  assert.equal(item(p).querySelector(".item-head .st")!.innerHTML,"◌ PAUSE");
+  const source=item(p).querySelector(".pause-reason .ref");
+  assert.ok(source,"the inherited pause links to the completed source");
+  await source.click(); await p.flush();
+  assert.ok(detailItem(p,"area"));
+  assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"DONE");
+  assert.match(markup(item(p,"area")),/暂停：先停这一轮/);
+  assert.equal(item(p,"area").querySelector(".pause-start"),null,"closed work cannot be paused again");
+  const resume=item(p,"area").querySelector(".pause-resume");
+  assert.ok(resume,"the closed source still allows clearing its explicit marker");
+  await resume.click();
+  assert.deepEqual(p.calls.find(call=>call.path === "/api/pause")!.body,{id:"area",paused:false});
+  const {paused:_paused,...restored}=s.items.area!;
+  await p.change("b".repeat(40),[{kind:"item",id:"area",after:{...restored,rev:2}}]); await p.flush();
+  assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"DONE","clearing pause does not reopen the completed source");
+  assert.equal(item(p,"area").querySelector(".pause-control"),null);
+  assert.deepEqual(restored.plan,rootPlan);
+  await expand(p,"child");
+  assert.equal(item(p).querySelector(".item-head .st")!.innerHTML,"WIP","open descendants recover their preserved work state");
+  assert.equal(item(p).querySelector(".pause-reason"),null);
+  assert.deepEqual(s.items.child!.plan,childPlan);
+  assert.equal(planRow(p,"child","work").querySelector(".g")!.innerHTML,"●");
+});
 function descendants(root: Element): Element[] { return [root,...root.children.flatMap(descendants)]; }
 function markup(root: Element): string { return descendants(root).map(e => e.innerHTML + e.textContent).join("\n"); }
 function card(): Decision {
