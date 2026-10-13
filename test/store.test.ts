@@ -37,6 +37,27 @@ test("published snapshots are reused until a write and remain deeply immutable",
   assert.equal(after.activity!.writes.length, before.activity!.writes.length + 1);
 });
 
+test("a write shares unchanged documents with the previous snapshot and inserts its own frozen", async t => {
+  const { store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("b", item("Other"))] });
+  const before = store.snapshot();
+  await store.commit({ author: "a", message: "Update", puts: [put("a", { ...item("Changed"), log: [{ at, text: "entry" }] }, 1)] });
+  const after = store.snapshot();
+  assert.strictEqual(after.items.b, before.items.b, "an untouched document is the same object, not a copy");
+  assert.strictEqual(after.decisions, before.decisions, "an untouched collection is the same object");
+  assert.notStrictEqual(after.items, before.items, "a touched collection is a new object");
+  assert.equal(before.items.a!.title, "An item", "the previous snapshot keeps its own document");
+  // The inserted document, its nested parts, the collections and the snapshot itself refuse mutation.
+  assert.throws(() => { after.items.a!.title = "mutate"; }, TypeError);
+  assert.throws(() => { after.items.a!.log[0]!.text = "mutate"; }, TypeError);
+  assert.throws(() => { after.items.a!.log.push({ at, text: "more" }); }, TypeError);
+  assert.throws(() => { after.items.c = after.items.a!; }, TypeError);
+  assert.throws(() => { delete (after.items as Record<string, unknown>).b; }, TypeError);
+  assert.throws(() => { after.head = "x"; }, TypeError);
+  assert.throws(() => { after.activity!.items.a = at; }, TypeError);
+  assert.throws(() => { (after.activity!.writes as string[])[0] = at; }, TypeError);
+});
+
 test("published snapshots refresh on owner-only changes and preserve a failed owner's previous state", async t => {
   const { store } = await setup(t);
   const before = store.snapshot();

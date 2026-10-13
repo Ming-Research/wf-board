@@ -181,3 +181,36 @@ test("MCP shows tags in rows, context, list and brief, lists the vocabulary, and
   assert.equal((await call("remove_tag", { author: coordinator, name: "安全", replace: "报错信息" })).error, false);
   assert.deepEqual(store.snapshot().items.a!.tags, ["报错信息"]);
 });
+
+test("set_tags_many sets many items' tags in one commit with set_tags' checks, all or nothing", async t => {
+  const { store, op } = await withTags(t);
+  await op.setTags({ author, id: "b", tags: ["健全性"] });
+  const count = (await store.log()).length, before = store.snapshot();
+  // One refused entry refuses the whole write, naming the entry.
+  await refuses(op.setTagsMany({ author, items: [{ id: "a", tags: ["健全性"] }, { id: "area", tags: ["没有这个"] }] }), /items\.1 \(area\): tags 没有这个: not in the tag vocabulary/);
+  await refuses(op.setTagsMany({ author, items: [{ id: "a", tags: ["健全性"] }, { id: "other", tags: ["健全性"] }] }), /items\.1 \(other\): item other belongs to project Firn/);
+  await refuses(op.setTagsMany({ author, items: [{ id: "a", tags: ["健全性"] }, { id: "a", tags: ["报错信息"] }] }), /items\.1\.id a: name each item once/);
+  await refuses(op.setTagsMany({ author, items: [{ id: "a", tags: [] }] }), /items\.0 \(a\): tags: give the item's whole tag list/);
+  await refuses(op.setTagsMany({ author, items: [] }), /at least one/);
+  assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
+  const res = await op.setTagsMany({ author, items: [{ id: "a", tags: ["健全性", "报错信息"] }, { id: "area", tags: ["报错信息"] }, { id: "b", tags: ["健全性"] }] });
+  assert.equal((await store.log()).length, count + 1, "one commit for every item");
+  assert.equal(res.rev, undefined);
+  const [commit] = await store.log({ limit: 1 });
+  assert.deepEqual(commit!.files.sort(), ["items/a.yaml", "items/area.yaml"], "an unchanged list (b) writes nothing");
+  assert.deepEqual(store.snapshot().items.a!.tags, ["健全性", "报错信息"]);
+  assert.deepEqual(store.snapshot().items.area!.tags, ["报错信息"]);
+  await op.setTagsMany({ author, items: [{ id: "a", tags: ["健全性", "报错信息"] }] });
+  assert.equal((await store.log()).length, count + 1, "all unchanged writes no commit");
+});
+
+test("the set_tags_many tool reports one commit", async t => {
+  const { store, op } = await withTags(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Tags", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const result = await client.callTool({ name: "set_tags_many", arguments: { author, items: [{ id: "a", tags: ["健全性"] }, { id: "b", tags: ["报错信息"] }] } });
+  assert.ok(!result.isError, JSON.stringify(result.content));
+  assert.match((result.content as Array<{ text: string }>)[0]!.text, /^set_tags 2 items · commit [0-9a-f]{40}$/);
+  assert.deepEqual([store.snapshot().items.a!.tags, store.snapshot().items.b!.tags], [["健全性"], ["报错信息"]]);
+});

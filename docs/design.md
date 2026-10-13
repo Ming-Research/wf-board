@@ -96,6 +96,43 @@ hidden in a database.
 exit. `GET /health` reports its state; the page shows a banner when the server
 does not answer, and every MCP tool error names the cause.
 
+**Write cost.** The live board (about 1,500 items, 600 cards, 750 notes and
+14,000 content writes in its history) cost 0.28–0.4 s of daemon CPU per
+write, a quarter of it garbage collection, because each write deep-copied the
+whole board twice and derived the board from scratch about eight times. The
+derivation design that replaced this:
+
+- The store publishes one frozen snapshot and never copies it. A write copies
+  only the collections it changes, inserts its new documents frozen, and the
+  result is the next published snapshot; earlier snapshots stay valid and
+  unchanged for whoever holds them.
+- One `Rules` object serves every reader of a snapshot (`store.derived`: MCP
+  reads, the check scan, the "before" side of a write's validation) within the
+  same minute; a Rules object reads the clock only for elapsed time (active
+  time, doing days), so its results are exactly `rules(snapshot, t)` for the
+  time `t` of the first read in that minute. A prospective state inside a
+  write gets one Rules object, built again only when the write changes it.
+- The activity times the stalled check reads are parsed once and kept as an
+  index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
+  comparing documents by identity instead of rescanning every log, note and
+  write. Without an index, `rules` scans the snapshot as before; the
+  equivalence of the two after random writes is a test.
+- A change event carries the activity's change, not the whole index (see the
+  stalled-work rule); the page keeps its copy current from it.
+- The check scan after a write, and the page's repaint after a live update,
+  rederive only the items the write can reach (`affectedItems` in
+  `src/rules.ts`): the written items, cards and notes, then along plan edges
+  while an item's derived summary changes, plus every reached item's
+  ancestors. A change of elapsed time alone is left to the minute timers,
+  which rescan and repaint everything as before.
+- A step diff for the page is kept by its two commits and path, which name
+  the same text forever, so a reload asks git again only for new steps.
+
+`scripts/bench-writes.ts` measures this path on a synthetic board of the live
+board's size (CPU and garbage collection per write, bytes per change event,
+peak memory); CI runs it on every push on this tree and on the code the
+branch started from, without gating.
+
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
 `~/.codex/config.toml` for Codex. Whether the desktop app's Code sessions read
@@ -274,9 +311,14 @@ log:
   items, cards, notes, notices or glossaries count; commits containing only
   owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
-  Live updates carry the activity index, MCP recomputes checks on read, and
-  the page recomputes them every minute so a quiet item can become stalled
-  without another write.
+  A live update carries the activity index's change, not the index: the
+  commit's content-write time, the items whose last change moved and the
+  whole new span list of each item whose pause spans changed, made against
+  the previous head. The page applies it only to a snapshot at that head; a
+  snapshot already at the new head ignores it, and one at another head missed
+  or overtook an event and reloads the whole snapshot. MCP recomputes checks
+  on read, and the page recomputes them every minute so a quiet item can
+  become stalled without another write.
 - **Blocking waits.** An owner wait either stops named work or does not. A
   decision card may carry `blocks`, one sentence naming the work that is
   stopped until the owner rules (for example `#398 合并停着`); a card with `blocks`
@@ -997,6 +1039,7 @@ item and card writes retain the normal project ownership checks.
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
+| `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |
 | `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
 | `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `总管`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `总管`; `to` unused |
@@ -1865,7 +1908,13 @@ the board.
 - The conversion checks of section 10, including the plan conversion's
   oracle, and for the plan rules a case per derived status, per refused
   ownership or cycle write and per check, each failing on the wrong input.
-- CI on GitHub-hosted runners for every push.
+- A derivation equivalence test: after every write of a seeded random
+  sequence, the shared and incremental derivations (shared Rules objects, the
+  activity index, a write's prospective rules, the page's activity deltas)
+  equal a from-scratch `rules` scan, and every item whose painted
+  presentation changed is among the affected items.
+- CI on GitHub-hosted runners for every push, with the write-path benchmark
+  as a step that reports and never fails the run.
 
 ### Three test layers
 
