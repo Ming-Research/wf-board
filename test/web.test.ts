@@ -3704,3 +3704,21 @@ test("a comment saved on an open card of a record item no plan names stays in vi
   assert.match(markup(cards()[0]!),/Draft on the card/,"the saved draft is visible without unfolding the comment list");
   assert.ok(descendants(cards()[0]!).some(e=>e.className === "cardsend" && e.innerHTML === "发送"),"its send button is reachable");
 });
+
+test("an item's blue number leads to its own first new place after an unrelated item gains new content", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.z={title:"Z",parent:"y",status:"wip",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  const yStep=unread("item","z","7".repeat(40)), xStep=unread("item","x","8".repeat(40));
+  let steps=yStep;
+  const p=await page(s,yStep,null,undefined,{response:path=>path === "/api/unread" ? reply({steps}) : undefined});
+  const blue=()=>wideHead(p,"y").children.find(e=>e.className.includes("freshchip"))!;
+  assert.equal(blue().innerHTML,"1","Y shows the new content of its child");
+  // New unread content appears on X, which comes earlier on the board; Y's row is not repainted.
+  steps=[...xStep,...yStep];
+  p.emit("b".repeat(40),[{kind:"item",id:"x",after:{...s.items.x!,rev:2}}]); await p.flush(); await settle();
+  await blue().click(); await p.flush(); await settle();
+  const selected=p.all().find(e=>e.id.startsWith("detail-it-"));
+  assert.equal(selected?.id,"detail-it-z","the click lands on Y's new place (its child Z), not on X");
+});
