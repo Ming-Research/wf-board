@@ -232,14 +232,14 @@ test("archive includes future item, log and reply timestamps", async t => {
 });
 
 
-test("only done items archive, a parent counts when all its sub-items are done, and any item un-archives", async t => {
+test("only done or cancelled items archive, a parent counts when all its sub-items are done, and any item un-archives", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later);
   // a is todo, b is blocked and area is derived from them, so none is done.
-  for (const id of ["a", "b", "area"]) assert.throws(() => own.archive({ id, on: true }), /Only done items can be archived/, id);
+  for (const id of ["a", "b", "area"]) assert.throws(() => own.archive({ id, on: true }), /Only done or cancelled items can be archived/, id);
   await op.setStatus({ author, id: "a", status: "wip", log: "Start" });
-  assert.throws(() => own.archive({ id: "a", on: true }), /Only done items/, "wip");
+  assert.throws(() => own.archive({ id: "a", on: true }), /Only done or cancelled items/, "wip");
   await op.setStatus({ author, id: "a", status: "done", log: "Complete" });
-  assert.throws(() => own.archive({ id: "area", on: true }), /Only done items/, "a parent with an open sub-item");
+  assert.throws(() => own.archive({ id: "area", on: true }), /Only done or cancelled items/, "a parent with an open sub-item");
   await op.setStatus({ author, id: "b", status: "done", log: "Complete" });
   assert.deepEqual(Object.keys(store.snapshot().owner.archived), [], "refusals archive nothing");
   own.archive({ id: "area", on: true }); own.archive({ id: "a", on: true });
@@ -250,6 +250,15 @@ test("only done items archive, a parent counts when all its sub-items are done, 
   assert.equal(rules(store.snapshot()).isArchived("b"), true);
   assert.notEqual(rules(store.snapshot()).statusOf("b"), "done");
   own.archive({ id: "b", on: false });
+  assert.equal(store.snapshot().owner.archived.b, undefined);
+});
+
+test("a cancelled item archives, and an open or blocked one is still refused", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  await op.setStatus({ author, id: "a", status: "cancelled", log: "Dropped" });
+  own.archive({ id: "a", on: true });
+  assert.ok(store.snapshot().owner.archived.a, "cancelled archives");
+  assert.throws(() => own.archive({ id: "b", on: true }), /Only done or cancelled items can be archived/, "b is still open");
   assert.equal(store.snapshot().owner.archived.b, undefined);
 });
 

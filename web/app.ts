@@ -1242,7 +1242,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // On an item inside an archived subtree it restores the nearest archived ancestor, where the archive was made.
   async function toggleArchive(it: ViewItem) {
     const target = [it.id, ...derived.ancestors(it.id)].find(id => derived.isArchived(id));
-    if (!target && statusOf(it) !== "done") { showError(new Error("只有完成的条目能归档")); return false; }
+    if (!target && statusOf(it) !== "done" && statusOf(it) !== "cancelled") { showError(new Error("只有完成或取消的条目能归档")); return false; }
     try { await api("/api/archive", { id: target || it.id, on: !target }); void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
 

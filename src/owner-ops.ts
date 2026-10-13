@@ -105,7 +105,8 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       if (!Object.hasOwn(s.items, a.id)) throw new NotFoundError(`Unknown item ${a.id}`);
       const archived = { ...s.owner.archived };
       if (a.on) {
-        if (rules(s).statusOf(a.id) !== "done") throw new OpError(`Only done items can be archived; ${a.id} is not done`);
+        const status = rules(s).statusOf(a.id);
+        if (status !== "done" && status !== "cancelled") throw new OpError(`Only done or cancelled items can be archived; ${a.id} is ${status}`);
         const item = s.items[a.id]!;
         const times = [now(), item.updated, ...item.log.map(e => e.at), ...Object.values(s.notes).filter(n => n.target === `it:${a.id}` && n.reply).map(n => n.repliedAt || n.sentAt || n.at)];
         archived[a.id] = times.sort().at(-1)!;
