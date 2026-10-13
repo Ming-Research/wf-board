@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <style>
-/* The owner chooses a split tree/detail view or single-column inline bodies. */
+/* The page is always the split view: the item tree on the left, the selected item's detail on the right. */
 :root {
   --bg: #f3f5f4;
   --surface: #ffffff;
@@ -68,13 +68,12 @@
 body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; padding-inline: 16px; padding-block: 0 64px; }
 .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
 .page-left { min-width: 0; display: flex; flex-direction: column; gap: 26px; }
-#item-detail[hidden] { display: none; }
-/* Wide mode is a fixed-height frame: the document never scrolls. The list (.page-left) and the detail pane are each
+/* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the detail pane are each
    their own scroll container, so each scrollbar sits at the right edge of its own pane. */
 body.wide { margin: 0; padding-inline: 8px; padding-block: 0; height: 100dvh; display: flex; flex-direction: column; overflow-y: hidden; }
 body.wide #server-banner { flex: none; }
 body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 0; }
-#split-divider[hidden] { display: none; }
+
 #split-divider { cursor: col-resize; touch-action: none; user-select: none; border-inline: 3px solid transparent; background: var(--rule); background-clip: content-box; }
 #split-divider:hover { background-color: var(--accent); }
 body.wide #item-detail { min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 26px 8px 64px; }
@@ -132,17 +131,10 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .log-head { font-family: var(--font-head); font-weight: 700; font-size: 14px; }
 .log-entry { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); }
 /* The blue bar of anything new is one straight line, drawn on its own and kept clear of rounded corners so it never
-   bends with them. An item's line runs down the empty space left of its body text, from the first line of the body to
-   the bottom, away from the status bar; a folded item, which has no body, gets a short line beside its head. */
-.item.fresh > .body, .item.fresh > .body ~ .notes { position: relative; }
-.item.fresh > .body::before, .item.fresh > .body ~ .notes::before { content: ""; position: absolute; left: 6px; top: 2px; bottom: -4px; width: 3px; background: var(--fresh); }
-.item.fresh > .body ~ .notes::before { top: -4px; bottom: 4px; }
-.item.fresh > .body:last-child::before { bottom: 4px; }
+   bends with them. A tree row, which has no body, gets a short line beside its head. */
 .item.fresh:not(:has(> .body))::before { left: 3px; top: 8px; bottom: 8px; }
 .item.fresh:has(> .body)::before { content: none; }
-/* In the split view the detail column marks an item's own new content with a short line beside its headline, which
-   stays in sight, instead of a line down the whole body. */
-body.wide #item-detail .item.fresh > .body::before, body.wide #item-detail .item.fresh > .body ~ .notes::before { content: none; }
+/* The detail column marks an item's own new content with a short line beside its headline, which stays in sight. */
 body.wide #item-detail .item.fresh > .item-row { position: relative; }
 body.wide #item-detail .item.fresh > .item-row::before { content: ""; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }
@@ -328,12 +320,21 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 #hint[hidden] { display: none; }
 /* A glossary link opens its term's definition in a popover beside the link. */
 .termpop { position: fixed; z-index: 45; box-sizing: border-box; width: max-content; max-width: min(360px, calc(100vw - 16px)); max-height: 50vh; overflow: auto; overflow-wrap: anywhere; padding: 8px 12px; font-size: 13.5px; line-height: 1.5; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); }
+/* A [[it:key]] or [[q:key]] reference in text links to its item or card; one whose target is gone shows its key, struck through. */
+.itemref.missing { color: var(--muted); text-decoration: line-through; }
+/* The "#" popup under a comment field and the "/" search box list found items and cards as dependency-style rows. */
+.refpop { display: flex; flex-direction: column; max-width: 78ch; padding: 4px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12); }
+.searchbox { position: fixed; z-index: 60; top: 12vh; left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); }
+.searchbox input { font: inherit; font-size: 14px; width: 100%; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--surface); color: var(--ink); }
+.search-list { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
+.refopt.sel, .searchrow.sel { background: var(--accent-soft); }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
 .inbox { margin-top: 12px; padding: 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
 .inbox h3 { margin: 0; font-size: 14px; }
 .request-meta { margin: 2px 8px 10px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 </style>
 
+<body class="wide">
 <div id="server-banner" role="alert" hidden></div>
 <div id="hint" role="status" hidden></div>
 <div class="wrap">
@@ -360,8 +361,8 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
     <span id="send-note"></span>
   </footer>
   </div>
-  <div id="split-divider" hidden></div>
-  <aside id="item-detail" aria-label="条目正文" hidden></aside>
+  <div id="split-divider"></div>
+  <aside id="item-detail" aria-label="条目正文"></aside>
 </div>
 
 

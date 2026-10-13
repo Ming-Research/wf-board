@@ -1,5 +1,7 @@
 import { rules } from "../src/rules.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
+import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
+import type { Target } from "./find.ts";
 import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
@@ -57,8 +59,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
   function saveManual() { try { localStorage.setItem("board-open", JSON.stringify(manual)); } catch (e) {} }
-  let wide = true;
-  try { wide = localStorage.getItem("board-split") !== "false"; } catch {}
+
   let treeWidth: number | null = null;
   try { const stored=Number(localStorage.getItem("board-tree-width")); if (Number.isFinite(stored) && stored > 0) treeWidth=stored; } catch {}
   let selectedItem: string | null = null;
@@ -68,29 +69,37 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     selectedItem = id;
     try { localStorage.setItem("board-selected", id || ""); } catch {}
   }
-  function bodyShown(id: string) { return wide ? selectedItem === id : !!manual[id]; }
-  function itemBox(id: string) { return get((wide ? "detail-it-" : "it-") + id); }
+  function bodyShown(id: string) { return selectedItem === id; }
+  function itemBox(id: string) { return get("detail-it-" + id); }
   function selectItem(id: string) {
     if (!snapshot.items[id]) return;
     if (selectedItem !== id) {
       get("it-" + selectedItem)?.classList.remove("selected");
       rememberSelected(id); detailDirty = true;
-      if (wide) get("item-detail").scrollTop = 0;
+      get("item-detail").scrollTop = 0;
     }
     get("it-" + id)?.classList.add("selected");
-    if (wide && detailDirty) renderNow("detail");
+    if (detailDirty) renderNow("detail");
   }
 
   function esc(s: unknown) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)); }
   // What each escape esc writes shows as.
   const ENTITIES: Record<string,string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" };
-  // Inline text: **bold**, `code`, [label](https://...). Escaped first, so stored text cannot inject markup.
+  // Inline text: **bold**, `code`, [label](https://...), and [[it:key]] or [[q:key]] references to an item or a decision
+  // card. Escaped first, so stored text cannot inject markup.
   function inline(s: unknown) {
     let t = esc(s);
     t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    return t;
+    return replaceRefs(t, refHtml);
+  }
+  // A reference shows its target's current title as a link; when the key no longer exists it shows the key, struck through.
+  function firstLine(s: string) { return s.split("\n").find(l => l.trim()) ?? ""; }
+  function refHtml(kind: Target["kind"], key: string) {
+    const title = kind === "item" ? snapshot.items[key]?.title : snapshot.decisions[key]?.question;
+    if (title === undefined) return '<span class="itemref missing" title="' + (kind === "item" ? "没有这个条目：" : "没有这张决策卡：") + esc(key) + '">' + esc(key) + "</span>";
+    return '<a class="itemref" href="#" data-ref="' + (kind === "item" ? "it:" : "q:") + esc(key) + '">' + esc(plain(firstLine(title)) || key) + "</a>";
   }
   // Block text: blank lines split paragraphs, "- " and "1. " lines make lists, ``` fences make code, and a paragraph opening with **label**: shows the label as a subheading.
   function textLines(src: unknown) {
@@ -197,7 +206,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
   function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
-  function depIds(it: ViewItem) { return depEntries(it).filter(e => e.kind === "item").map(e => e.id); }
   function whyOf(w: ViewItem, id: string) { return depEntries(w).find(d => d.kind === "item" && d.id === id)?.why || ""; }
   function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).map(e => e.kind === "item" ? index().byId.get(e.id)! : index().byId.get(snapshot.decisions[e.id]!.item)!).filter(Boolean); }
   function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w) && !inArchive(w)); }
@@ -302,7 +310,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && (key === "archived" ? isArchived(it) : !inArchive(it) && (key === "cancelled" || !isCancelled(it))) && f![3](it)).length; }
   function passes(it: ViewItem) { return !filtering(groupOf(it)) || filterMatches().keep.has(it.id); }
-  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : [])); }
+  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
   function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); }
@@ -319,7 +327,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const n = filterCount(DEP_FILTERS, key, g), on = f.dep === key;
       if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
     });
-    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : [])); }));
+    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
     return row;
   }
   const byOrder = (a: {order?:number}, b: {order?:number}) => (a.order || 0) - (b.order || 0);
@@ -461,10 +469,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if ([...required.keys()].some(key => failedDiffs.has(key))) return;
       if ([...required.keys()].every(key => diffs.has(key))) break;
     }
-    const primary=wide && it && target.id === "it-"+it.id ? itemBox(it.id) : get(target.id);
+    const primary=it && target.id === "it-"+it.id ? itemBox(it.id) : get(target.id);
     const e=target.selection ? selEl(target.selection) || primary : primary;
     if (!e) return;
-    if (wide && it) {
+    if (it) {
       const row=get("it-"+it.id);
       if (row) {
         const y=scrollToShow(listScroller(),row.getBoundingClientRect());
@@ -486,13 +494,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       notesOf(key).filter(listed).forEach(n => add("note",n.id));
     };
     const card = (id:string) => { if (!get("q-" + id)) return; add("decision",id); notes("q:" + id); };
-    if (st.item) for (const id of wide ? [st.item] : [st.item,...derived.ancestors(st.item)]) {
-      if (!get("it-" + id)) continue;
-      // Only rendered bodies and their expanded comment lists need baselines.
-      if (!bodyShown(id)) continue;
-      notes("it:" + id);
-      add("item",id);
-      derived.cardsOf(id).forEach(card);
+    // Only the selected item's rendered body and its expanded comment list need baselines.
+    if (st.item && get("it-" + st.item) && bodyShown(st.item)) {
+      notes("it:" + st.item);
+      add("item",st.item);
+      derived.cardsOf(st.item).forEach(card);
     }
     if (st.card) card(st.card);
     if (st.note && snapshot.notes[st.note]) add("note",st.note);
@@ -611,7 +617,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The selection: an item (it:), a card (q:), a log entry (log:<item>@<time>) or a comment or reply (note:<id>).
   // r, c, e and a act on it, or on the item or card that holds it.
   let current: string | null = null;
-  function effectiveSelection() { return current ?? (wide && selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
+  function effectiveSelection() { return current ?? (selectedItem && snapshot.items[selectedItem] ? "it:"+selectedItem : null); }
   function keyOfBox(box: HTMLElement | null) { return !box ? null : box.dataset.sel || (box.id.startsWith("q-") ? "q:" + box.id.slice(2) : box.id.startsWith("it-") ? "it:" + box.id.slice(3) : null); }
   function selEl(key: string | null) {
     if (!key) return null;
@@ -641,17 +647,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     clearSelectionClasses();
     current = key;
     box.classList.add("cur");
-    if (wide && key === "it:"+selectedItem) get("it-"+selectedItem)?.classList.add("cur");
+    if (key === "it:"+selectedItem) get("it-"+selectedItem)?.classList.add("cur");
   }
   function onScreen(e: HTMLElement | null) {
     if (!e) return false;
-    const s=wide && get("item-detail").contains(e) ? detailScroller() : listScroller();
+    const s=get("item-detail").contains(e) ? detailScroller() : listScroller();
     const r = e.getBoundingClientRect();
     return r.bottom > s.origin() && r.top < s.origin() + s.height();
   }
   function clearSelectionClasses() {
     selEl(current)?.classList.remove("cur");
-    if (wide && current?.startsWith("it:")) get("it-"+current.slice(3))?.classList.remove("cur");
+    if (current?.startsWith("it:")) get("it-"+current.slice(3))?.classList.remove("cur");
   }
   function clearCurrent() { clearSelectionClasses(); current = null; }
   // A drag that selects text ends in a click on the row where it started; that click must not toggle, follow or
@@ -667,7 +673,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // A click on an item or card selects it; a click on blank space (not on a control) clears the selection.
   document.addEventListener("click", ev => {
     const t = ev.target as HTMLElement & {type?: string};
-    if (wide && t.closest && t.closest<HTMLElement>("button.caret")) return;
+    if (t.closest && t.closest<HTMLElement>("button.caret")) return;
     const box = t.closest && t.closest<HTMLElement>("[data-sel], #areas .item, #areas .card, #cards .card, #item-detail .card");
     if (box) setCurrent(box);
     else if (!(t.closest && t.closest<HTMLElement>("button, a, input, textarea, select, label"))) clearCurrent();
@@ -675,9 +681,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Otherwise the item or card the reader is looking at near the top of the screen.
   function targetOnScreen() {
     if (current && onScreen(boxOfKey(current))) return current;
-    if (wide && selectedItem && snapshot.items[selectedItem]) return "it:"+selectedItem;
+    if (selectedItem && snapshot.items[selectedItem]) return "it:"+selectedItem;
     const list = listScroller(), y = list.origin() + 16;
-    const wrap = (wide ? get("areas") : document.querySelector<HTMLElement>(".wrap")!).getBoundingClientRect();
+    const wrap = get("areas").getBoundingClientRect();
     const hit = document.elementFromPoint(wrap.left + wrap.width / 2, y);
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
     if (box && box.id.startsWith("q-")) return "q:" + box.id.slice(2);
@@ -694,6 +700,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
     const t = ev.target as HTMLElement & {type?: string};
     if (t && (t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable || (t.tagName === "INPUT" && !/^(checkbox|radio|button|submit|reset)$/.test(t.type || "")))) return;
+    if (ev.key === "/") { ev.preventDefault(); openSearch(); return; }
     if (ev.key === "G") { ev.preventDefault(); lastG = 0; glideTo(listScroller().max()); return; }
     if (ev.key === "g") {
       ev.preventDefault();
@@ -705,8 +712,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (ev.key === "Backspace" || ev.key === "[") { if (backStack.length) { ev.preventDefault(); goBack(); } return; }
     if (ev.key === "j" || ev.key === "k") { ev.preventDefault(); moveFocus(ev.key === "j" ? 1 : -1); return; }
     if (ev.key === "Enter") {
-      if (wide && t?.closest<HTMLElement>("button.caret")) return;
-      if (toggleFocused(wide && t?.classList.contains("item-head") ? t : undefined)) ev.preventDefault();
+      if (t?.closest<HTMLElement>("button.caret")) return;
+      if (toggleFocused(t?.classList.contains("item-head") ? t : undefined)) ev.preventDefault();
       return;
     }
     if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") { ev.preventDefault(); stepStop(ev.key === "ArrowRight" ? 1 : -1); return; }
@@ -724,26 +731,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return id ? index().byId.get(id) : null;
   }
   // j and k move the selection to the next or previous item or card on the page, in screen order, without opening
-  // anything; the page scrolls only as far as keeps the new selection in view. Enter selects detail in wide windows,
-  // and opens or folds the selected item in narrow windows.
+  // anything; the page scrolls only as far as keeps the new selection in view. Enter shows the selected item's detail.
   function navBoxes() { return [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].filter(e => e.offsetParent !== null); }
   function moveFocus(dir: number) {
     const list = navBoxes();
     if (!list.length) return;
     const selection=effectiveSelection();
-    const sel = wide && selection?.startsWith("it:") ? get("it-"+selection.slice(3)) : selEl(selection);
+    const sel = selection?.startsWith("it:") ? get("it-"+selection.slice(3)) : selEl(selection);
     const selectedBox = sel && (sel.matches(".item, .card") ? sel : sel.closest<HTMLElement>(".card, .item"));
-    const box = wide && selectedBox && get("item-detail").contains(selectedBox) ? get("it-"+selectedItem) : selectedBox;
+    const box = selectedBox && get("item-detail").contains(selectedBox) ? get("it-"+selectedItem) : selectedBox;
     let k = box ? list.indexOf(box) : -1;
     let next;
     if (k >= 0 && onScreen(box)) next = list[Math.min(list.length - 1, Math.max(0, k + dir))];
     else next = list.find(e => e.getBoundingClientRect().top >= 0) || list[0];
     if (!next) return;
     setCurrent(next);
-    if (wide) {
-      const head=next.classList.contains("item") ? next.querySelector<HTMLElement>(".item-head") : null;
-      if (head) head.focus({preventScroll:true}); else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    }
+    const head=next.classList.contains("item") ? next.querySelector<HTMLElement>(".item-head") : null;
+    if (head) head.focus({preventScroll:true}); else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const y = scrollToShow(listScroller(), next.getBoundingClientRect());
     if (y !== null) glideTo(y);
   }
@@ -770,8 +774,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
-    { key: "Enter", show: "Enter", label: "查看选中的条目（单栏展开或收起）", run: () => toggleFocused() },
+    { key: "Enter", show: "Enter", label: "查看选中的条目", run: () => toggleFocused() },
     { key: "ArrowRight", show: "← / →", label: "上一条 / 下一条等你处理", run: () => { stepStop(1); return true; } },
+    { key: "/", label: "按标题搜索所有条目和决策卡", run: () => { openSearch(); return true; } },
     { key: "n", label: "下一条新", db: true, run: () => { goNextFresh(); return true; } },
     { key: "N", label: "上一条新", db: true, run: () => { goPrevFresh(); return true; } },
     { key: "r", label: "标为已阅", db: true, run: () => { void markRead(); return true; } },
@@ -822,7 +827,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return b;
   }
   // An item opens by default when it is in progress, waits for the owner, or holds something that does.
-  // Sub-items start folded; owner toggles and navigation open their path. Single-column mode also uses manual for bodies.
+  // Sub-items start folded; owner toggles and navigation open their path.
   // Under a dependency filter, the items above a match open unless the owner folded them.
   function isOpen(it: ViewItem) { return filtering(groupOf(it)) && !(it.id in manual) ? filterMatches().anc.has(it.id) : !!manual[it.id]; }
 
@@ -832,8 +837,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let landing:{id:string;top:number;gliding?:number;pane?:boolean} | null = null;
   let expectedScroll:number | null = null;
   let expectedDetailScroll:number | null = null;
-  // A scroller is the thing that scrolls one column: the left list pane in wide mode and the window otherwise (the list
-  // scroller), or the detail pane. Positions are scroll offsets; origin is the scroller's top edge in viewport
+  // A scroller is the thing that scrolls one column: the left list pane (the list scroller) or the detail pane. Positions are scroll offsets; origin is the scroller's top edge in viewport
   // coordinates, so a rectangle's viewport top minus the origin is its place inside the scroller's view. Its own scrolls
   // are recorded in `expected`, so the scroll event they raise is not mistaken for the reader scrolling.
   interface Scroller { height():number; position():number; max():number; origin():number; to(y:number):void; by(delta:number):void; expect():void }
@@ -849,16 +853,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     };
     return s;
   }
-  const windowScroller: Scroller={
-    height:() => innerHeight,
-    position:() => window.scrollY,
-    max:() => Math.max(0,document.documentElement.scrollHeight-innerHeight),
-    origin:() => 0,
-    to(y) { window.scrollTo(0,y); windowScroller.expect(); },
-    by(delta) { window.scrollBy(0,delta); windowScroller.expect(); },
-    expect:() => { expectedScroll=window.scrollY; },
-  };
-  function listScroller(): Scroller { return wide ? elementScroller(get("page-left"),position => { expectedScroll=position; }) : windowScroller; }
+  function listScroller(): Scroller { return elementScroller(get("page-left"),position => { expectedScroll=position; }); }
   function detailScroller(): Scroller { return elementScroller(get("item-detail"),position => { expectedDetailScroll=position; }); }
   // Where the scroller must go to bring a rectangle into view with an 8px margin, or null when it is already in view.
   function scrollToShow(s:Scroller, r:{top:number;bottom:number}) {
@@ -897,7 +892,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // and centres what it shows: the whole card when it fits in the viewport, else the target, moved off
   // centre only as far as keeps the card filling three quarters of the view.
   function glideToTarget(t: HTMLElement) {
-    const inDetail=wide && get("item-detail").contains(t), s=inDetail ? detailScroller() : listScroller();
+    const inDetail=get("item-detail").contains(t), s=inDetail ? detailScroller() : listScroller();
     const origin=s.origin(), height=s.height(), offset=s.position();
     const top = 8, bottom = height - 8, room = bottom - top;
     const doc = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { top: r.top-origin+offset, bottom: r.bottom-origin+offset }; };
@@ -925,7 +920,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openPath(id: string) {
     let it = index().byId.get(id);
     let outer:string | undefined;
-    if (it && !wide && !manual[it.id]) { manual[it.id] = true; outer=it.id; }
     if (it) ancestors(it).forEach(p => { if (!isOpen(p)) { manual[p.id] = true; outer=p.id; } });
     saveManual();
     if (outer) renderNow(get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer));
@@ -975,7 +969,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     renderBack();
     if (!b) return;
     const box = b.key && boxOfKey(b.key);
-    if (wide && b.key) {
+    if (b.key) {
       const container=containerOf(b.key), card=container?.startsWith("q:") ? container.slice(2) : undefined;
       const item=container?.startsWith("it:") ? container.slice(3) : card ? snapshot.decisions[card]?.item || null : null;
       const note=b.key.startsWith("note:") ? b.key.slice(5) : undefined;
@@ -1019,12 +1013,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // A row for a dependency that is not a live item: a decision card shows its state where an item shows its status,
   // its question as the title and, under it, why the depending item needs it, like an item row.
-  function depFallbackRow(kind: string, id: string, why: string) {
-    const d = kind === "card" ? snapshot.decisions[id] : undefined;
-    const tag = !d ? '<span class="st cancelled">已删除</span>'
+  function cardTag(id: string, d: Decision | undefined) {
+    return !d ? '<span class="st cancelled">已删除</span>'
       : derived.cardWaiting(id) ? '<span class="asktag">等你决定</span>'
       : d.status === "open" ? '<span class="st todo">未定</span>'
       : '<span class="st done">' + (d.ruling ? "已裁定" : "已结束") + "</span>";
+  }
+  function depFallbackRow(kind: string, id: string, why: string) {
+    const d = kind === "card" ? snapshot.decisions[id] : undefined;
+    const tag = cardTag(id, d);
     const b = el("button", "deprow", tag + '<span class="t">' + inline(d?.question || id)
       + '<span class="why' + (why ? "" : " none") + '">' + (why ? inline(why) : "（没写为什么）") + "</span></span>");
     b.type = "button";
@@ -1032,6 +1029,85 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return b;
   }
   function followCard(id: string) { if (snapshot.decisions[id]) jump("q-"+id); }
+  // Every item and decision card the owner can search for or refer to, in board data order, with what a result row shows:
+  // its project, its parent item (the item holding it, for a card) and its status.
+  interface Found extends Target { project: string; parent: string; tag: string }
+  function allTargets(): Found[] {
+    return cached("targets", () => {
+      const out: Found[] = [];
+      for (const it of state.items) {
+        const st = statusOf(it), parent = upItem(it);
+        out.push({ kind: "item", key: it.id, title: plain(it.title), project: groupOf(it), parent: parent ? plain(parent.title) : "", tag: '<span class="st ' + st + '">' + esc(STATUS[st] || st) + "</span>" });
+      }
+      for (const d of state.decisions) {
+        const home = index().byId.get(d.item);
+        out.push({ kind: "card", key: d.id, title: plain(firstLine(d.question)) || "决策", project: home ? groupOf(home) : "", parent: home ? plain(home.title) : "", tag: cardTag(d.id, d) });
+      }
+      return out;
+    });
+  }
+  function targetRow(t: Found, cls: string) {
+    const b = el("button", "deprow " + cls, t.tag + '<span class="t">' + esc(t.title) + '</span><span class="where">' + esc([t.project || "其他", t.parent].filter(Boolean).join(" › ")) + "</span>");
+    b.type = "button";
+    return b;
+  }
+  // A list of found targets with one marked row, shared by the "/" search and the "#" popup.
+  function targetList(host: HTMLElement, pick: (t: Found) => void, rowClass: string) {
+    let rows: Found[] = [], els: HTMLElement[] = [], at = 0;
+    const mark = () => els.forEach((e, i) => { e.classList.remove("sel"); if (i === at) e.classList.add("sel"); });
+    return {
+      show(found: Found[]) {
+        rows = found; at = 0; host.innerHTML = "";
+        els = found.map(t => {
+          const b = targetRow(t, rowClass);
+          // The text field keeps its focus while a row is clicked.
+          b.addEventListener("mousedown", ev => ev.preventDefault());
+          b.addEventListener("click", ev => { ev.stopPropagation(); pick(t); });
+          host.appendChild(b); return b;
+        });
+        mark();
+      },
+      move(delta: number) { if (rows.length) { at = (at + delta + rows.length) % rows.length; mark(); els[at]!.scrollIntoView({ block: "nearest" }); } },
+      get current() { return rows[at]; },
+      get size() { return rows.length; },
+    };
+  }
+  function goTo(kind: Target["kind"], key: string) { if (kind === "item") { if (snapshot.items[key]) reveal(key); } else followCard(key); }
+  // A reference in a comment, log or reply selects its target like a dependency link: Back returns to where the reader was.
+  document.addEventListener("click", ev => {
+    const link = (ev.target as HTMLElement).closest?.<HTMLElement>("a.itemref");
+    if (!link || ev.defaultPrevented) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const ref = link.getAttribute("data-ref") ?? "";
+    remember(); goTo(ref.startsWith("it:") ? "item" : "card", ref.slice(ref.indexOf(":") + 1)); renderBack();
+  }, true);
+  // "/" searches every item and decision card by title; up and down choose a row, Enter or a click goes there, Esc closes.
+  let searchBox: HTMLElement | null = null;
+  function closeSearch() { searchBox?.remove(); searchBox = null; }
+  function openSearch() {
+    if (searchBox) { searchBox.querySelector<HTMLInputElement>("input")?.focus(); return; }
+    const box = el("div", "searchbox"), list = el("div", "search-list");
+    box.id = "search"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "搜索条目和决策卡");
+    const input = document.createElement("input");
+    input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题"; input.setAttribute("aria-label", "搜索条目和决策卡的标题");
+    box.appendChild(input); box.appendChild(list);
+    const found = targetList(list, t => { closeSearch(); goTo(t.kind, t.key); }, "searchrow");
+    const update = () => {
+      const rows = findTargets(allTargets(), input.value);
+      found.show(rows);
+      if (!rows.length) list.appendChild(el("p", "empty", "没有匹配的条目或决策卡"));
+    };
+    input.addEventListener("input", update);
+    input.addEventListener("keydown", ev => {
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSearch(); }
+      else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); found.move(ev.key === "ArrowDown" ? 1 : -1); }
+      else if (ev.key === "Enter" && found.current) { ev.preventDefault(); const t = found.current; closeSearch(); goTo(t.kind, t.key); }
+    });
+    document.body.appendChild(box); searchBox = box;
+    update(); input.focus();
+  }
+  document.addEventListener("mousedown", ev => { if (searchBox && !searchBox.contains(ev.target as Node)) closeSearch(); }, true);
   function depLink(d: ViewItem | {kind: "item" | "card"; id: string}) {
     const card = "kind" in d && d.kind === "card";
     const title = card ? snapshot.decisions[d.id]?.question : snapshot.items[d.id]?.title;
@@ -1072,8 +1148,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // A comment on a log entry or a reply keeps its target, the item or card, and names the piece in anchor.
   let editingAnchor: Note["anchor"] | null = null;
   function openComment(key: string, anchor?: Note["anchor"] | null) {
-    if (key.startsWith("it:")) { openPath(key.slice(3)); if (wide) selectItem(key.slice(3)); }
-    else if (wide && key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
+    if (key.startsWith("it:")) { openPath(key.slice(3)); selectItem(key.slice(3)); }
+    else if (key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
     editing = key; editingAnchor = anchor || null;
     renderNow("notes:"+key);
     const ta = get<HTMLTextAreaElement>("ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_"));
@@ -1096,7 +1172,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         (e as HTMLButtonElement).disabled=busy || !connected || d.status !== "open" || !!(chosen && chosen.state !== "draft");
       });
     } else if (kind === "explain") {
-      const boxes=[box,...(wide && target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
+      const boxes=[box,...(target.startsWith("it:") ? [get("it-"+target.slice(3))].filter((e):e is HTMLElement => !!e && e !== box) : [])];
       for (const host of boxes) {
         const head=target.startsWith("it:") ? host.querySelector<HTMLElement>(".item-head") : host.children[0]?.children[0] as HTMLElement | undefined;
         if (!head) continue;
@@ -1219,21 +1295,24 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       wrap.appendChild(box);
     });
     if (editing === key) {
-      const ed = el("div", "editor");
+      const ed = el("div", "editor"), row = el("div", "row");
       const ta = document.createElement("textarea");
       ta.id = "ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_");
       ta.maxLength = 4000;
       ta.placeholder = "写给 Claude 的意见或问题（关于：" + title + (editingAnchor ? "，" + anchorLabel(editingAnchor) : "") + "）。回车保存，Shift+回车换行，Esc 取消";
       ta.value = drafts[key] || "";
-      ta.addEventListener("input", () => { drafts[key] = ta.value; });
+      const picker = refPicker(ta, ed, row, () => { drafts[key] = ta.value; });
+      ta.addEventListener("input", () => { drafts[key] = ta.value; picker.update(); });
+      ta.addEventListener("blur", () => picker.close());
       // Enter saves, Shift+Enter starts a new line, Esc cancels and keeps the draft; inside an IME composition both only act on the composition.
+      // While the "#" popup is open it takes the arrow keys, Enter and Esc first.
       ta.addEventListener("keydown", ev => {
         if (ev.isComposing || ev.keyCode === 229) return;
+        if (picker.key(ev)) return;
         if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); save.click(); }
         else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel.click(); }
       });
       ed.appendChild(ta);
-      const row = el("div", "row");
       const save = el("button", "save", "保存"); save.type = "button";
       const cancel = el("button", "cancel", "取消"); cancel.type = "button";
       save.addEventListener("click", async () => {
@@ -1251,6 +1330,42 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       wrap.appendChild(ed);
     }
     return wrap;
+  }
+
+  // Typing "#" in a comment opens a small popup of the items and decision cards whose title contains what follows it. Up and
+  // down choose, Enter or a click writes the target's reference token over "#…", Esc closes only the popup. A "#" glued to a
+  // word before it (Repo#341) is not a reference.
+  function refPicker(ta: HTMLTextAreaElement, ed: HTMLElement, before: HTMLElement, sync: () => void) {
+    const pop = el("div", "refpop");
+    pop.setAttribute("role", "listbox");
+    let start = 0, open = false;
+    const list = targetList(pop, t => choose(t), "refopt");
+    function close() { if (open) { pop.remove(); open = false; } }
+    function choose(t: Found) {
+      const token = refToken(t.kind, t.key), caret = ta.selectionStart ?? ta.value.length;
+      ta.value = ta.value.slice(0, start) + token + ta.value.slice(caret);
+      ta.setSelectionRange(start + token.length, start + token.length);
+      sync(); close(); ta.focus();
+    }
+    return {
+      close,
+      update() {
+        const q = refQuery(ta.value, ta.selectionStart ?? ta.value.length);
+        const rows = q ? findTargets(allTargets(), q.query).slice(0, 8) : [];
+        if (!q || !rows.length) { close(); return; }
+        start = q.start; list.show(rows);
+        if (!open) { ed.insertBefore(pop, before); open = true; }
+      },
+      // True when the popup used the key.
+      key(ev: KeyboardEvent) {
+        if (!open) return false;
+        if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); list.move(ev.key === "ArrowDown" ? 1 : -1); return true; }
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); choose(list.current!); return true; }
+        if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); close(); return true; }
+        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "Home" || ev.key === "End") close();
+        return false;
+      },
+    };
   }
 
   function renderSend() {
@@ -1315,14 +1430,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       acts.appendChild(all);
     }
     view.appendChild(el("span", "sum-k", "视图"));
-    const split=sbtn("s-plain" + (wide ? " s-on" : ""), wide ? "单栏" : "分屏", wide ? "切换到单栏正文" : "切换到分屏正文", () => {
-      wide=!wide;
-      try { localStorage.setItem("board-split",String(wide)); } catch {}
-      layoutChanged(); get("split-toggle").focus({preventScroll:true});
-    });
-    split.addEventListener("keydown",ev => { if (ev.key === "Enter") ev.stopPropagation(); });
-    split.id="split-toggle"; split.setAttribute("aria-label","分屏"); split.setAttribute("aria-pressed",String(wide));
-    view.appendChild(split);
+
     const fold = sbtn("s-plain", "全部折叠", "折叠所有条目和评论", () => {
       // Folding everything also folds every comment list, including ones that new replies had opened.
       manual = {}; logOpen = {}; saveManual();
@@ -1337,7 +1445,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     view.appendChild(sbtn("s-plain", "展开第一层", "展开每条工作线，只显示它下面第一层条目", () => {
       state.items.forEach(i => { delete manual[i.id]; });
       tops().forEach(t => { manual[t.id] = true; });
-      saveManual(); renderNow("areas",...(wide && selectedItem ? ["head:"+selectedItem] : []));
+      saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
     acts.insertBefore(el("span", "sum-k", "待看"), acts.firstChild);
 
@@ -1436,25 +1544,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const retained=groupReuse?.items.get(it.id);
     if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly && !detail) return retained;
     const li = el("li");
-    // Filters open sub-item paths; the shared body renders inline when opened, or as the selected wide detail.
-    const open = isOpen(it), bodyOpen = detail || !wide && !!manual[it.id];
+    // Filters open sub-item paths; the body renders only as the selected item's detail.
+    const open = isOpen(it), bodyOpen = detail;
     if (!bodyOpen && !bodyShown(it.id)) { delete logShown[it.id]; delete logHold[it.id]; }
     const baseline = unreadBefore<Item>("item",it.id);
-    const before = bodyOpen || wide ? baseline : undefined;
+    const before = baseline;
     const st = statusOf(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (filtering(groupOf(it)) && !filterMatches().hit.has(it.id) ? " ctx" : ""));
     box.id = (detail ? "detail-it-" : "it-") + it.id;
     if (detail) box.dataset.sel = "it:"+it.id;
-    if (wide && !detail && selectedItem === it.id) box.classList.add("selected");
+    if (!detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");
     // Archived and cancelled sub-items stay where they are: hidden, unless the 已归档 or 取消 filter shows them.
     const sub = kids(it.id, inArchive || showsArchived(groupOf(it)) || showsCancelled(groupOf(it))).filter(k => inArchive || passes(k));
     const ck = checksOf(it), raised = raisedBy(it);
-    const hasBody = !!(before?.head || before?.deps.length || before?.links.length || before?.ask || headOf(it) || logOf(it).length || it.data || it.ask || derived.cardsOf(it.id).length || depIds(it).length || (waitedBy().get(it.id) || []).length || ck.length || raised || (it.links || []).length || sub.length);
+
     const head = el("button", "item-head");
     head.type = "button";
-    if (!wide) head.setAttribute("aria-expanded", String(open));
-    if (!wide) head.appendChild(el("span", "caret", hasBody ? (open ? "▾" : "▸") : ""));
 
     head.appendChild(el("span", "st " + st + (before && it.status !== undefined && before.status !== it.status ? " chg-add" : ""), esc(STATUS[st] || st)));
     // The badge shows the priority; a legacy raise also shows the written one, struck through (LEGACY PRIORITY).
@@ -1464,7 +1570,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     head.appendChild(pb);
     if (raised) head.appendChild(el("span", "prio-was", esc(wrote || "P?")));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
-    if (wide && !detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
+    if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);
     if (ck.length) head.appendChild(el("span", "checktag", "需核对")).title = ck.map(c => c.text).join("\n");
     if (needsOwner(it)) head.appendChild(el("span", "asktag", "等你处理"));
     const ownFresh = freshShown(it), freshCount = (ownFresh ? 1 : 0) + (sub.length ? below.fresh[it.id] || 0 : 0);
@@ -1489,27 +1595,24 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The blue line marks what r on this item reads: its own new content. New sub-items carry their own line, and a
     // parent with nothing new of its own shows them only in its 新 chip.
     if (ownFresh) box.classList.add("fresh");
-    // Single-column head clicks open the subtree; split clicks select the displayed detail.
+    // A head click selects the item whose detail is displayed.
     head.addEventListener("click", ev => {
-      if (wide) { ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id)); }
-      else { rememberSelected(it.id); manual[it.id] = !(open && bodyOpen); saveManual(); renderNow("tree:"+it.id); }
+      ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id));
       get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
     });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
-    const row = el("div", "item-row" + (wide && !detail ? " tree-row" : ""));
-    if (wide) {
-      const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
-      caret.type="button"; caret.disabled=!sub.length;
-      caret.setAttribute("aria-expanded",String(open)); caret.setAttribute("aria-label",open ? "收起子条目" : "展开子条目");
-      caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
-      row.appendChild(caret);
-      row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
-      // A double-click on a tree row folds or unfolds its sub-items, as the caret does; a single click only selects.
-      if (!detail && sub.length) row.addEventListener("dblclick", ev => {
-        if ((ev.target as HTMLElement).closest?.("button.caret, a, [role=button]")) return;
-        getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
-      });
-    }
+    const row = el("div", "item-row" + (!detail ? " tree-row" : ""));
+    const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
+    caret.type="button"; caret.disabled=!sub.length;
+    caret.setAttribute("aria-expanded",String(open)); caret.setAttribute("aria-label",open ? "收起子条目" : "展开子条目");
+    caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
+    row.appendChild(caret);
+    row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
+    // A double-click on a tree row folds or unfolds its sub-items, as the caret does; a single click only selects.
+    if (!detail && sub.length) row.addEventListener("dblclick", ev => {
+      if ((ev.target as HTMLElement).closest?.("button.caret, a, [role=button]")) return;
+      getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
+    });
     row.appendChild(head);
     // A parent counts its leaves by status at the right of its row; archived and cancelled ones are left out.
     if ((index().children.get(it.id) || []).length) {
@@ -1582,7 +1685,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       sub.forEach(k => ul.appendChild(itemNode(k, inArchive)));
       li.appendChild(ul);
     }
-    if (derived.isRequest(it.id) && (!wide || detail)) {
+    if (derived.isRequest(it.id) && detail) {
       const prefix = `${it.request!.by} 提出：`, first = it.log[0]?.text || "";
       li.appendChild(el("div", "request-meta", esc(it.request!.by) + " · " + esc(day(it.request!.at)) + " · " + inline(first.startsWith(prefix) ? first.slice(prefix.length) : first)));
     }
@@ -1724,19 +1827,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     sec.hidden = !loose.length;
     loose.forEach(d => root.appendChild(decisionCard(d)));
   }
-  // The reader scrolling the list releases a landing; the list scrolls in the left pane in wide mode and in the window otherwise.
+  // The reader scrolling the list releases a landing; the list scrolls in the left pane.
   function listScrolled() {
     if (landing && !landing.pane && (expectedScroll === null || Math.abs(listScroller().position()-expectedScroll)>1)) releaseLanding();
   }
-  window.addEventListener("scroll", () => { if (!wide) listScrolled(); }, { passive: true });
-  get("page-left").addEventListener("scroll", () => { if (wide) listScrolled(); }, { passive: true });
+  get("page-left").addEventListener("scroll", () => listScrolled(), { passive: true });
 
   // A snapshot can re-render while the owner is typing; keep the editor's focus and caret.
   // The item or card the reader is looking at, and where it sits, so a data update does not move the page under them.
   function scrollAnchor() {
     const cur = boxOfKey(current);
     const origin=listScroller().origin();
-    if (cur && !(wide && get("item-detail").contains(cur)) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top-origin };
+    if (cur && !get("item-detail").contains(cur) && onScreen(cur)) return { id: cur.id, top: cur.getBoundingClientRect().top-origin };
     const e = [...document.querySelectorAll<HTMLElement>("#areas .item, #areas .card, #cards .card")].find(x => x.getBoundingClientRect().bottom > origin);
     return e ? { id: e.id, top: e.getBoundingClientRect().top-origin } : null;
   }
@@ -1824,16 +1926,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const retained=new Map(elements(pane).filter(e => e.classList.contains("card")).map(e => [e.id,e]));
     pane.innerHTML="";
     const it=selectedItem && index().byId.get(selectedItem);
-    if (wide && it) {
+    if (it) {
       const next=itemNode(it,inArchive(it),false,true,true);
       for (const card of elements(next).filter(e => e.classList.contains("card"))) {
         const old=retained.get(card.id), id=card.id.slice(2);
         if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
       }
       [...next.children].forEach(child => pane.appendChild(child));
-    } else if (wide) pane.appendChild(el("p","empty","点左边的条目标题，在这里看正文"));
+    } else pane.appendChild(el("p","empty","点左边的条目标题，在这里看正文"));
     pane.scrollTop=top;
-    pane.hidden=!wide; detailDirty=false;
+    detailDirty=false;
   }
   function renderPage(scope:Set<string>) {
     presentationScopes(scope);
@@ -1843,15 +1945,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const anchor = landing ? landing.gliding ? null : {...landing} : listScroller().position() > 0 ? scrollAnchor() : null;
     const paneTop=get("item-detail").scrollTop;
     countBelow();
-    const detailPainted=wide && (detailDirty || scope.has("all") || scope.has("detail") || !!selectedItem && scope.has("item:"+selectedItem));
-    if (detailPainted || !wide && (detailDirty || scope.has("all") || scope.has("detail"))) renderDetail(scope);
+    const detailPainted=detailDirty || scope.has("all") || scope.has("detail") || !!selectedItem && scope.has("item:"+selectedItem);
+    if (detailPainted) renderDetail(scope);
     if (scope.has("all") || scope.has("areas")) renderAreasDOM();
     else { const groups=new Set([...scope].filter(k => k.startsWith("group:")).map(k => k.slice(6))); if (groups.size) renderAreasDOM(groups,scope); }
     if (scope.has("all") || scope.has("cards")) renderCardsDOM();
     if (!scope.has("all")) {
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
-      const paintedHome=(home:string | null) => home ? wide ? home === selectedItem && detailPainted : scope.has("areas") || scope.has("group:"+derived.groupOf(home)) : scope.has("cards");
+      const paintedHome=(home:string | null) => home ? home === selectedItem && detailPainted : scope.has("cards");
       for (const key of scope) {
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
@@ -1867,7 +1969,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
             if (kind === "tree") old.parentElement!.replaceWith(next); else old.replaceWith(next.children[0]!);
             drawnItems.add(id);
           }
-          if (it) { if (wide && kind === "tree") heads.add(id); derived.ancestors(id).forEach(p => heads.add(p)); }
+          if (it) { if (kind === "tree") heads.add(id); derived.ancestors(id).forEach(p => heads.add(p)); }
         } else if (kind === "card") {
           const d=index().decById.get(id); if (d && !paintedHome(homeOf(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
@@ -1888,7 +1990,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const next=itemNode(it,inArchive(it),true).children[0] as HTMLElement;
           old.children[0]!.replaceWith(next.children[0]!); old.className=next.className;
         }
-        if (wide && id === selectedItem && !detailPainted) {
+        if (id === selectedItem && !detailPainted) {
           const detail=itemBox(id);
           if (detail) {
             const head=itemNode(it,inArchive(it),true,true,true).children[0] as HTMLElement;
@@ -1916,10 +2018,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const order=stops().map(s => s.id);
     if (!sameValue(order,waitingOrder)) {
       waitingOrder=order;
-      for (const root of [get("areas"),get("cards"),...(wide ? [get("item-detail")] : [])]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
+      for (const root of [get("areas"),get("cards"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
     renderHeader(); renderSend(); renderMenu();
-    if (wide) get("item-detail").scrollTop=paneTop;
+    get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
       const d=e.getBoundingClientRect().top-s.origin()-anchor.top;
@@ -1933,8 +2035,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   divider.setAttribute("aria-label","调整左右栏宽度"); divider.setAttribute("aria-controls","areas item-detail");
   let drag: {pointer:number;x:number;width:number} | null = null;
   function applyTreeWidth() {
-    if (!wide) return;
-    // In split mode the grid may overflow a phone; both columns retain their useful minimums.
+    // The grid may overflow a phone; both columns retain their useful minimums.
     const maximum=Math.max(300,Math.floor(wrap.getBoundingClientRect().width-8-380));
     const width=Math.round(Math.max(300,Math.min(maximum,treeWidth ?? (wrap.getBoundingClientRect().width-8)/2.3)));
     wrap.style.setProperty("--tree-width",width+"px");
@@ -1951,7 +2052,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     divider.releasePointerCapture(drag.pointer); drag=null;
   }
   divider.addEventListener("pointerdown",ev => {
-    if (!wide || drag || ev.button !== 0) return;
+    if (drag || ev.button !== 0) return;
     ev.preventDefault();
     drag={pointer:ev.pointerId,x:ev.clientX,width:applyTreeWidth()!}; divider.setPointerCapture(ev.pointerId);
   });
@@ -1959,15 +2060,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   for (const kind of ["pointerup","pointercancel"] as const) divider.addEventListener(kind,ev => { if (drag && ev.pointerId === drag.pointer) endDrag(); });
   divider.addEventListener("lostpointercapture",() => { drag=null; });
   window.addEventListener("resize",() => applyTreeWidth(),{passive:true});
-  function layoutChanged() {
-    if (wide) document.body.classList.add("wide"); else document.body.classList.remove("wide");
-    divider.hidden=!wide; endDrag(); applyTreeWidth();
-    detailDirty=true; releaseLanding(); renderAll();
-  }
+
   get("item-detail").addEventListener("scroll", () => {
     if (landing?.pane && (expectedDetailScroll === null || Math.abs(get("item-detail").scrollTop-expectedDetailScroll)>1)) releaseLanding();
   }, {passive:true});
-  layoutChanged();
+  applyTreeWidth();
+  detailDirty=true; releaseLanding(); renderAll();
 
   get("to-top").addEventListener("click", () => glideTo(0));
 
@@ -2026,13 +2124,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       selectionRestored=true;
       if (selectedItem && s.items[selectedItem]) {
         current="it:"+selectedItem;
-        if (wide) {
-          const it=index().byId.get(selectedItem)!;
-          if (inArchive(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["archived"]};
-          else if (isCancelled(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["cancelled"]};
-          else if (!passes(it)) clearFilters(groupOf(it));
-          ancestors(it).forEach(p => { manual[p.id]=true; }); saveManual();
-        }
+        const it=index().byId.get(selectedItem)!;
+        if (inArchive(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["archived"]};
+        else if (isCancelled(it)) filters[groupOf(it)]={...groupFilter(groupOf(it)),status:["cancelled"]};
+        else if (!passes(it)) clearFilters(groupOf(it));
+        ancestors(it).forEach(p => { manual[p.id]=true; }); saveManual();
       }
     }
   }
@@ -2214,6 +2310,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return out;
   }
   function itemTerms(id: string) { return termLinks(derived.projectOf(id)); }
+  // Every "it:key" and "q:key" some document of the board refers to, built when a changed target needs to know.
+  function citedRefs() {
+    return cached("citedRefs", () => {
+      const out = new Set<string>();
+      for (const docs of [snapshot.items, snapshot.decisions, snapshot.notes]) for (const doc of Object.values(docs)) refsIn(JSON.stringify(doc)).forEach(k => out.add(k));
+      return out;
+    });
+  }
   let retry: ReturnType<typeof setTimeout> | undefined;
   let source: EventSource | undefined;
   let connectionAbort: AbortController | undefined;
@@ -2263,7 +2367,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       snapshotGeneration++;
       const change = JSON.parse((event as MessageEvent).data) as {commit: string; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
-      const relocated:string[]=[];
+      const relocated:string[]=[], retitled:string[]=[];
       snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
       rulePresentationDirty=true;
       for (const doc of change.changed) {
@@ -2277,6 +2381,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         } else if (doc.kind === "item") {
           const before=previous as Item | undefined, after=doc.after as Item | null;
           scope.add("item:"+doc.id);
+          if (before?.title !== after?.title) retitled.push("it:"+doc.id);
           if (!before || !after || before.parent !== after.parent || before.group !== after.group || before.order !== after.order || !sameValue(before.request,after.request)) {
             if (before) { scope.add("group:"+derived.groupOf(doc.id)); derived.ancestors(doc.id).forEach(p => scope.add("item:"+p)); } relocated.push(doc.id);
           }
@@ -2286,6 +2391,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
         } else if (doc.kind === "decision") {
           const before=previous as Decision | undefined, after=doc.after as Decision | null;
+          if (before?.question !== after?.question) retitled.push("q:"+doc.id);
           if (!before || !after || before.item !== after.item || before.status !== after.status) {
             for (const item of [before?.item,after?.item]) if (item && snapshot.items[item]) scope.add("item:"+item);
             if (!before?.item || !snapshot.items[before.item] || !after?.item || !snapshot.items[after.item]) scope.add("cards");
@@ -2303,6 +2409,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
       snapshot.head = change.commit; applySnapshot(snapshot);
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
+      // A title that changed, or a target that appeared or went, changes how every reference to it reads.
+      if (retitled.some(k => citedRefs().has(k))) scope.add("all");
 
       scheduleRender(...scope); queueUnread(active,controller.signal,next);
     });
