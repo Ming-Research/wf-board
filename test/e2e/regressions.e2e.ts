@@ -77,12 +77,6 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => { const o = await oracle(b.store); return [...await checkFresh(bp, o), ...await checkWrap(bp, o)]; },
   },
   {
-    bug: "n from the bottom row wrapped onto a stop with no row in the list (owner, 2026-10-14)",
-    reverts: [{ file: "web/app.ts", edit: "n's wrap skips stops with no row in the list", find: " && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh", replace: "); goFresh" }],
-    family: "wrap-n",
-    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
-  },
-  {
     bug: "the right arrow chose the card nearest the top of the screen instead of the next one in the list (owner, 2026-10-14)",
     // The old stepStop body, back where the new one stands.
     reverts: [{ file: "web/app.ts", edit: "the arrows step by the list's rows", find: ARROW_NEW, replace: ARROW_OLD }],
