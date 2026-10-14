@@ -686,7 +686,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n reaches hidden completed items in page order, and m reads the selected item but not its sub-items", async () => {
+test("n reaches completed items holding unread content in page order, and m reads the selected item but not its sub-items", async () => {
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Completed",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"});
@@ -700,14 +700,14 @@ test("n reaches hidden completed items in page order, and m reads the selected i
   p.key("m"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").querySelector(".item-head")!).filter(e=>e.className === "newtag freshchip");
-  assert.deepEqual(areaChip.map(e=>e.innerHTML),["2"],"the parent counts both open and hidden completed sub-items");
+  assert.deepEqual(areaChip.map(e=>e.innerHTML),["2"],"the parent counts both open and completed sub-items holding unread content");
   assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 2 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
   p.key("m"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 2 条在下面的子条目里/,"m says where the new content is");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after m, n goes on to the next stop on the page");
-  p.key("n"); await p.flush(); const completed=detailItem(p,"other"); assert.ok(completed,"the hidden completed item's detail is rendered");
-  assert.ok(completed.className.includes("cur"),"the hidden completed item remains the next unread stop");
-  assert.ok(!rowOf(p,"other"),"unread navigation leaves its node hidden");
+  p.key("n"); await p.flush(); const completed=detailItem(p,"other"); assert.ok(completed,"the completed item's detail is rendered");
+  assert.ok(completed.className.includes("cur"),"the completed item remains the next unread stop");
+  assert.ok(rowOf(p,"other")?.className.includes("fresh-ended"),"the completed item shows dimmed in the tree while it holds unread content");
 });
 
 test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
@@ -2573,7 +2573,7 @@ test("hidden closed item references open detail and Back returns without changin
   });
 });
 
-test("hidden completed and cancelled items retain unread item, card and reply stops and can be read", async t => {
+test("done and cancelled items holding unread item, card or reply content show dimmed in the tree and can be read", async t => {
   for (const state of ["done","cancelled"] as const) for (const kind of ["item","decision","note"] as const) await t.test(state+" "+kind,async()=> {
     const s=nativeSnapshot(), baseline={...s.items.child!,head:"Before"};
     s.items.child!.plan=planWork([],state === "done" ? "done" : "dropped"); s.items.child!.head="Changed";
@@ -2582,10 +2582,11 @@ test("hidden completed and cancelled items retain unread item, card and reply st
     s.notes.n={target:"it:child",kind:"comment",text:"Question",at,state:"done",reply:"New answer",repliedAt:at,rev:1};
     const id=kind === "item" ? "child" : kind === "decision" ? "q" : "n";
     const p=await page(s,unread(kind,id),kind === "item" ? baseline : null); await expand(p,"area");
-    assert.ok(!rowOf(p,"child")); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+    // Owner, 2026-10-14: n only lands on rows on screen, so a closed item holding unread content shows, dimmed.
+    assert.ok(rowOf(p,"child")?.className.includes("fresh-ended"),"the closed item shows dimmed while it holds unread content"); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
     const chip=rowOf(p,"area").querySelector(".freshchip")!; assert.ok(chip,"a hidden child's unread content still reaches its visible owner");
     await chip.click(); await p.flush();
-    const child=detailItem(p,"child"); assert.ok(child); assert.ok(!rowOf(p,"child"));
+    const child=detailItem(p,"child"); assert.ok(child); assert.ok(rowOf(p,"child"));
     const target=kind === "item" ? child : p.document.getElementById(kind === "decision" ? "q-q" : "note-n");
     assert.ok(target,"the unread target is rendered inside the hidden item's detail");
     assert.ok(target.className.includes("cur"));
