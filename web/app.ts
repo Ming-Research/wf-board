@@ -1723,15 +1723,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return row;
     };
     // An unfolded card follows the first row naming it in the shown item's plan.
-    const appendRow = (parent: HTMLElement, value: typeof rows[number]) => {
+    const appendRow = (outer: HTMLElement, value: typeof rows[number]) => {
       const stored = value.row, d = "card" in stored ? index().decById.get(stored.card) : undefined;
       // A card row is one tinted box: the row with its card unfolded inside it, so the title shows once.
-      if (d && inlineHost(d.id) !== null) {
-        const wrap = el("div", "cardbox"); wrap.appendChild(renderRow(value));
-        if (inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) wrap.appendChild(decisionCard(d));
-        parent.appendChild(wrap); return;
-      }
+      const parent = d && inlineHost(d.id) !== null ? el("div", "cardbox") : outer;
       parent.appendChild(renderRow(value));
+      if (d && inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) parent.appendChild(decisionCard(d));
+      if (parent !== outer) outer.appendChild(parent);
     };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
