@@ -10,6 +10,7 @@
 /* The selected item's detail opens beside the tree; with no selection the tree fills the page. */
 :root {
   --bg: #f3f5f4;
+  --tag-bg: #e3f2f1; --tag-ink: #0b4f4b; --tag-rule: #9fd0cb;
   --surface: #ffffff;
   --ink: #18201e;
   --muted: #5b6763;
@@ -51,7 +52,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
+    --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
     --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
     --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
@@ -61,7 +62,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
+  --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
   --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
   --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
@@ -175,7 +176,8 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-row.item-line .plan-meta { display: inline; margin-left: 8px; white-space: nowrap; }
 .plan-row.item-line .plan-meta > * + * { margin-left: 6px; }
 .plan-row.item-line .tagchips { display: inline-flex; gap: 3px; flex: none; }
-.tagchip { font-size: 11px; line-height: 1.5; padding: 0 5px; border-radius: 4px; background: var(--chip, rgba(128,128,128,.14)); color: var(--muted, inherit); white-space: nowrap; font-weight: 400; }
+/* Every tag chip one teal (owner, 2026-10-14): text and fill keep at least 4.5:1 in both themes. */
+.tagchip { font-size: 12px; line-height: 1.5; padding: 0 5px; border-radius: 4px; background: var(--tag-bg); color: var(--tag-ink); border: 1px solid var(--tag-rule); white-space: nowrap; font-weight: 400; }
 .item-tags { margin: 2px 0 4px 20px; }
 .tagfilter { font-weight: 400; }
 .checktag { font-size: 11px; padding: 0 5px; vertical-align: 1px; }

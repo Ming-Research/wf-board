@@ -3895,3 +3895,18 @@ test("code blocks are set in Monaco: the inner code element inherits the block's
   assert.match(html.match(/\.rich pre\.code \{[^}]*\}/)![0], /font-family: Monaco/);
   assert.match(html.match(/\.rich pre\.code code \{[^}]*\}/)![0], /font: inherit/, "the global code rule would otherwise reset the family to the mono stack");
 });
+
+test("tag chips are one teal with text readable at 4.5:1 in the light theme and both dark-theme blocks", async () => {
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html.match(/\n\.tagchip \{[^}]*\}/)![0], /background: var\(--tag-bg\); color: var\(--tag-ink\); border: 1px solid var\(--tag-rule\)/);
+  const lum = (hex: string) => {
+    const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * c[0]! + 0.7152 * c[1]! + 0.0722 * c[2]!;
+  };
+  const pairs = [...html.matchAll(/--tag-bg: (#[0-9a-f]{6}); --tag-ink: (#[0-9a-f]{6});/g)];
+  assert.equal(pairs.length, 3, "light :root, the prefers-color-scheme dark block and the data-theme dark block each set the tag colors");
+  for (const [, bg, ink] of pairs) {
+    const [hi, lo] = [lum(bg!), lum(ink!)].sort((a, b) => b - a);
+    assert.ok((hi! + 0.05) / (lo! + 0.05) >= 4.5, `tag text ${ink} on ${bg} is below 4.5:1`);
+  }
+});
