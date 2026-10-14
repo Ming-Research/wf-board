@@ -21,11 +21,14 @@ export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
-export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
+export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 /** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
-export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
+/** `session`: the writing session's name from the commit's `Session:` trailer; `message` excludes the trailer. */
+export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string }
+/** The commit trailer that records which session made a write (docs/design.md, history). */
+const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
 type Doc = Item | Decision | Note | Notice | Glossary;
 const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, notice: Notice, glossary: Glossary };
@@ -474,6 +477,7 @@ export class Store {
         }
       }
       this.noteActivity(activity, commit.at, touched);
+      if (commit.session) this.noteSessions(activity, commit.at, commit.session, touched);
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
     }
     await this.loadPauses(activity, commits);
@@ -628,6 +632,15 @@ export class Store {
     for (const id of touched) if (!Object.hasOwn(activity.items, id) || Date.parse(at) > Date.parse(activity.items[id]!)) activity.items[id] = at;
   }
 
+  /** Later writes replace earlier attributions; a write without a session leaves the previous one. */
+  private noteSessions(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
+    for (const id of touched) {
+      const known = activity.sessions?.[id];
+      if (known && Date.parse(at) < Date.parse(known.at)) continue;
+      (activity.sessions ??= {})[id] = { name, at };
+    }
+  }
+
   private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
     const touched = new Set<string>();
     for (const change of changed) {
@@ -671,6 +684,8 @@ export class Store {
   private async apply(txn: Txn, ownerOnly = false): Promise<{ commit: string; revs: Record<string, number> }> {
     if (!txn.author.trim() || /[<>\r\n\0]/.test(txn.author)) throw new Error("Author must be a nonempty git author name without delimiters");
     if (!txn.message.trim()) throw new Error("Commit message must be nonempty");
+    const session = txn.session?.trim();
+    if (txn.session !== undefined && (!session || session.length > 80 || /\p{Cc}/u.test(session))) throw new Error("Session must be 1-80 characters without control characters");
     // Share the current snapshot: copy only the collections this write changes,
     // on first use, and insert new documents frozen.
     const next: Snapshot = { ...this.state };
@@ -783,7 +798,7 @@ export class Store {
       if (numbersChanged) atomicWrite(join(this.dir, numbersPath), validated(Numbers, { next: nextNum }, numbersPath));
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message], txn.author);
+      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : [])], txn.author);
       const [head, timestamp] = (await this.git(["show", "-s", "--format=%H%x00%aI", "HEAD"])).trimEnd().split("\0");
       if (!head || !/^[0-9a-f]{40}$/.test(head) || !timestamp) throw new Error("Invalid git commit metadata");
       next.head = head;
@@ -791,7 +806,7 @@ export class Store {
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
       // Documents in `changed` are already frozen snapshot documents.
-      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {} } };
+      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -820,14 +835,17 @@ export class Store {
     if (changed.some(c => c.kind !== "owner")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
-      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}) };
-      this.noteActivity(activity, event.at, this.changedItems(changed, next));
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}) };
+      const touched = this.changedItems(changed, next);
+      this.noteActivity(activity, event.at, touched);
+      if (session) this.noteSessions(activity, event.at, session, touched);
       this.notePauses(activity, this.state.items, next.items, changed, event.at);
       next.activity = activity;
       const delta = event.activity;
       delta.write = event.at;
       for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
       for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
+      for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
@@ -911,7 +929,9 @@ export class Store {
       const parents = fields[index++]!.split(" ").filter(Boolean);
       const at = new Date(fields[index++]!).toISOString();
       const author = fields[index++]!;
-      const message = fields[index++]!.trimEnd();
+      let message = fields[index++]!.trimEnd();
+      const trailer = SESSION_TRAILER.exec(message);
+      if (trailer) message = message.slice(0, trailer.index);
       const files: string[] = [];
       // The extra NUL following the format separates metadata from file paths.
       while (index < fields.length && !(fields[index]?.trim().match(/^[0-9a-f]{40}$/))) {
@@ -920,7 +940,7 @@ export class Store {
       }
       // git just named these as commits, so later reads of them need no rev-parse.
       for (const c of [hash, ...parents]) this.resolved.set(c, c);
-      infos.push({ commit: hash, parents, at, author, message, files });
+      infos.push({ commit: hash, parents, at, author, message, files, ...(trailer ? { session: trailer[1]!.trim() } : {}) });
     }
     return infos;
   }

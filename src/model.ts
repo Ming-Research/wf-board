@@ -316,5 +316,8 @@ export interface Snapshot {
     items: Record<string, string>;
     /** Historical effective pauses; inherited pauses stop each descendant's clock. */
     pauses?: Record<string, Array<{ start: string; end?: string }>>;
+    /** The session that last wrote to each item and when, from the commits' `Session:` trailers. An observation of
+     * who wrote, never an assignment of work to a session. */
+    sessions?: Record<string, { name: string; at: string }>;
   };
 }

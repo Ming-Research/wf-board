@@ -307,13 +307,23 @@ log:
   skipped; unknown fields and malformed plan entries do not prevent startup.
   Live pause indexing uses the same tolerant projection, since conversion
   transactions include legacy before-documents and records with omitted plans.
+  Each write may name the session that made it (`session` on every write
+  tool, below); the store records it as a `Session: <name>` trailer on that
+  operation's commit, and the same index keeps, per item, the session that
+  last wrote to it and when (`activity.sessions`). Cards and notes count for
+  their item as they do for its clock. A write without a session changes no
+  attribution; a later one replaces it; a restart derives it from the
+  trailers in history. This is an observation of who wrote, never an
+  assignment of work to a session: no document stores a session, and
+  `history` and `changes` show the message without the trailer.
   Content commits touching board metadata,
   items, cards, notes, notices or glossaries count; commits containing only
   owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   A live update carries the activity index's change, not the index: the
-  commit's content-write time, the items whose last change moved and the
-  whole new span list of each item whose pause spans changed, made against
+  commit's content-write time, the items whose last change moved, the
+  whole new span list of each item whose pause spans changed and each item
+  whose last-writing session moved, made against
   the previous head. The page applies it only to a snapshot at that head; a
   snapshot already at the new head ignores it, and one at another head missed
   or overtook an event and reloads the whole snapshot. MCP recomputes checks
@@ -997,7 +1007,27 @@ winning over a number. Writes take
 `author`, the name of the project the session works for, selected from
 `projects` by matching `repo` to its repository's GitHub remote. The
 coordinator writes as `总管`. Several sessions may share a project and
-coordinate among themselves; sessions may be renamed freely.
+coordinate among themselves; sessions may be renamed freely. Every write
+tool also takes an optional `session` (1–80 characters, trimmed): the writing
+session's own name as the app's session list shows it, recorded as described
+under the stalled-work rule's activity index. `context` prints
+`last push: <session> · <time to the minute>` for an item with a known last
+writer, and `brief` gives each work-in-progress row a `lastPush` with the
+same text, so a coordinator sees whether work is being pushed and what a
+closed session left behind. Omitting `session` is allowed for older clients.
+
+### Reading guide
+
+The server's instructions end with a short, project-independent reading
+guide (`READING_GUIDE` in `src/mcp.ts`), the single owner of how an agent
+reads the board and how the coordinator allocates sessions from it: start
+with `projects` then `brief`; paused work is not worked on; read work in
+progress, then ready work, owner cards, inbox requests and notes; pass
+`session` on every write; put things in flight (background runs, unpushed
+local work) in plan rows with `waits`; the coordinator gives a session to each
+unpaused project with ready or in-progress work and no recent session push.
+The groupings change with the work and are not stored. Agent guidance such as
+`AGENTS.md` points here instead of repeating it.
 
 ### Finding things
 

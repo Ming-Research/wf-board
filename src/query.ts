@@ -7,6 +7,8 @@ import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
 export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; plan?: string[]; targets?: string[] }
+/** `<session> · <time to the minute>`: the one form `context` and `brief` print for an item's last writer. */
+export const pushLine = (last: { name: string; at: string }): string => `${last.name} · ${last.at.slice(0, 16)}Z`;
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -170,8 +172,9 @@ export function context(s: Snapshot, r: Rules, ref: string, options: { log?: num
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
   const levels = r.planRows(id).map(p => p.level), seen = new Set<number>(), repeated = new Set<number>();
   for (let i = 0; i < levels.length; i++) if (levels[i] !== levels[i - 1]) { if (seen.has(levels[i]!)) repeated.add(levels[i]!); seen.add(levels[i]!); }
+  const lastPush = s.activity?.sessions?.[id];
   const pauseOwner = r.pausedBy(id), pause = pauseOwner ? s.items[pauseOwner]?.paused : undefined;
-  return { ...row(s, r, "item", id), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), ...(lastPush ? { lastPush } : {}), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)),
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
@@ -241,12 +244,14 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
   });
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
+  /** Current work also says which session last wrote to it, so a coordinator sees whether it is being pushed. */
+  const wipRow = (id: string): Row & { lastPush?: string } => { const last = s.activity?.sessions?.[id]; return { ...workRow(id), ...(last ? { lastPush: pushLine(last) } : {}) }; };
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
     checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
-    wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
+    wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(wipRow),
     todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),

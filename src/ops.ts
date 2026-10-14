@@ -12,32 +12,32 @@ export class OpError extends Error {}
 /** `dropped`: items whose stored priority the write removed because they are non-roots. */
 export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }> }
 export interface Ops {
-  createProject(a: { author: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  updateProject(a: { author: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  createRequest(a: { author: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
-  triageRequest(a: { author: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
-  closeNote(a: { author: string; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
-  appendLog(a: { author: string; id: string; text: string }): Promise<Result>;
-  setPlan(a: { author: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
-  setTargets(a: { author: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
-  updateItem(a: { author: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
-  setStatus(a: { author: string; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
-  setTags(a: { author: string; id: string; tags: string[] }): Promise<Result>;
+  createProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
+  updateProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
+  createRequest(a: { author: string; session?: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
+  triageRequest(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
+  closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
+  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
+  appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
+  setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
+  updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
+  setStatus(a: { author: string; session?: string; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
+  setTags(a: { author: string; session?: string; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
-  setTagsMany(a: { author: string; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  setTag(a: { author: string; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
-  renameTag(a: { author: string; name: string; to: string }): Promise<Result>;
-  removeTag(a: { author: string; name: string; replace?: string }): Promise<Result>;
-  setPause(a: { author: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
-  moveItem(a: { author: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
-  clearAsk(a: { author: string; id: string; log: string }): Promise<Result>;
-  writeCard(a: { author: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
-  postNotice(a: { author: string; text: string; item?: string }): Promise<Result>;
-  ruleCard(a: { author: string; key: string; choice?: string; ruling: string }): Promise<Result>;
-  replyNote(a: { author: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
-  setTerm(a: { author: string; term: string; definition: string }): Promise<Result>;
-  deleteTerm(a: { author: string; term: string }): Promise<Result>;
+  setTagsMany(a: { author: string; session?: string; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
+  setTag(a: { author: string; session?: string; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
+  renameTag(a: { author: string; session?: string; name: string; to: string }): Promise<Result>;
+  removeTag(a: { author: string; session?: string; name: string; replace?: string }): Promise<Result>;
+  setPause(a: { author: string; session?: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
+  moveItem(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
+  clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
+  writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
+  postNotice(a: { author: string; session?: string; text: string; item?: string }): Promise<Result>;
+  ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling: string }): Promise<Result>;
+  replyNote(a: { author: string; session?: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
+  setTerm(a: { author: string; session?: string; term: string; definition: string }): Promise<Result>;
+  deleteTerm(a: { author: string; session?: string; term: string }): Promise<Result>;
 }
 
 // Shared across Ops instances: validation and multi-document writes are one
@@ -206,10 +206,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (!Number.isSafeInteger(rev) || rev < 1) throw new OpError("rev: provide the positive integer revision read from context");
     if (rev !== doc.rev) await stale(kind, id, rev, doc);
   }
-  function run(a: { author: string }, make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
+  function run(a: { author: string; session?: string }, make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       nonempty(a);
       for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
+      if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
       if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
       for (;;) {
         const s = store.snapshot(), at = now();
@@ -304,7 +305,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           }
         }
         try {
-          const result = await store.commit({ author: a.author, message: work.message, puts: work.puts, board: work.board });
+          const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
           return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(dropped.length ? { dropped } : {}) };
         } catch (error) {
           if (error instanceof ConflictError) {
@@ -322,7 +323,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   const itemPut = (id: string, doc: Item): Put => ({ kind: "item", id, doc: parse(Item, doc), expectRev: doc.rev });
   const entry = (author: string, at: string, text: string) => ({ at, by: author, text });
-  function edit(a: { author: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = ""): Promise<Result> {
+  function edit(a: { author: string; session?: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = ""): Promise<Result> {
     return run(a, async (s, at) => ({ id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author), s, at))] }), overwrite);
   }
   /** The item with its whole tag list set: the one rule set_tags and set_tags_many share; the item itself when unchanged. */
@@ -616,7 +617,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         await revision("decision", a.key, a.rev, previous);
         if (previous.status !== "open") throw new OpError("status: only an open card can be revised; create a new card");
       } else newKey(s, a.key);
-      const { author: _author, key: _key, rev: _rev, blocks, ...fields } = a;
+      const { author: _author, session: _session, key: _key, rev: _rev, blocks, ...fields } = a;
       // blocks: text sets it, null clears it, omitted keeps the revised card's.
       const merged: Record<string, unknown> = { ...previous, ...fields, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 };
       if (blocks === null) delete merged.blocks; else if (blocks !== undefined) merged.blocks = blocks;
