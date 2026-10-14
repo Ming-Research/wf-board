@@ -749,6 +749,20 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after m, n continues below the read stop instead of starting over");
 });
 
+test("after the owner selects another item in the tree, n goes to the first new stop at or below it, and its reverse to the last one above it", async () => {
+  const s = snapshot(), [a,b] = ["a","b"].map(x => x.repeat(40)) as [string,string];
+  s.items.plain = {title:"Plain",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  const doc = (id:string) => ({kind:"item" as const,id,summary:"head changed",pieces:{progress:0,reply:0,other:1}});
+  // Page order: area, its child, then plain; all three hold new content.
+  const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]}]);
+  await wideCaret(p).click(); await p.flush();
+  const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
+  // Without the fix n went on from where it last landed (child), not from the item the owner clicked.
+  await selectWide(p,"plain"); p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"n starts from the clicked item");
+  await selectWide(p,"child"); p.key("N"); await p.flush(); assert.deepEqual(cur(),["area"],"its reverse goes to the last stop above the clicked item");
+});
+
 test("shared plan rows are one line: no owner or origin line under them", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other project"});
   s.items.sib={...s.items.child!,title:"Sibling",plan:planWork([planStep("work")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("sib")]);
