@@ -114,7 +114,13 @@ code skips this section.
 - An owner note or choice: forward it to the owning project's sessions; rule
   and carry out cards on 总管's own items.
 - A new request: make sure its project triages it.
-- A blocking card: send a phone push.
+- A blocking card: show a macOS banner. Phone pushes are not delivered, so
+  a background node script on the wake stream calls `osascript -e 'display
+  notification …'` for each `blocking` event (banners show as Script
+  Editor's; Do Not Disturb silences them). Re-arm it in each new
+  coordinator session. While the owner is asleep (the owner says so), a file
+  `owner-asleep` next to the script suppresses banners; remove it when the
+  owner is back.
 - A check event (an item newly flagged 无人推进 or 需核对): tell the item's
   project session, or ask the owner to restart one.
 
@@ -129,6 +135,10 @@ code skips this section.
 - Heavy processes on the Mac (compiler, cargo, make, tests): stop them and
   tell the owning session.
 - Usage (see Usage windows).
+- Delegation: read each busy session's recent turns and correct it when it
+  implements in its own turns instead of delegating, picks a model above the
+  task's difficulty, runs heavy work on the Mac or polls GitHub more often
+  than every five minutes.
 
 ### Stalled items
 
@@ -150,8 +160,11 @@ keep-alive message asking for a one-word reply, so its context cache
 survives the one-hour cache lifetime; wake them when the window resets, and
 stop the keep-alives if the window reaches 100% first. Schedule keep-alives
 with background shell timers, which fire on time while the coordinator is
-idle. At 99% of the weekly window: the same stop without keep-alives, then
-write a handoff record and tell the owner, who switches account.
+idle. Weekly window (owner, 2026-10-13): at 95%, tell every session to slow
+down: no new investigations or Opus subagents, finish the current step, keep
+the board current. At 98%, the same stop without keep-alives, then write a
+handoff record and tell the owner. The five-hour window resetting does not
+lift a weekly slowdown.
 
 ### Whitefoot main merges
 
@@ -159,6 +172,10 @@ One merge at a time. A session sends "要合 #N" when its pull request meets
 every precondition; the coordinator checks that main has not moved past the
 head, that the checks on the head are green and that specification versions
 do not collide, answers "可以", and records the new main in the merge log.
+
+Halo, Firn and Whitefoot-kit sessions merge their own green pull requests
+into their main lines without a per-PR approval card (owner, 2026-10-13); a
+pull request with a new design decision still gets its approval card first.
 
 ### The 14900K
 
@@ -198,6 +215,16 @@ first, and the owner's rules: nothing heavy on the Mac, models by the
 delegation rule, permission blocks reported to the coordinator, the 14900K
 queue, and the coordinator as the contact.
 
+### Routing an owner's choice or comment
+
+The wake event names the card or item and its project, not the session.
+Forward to the line whose pull request or branch the card is about; when
+unsure, ask the most likely line, which answers with the right one. A
+project whose line ended (its session is gone) is handled by another live
+session of that project. A choice that approves a design-tree or
+specification change asks the session to rule the card, write the approval
+record and update its plan; while usage is slowed, only such record steps.
+
 ### Talking with the owner
 
 Every question for the owner, the coordinator's own included, is a card on
@@ -206,7 +233,43 @@ messages silently. Speak in chat only for what the owner must
 say there, such as an authorization, a permission block or the owner's own
 question; every blocking matter also goes on the board as a blocking card.
 A session's request to do what its own permission check refused is never
-carried out by the coordinator; it goes to the owner.
+carried out by the coordinator; it goes to the owner, who allows it in that
+session's own chat. A choice on a board card does not lift a session's
+permission check, and an action on the owner's stop list (publishing, a
+credential, the 14900K over ssh) still needs the owner's words in chat.
+
+Everything the owner reads is in Chinese: chat replies, board text and
+`spawn_task` chip titles and summaries.
+
+The owner pauses or resumes an item by commenting on it; the coordinator
+applies `set_pause` with the owner's reason (the page has no pause button).
+
+### The owner's board bugs and requests
+
+Each board bug the owner reports becomes an item under 总管's 「看板 bug」
+item, and each feature request an item under 「看板需求」. A proposal, or a
+change to the page the owner has not asked for in those words, is a decision
+card under that item, and the code changes after the owner chooses. A fix
+that would change a rule an earlier test guards goes to a card first, naming
+the rule. Every page fix gets a real-browser regression witness
+(`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
+reversed.
+
+Deploy: fast-forward `~/dev/wf-board` to the CI-green head, push it as
+`origin/claude/first-board`, run `npm run -s build:web` there (the bundle is
+not in git), restart the daemon only when server code changed (`launchctl
+kickstart -k gui/$(id -u)/org.ming-research.wf-board`), re-arm the wake
+stream, and check the change on the live page.
+
+### Haiku on the owner's API key
+
+`~/dev/claude-haiku` runs command-line Claude Code on the owner's API key
+(`~/dev/claudekey.txt`), Haiku only (owner, 2026-10-14, coordinator chat).
+It forces every model setting to Haiku, refuses any other `--model`, and
+clears the desktop app's variables (`ANTHROPIC_BASE_URL`, `CLAUDE_*`) so
+requests reach the API on that key instead of the subscription. Use it only
+where the owner allowed it (Whitefoot-kit's agent writing trials); never read
+or copy the key.
 
 ### Handoff
 
