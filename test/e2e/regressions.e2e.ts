@@ -45,15 +45,9 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "closed items holding unread content stay in the tree", find: "openWorkAncestors().has(it.id) || freshPath().has(it.id); }", replace: "openWorkAncestors().has(it.id); }" },
       { file: "web/app.ts", edit: "new-content stops follow the shown tree", find: " && (!st.item || !index().byId.has(st.item) || treeShown(st.item))", replace: "" }],
     family: "n-walk",
-    run: async (bp, b) => checkFresh(bp, await oracle(b.store)),
-  },
-  {
-    // The same check also walks n from the bottom row on the current page (it must land on the first row holding new
-    // content); the seeded board does not reproduce the owner's wrong n landing, so that half has no reversal yet.
-    bug: "the right arrow jumped to cards of rows the list does not show (owner, 2026-10-14)",
-    reverts: [{ file: "web/app.ts", edit: "the arrows walk only stops of shown rows", find: "const all = stops().filter(st => !st.item || treeShown(st.item));", replace: "const all = stops();" }],
-    family: "wrap-card",
-    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+    // The current page is also walked with n and the right arrow from the bottom row of the tree (checkWrap); the
+    // seeded board does not yet reproduce the owner's wrong landings there, so those have no reversal witness.
+    run: async (bp, b) => { const o = await oracle(b.store); return [...await checkFresh(bp, o), ...await checkWrap(bp, o)]; },
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
