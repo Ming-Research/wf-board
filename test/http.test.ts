@@ -15,10 +15,10 @@ import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { applyActivityDelta } from "../src/rules.ts";
 
-async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
+async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }), now: extra.now, checkIntervalMs: extra.checkIntervalMs });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }), now: extra.now, checkIntervalMs: extra.checkIntervalMs, maxMcpSessions: extra.maxMcpSessions });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -147,6 +147,20 @@ test("stateful MCP client initializes, lists tools, reuses session and closes it
   const result = await client.callTool({ name: "context", arguments: { id: "a" } }); assert.ok(!result.isError);
   await transport.terminateSession();
   assert.equal((await fetch(url + "/mcp", { headers: { "mcp-session-id": id, Accept: "text/event-stream" } })).status, 404);
+});
+
+test("abandoned MCP sessions are bounded: past the limit the least recently used one is closed", async t => {
+  const { url } = await server(t, { maxMcpSessions: 3 });
+  const ids: string[] = [];
+  for (let n = 0; n < 10; n++) {
+    const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
+    const client = new Client({ name: "Abandoned " + n, version: "1" }); t.after(() => client.close().catch(() => {}));
+    await client.connect(transport); ids.push(transport.sessionId!);   // never terminated, as a killed headless session
+  }
+  const alive: boolean[] = [];
+  for (const id of ids) alive.push((await fetch(url + "/mcp", { method: "DELETE", headers: { "mcp-session-id": id } })).status !== 404);
+  assert.equal(alive.filter(Boolean).length, 3, "only the limit's worth of sessions is retained after 10 abandoned ones");
+  assert.deepEqual(alive.slice(0, 7), Array(7).fill(false), "the oldest were the ones dropped");
 });
 
 test("JSON body decoding preserves Chinese codepoints split across request chunks", async t => {

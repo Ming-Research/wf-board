@@ -18,11 +18,22 @@ import { NotFoundError } from "./owner-ops.ts";
 import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; mcp: McpServer }>();
   const connections = new Set<{ socket: WebSocket; session: string; alive: boolean }>();
   const streams = new Set<ServerResponse>();
+  // Headless API sessions often vanish without closing their MCP session; each kept one holds a whole server object, so
+  // the map is bounded: the least recently used session is closed past the limit (its client re-initializes on a 404).
+  const maxSessions = deps.maxMcpSessions ?? 64, maxStreamBytes = deps.maxStreamBytes ?? 4 * 1024 * 1024;
+  function touch(id: string, entry: { transport: StreamableHTTPServerTransport; mcp: McpServer }) {
+    sessions.delete(id); sessions.set(id, entry);
+    while (sessions.size > maxSessions) {
+      const [oldId, old] = sessions.entries().next().value!;
+      sessions.delete(oldId);
+      void old.transport.close().catch(console.error);
+    }
+  }
   const ws = new WebSocketServer({ noServer: true });
   function security(req: IncomingMessage): boolean {
     const port = req.socket.localPort;
@@ -56,6 +67,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       if (typeof id === "string") {
         const session = sessions.get(id);
         if (!session) { json(res, 404, { error: "Unknown MCP session" }); return; }
+        touch(id, session);
         await session.transport.handleRequest(req, res); return;
       }
       const input = method === "POST" ? await body(req) : undefined;
@@ -66,7 +78,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: randomUUID, enableDnsRebindingProtection: true,
         allowedHosts: hosts, allowedOrigins: hosts.map(h => `http://${h}`),
-        onsessioninitialized: sessionId => { sessions.set(sessionId, { transport, mcp }); },
+        onsessioninitialized: sessionId => { touch(sessionId, { transport, mcp }); },
       });
       await mcp.connect(transport);
       const onclose = transport.onclose;
@@ -132,9 +144,17 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       socket.on("close", () => connections.delete(connection));
     });
   });
+  /** A page that stops reading would let its unsent events pile up in memory: past the limit its stream is cut. */
+  function writeStreams(data: string) {
+    for (const stream of streams) {
+      if (stream.writableLength > maxStreamBytes) { streams.delete(stream); stream.destroy(); continue; }
+      stream.write(data);
+    }
+  }
   function wake(event: { project: string } & Record<string, unknown>) {
     const data = JSON.stringify(event);
-    for (const connection of connections) if ((connection.session === "*" || event.project === connection.session) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
+    for (const connection of connections) if (connection.socket.bufferedAmount > maxStreamBytes) connection.socket.terminate();
+    else if ((connection.session === "*" || event.project === connection.session) && connection.socket.readyState === WebSocket.OPEN) connection.socket.send(data);
   }
   // The (item, check text) pairs flagged now, by item; a pair absent from it that appears emits one "check" event.
   // Seeded at start without emitting, so a restart does not announce every standing check.
@@ -185,10 +205,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     scanChecks(true, s, before && seeds ? affectedItems(before, r, seeds) : undefined);
     // The activity index travels as its change, not whole: the page applies it to the snapshot it holds (web/app.ts).
     const data = `event: change\ndata: ${JSON.stringify({ commit: change.commit, author: change.author, message: change.message, activity: change.activity, changed: change.changed.map(({ kind, id, after }) => ({ kind, id, after })) })}\n\n`;
-    for (const stream of streams) stream.write(data);
+    writeStreams(data);
   });
   const heartbeat = setInterval(() => {
-    for (const stream of streams) stream.write(": ping\n\n");
+    writeStreams(": ping\n\n");
     for (const connection of connections) {
       if (!connection.alive) { connection.socket.terminate(); continue; }
       connection.alive = false; connection.socket.ping();
