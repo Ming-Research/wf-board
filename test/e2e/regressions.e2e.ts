@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkFresh } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkFresh, checkWrap } from "./invariants.ts";
 
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
@@ -46,6 +46,18 @@ const WITNESSES: Witness[] = [
       { file: "web/app.ts", edit: "new-content stops follow the shown tree", find: " && (!st.item || !index().byId.has(st.item) || treeShown(st.item))", replace: "" }],
     family: "n-walk",
     run: async (bp, b) => checkFresh(bp, await oracle(b.store)),
+  },
+  {
+    bug: "n from the bottom row of the tree wrapped onto a stop the list does not show instead of the first shown row (owner, 2026-10-14)",
+    reverts: [{ file: "web/app.ts", edit: "n's wrap skips stops with no row in the list", find: " && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh", replace: "); goFresh" }],
+    family: "wrap-n",
+    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+  },
+  {
+    bug: "the right arrow jumped to cards of rows the list does not show (owner, 2026-10-14)",
+    reverts: [{ file: "web/app.ts", edit: "the arrows walk only stops of shown rows", find: "const all = stops().filter(st => !st.item || treeShown(st.item));", replace: "const all = stops();" }],
+    family: "wrap-card",
+    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 138634b)",
