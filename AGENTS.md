@@ -126,9 +126,10 @@ code skips this section.
 
 ### Every ten minutes
 
-- Sessions: find each idle session's reason and push it to ready work. A
-  project with scheduled work and no live session gets one blocking card
-  asking the owner to restart it.
+- Sessions: allocate them as the server's reading guide says (docs/design.md,
+  Reading guide), push each idle session to ready work, and give a project
+  that needs a session and has no live one a blocking card asking the owner
+  to restart it.
 - `followups`: resend notes and requests still unhandled.
 - Checks the board flags. A stalled item (see Stalled items) gets a blocking
   card under 总管's item that follows sessions.
@@ -206,7 +207,8 @@ that priority. The queue record itself passes none.
 A project's live session is the one whose working directory is in the
 project's repository (`list_sessions` gives each `cwd` and current name);
 the session list can miss a live session, so a project's recent board writes
-count as a sign of life too.
+count as a sign of life too: `context` and `brief` show each item's last
+pushing session and time (`last push`).
 
 Start a session for a project with `spawn_task`, its directory being the
 project's repository, so it shows in the app's session list; the opening

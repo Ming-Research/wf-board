@@ -336,13 +336,14 @@ export function withSorted(list: readonly string[], value: string): string[] {
 /** How one commit changed Snapshot["activity"]: the content write's time (absent for an owner-only commit), the items
  * whose last change moved, and each item whose pause spans changed with its whole new list. `from` is the head before
  * the commit: the delta applies only to the snapshot at that head. */
-export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>> }
+export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }> }
 /** The activity after `delta`, equal to the store's (docs/design.md, live updates); unchanged activity stays the same object. */
 export function applyActivityDelta(activity: Snapshot["activity"], delta: ActivityDelta): Snapshot["activity"] {
-  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length) return activity;
+  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length) return activity;
   const base = activity ?? { writes: [], items: {} };
   const pauses = base.pauses || Object.keys(delta.pauses).length ? { ...base.pauses, ...delta.pauses } : undefined;
-  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}) };
+  const sessions = base.sessions || Object.keys(delta.sessions ?? {}).length ? { ...base.sessions, ...delta.sessions } : undefined;
+  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}) };
 }
 
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,

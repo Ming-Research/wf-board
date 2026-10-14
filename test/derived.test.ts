@@ -50,13 +50,19 @@ async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () =
     }
   }
   await store.commit({ author: "Fixture", message: "Seed", puts });
-  return { store, now: () => time, tick, advance: () => { time += Math.floor(1 + rand() * 8 * MINUTE); return iso(time); } };
+  return { dir, store, now: () => time, tick, advance: () => { time += Math.floor(1 + rand() * 8 * MINUTE); return iso(time); } };
 }
 
 test("shared and incremental derivation equal a from-scratch derivation after every write", async t => {
   const rand = random(20261013), start = Date.now() - 24 * 60 * MINUTE;
-  const { store, now, advance } = await synthetic(t, rand, start);
-  const op = ops(store, advance), owner = ownerOps(store, advance);
+  const { dir, store, now, advance } = await synthetic(t, rand, start);
+  const base = ops(store, advance), owner = ownerOps(store, advance);
+  // Most writes name one of three sessions, some none (an older client): the session attribution then has to follow the
+  // same incremental and from-history derivations as the activity times.
+  const op = new Proxy(base, { get: (target, name) => {
+    const fn = target[name as keyof typeof target] as (a: object) => Promise<unknown>;
+    return (a: object) => { const session = [undefined, "session-a", "session-b", "session-c"][Math.floor(rand() * 4)]; return fn.call(target, session ? { ...a, session } : a); };
+  } }) as typeof base;
   await op.setTag({ author: "总管", name: "健全性", meaning: "影响接受或拒绝" });
   await op.setTag({ author: "总管", name: "报错信息", meaning: "影响诊断措辞" });
   // Each commit with the snapshot it published, taken when the store announces it.
@@ -153,6 +159,10 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     }
     handled = events.length;
   }
+  const attributed = Object.keys(store.snapshot().activity?.sessions ?? {}).length;
+  assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
+  // A daemon restart derives the whole activity, session attribution included, from history alone.
+  assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
   assert.ok(compared > 60, `enough writes compared (${compared})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });

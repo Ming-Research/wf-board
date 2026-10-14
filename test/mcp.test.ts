@@ -130,7 +130,7 @@ test("MCP set_targets exposes date-free goal edits, all modes and compact contex
   t.after(async () => { await client.close(); await server.close(); });
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_targets")!;
   assert.ok(tool);
-  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "remove", "target", "targets"]);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "remove", "session", "target", "targets"]);
   const targetSchema = tool.inputSchema.properties!.target as { properties: Record<string, unknown> };
   assert.deepEqual(Object.keys(targetSchema.properties).sort(), ["baseline", "current", "goal", "id", "target"]);
   assert.match(client.getInstructions()!, /Use set_targets.*goal/);
@@ -177,7 +177,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   assert.equal(tools.length, 40); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
-  assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows"]);
+  assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]], ["triage_request", ["parent", "parent_why"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
     for (const field of removed) assert.ok(!(field in schema.properties!));
