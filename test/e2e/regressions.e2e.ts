@@ -86,7 +86,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "a card row in a plan showed its title again in a second box when unfolded, and a ruled card hid its ruling (owner, 2026-10-14)",
     // The unfolded card gets its title heading back, and the folded row stops showing the ruling.
-    reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inline) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
+    reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
       { file: "web/app.ts", edit: "a folded ruled row shows its ruling", find: "if (result) main.appendChild(", replace: "if (result && !result) main.appendChild(" }],
     family: "card-box",
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.donePlanCard]); },
