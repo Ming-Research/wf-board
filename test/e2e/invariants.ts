@@ -141,10 +141,17 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[]): P
     if (!await attempt(v, `card-box ${card}`, async () => { if (await expanded()) { await toggle.click(); await bp.settle(); } })) continue;
     const folded = await count();
     if (folded !== 1) v.push(`card-box: folded, card ${card}'s title shows ${folded} times in ${x}'s plan, not once`);
-    if (d.status !== "open") {
-      const text = await page.locator(rowSel).textContent() ?? "", sentence = (d.ruling ?? "").split("\n")[0]!.slice(0, 20);
-      if (!sentence || !text.includes(sentence)) v.push(`card-box: folded, the ruled card ${card} does not show its ruling after the title`);
-    }
+    const m = await page.evaluate(([sel]) => {
+      const row = document.querySelector(sel!) as HTMLElement, t = row.querySelector("a.cardtoggle") as HTMLElement, cs = getComputedStyle(t);
+      const h = t.getBoundingClientRect().height, lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.3;
+      const keep = t.style.maxWidth; t.style.maxWidth = "40px";
+      const cut = t.scrollWidth > t.clientWidth; t.style.maxWidth = keep;
+      return { h, lh, weight: parseInt(cs.fontWeight), ellipsis: cs.textOverflow, nowrap: cs.whiteSpace, cut, text: row.textContent ?? "" };
+    }, [rowSel]);
+    if (m.h > m.lh * 1.5 || m.nowrap !== "nowrap") v.push(`card-box: folded, card ${card}'s row is not one line (height ${m.h}, line ${m.lh}, white-space ${m.nowrap})`);
+    if (m.weight < 600) v.push(`card-box: folded, card ${card}'s title is not bold (weight ${m.weight})`);
+    if (m.ellipsis !== "ellipsis" || !m.cut) v.push(`card-box: folded, card ${card}'s long title does not end in an ellipsis`);
+    if (d.status !== "open" && d.ruling && m.text.includes(d.ruling.split("\n")[0]!.slice(0, 20))) v.push(`card-box: folded, the ruled card ${card} shows its ruling next to the title`);
     if (!await attempt(v, `card-box open ${card}`, async () => { await toggle.click(); await bp.settle(); })) continue;
     const unfolded = await count();
     if (unfolded !== 1) v.push(`card-box: unfolded, card ${card}'s title shows ${unfolded} times in ${x}'s plan, not once`);
