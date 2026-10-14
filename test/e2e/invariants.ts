@@ -229,6 +229,37 @@ export async function checkFresh(bp: BoardPage, o: Oracle): Promise<string[]> {
   return v;
 }
 
+/** n and the arrow keys wrap around the list as shown. With the bottom row of the left tree selected, n lands on the
+ * first row of the tree holding unread content (or on the bottom row itself when that holds some); the right arrow,
+ * pressed repeatedly, lands only on cards the page shows, and its second lap repeats the first. */
+export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], page = bp.page, rows = await bp.treeRows();
+  if (!rows.length) return v;
+  const last = rows[rows.length - 1]!, blur = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+  const freshRows = rows.filter(id => o.fresh.has(id));
+  if (freshRows.length) {
+    const expected = o.fresh.has(last) ? last : freshRows[0]!;
+    for (let lap = 0; lap < 2; lap++) {
+      await bp.select(last); await blur(); await page.keyboard.press("n"); await bp.settle();
+      const sel = await bp.selected();
+      if (sel !== expected) v.push(`wrap-n: n from the bottom row ${last} landed on ${sel}, expected ${expected}`);
+    }
+  }
+  const landings: string[] = [];
+  await bp.select(last); await blur();
+  const presses = 2 * Object.keys(o.s.decisions).length + 2;
+  for (let k = 0; k < presses; k++) {
+    await page.keyboard.press("ArrowRight"); await bp.settle();
+    const cards = await bp.currentCards(), sel = await bp.selected();
+    landings.push(cards[0] ?? "item:" + sel);
+    if (cards[0] && !await page.locator(`[id="q-${cards[0]}"]`).count()) v.push(`wrap-card: the right arrow landed on card ${cards[0]}, which the page does not show`);
+  }
+  const period = landings.indexOf(landings[0]!, 1);
+  if (period < 0) v.push(`wrap-card: the right arrow never came back to its first stop in ${presses} presses: ${landings.join(",")}`);
+  else if (landings.slice(0, period).some((x, i) => landings[period + i] !== undefined && landings[period + i] !== x)) v.push(`wrap-card: the right arrow's second lap differs from its first: ${landings.join(",")}`);
+  return v;
+}
+
 const STATUS_LABELS: Record<string, string> = { 进行中: "wip", 卡住: "blocked", 暂停: "paused", 未开始: "todo", 完成: "done", 取消: "cancelled" };
 /** Each project's filter buttons: the number on a button counts its matches in that project; pressed, the tree shows
  * every match whose owners are in the project, undimmed, and dims or hides everything else of the project. */

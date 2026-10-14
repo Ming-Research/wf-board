@@ -673,7 +673,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
     const row = selectionRow();
-    if (row !== null) { const k = all.findIndex(st => st.at[0]! >= row); goFresh(k < 0 ? 0 : k); return; }
+    if (row !== null) { const k = all.findIndex(st => st.at[0]! >= row && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh(k < 0 ? 0 : k); return; }
     const at = shownPlace();
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
@@ -843,14 +843,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Left and right arrows step through what waits for the owner (requests and open cards), from the selection.
   function stepStop(dir: number) {
-    const all = stops();
+    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
+    const all = stops().filter(st => !st.item || treeShown(st.item));
     if (!all.length) return;
     const key = containerOf(effectiveSelection());
-    let k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
-    if (k >= 0) { goStop(k + dir); return; }
-    const pos = (st: {id:string;item:string|null}) => { const e = get(st.id) || (st.item ? get("it-" + st.item) : null); return e ? e.getBoundingClientRect().top : Infinity; };
-    if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
-    else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
+    const k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
+    if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
+    // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
+    // last stop above it, wrapping around at the list's ends.
+    const order = new Map<string, number>(); boardOrder().forEach((it, i) => { if (!order.has(it.id)) order.set(it.id, i); });
+    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const row = home && order.has(home) ? order.get(home)! : -1;
+    const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
+    let n = -1;
+    if (dir > 0) n = all.findIndex(st => at(st) >= row);
+    else all.forEach((st, i) => { if (at(st) < row) n = i; });
+    const pick = all[n >= 0 ? n : dir > 0 ? 0 : all.length - 1]!;
+    goStop(stops().findIndex(st => st.id === pick.id));
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
