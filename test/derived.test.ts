@@ -28,7 +28,8 @@ function derivedView(r: Rules, s: Snapshot): unknown {
 
 async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () => number, start: number) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-derived-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // git may still be writing objects when the test ends; retry instead of failing on ENOTEMPTY.
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const projects = ["Whitefoot", "Firn"];
   const store = await Store.open(dir, { init: true, board: { title: "Derived", projects: [...projects.map(name => ({ name })), { name: "总管" }] } });
   const puts: Put[] = [];
