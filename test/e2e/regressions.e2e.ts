@@ -55,7 +55,11 @@ const WITNESSES: Witness[] = [
   },
   {
     bug: "a card row in a plan jumped to the card's own item, even a done one, instead of unfolding in place (fixed in 8009707 and 2626698)",
-    reverts: [{ commit: "2626698", file: "web/app.ts" }, { commit: "8009707", file: "web/app.ts" }, { commit: "8009707", file: "web/index.html" }], family: "plan-card-row",
+    // 8009707's app.ts hunks around the card row were rewritten by the card-box change, so that part is a targeted
+    // edit: no row unfolds its card, every card row links to the card's own item instead.
+    reverts: [{ commit: "2626698", file: "web/app.ts" },
+      { file: "web/app.ts", edit: "a card row links to the card's item instead of unfolding", find: "const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;", replace: "const home = undefined as ViewDecision | undefined;" },
+      { commit: "8009707", file: "web/index.html" }], family: "plan-card-row",
     // The items whose plans name a card that lives in another item: the card named by three plans, by a done item's
     // plan, and only by another item's plan.
     run: async (bp, b) => { const o = await oracle(b.store); return checkPlanRows(bp, o, Object.keys(o.s.items).filter(id => o.s.items[id]!.plan.some(row => "card" in row && o.s.decisions[row.card]?.item !== id))); },
