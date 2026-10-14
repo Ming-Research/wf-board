@@ -65,6 +65,11 @@ test("a session name must be 1 to 80 printable characters", async t => {
     assert.match(text(r), /session/);
   }
   assert.equal(store.snapshot().head, before);
+  // Surrounding spaces are trimmed, and a name that itself reads like a trailer is still the whole name.
+  for (const [given, stored] of [["  padded  ", "padded"], ["Session: X", "Session: X"]]) {
+    await client.callTool({ name: "append_log", arguments: { author, session: given, id: "a", text: "named" } }).then(r => assert.ok(!r.isError, text(r)));
+    assert.equal(store.snapshot().activity?.sessions?.a?.name, stored);
+  }
 });
 
 test("the server instructions carry a short generic reading guide", async t => {
