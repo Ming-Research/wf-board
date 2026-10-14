@@ -2089,8 +2089,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const terms = itemTerms(d.item);
     const top = el("div", "card-top");
     const h = el("h3");
-    const inline = inlineHost(d.id) !== null; // the plan row above carries the title and the status
-    if (inline) c.classList.add("inlinecard");
+    const inlined = inlineHost(d.id) !== null; // the plan row above carries the title and the status
+    if (inlined) c.classList.add("inlinecard");
     const closed = d.status !== "open";
     if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
     else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
@@ -2102,8 +2102,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
     if (cardFresh(d)) { if (!homeOf(d)) h.appendChild(freshChip("q:" + d.id, 1, true)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
-    if (pc && !inline) h.appendChild(pc);
-    if (!inline) top.appendChild(h); else if (pc) top.appendChild(pc);
+    if (pc && !inlined) h.appendChild(pc);
+    if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);
     if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
       x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); const host = inlineHost(d.id); if (host) { inlineOpen[d.id] = false; saveInline(); } renderNow(host ? "card:"+d.id : homeOf(d) ? "item:"+d.item : "cards"); });
