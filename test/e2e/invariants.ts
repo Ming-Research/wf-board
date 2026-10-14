@@ -126,6 +126,34 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
   return v;
 }
 
+/** A decision card named by a plan is one box with its title shown once, folded or unfolded; unfolded, its card sits
+ * inside the row's box; a ruled card shows its ruling after the title while folded. */
+export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[]): Promise<string[]> {
+  const v: string[] = [], page = bp.page;
+  for (const card of cards) {
+    const d = o.s.decisions[card]!, x = Object.keys(o.s.items).find(id => o.s.items[id]!.plan.some(row => "card" in row && row.card === card && o.s.decisions[card]!.item === id)) ?? Object.keys(o.s.items).find(id => o.s.items[id]!.plan.some(row => "card" in row && row.card === card))!;
+    const row = o.s.items[x]!.plan.find(r => "card" in r && r.card === card)!;
+    const rowId = "plan-" + encodeURIComponent(JSON.stringify([x, row.id])), rowSel = `#item-detail [id="${q(rowId)}"]`, toggle = page.locator(rowSel + " a.cardtoggle");
+    if (await bp.selected() !== x) await bp.select(x);
+    const title = d.question.split("\n")[0]!.trim();
+    const count = () => page.evaluate((t) => [...document.querySelectorAll("#item-detail .plan *")].filter(e => (e.textContent ?? "").includes(t) && ![...e.children].some(c => (c.textContent ?? "").includes(t))).length, title);
+    const expanded = async () => (await toggle.getAttribute("aria-expanded")) === "true";
+    if (!await attempt(v, `card-box ${card}`, async () => { if (await expanded()) { await toggle.click(); await bp.settle(); } })) continue;
+    const folded = await count();
+    if (folded !== 1) v.push(`card-box: folded, card ${card}'s title shows ${folded} times in ${x}'s plan, not once`);
+    if (d.status !== "open") {
+      const text = await page.locator(rowSel).textContent() ?? "", sentence = (d.ruling ?? "").split("\n")[0]!.slice(0, 20);
+      if (!sentence || !text.includes(sentence)) v.push(`card-box: folded, the ruled card ${card} does not show its ruling after the title`);
+    }
+    if (!await attempt(v, `card-box open ${card}`, async () => { await toggle.click(); await bp.settle(); })) continue;
+    const unfolded = await count();
+    if (unfolded !== 1) v.push(`card-box: unfolded, card ${card}'s title shows ${unfolded} times in ${x}'s plan, not once`);
+    const together = await page.evaluate(([r, c]) => { const a = document.getElementById(r!), b = document.getElementById("q-" + c); const box = a?.closest(".cardbox"); return !!box && !!b && box.contains(b); }, [rowId, card]);
+    if (!together) v.push(`card-box: unfolded, card ${card} is not inside the same box as its plan row`);
+  }
+  return v;
+}
+
 /** The 被依赖 rows of an item's detail list exactly its open dependents through shared rows; each selects its item and
  * Back returns. */
 export async function checkDependents(bp: BoardPage, o: Oracle, items: string[]): Promise<string[]> {
@@ -358,7 +386,7 @@ export async function checkComments(bp: BoardPage, o: Oracle): Promise<string[]>
     await bp.select(home);
     const cardBox = page.locator(`#item-detail [id="q-${q(card)}"]`);
     if (!await cardBox.count()) { await page.locator(`#item-detail [id="${q("plan-" + encodeURIComponent(JSON.stringify([home, card])))}"] a.cardtoggle`).click(); await bp.settle(); }
-    await cardBox.locator(".card-top h3").click(); await bp.settle();
+    await cardBox.click({ position: { x: 4, y: 4 } }); await bp.settle();
     await page.keyboard.press("c");
   });
   return v;

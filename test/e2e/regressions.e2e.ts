@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkFresh, checkWrap } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -82,6 +82,14 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "the arrows step by the list's rows", find: ARROW_NEW, replace: ARROW_OLD }],
     family: "wrap-card",
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+  },
+  {
+    bug: "a card row in a plan showed its title again in a second box when unfolded, and a ruled card hid its ruling (owner, 2026-10-14)",
+    // The unfolded card gets its title heading back, and the folded row stops showing the ruling.
+    reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inline) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
+      { file: "web/app.ts", edit: "a folded ruled row shows its ruling", find: "if (result) main.appendChild(", replace: "if (result && !result) main.appendChild(" }],
+    family: "card-box",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.donePlanCard]); },
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 138634b)",

@@ -1690,9 +1690,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         }
       } else {
         const card = snapshot.decisions[stored.card];
-        main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
-          ? '<span class="waittag" title="' + esc(card.blocks) + '">阻塞</span>'
-          : '<span class="asktag">决策卡</span>'));
+        main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.status !== "open"
+          ? '<span class="closedtag">' + (card.ruling ? "已裁定" : "已结束") + '</span>'
+          : derived.cardBlocking(stored.card)
+            ? '<span class="waittag" title="' + esc(card.blocks || "") + '">阻塞</span>'
+            : '<span class="asktag">待裁定</span>'));
         const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;
         if (home) {
           // The question unfolds the whole card under this row instead of jumping to it, whichever item holds the card.
@@ -1712,6 +1714,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) flip(ev); });
           main.appendChild(toggle);
+          // A ruled card shows its result after the title while folded; unfolded, the card itself carries it.
+          const result = card!.status !== "open" && card!.ruling ? plain(firstLine(card!.ruling)) : "";
+          if (result) main.appendChild(el("span", "cardruling", " · " + esc(result.length > 60 ? result.slice(0, 60) + "…" : result)));
         } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);
@@ -1719,9 +1724,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     };
     // An unfolded card follows the first row naming it in the shown item's plan.
     const appendRow = (parent: HTMLElement, value: typeof rows[number]) => {
-      parent.appendChild(renderRow(value));
       const stored = value.row, d = "card" in stored ? index().decById.get(stored.card) : undefined;
-      if (d && inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) parent.appendChild(decisionCard(d));
+      // A card row is one tinted box: the row with its card unfolded inside it, so the title shows once.
+      if (d && inlineHost(d.id) !== null) {
+        const wrap = el("div", "cardbox"); wrap.appendChild(renderRow(value));
+        if (inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) wrap.appendChild(decisionCard(d));
+        parent.appendChild(wrap); return;
+      }
+      parent.appendChild(renderRow(value));
     };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
@@ -2079,6 +2089,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const terms = itemTerms(d.item);
     const top = el("div", "card-top");
     const h = el("h3");
+    const inline = inlineHost(d.id) !== null; // the plan row above carries the title and the status
+    if (inline) c.classList.add("inlinecard");
     const closed = d.status !== "open";
     if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
     else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
@@ -2090,14 +2102,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
     if (cardFresh(d)) { if (!homeOf(d)) h.appendChild(freshChip("q:" + d.id, 1, true)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
-    if (pc) h.appendChild(pc);
-    top.appendChild(h);
+    if (pc && !inline) h.appendChild(pc);
+    if (!inline) top.appendChild(h); else if (pc) top.appendChild(pc);
     if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
       x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); const host = inlineHost(d.id); if (host) { inlineOpen[d.id] = false; saveInline(); } renderNow(host ? "card:"+d.id : homeOf(d) ? "item:"+d.item : "cards"); });
       top.appendChild(x);
     }
-    c.appendChild(top);
+    if (top.children.length) c.appendChild(top);
     if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + linkTerms(markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || ""),terms) + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
     if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + linkTerms(markedBlocks(before?.background,d.background || ""),terms)));
     const chosen = choiceOf(d);
