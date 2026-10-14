@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkFresh } from "./invariants.ts";
 
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
@@ -37,6 +37,13 @@ const WITNESSES: Witness[] = [
     bug: "code blocks were not set in Monaco: the global code rule overrode the block's font (fixed in 2ecbbaf)",
     reverts: [{ commit: "2ecbbaf", file: "web/index.html" }], family: "code-font",
     run: async (bp, b) => checkCodeFont(bp, await oracle(b.store)),
+  },
+  {
+    bug: "n and the new-content counts stopped on cancelled items the tree hides (owner, 2026-10-14)",
+    // The fix's filter, removed where it stands: every stop counts again, shown in the tree or not.
+    reverts: [{ file: "web/app.ts", edit: "new-content stops follow the shown tree", find: " && (!st.item || !index().byId.has(st.item) || treeShown(st.item))", replace: "" }],
+    family: "n-walk",
+    run: async (bp, b) => checkFresh(bp, await oracle(b.store)),
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 138634b)",

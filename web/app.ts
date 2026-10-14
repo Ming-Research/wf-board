@@ -429,7 +429,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // that card's comments; what the page does not place comes last, in commit order. Closed items remain stops even
   // while their tree nodes are hidden. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
-  function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
+  // n and every new-content count follow the left tree as shown: a stop counts only when its item, and every item above
+  // it, passes the project's filters or, unfiltered, is not a done or cancelled item hidden from the tree.
+  function treeShown(id: string) { const it = index().byId.get(id); return !!it && passes(it) && ancestors(it).every(passes); }
+  function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon) && (!st.item || !index().byId.has(st.item) || treeShown(st.item)))); }
   // The stops indexed once per data change, so n, the chips and the blue lines look a stop up instead of passing over
   // every stop for each key press, item and card: each stop's place and the next one by page position (freshIndex), the
   // first stop that is part of each item or card (touching), and the first stop in each item's subtree (under).
