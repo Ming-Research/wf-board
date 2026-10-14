@@ -39,9 +39,11 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkCodeFont(bp, await oracle(b.store)),
   },
   {
-    bug: "n and the new-content counts stopped on cancelled items the tree hides (owner, 2026-10-14)",
-    // The fix's filter, removed where it stands: every stop counts again, shown in the tree or not.
-    reverts: [{ file: "web/app.ts", edit: "new-content stops follow the shown tree", find: " && (!st.item || !index().byId.has(st.item) || treeShown(st.item))", replace: "" }],
+    bug: "n landed on done or cancelled items the left tree hid (owner, 2026-10-14)",
+    // Both halves of the fix, removed where they stand: closed items holding unread content leave the tree, and n's
+    // stops no longer follow the tree, so n lands on rows the tree does not show.
+    reverts: [{ file: "web/app.ts", edit: "closed items holding unread content stay in the tree", find: "openWorkAncestors().has(it.id) || freshPath().has(it.id); }", replace: "openWorkAncestors().has(it.id); }" },
+      { file: "web/app.ts", edit: "new-content stops follow the shown tree", find: " && (!st.item || !index().byId.has(st.item) || treeShown(st.item))", replace: "" }],
     family: "n-walk",
     run: async (bp, b) => checkFresh(bp, await oracle(b.store)),
   },

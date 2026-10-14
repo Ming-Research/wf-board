@@ -225,8 +225,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openWorkAncestors() {
     return cached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
   }
-  // Closed owners remain a path to open work, including through other closed owners.
-  function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id); }
+  // Closed owners remain a path to open work, including through other closed owners. A done or cancelled item also
+  // shows, dimmed, while it or anything under it holds content the owner has not read (owner, 2026-10-14), so n and the
+  // new-content counts only reach rows on screen and the news of a completion is not lost; once read, it hides again.
+  function freshPath() {
+    return cached("freshPath", () => new Set(allFreshStops().filter(st => st.kinds.some(fon) && st.item && index().byId.has(st.item)).flatMap(st => [st.item!, ...derived.ancestors(st.item!)])));
+  }
+  function shownForFresh(it: ViewItem) { return ended(it) && !openWorkAncestors().has(it.id) && freshPath().has(it.id); }
+  function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id) || freshPath().has(it.id); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
@@ -430,7 +436,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // while their tree nodes are hidden. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
   // n and every new-content count follow the left tree as shown: a stop counts only when its item, and every item above
-  // it, passes the project's filters or, unfiltered, is not a done or cancelled item hidden from the tree.
+  // it, passes the project's filters; unfiltered, every item holding new content is shown (see visible).
   function treeShown(id: string) { const it = index().byId.get(id); return !!it && passes(it) && ancestors(it).every(passes); }
   function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon) && (!st.item || !index().byId.has(st.item) || treeShown(st.item)))); }
   // The stops indexed once per data change, so n, the chips and the blue lines look a stop up instead of passing over
@@ -1849,6 +1855,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const context = filtering(groupOf(it)) ? !filterMatches().hit.has(it.id) : !detail && ended(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (context ? " ctx" : ""));
     box.id = (detail ? "detail-it-" : "it-") + it.id;
+    if (!detail && shownForFresh(it)) box.classList.add("fresh-ended");
     if (detail) box.dataset.sel = "it:"+it.id;
     if (!detail && selectedItem === it.id) box.classList.add("selected");
     if (current === "it:" + it.id) box.classList.add("cur");

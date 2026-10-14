@@ -33,18 +33,12 @@ export async function oracle(store: Store): Promise<Oracle> {
   const cardsIn = (sub: Set<string>, pred: (k: string) => boolean) => Object.keys(s.decisions).filter(k => sub.has(s.decisions[k]!.item) && pred(k)).map(k => "q:" + k);
   const steps = await unreadSteps(store, s.owner.cursor, s.owner.readMarks, s.head);
   const fresh = new Set<string>(), docs = new Set<string>(), units = new Set<string>();
-  // The tree as shown unfiltered: a done or cancelled item shows only as the owner of open work, and an item shows only
-  // when every item above it does. Unread content on an item the tree hides is not counted and n never lands there.
-  const openAbove = new Set(Object.keys(s.items).filter(v => r.isOpenWork(v)).flatMap(v => r.ancestors(v)));
-  const inTree = (v: string) => !/^(done|cancelled)$/.test(r.statusOf(v) ?? "") || openAbove.has(v);
-  const shown = (v: string) => inTree(v) && r.ancestors(v).every(inTree);
   for (const step of steps) for (const d of step.docs) {
     docs.add(d.kind + ":" + d.id);
     let item: string | undefined, card: string | undefined;
     if (d.kind === "item") item = d.id;
     else if (d.kind === "decision") { card = d.id; item = s.decisions[d.id]?.item; }
     else if (d.kind === "note") { const target = s.notes[d.id]?.target; if (target?.startsWith("q:")) { card = target.slice(2); item = s.decisions[card]?.item; } else item = target?.slice(3); }
-    if (item && s.items[item] && !shown(item)) continue;
     if (item && s.items[item]) { fresh.add(item); units.add("it:" + item); }
     else units.add(card && s.decisions[card] ? "q:" + card : d.kind + ":" + d.id);
   }
@@ -204,8 +198,8 @@ export async function checkWaitPanel(bp: BoardPage, o: Oracle): Promise<string[]
 }
 
 /** Each blue number counts the items under it holding unread content and leads to one of them; the header's 新 number
- * counts every unit on an item the tree shows; n walks every shown item holding unread content, landing on nothing
- * else, and never on a done or cancelled item the tree hides. */
+ * counts every unit; n walks every item holding unread content, landing on nothing else, and each landing is a row
+ * the tree shows: a done or cancelled item holding unread content stays in the tree, dimmed, until read. */
 export async function checkFresh(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page;
   const head = page.locator("#unread-row .sbtn.s-new"), total = await head.count() ? Number((await head.textContent())!.match(/\d+/)![0]) : 0;
@@ -226,6 +220,7 @@ export async function checkFresh(bp: BoardPage, o: Oracle): Promise<string[]> {
     await page.keyboard.press("n"); await bp.settle();
     const sel = await bp.selected();
     if (sel && !o.fresh.has(sel)) v.push(`n-walk: n landed on ${sel}, which holds no unread content`);
+    if (sel && !await bp.row(sel).count()) v.push(`n-walk: n landed on ${sel}, which the left tree does not show`);
     if (sel) visited.add(sel);
     if ([...o.fresh].every(id => visited.has(id))) break;
   }
