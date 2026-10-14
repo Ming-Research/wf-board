@@ -287,6 +287,14 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   // Unread content on a cancelled item the tree hides: n and the new-content counts must pass over it.
   const hiddenFresh = pickItem(x => x.status === "cancelled" && x.children.length === 0 && !x.record);
   batches.push({ message: "Unread change on a hidden cancelled item", puts: [{ kind: "item" as const, id: hiddenFresh.id, doc: { ...itemDoc(hiddenFresh), title: hiddenFresh.title + "（改）", updated: tick() } }] });
+  // Unread changes at several depths, at both ends of the tree and in the middle: n must wrap from the bottom row to the
+  // first of them, and a lap of n must pass each once.
+  const depthOf = (x: ItemDraft) => ancestors(x.id).length;
+  const touchable = order.filter(x => !x.record && !x.status && !ancestors(x.id).some(a => items.get(a)!.status));
+  const lastGroup = PROJECTS[PROJECTS.length - 1]!.name;
+  const spread = [touchable.find(x => x.group === p0 && depthOf(x) === 0), touchable.filter(x => x.group === p0 && depthOf(x) === 2)[0], touchable.filter(x => x.group === p1 && depthOf(x) === 3)[0],
+    touchable.filter(x => x.group === lastGroup && depthOf(x) === 1).at(-1), touchable.filter(x => x.group === lastGroup && depthOf(x) === 3).at(-1), touchable.filter(x => x.group === lastGroup).at(-1)].filter((x): x is ItemDraft => !!x);
+  batches.push({ message: "Unread changes at several depths", puts: [...new Set(spread)].map(it => ({ kind: "item" as const, id: it.id, doc: { ...itemDoc(it), title: it.title + "（改）", updated: tick() } })) });
   const replied = notes.filter((n, k) => n.doc.kind === "comment" && n.doc.reply && k % 3 === 0).slice(0, 6);
   batches.push({ message: "Unread replies", puts: replied.map(n => ({ kind: "note" as const, id: n.id, doc: { ...n.doc, reply: "补充：" + n.doc.reply, repliedAt: tick() } })) });
   const newHome = pickItem(x => open(x) && x.group === PROJECTS[2].name && x !== commentHome);

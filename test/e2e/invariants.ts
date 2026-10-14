@@ -244,19 +244,30 @@ export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
       const sel = await bp.selected();
       if (sel !== expected) v.push(`wrap-n: n from the bottom row ${last} landed on ${sel}, expected ${expected}`);
     }
+    // A lap of n from the bottom: every row holding unread content once, in tree order, starting with the first.
+    await bp.select(last); await blur();
+    const seen: string[] = [];
+    for (let k = 0; k < 6 * o.docs.size + 6 && seen.length < freshRows.length; k++) {
+      await page.keyboard.press("n"); await bp.settle();
+      const sel = await bp.selected();
+      if (sel && seen.at(-1) !== sel) seen.push(sel);
+    }
+    const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
+    if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
   }
-  const landings: string[] = [];
-  await bp.select(last); await blur();
-  const presses = 2 * Object.keys(o.s.decisions).length + 2;
-  for (let k = 0; k < presses; k++) {
+  // The right arrow, with a row selected and the page scrolled to the top, goes to the first waiting card at or below
+  // that row in the list, not to whatever card is nearest the top of the screen: select the last row holding a waiting
+  // card (and no ask) and the card must be its own.
+  const waiting = (id: string) => o.r.cardsOf(id).filter(k => o.r.cardWaiting(k)).length > 0;
+  const holders = rows.filter(id => o.s.items[id] && waiting(id) && !o.r.askPending(id));
+  const target = holders.at(-1);
+  if (target) {
+    await bp.select(target); await blur();
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.keyboard.press("ArrowRight"); await bp.settle();
-    const cards = await bp.currentCards(), sel = await bp.selected();
-    landings.push(cards[0] ?? "item:" + sel);
-    if (cards[0] && !await page.locator(`[id="q-${cards[0]}"]`).count()) v.push(`wrap-card: the right arrow landed on card ${cards[0]}, which the page does not show`);
+    const sel = await bp.selected(), cards = await bp.currentCards();
+    if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
   }
-  const period = landings.indexOf(landings[0]!, 1);
-  if (period < 0) v.push(`wrap-card: the right arrow never came back to its first stop in ${presses} presses: ${landings.join(",")}`);
-  else if (landings.slice(0, period).some((x, i) => landings[period + i] !== undefined && landings[period + i] !== x)) v.push(`wrap-card: the right arrow's second lap differs from its first: ${landings.join(",")}`);
   return v;
 }
 
