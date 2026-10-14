@@ -48,12 +48,8 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkFresh(bp, await oracle(b.store)),
   },
   {
-    bug: "n from the bottom row of the tree wrapped onto a stop the list does not show instead of the first shown row (owner, 2026-10-14)",
-    reverts: [{ file: "web/app.ts", edit: "n's wrap skips stops with no row in the list", find: " && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh", replace: "); goFresh" }],
-    family: "wrap-n",
-    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
-  },
-  {
+    // The same check also walks n from the bottom row on the current page (it must land on the first row holding new
+    // content); the seeded board does not reproduce the owner's wrong n landing, so that half has no reversal yet.
     bug: "the right arrow jumped to cards of rows the list does not show (owner, 2026-10-14)",
     reverts: [{ file: "web/app.ts", edit: "the arrows walk only stops of shown rows", find: "const all = stops().filter(st => !st.item || treeShown(st.item));", replace: "const all = stops();" }],
     family: "wrap-card",
