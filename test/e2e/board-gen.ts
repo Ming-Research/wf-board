@@ -10,6 +10,8 @@ import type { Put } from "../../src/store.ts";
 
 export interface Batch { message: string; puts: Omit<Put, "expectRev">[] }
 export interface Witness {
+  /** A cancelled item the tree hides (no open work under it) whose title changed after the owner last read. */
+  hiddenFresh: string;
   /** An open item whose head holds a fenced code block. */
   code: string;
   /** An open item with listed comments, for the comment flow; the test folds its list in localStorage. */
@@ -282,6 +284,9 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     const doc = itemDoc(it), plan = (doc.plan as Array<Record<string, unknown>>).map(row => row.state === "todo" && !row.accept ? { ...row, state: "doing", since: tick() } : row);
     return { kind: "item" as const, id: it.id, doc: { ...doc, plan, updated: tick() } };
   }) });
+  // Unread content on a cancelled item the tree hides: n and the new-content counts must pass over it.
+  const hiddenFresh = pickItem(x => x.status === "cancelled" && x.children.length === 0 && !x.record);
+  batches.push({ message: "Unread change on a hidden cancelled item", puts: [{ kind: "item" as const, id: hiddenFresh.id, doc: { ...itemDoc(hiddenFresh), title: hiddenFresh.title + "（改）", updated: tick() } }] });
   const replied = notes.filter((n, k) => n.doc.kind === "comment" && n.doc.reply && k % 3 === 0).slice(0, 6);
   batches.push({ message: "Unread replies", puts: replied.map(n => ({ kind: "note" as const, id: n.id, doc: { ...n.doc, reply: "补充：" + n.doc.reply, repliedAt: tick() } })) });
   const newHome = pickItem(x => open(x) && x.group === PROJECTS[2].name && x !== commentHome);
@@ -304,6 +309,6 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   return {
     board: { title: "合成看板", eyebrow: "状态看板", goal: "合成数据：结构像真实看板，文字全是生成的。", projects: PROJECTS.map(p => ({ name: p.name, ...("repo" in p ? { repo: p.repo } : {}) })), tags: TAGS.map(t => ({ ...t })) },
     batches, readBefore,
-    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, recordCard: recordCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id },
+    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, recordCard: recordCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id, hiddenFresh: hiddenFresh.id },
   };
 }
