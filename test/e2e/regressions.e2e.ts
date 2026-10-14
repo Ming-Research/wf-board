@@ -9,6 +9,33 @@ import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts
 import type { BoardServer, Revert } from "./harness.ts";
 import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkFresh, checkWrap } from "./invariants.ts";
 
+const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
+    const all = stops().filter(st => !st.item || treeShown(st.item));
+    if (!all.length) return;
+    const key = containerOf(effectiveSelection());
+    const k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
+    if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
+    // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
+    // last stop above it, wrapping around at the list's ends.
+    const order = new Map<string, number>(); boardOrder().forEach((it, i) => { if (!order.has(it.id)) order.set(it.id, i); });
+    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const row = home && order.has(home) ? order.get(home)! : -1;
+    const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
+    let n = -1;
+    if (dir > 0) n = all.findIndex(st => at(st) >= row);
+    else all.forEach((st, i) => { if (at(st) < row) n = i; });
+    const pick = all[n >= 0 ? n : dir > 0 ? 0 : all.length - 1]!;
+    goStop(stops().findIndex(st => st.id === pick.id));
+`;
+const ARROW_OLD = `    const all = stops();
+    if (!all.length) return;
+    const key = containerOf(effectiveSelection());
+    let k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
+    if (k >= 0) { goStop(k + dir); return; }
+    const pos = (st: {id:string;item:string|null}) => { const e = get(st.id) || (st.item ? get("it-" + st.item) : null); return e ? e.getBoundingClientRect().top : Infinity; };
+    if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
+    else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
+`;
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
   {
@@ -48,6 +75,19 @@ const WITNESSES: Witness[] = [
     // The current page is also walked with n and the right arrow from the bottom row of the tree (checkWrap); the
     // seeded board does not yet reproduce the owner's wrong landings there, so those have no reversal witness.
     run: async (bp, b) => { const o = await oracle(b.store); return [...await checkFresh(bp, o), ...await checkWrap(bp, o)]; },
+  },
+  {
+    bug: "n from the bottom row wrapped onto a stop with no row in the list (owner, 2026-10-14)",
+    reverts: [{ file: "web/app.ts", edit: "n's wrap skips stops with no row in the list", find: " && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh", replace: "); goFresh" }],
+    family: "wrap-n",
+    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+  },
+  {
+    bug: "the right arrow chose the card nearest the top of the screen instead of the next one in the list (owner, 2026-10-14)",
+    // The old stepStop body, back where the new one stands.
+    reverts: [{ file: "web/app.ts", edit: "the arrows step by the list's rows", find: ARROW_NEW, replace: ARROW_OLD }],
+    family: "wrap-card",
+    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
