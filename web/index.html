@@ -346,8 +346,10 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .body .card { margin-top: 4px; }
 .cardbox { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 6px 12px; margin: 4px 0; }
 .card.inlinecard { border: 0; padding: 4px 0 4px 22px; border-radius: 0; background: transparent; }
-.cardtoggle[aria-expanded="true"] + .cardruling { display: none; }
-.cardruling { color: var(--muted); }
+.plan-row.cardrow > .plan-main { display: flex; align-items: baseline; gap: 6px; }
+.plan-row.cardrow > .plan-main > span { flex: none; }
+.plan-row.cardrow .cardtoggle { font-weight: 700; min-width: 0; flex: 1 1 auto; }
+.plan-row.cardrow .cardtoggle[aria-expanded="false"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
 .empty { color: var(--muted); font-size: 14px; margin: 0; }

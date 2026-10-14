@@ -1714,9 +1714,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) flip(ev); });
           main.appendChild(toggle);
-          // A ruled card shows its result after the title while folded; unfolded, the card itself carries it.
-          const result = card!.status !== "open" && card!.ruling ? plain(firstLine(card!.ruling)) : "";
-          if (result) main.appendChild(el("span", "cardruling", " · " + esc(result.length > 60 ? result.slice(0, 60) + "…" : result)));
         } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);

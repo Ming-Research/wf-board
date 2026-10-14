@@ -89,10 +89,10 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
-    bug: "a card row in a plan showed its title again in a second box when unfolded, and a ruled card hid its ruling (owner, 2026-10-14)",
-    // The unfolded card gets its title heading back, and the folded row stops showing the ruling.
+    bug: "a card row in a plan showed its title again in a second box when unfolded, and a folded card row took several lines instead of one bold truncated line (owner, 2026-10-14)",
+    // The unfolded card gets its title heading back, and the folded row loses its one-line bold ellipsis style.
     reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
-      { file: "web/app.ts", edit: "a folded ruled row shows its ruling", find: "if (result) main.appendChild(", replace: "if (result && !result) main.appendChild(" }],
+      { file: "web/index.html", edit: "a folded card row is one bold line", find: ".plan-row.cardrow .cardtoggle { font-weight: 700; min-width: 0; flex: 1 1 auto; }\n.plan-row.cardrow .cardtoggle[aria-expanded=\"false\"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }", replace: "" }],
     family: "card-box",
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.donePlanCard]); },
   },
