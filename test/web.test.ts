@@ -3439,7 +3439,7 @@ test("plan rows refresh when a shared target's title or card blocking text chang
   s.items.area!.plan=planWork([ownedRow("child"),sharedRow("dependency"),cardRow("q")]);
   const p=await page(s,[]); await expand(p,"area");
   assert.match(markup(planRow(p,"area","dependency")),/Shared result/);
-  assert.match(markup(planRow(p,"area","q")),/决策卡/);
+  assert.match(markup(planRow(p,"area","q")),/待裁定/);
   await p.change("b".repeat(40),[{kind:"item",id:"dependency",after:{...s.items.dependency!,title:"Renamed result"}}]); await p.flush();
   assert.match(markup(planRow(p,"area","dependency")),/Renamed result/);
   assert.doesNotMatch(markup(planRow(p,"area","dependency")),/Shared result/);
