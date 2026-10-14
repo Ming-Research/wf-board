@@ -59,6 +59,7 @@ const WITNESSES: Witness[] = [
     // edit: no row unfolds its card, every card row links to the card's own item instead.
     reverts: [{ commit: "2626698", file: "web/app.ts" },
       { file: "web/app.ts", edit: "a card row links to the card's item instead of unfolding", find: "const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;", replace: "const home = undefined as ViewDecision | undefined;" },
+      { file: "web/app.ts", edit: "no plan names a card as its host", find: "    if (selectedItem && cardRowOf(selectedItem, id)) return selectedItem;\n    return cardRowOf(d.item, id) ? d.item : null;", replace: "    return null;" },
       { commit: "8009707", file: "web/index.html" }], family: "plan-card-row",
     // The items whose plans name a card that lives in another item: the card named by three plans, by a done item's
     // plan, and only by another item's plan.
