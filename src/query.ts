@@ -401,6 +401,11 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
     async function recoverOwner(id: string): Promise<string | undefined> {
       const present = makeRules(view).parentOf(id);
       if (present) return present;
+      // A document alive in the snapshot keeps the ownership the snapshot gives it: a root
+      // there stays a root, and no owner is recovered for it. The search below rebuilds a
+      // whole board for every earlier commit that touched an item, and every live chain
+      // ends at a root, so searching for live roots made one call exhaust the daemon's heap.
+      if (Object.hasOwn(s.items, id)) return undefined;
       const index = all.findIndex(commit => commit.commit === boundary), tried = new Set<string>();
       for (const commit of all.slice(index)) {
         if (!commit.files.some(path => path.startsWith("items/"))) continue;
