@@ -162,6 +162,18 @@ test("changes stays anchored to its snapshot even if a later commit lands, and i
   assert.equal(deleted.summary, "deleted item"); assert.equal(deleted.title, "阻塞证据");
 });
 
+test("changes recovers no owner for a live root, so it rebuilds no earlier whole board", async t => {
+  const { store, op } = await board(t);
+  for (let i = 0; i < 5; i++) await op.appendLog({ author, id: "b", text: `Earlier ${i}` });
+  const baseline = store.snapshot().head;
+  await op.appendLog({ author, id: "a", text: "Recent" });
+  const rebuilt = t.mock.method(store, "comparisonSnapshot");
+  const changed = await q.changes(store, store.snapshot(), baseline);
+  assert.equal(changed.length, 1); assert.equal(changed[0]!.areaId, "area");
+  assert.deepEqual(changed[0]!.documents.map(d => d.id), ["a"]);
+  assert.equal(rebuilt.mock.callCount(), 0, "the chain ends at a live root, which keeps the ownership its snapshot gives it");
+});
+
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
   await op.createItem({ author, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
