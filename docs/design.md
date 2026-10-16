@@ -238,6 +238,74 @@ operation already passes. A timer inside each tool or route would miss the next
 one someone adds. Logging alone leaves the architect to read the log; a timed
 probe of `/health` from outside cannot say which operation was slow.
 
+**Request budgets.** What a request that reads the history costs follows the range it
+asks about, never the length of the history, and a request that asks for more than it
+may fails alone while the service goes on. Before this, `changes` rebuilt the whole
+board as it was before each deleted document in the range, to find which item the
+document hung on: one rebuild took 2.7 to 3.1 s and kept about 510 MB of heap, all of
+them stayed until the request ended, and a range with 10 deleted notes ran the heap
+into its 4 GB limit and killed the process, with every session's connection and the
+owner's page (measured in CI on a synthetic board of the live one's size, 18,000
+commits; `scripts/bench-changes.ts`). Three rules follow.
+
+1. *Reads follow the range.* The commits of a query are listed from the range
+   alone (`store.log({since, at})`), and a time given to `diff` is resolved by git going
+   back from the head to the first commit at or before it (`Store.commitAt`), not
+   by listing the history. A document the head no longer holds is found by reading its
+   one file in the commit before the one that deleted it. The item it hangs on is
+   read from the document itself (a note's target, a card's item field, and for a
+   card that is gone too the item the store last saw it on, `Store.cardItem`); an
+   item's owner is looked for among the current items and the last versions of the
+   items deleted in the range, gathered into one view whose rules are worked out once.
+   An item whose owner was deleted before the range has no owner to find, and is
+   grouped as the top of its own project. A version conflict reads an item's
+   versions back only as far as the revision it was written against and not at all
+   for a revision above the current one.
+2. *Every request has a budget.* `src/budget.ts` holds it in the request's async
+   context. A page request (`src/http.ts`), a tool call (`register` in `src/mcp.ts`),
+   the timed wake, the start and a write made outside a request each open one;
+   a budget opened inside a request replaces its outer one. `REQUEST_LIMITS`: 64 MB of
+   history read, and 32 KB more for each commit of the range the request lists
+   (`allowRange`, called by `changes` and by the unread list); one rebuild of a whole
+   old board, which only a comparison reaching back before the plan format
+   conversion needs; and the heap, which may not pass 75% of its limit. The start
+   (`STARTUP_LIMITS`) reads 256 MB and 64 KB per replayed commit, and rebuilds no board.
+   A request over a limit fails with an error that says which and how to narrow the
+   range (a tool answers with it, a page request with 413).
+3. *Three places charge it*, all in `src/store.ts`: reading one historical file
+   (`readAt`, charged when git is read and not when the cache answers), rebuilding a whole old
+   board (`comparisonSnapshot`) and reading a git command's output
+   (`gitRead`, for `log`, `diff` and `ls-tree`; the commands a write runs, and the
+   one read its rollback makes of the head, are not charged). Each also looks at the heap, which counts the garbage not yet
+   collected and what other requests hold, so the 75% line is the last defense
+   against a count that missed something, and the normal queries stay well below it
+   (`scripts/bench-changes.ts` prints their peak against the line). With
+   `requireBudget` (the daemon sets it), a read of history that runs under no
+   budget fails, so a new path that forgets to open one fails the first time it runs;
+   a test checks that the only source files that start a process are `store.ts`,
+   `net-git.ts` (git against a remote, whose output is never read as history) and
+   the two that run `gh` and the notification command, and that those two do not
+   run git.
+
+   A read that two requests share (a file read or a board rebuild still pending, and the
+   unread list's memo) is charged to the request that started it. If that request's
+   budget stops it, the other request fails with the same error, and its retry is
+   served; this is accepted because two requests reading the same history at once is
+   rare and the failure is only a retry.
+
+The history caches are bounded by the heap they are estimated to hold: parsed
+documents 64 MB (16 bytes of heap per byte of file, as the whole-board figures
+measured) and 4096 entries, diffs 16 MB, and one whole old board.
+
+*Rejected.* Running history queries in a worker thread with a memory limit works (a
+256 MB limit stopped a runaway allocation in 3.4 to 6.4 s and left the main thread
+at its normal rate) but needs the board in the thread, 85 to 550 ms and 41 MB for
+each copy, a message protocol for the six readers of history, and a test that
+no reader stays on the main thread, which is the same test as for budgets. A child
+process costs more than a thread and isolates more than is needed. A budget costs
+a few counters and stops what actually grew: reading history. A runaway allocation that
+reads no history is not stopped by it.
+
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
@@ -1475,6 +1543,12 @@ instructions within the limit and free of rule text.
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
+`changes`, `history` and `diff` read the git history, so each call runs under a request budget
+(section 4): a range too large for it ends the call with an error that names what ran out
+and says to narrow `since` or the filters. In `changes` a deleted document is placed by
+the current board and by the documents deleted in the range; an item whose owner was
+deleted before the range is its own area.
+
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
@@ -2488,10 +2562,11 @@ endpoints spanning the schema change, caching historical documents and
 yielding between commits. A legacy status, parent or dependency edit counts
 as an `other` change on the edited item, rather than normalized plan progress
 on its owner, preserving what the owner saw before plans.
-Parsed historical documents are cached up to 4096 entries and normalized
-whole-board snapshots up to 4 entries, evicting the oldest insertions so
-walking old history does not retain every parsed version indefinitely;
-whole-board snapshots have a smaller bound because each holds the full board.
+Parsed historical documents are cached up to an estimated 64 MB of heap (and 4096
+entries) and one normalized whole-board snapshot is kept, evicting the oldest
+insertions so walking old history does not retain every parsed version
+indefinitely; a whole-board snapshot is built at most once per request (section 4,
+Request budgets).
 Normalized page baselines use the same converter;
 the conversion itself marks nothing new and is not a history step.
 `npm run convert:plans -- --data <copy> --dry-run --report <file>` writes the

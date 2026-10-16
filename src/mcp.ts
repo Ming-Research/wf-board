@@ -11,6 +11,8 @@ import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
 import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
+import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
+import type { BudgetLimits } from "./budget.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -111,7 +113,8 @@ const count = (description: string) => z.number().int().nonnegative().describe(d
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-export function createMcpServer({ store, ops, now, wake, slow }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps }): McpServer {
+/** `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one. */
+export function createMcpServer({ store, ops, now, wake, slow, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -131,7 +134,8 @@ export function createMcpServer({ store, ops, now, wake, slow }: { store: Store;
       try {
         const args = schema.parse(a);
         if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
-        return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
+        // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
+        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
       finally { timed?.(outcome, () => summarize(a)); }

@@ -125,6 +125,17 @@ test("a deploy that changed the page tells every open page, and one that did not
   assert.deepEqual(await first.next(), { event: "page", data: { version: one } });
 });
 
+test("reading the page reads no history: with requireBudget GET /, the stream and a deploy's announcement work", async t => {
+  const page = await pageDir(t), { url, api } = await server(t, { webDir: page.dir, requireBudget: true });
+  const one = await page.version();
+  assert.match(await (await fetch(url + "/")).text(), new RegExp(`content="${one}"`));
+  const events = await stream(t, url);
+  assert.deepEqual(await events.next(), { event: "page", data: { version: one } });
+  await page.write(HTML, "console.log('two')");
+  assert.equal((await api("/api/wake", deployed)).status, 200);
+  assert.deepEqual(await events.next(), { event: "page", data: { version: await page.version() } });
+});
+
 test("a page that connects is told the version on disk, and the pages already open wait for the deploy that ends", async t => {
   const page = await pageDir(t), { url, api } = await server(t, { webDir: page.dir });
   const first = await stream(t, url);

@@ -91,14 +91,12 @@ test("reloading activity invalidates a previously published snapshot without a n
   assert.strictEqual(store.snapshot(), after);
 });
 
-test("historical document cache stays bounded, evicts FIFO and rereads unchanged evidence", async t => {
+test("historical document cache stays bounded by entries, evicts FIFO and rereads unchanged evidence", async t => {
   const { store } = await setup(t);
   const internals = store as unknown as {
     readAt(path: string, commit: string): Promise<unknown | null>;
-    historicalDocuments: Map<string, Promise<unknown | null>>;
     blobs: { read(key: string): Promise<Buffer | null> };
   };
-  internals.historicalDocuments.clear();
   const reads = new Map<string, number>();
   t.mock.method(internals.blobs, "read", async (key: string) => {
     reads.set(key, (reads.get(key) ?? 0) + 1);
@@ -107,52 +105,68 @@ test("historical document cache stays bounded, evicts FIFO and rereads unchanged
   const firstKey = "commit:items/first.yaml";
   const first = await internals.readAt("items/first.yaml", "commit");
   for (let i = 0; i < 4095; i++) await internals.readAt(`items/a${i}.yaml`, "commit");
-  assert.equal(internals.historicalDocuments.size, 4096);
   assert.deepEqual(await internals.readAt("items/first.yaml", "commit"), first);
   assert.equal(reads.get(firstKey), 1, "a hit reuses its parsed document");
   await internals.readAt("items/overflow.yaml", "commit");
-  assert.equal(internals.historicalDocuments.size, 4096, "the cache cannot grow with history");
-  assert.equal(internals.historicalDocuments.has(firstKey), false, "hits do not change FIFO order");
-  assert.equal(internals.historicalDocuments.has("commit:items/a0.yaml"), true);
+  await internals.readAt("items/a0.yaml", "commit");
+  assert.equal(reads.get("commit:items/a0.yaml"), 1, "hits do not change FIFO order: only the oldest, first, was evicted");
   assert.deepEqual(await internals.readAt("items/first.yaml", "commit"), first, "eviction changes no historical evidence");
   assert.equal(reads.get(firstKey), 2, "an evicted document is reread");
-  assert.equal(internals.historicalDocuments.size, 4096);
-  assert.equal(internals.historicalDocuments.has("commit:items/a0.yaml"), false);
+  await internals.readAt("items/a0.yaml", "commit");
+  assert.equal(reads.get("commit:items/a0.yaml"), 2, "and its return evicted the next oldest");
+});
+
+test("historical document cache also stays within an estimate of the heap its documents take", async t => {
+  const { store } = await setup(t);
+  const internals = store as unknown as {
+    readAt(path: string, commit: string): Promise<unknown | null>;
+    blobs: { read(key: string): Promise<Buffer | null> };
+  };
+  const reads = new Map<string, number>();
+  // A file of 1 MB is estimated at 16 MB of heap once parsed; the cache holds 64 MB.
+  t.mock.method(internals.blobs, "read", async (key: string) => {
+    reads.set(key, (reads.get(key) ?? 0) + 1);
+    return Buffer.from(`evidence: ${"x".repeat(1_000_000)}\n`);
+  });
+  for (let i = 0; i < 4; i++) await internals.readAt(`items/big${i}.yaml`, "commit");
+  for (let i = 0; i < 4; i++) await internals.readAt(`items/big${i}.yaml`, "commit");
+  assert.deepEqual([...reads.values()], [1, 1, 1, 1], "four of them fit");
+  await internals.readAt("items/big4.yaml", "commit");
+  await internals.readAt("items/big3.yaml", "commit");
+  assert.equal(reads.get("commit:items/big3.yaml"), 1, "a fifth brought the weight over the limit and the oldest went");
+  await internals.readAt("items/big0.yaml", "commit");
+  assert.equal(reads.get("commit:items/big0.yaml"), 2, "the oldest is read again");
 });
 
 test("pending historical reads share entries and a rejected evicted read cannot delete its replacement", async t => {
   const { store } = await setup(t);
   const internals = store as unknown as {
     readAt(path: string, commit: string): Promise<unknown | null>;
-    historicalDocuments: Map<string, Promise<unknown | null>>;
     blobs: { read(key: string): Promise<Buffer | null> };
   };
-  internals.historicalDocuments.clear();
   const pending: Array<{ resolve(value: Buffer | null): void; reject(error: Error): void }> = [];
   t.mock.method(internals.blobs, "read", () => new Promise<Buffer | null>((resolve, reject) => pending.push({ resolve, reject })));
   const first = internals.readAt("items/first.yaml", "commit");
   const firstAgain = internals.readAt("items/first.yaml", "commit");
   assert.equal(pending.length, 1, "concurrent readers share the same pending blob");
   const overflow = Array.from({ length: 4096 }, (_, i) => internals.readAt(`items/a${i}.yaml`, "commit"));
-  assert.equal(internals.historicalDocuments.size, 4096, "pending reads also obey the bound");
+  assert.equal(pending.length, 4097);
+  // Pending reads obey the bound too: the first one was evicted, so reading it again starts a new read.
   const retry = internals.readAt("items/first.yaml", "commit");
-  const replacement = internals.historicalDocuments.get("commit:items/first.yaml");
+  assert.equal(pending.length, 4098);
   const failures = [assert.rejects(first, /old read failed/), assert.rejects(firstAgain, /old read failed/)];
   pending[0]!.reject(new Error("old read failed"));
   await Promise.all(failures);
-  assert.equal(internals.historicalDocuments.get("commit:items/first.yaml"), replacement, "old rejection leaves the replacement cached");
   const retryAgain = internals.readAt("items/first.yaml", "commit");
-  assert.equal(pending.length, 4098, "the replacement is shared rather than started again");
+  assert.equal(pending.length, 4098, "the old rejection left the replacement cached, and it is shared rather than started again");
   for (const read of pending.slice(1)) read.resolve(Buffer.from("evidence: unchanged\n"));
   await Promise.all(overflow);
   assert.deepEqual(await retryAgain, await retry);
-  assert.equal(internals.historicalDocuments.size, 4096);
 });
 
-test("normalized comparison cache retains at most four snapshots and rereads evicted commits", async t => {
+test("normalized comparison cache retains one snapshot and rereads evicted commits", async t => {
   const { store } = await setup(t);
   const internals = store as unknown as {
-    compared: Map<string, Promise<unknown>>;
     resolveCommit(ref: string): Promise<string>;
     git(args: string[]): Promise<string>;
     readAt(path: string, commit: string): Promise<unknown | null>;
@@ -170,17 +184,13 @@ test("normalized comparison cache retains at most four snapshots and rereads evi
     return board;
   });
   const first = await store.comparisonSnapshot("first");
-  for (const commit of ["second", "third", "fourth"]) await store.comparisonSnapshot(commit);
-  assert.equal(internals.compared.size, 4);
   assert.strictEqual(await store.comparisonSnapshot("first"), first);
   assert.equal(reads.get("first"), 1);
-  await store.comparisonSnapshot("fifth");
-  assert.equal(internals.compared.size, 4, "whole boards cannot accumulate for every history commit");
-  assert.equal(internals.compared.has("first"), false, "snapshot hits preserve FIFO order");
+  await store.comparisonSnapshot("second");
   assert.deepEqual(await store.comparisonSnapshot("first"), first);
-  assert.equal(reads.get("first"), 2);
-  assert.equal(internals.compared.size, 4);
-  assert.equal(internals.compared.has("second"), false);
+  assert.equal(reads.get("first"), 2, "whole boards cannot accumulate for every history commit");
+  assert.strictEqual(await store.comparisonSnapshot("first"), await store.comparisonSnapshot("first"));
+  assert.equal(reads.get("second"), 1);
 });
 
 test("YAML round trip preserves troublesome strings and schema key order", async t => {

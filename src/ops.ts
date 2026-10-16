@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
+import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
@@ -231,9 +232,21 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   async function stale(kind: "item" | "decision", id: string, rev: number, current: Item | Decision): Promise<never> {
     let before: unknown = null;
-    for (const commit of await store.log({ kind, id })) {
-      const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
-      if (doc?.rev === rev) { before = doc; break; }
+    // Each write raises the revision by one, so a revision above the current one never existed, and going back from the
+    // newest version, the first one below the wanted revision means it is not in the history. Neither case reads on.
+    try {
+      if (rev <= current.rev) {
+        const versions = await store.log({ kind, id });
+        allowRange(versions.length);
+        for (const commit of versions) {
+          const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
+          if (doc?.rev === rev) { before = doc; break; }
+          if (doc && doc.rev < rev) break;
+        }
+      }
+    } catch (error) {
+      // The conflict is still the answer when the history it is explained from is more than a request may read.
+      if (!(error instanceof BudgetError)) throw error;
     }
     throw new OpError(`rev ${rev}: current rev ${current.rev}; ${before ? describeChanges(before, current, kind) : "previous revision unavailable; " + currentTitle(current)}. Read context and redo with current rev ${current.rev}`);
   }
