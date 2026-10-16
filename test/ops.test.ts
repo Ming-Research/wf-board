@@ -7,13 +7,13 @@ import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { board, at, later, author } from "./helpers.ts";
+import { board, at, later, author, architect } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 
 test("creation, revision, dependency, status, movement and card checks name a fix and leave the board unchanged", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  const create = { author, key: "new", owner: "area", title: "New", accept: "New result passes" };
+  const create = { author: architect, key: "new", owner: "area", title: "New", accept: "New result passes" };
   const card = { author, key: "new-card", item: "a", question: "Choose?", background: "Why", options: [{ key: "A", text: "A" }] };
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
     [() => op.createItem({ ...create, key: "../escape" }), /key.*use/],
@@ -24,7 +24,7 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.createItem({ ...create, accept: undefined }), /accept.*required/],
     [() => op.createItem({ ...create, plan: [{ item: "missing", own: false }] }), /依赖的条目不存在.*missing.*set_plan.*remove or replace/],
     [() => op.createItem({ ...create, plan: [{ card: "missing" }] }), /依赖的决策卡不存在.*missing.*set_plan.*remove or replace/],
-    [() => op.updateItem({ author, id: "a", rev: 0, title: "Bad" }), /rev.*positive.*context/],
+    [() => op.updateItem({ author: architect, id: "a", rev: 0, title: "Bad" }), /rev.*positive.*context/],
     [() => op.updateItem({ author, id: "a", rev: 1, head: "Changed" }), /reason.*explain.*head/],
     [() => op.updateItem({ author, id: "a", rev: 1, links: [{ label: "Invalid", url: "invalid" }] }), /links.*fix/],
     [() => op.updateItem({ author, id: "a", rev: 1, order: 2 }), /order.*only top items.*plan/],
@@ -33,10 +33,10 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.setPlan({ author, id: "area", remove: "a" }), /a is open.*move_item or cancel/],
     [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["accept"] } }), /after.*earlier/],
     [() => op.setPlan({ author, id: "a", row: { id: "drop", text: "Dropped work", state: "dropped" } }), /reason.*fix/],
-    [() => op.setStatus({ author, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
-    [() => op.setStatus({ author, id: "other", status: "blocked", log: "Wait" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
-    [() => op.setStatus({ author, id: "area", status: "cancelled", log: "Drop" }), /owned items.*a.*b.*cancel or move each part first/],
-    [() => op.setStatus({ author, id: "a", status: "open", log: "Resume" }), /only a cancelled item can be reopened/],
+    [() => op.setStatus({ author: architect, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
+    [() => op.setStatus({ author: architect, id: "other", status: "blocked", log: "Wait" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
+    [() => op.setStatus({ author: architect, id: "area", status: "cancelled", log: "Drop" }), /owned items.*a.*b.*cancel or move each part first/],
+    [() => op.setStatus({ author: architect, id: "a", status: "open", log: "Resume" }), /only a cancelled item can be reopened/],
     [() => op.moveItem({ author, id: "a", owner: "a" }), /依赖成环.*set_plan or move_item.*remove/],
     [() => op.moveItem({ author, id: "area", owner: "a" }), /依赖成环.*set_plan or move_item.*remove/],
     [() => op.moveItem({ author, id: "a", owner: "missing" }), /owner.*existing/],
@@ -63,27 +63,27 @@ test("creation, revision, dependency, status, movement and card checks name a fi
 
 test("each operation records its effects, author and single atomic commit", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  async function committed(call: () => Promise<Result>, message: string, files: string[], kind: "item" | "decision" | "note", id: string) {
+  async function committed(call: () => Promise<Result>, message: string, files: string[], kind: "item" | "decision" | "note", id: string, by = author) {
     const count = (await store.log()).length, previous = store.snapshot().head, result = await call(), after = store.snapshot(), log = await store.log({ limit: 1 });
     const doc = kind === "item" ? after.items[id]! : kind === "decision" ? after.decisions[id]! : after.notes[id]!;
     assert.equal((await store.log()).length,count+1,"all document effects enter one atomic commit");
     assert.notEqual(after.head,previous); assert.equal(result.commit,after.head); assert.equal(result.commit,log[0]!.commit);
     assert.deepEqual(result,{commit:after.head,id,rev:doc.rev,summary:message},"the result names the revision and commit actually produced");
-    assert.equal(log[0]!.author,author); assert.equal(log[0]!.message,message);
+    assert.equal(log[0]!.author,by); assert.equal(log[0]!.message,message);
     assert.deepEqual(log[0]!.files.slice().sort(),files.slice().sort(),"the commit contains every effect and no unrelated document");
     assert.deepEqual(await store.show(kind,id,result.commit),doc,"the returned revision is stored in that exact commit");
     assert.deepEqual((await Store.open(dir)).snapshot(),after,"all atomic effects survive reopen");
   }
-  const itemCommit = (call: () => Promise<Result>, message: string, files=["items/new.yaml"]) => committed(call,message,files,"item","new");
-  await itemCommit(() => op.createItem({ author, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml","numbers.yaml"]);
+  const itemCommit = (call: () => Promise<Result>, message: string, files=["items/new.yaml"], by = author) => committed(call,message,files,"item","new",by);
+  await itemCommit(() => op.createItem({ author: architect, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml","numbers.yaml"],architect);
   assert.deepEqual(store.snapshot().items.area!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
   const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"todo");
   assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"accept",accept:true,text:"New result passes",state:"todo"}]);
   await itemCommit(() => op.appendLog({ author, id: "new", text: "Evidence" }),"append_log new");
   assert.deepEqual(store.snapshot().items.new!.log[0],{at:later,by:author,text:"Evidence"});
-  await itemCommit(() => op.updateItem({ author, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", links: [{label:"PR",url:"https://github.com/Ming-Research/Whitefoot/pull/1"}], data: null }),"update_item new");
+  await itemCommit(() => op.updateItem({ author: architect, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", links: [{label:"PR",url:"https://github.com/Ming-Research/Whitefoot/pull/1"}], data: null }),"update_item new",undefined,architect);
   const revised=store.snapshot().items.new!; assert.equal(revised.head,"Revised"); assert.equal(revised.title,"Revised title"); assert.equal(revised.data,undefined); assert.equal(Object.hasOwn(revised,"agent"),false);
-  assert.deepEqual(revised.plan,created.plan); assert.deepEqual(revised.log.at(-1),{at:later,by:author,text:"改了 head：Scope settled"});
+  assert.deepEqual(revised.plan,created.plan); assert.deepEqual(revised.log.at(-1),{at:later,by:architect,text:"改了 head：Scope settled"});
   await committed(() => op.updateItem({author,id:"other",rev:store.snapshot().items.other!.rev,order:2}),"update_item other",["items/other.yaml"],"item","other");
   assert.equal(store.snapshot().items.other!.order,2,"top-item order remains editable while owned order is the plan's");
   await itemCommit(() => op.setPlan({ author, id: "new", row: {card:"choice",after:[]} }),"set_plan new");
@@ -97,10 +97,10 @@ test("each operation records its effects, author and single atomic commit", asyn
   const waiting=store.snapshot().items.new!;
   await store.commit({author:"Fixture",message:"Legacy ask",puts:[{kind:"item",id:"new",expectRev:waiting.rev,doc:{...waiting,ask:{text:"Approve",url:"https://example.com/approve",chat:true}}}]});
   const beforeCancel=store.snapshot().items.new!;
-  await itemCommit(() => op.setStatus({ author, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled");
+  await itemCommit(() => op.setStatus({ author: architect, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled",undefined,architect);
   assert.equal(rules(store.snapshot()).statusOf("new"),"cancelled"); assert.deepEqual(store.snapshot().items.new!.plan,beforeCancel.plan); assert.deepEqual(store.snapshot().items.new!.ask,beforeCancel.ask);
-  assert.deepEqual(store.snapshot().items.new!.log.at(-1),{at:later,by:author,text:"Superseded"});
-  await itemCommit(() => op.setStatus({ author, id: "new", status: "open", log: "Resume" }),"set_status new open");
+  assert.deepEqual(store.snapshot().items.new!.log.at(-1),{at:later,by:architect,text:"Superseded"});
+  await itemCommit(() => op.setStatus({ author: architect, id: "new", status: "open", log: "Resume" }),"set_status new open",undefined,architect);
   assert.equal(store.snapshot().items.new!.status,undefined); assert.equal(rules(store.snapshot()).statusOf("new"),"blocked");
   await itemCommit(() => op.clearAsk({ author, id: "new", log: "Owner approved" }),"clear_ask new");
   assert.equal(store.snapshot().items.new!.ask,undefined); assert.equal(store.snapshot().items.new!.log.at(-1)!.text,"Owner approved");
@@ -126,7 +126,7 @@ test("stale item/card revisions summarize intervening changes and never overwrit
   const { store, op } = await board(t, { sharedProjects: true });
   await op.appendLog({ author, id: "a", text: "Concurrent evidence" });
   const before = store.snapshot();
-  await assert.rejects(op.updateItem({ author, id: "a", rev: 1, title: "Stale" }), /rev 1: current rev 2; \+1 log.*redo.*rev 2/);
+  await assert.rejects(op.updateItem({ author: architect, id: "a", rev: 1, title: "Stale" }), /rev 1: current rev 2; \+1 log.*redo.*rev 2/);
   assert.deepEqual(store.snapshot(), before);
   const args = { author, key: "choice", item: "a", question: "Changed?", background: "Changed", options: [{ key: "A", text: "A" }] };
   await op.writeCard({ ...args, rev: 1 });
@@ -164,7 +164,7 @@ test("an update racing a Store write returns an OpError with current revision an
     }
     return original(txn);
   });
-  await assert.rejects(op.updateItem({ author, id: "a", rev: 1, title: "Would overwrite" }), e => {
+  await assert.rejects(op.updateItem({ author: architect, id: "a", rev: 1, title: "Would overwrite" }), e => {
     assert.ok(e instanceof OpError); assert.match(e.message, /current rev 2; title changed.*redo.*rev 2/); return true;
   });
   assert.equal(store.snapshot().items.a!.title, "Intervening title");
@@ -206,7 +206,7 @@ test("project closeNote handles sent card/item notes atomically and refuses draf
   }
 });
 
-test("project creation accepts any author and repo updates require the project or coordinator", async t => {
+test("project creation accepts any author and repo updates require the project or Architect", async t => {
   const { store, op, dir } = await board(t);
   await op.createProject({ author: "Unconfigured caller", name: "New project", repo: "Org/New" });
   assert.deepEqual(store.snapshot().board.projects.at(-1), { name: "New project", repo: "Org/New" });
@@ -228,59 +228,62 @@ test("project creation accepts any author and repo updates require the project o
   await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
   assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Changed");
   assert.equal((await store.log({ limit: 1 }))[0]!.message, "update_project Whitefoot");
-  await op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Coordinated" });
+  await op.updateProject({ author: architect, name: "Whitefoot", repo: "Org/Coordinated" });
   assert.equal(store.snapshot().board.projects[0]!.repo, "Org/Coordinated");
-  assert.equal((await store.log({ limit: 1 }))[0]!.author, "总管");
+  assert.equal((await store.log({ limit: 1 }))[0]!.author, architect);
   const unchanged = store.snapshot();
   await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Missing", repo: "Org/Missing" }), /project Missing.*configured/);
   assert.deepEqual(store.snapshot(), unchanged);
-  await op.createItem({ author: "New project", key: "new-area", title: "Area", accept: "Pass", group: "New project", priority: "P2" });
+  await op.createItem({ author: architect, key: "new-area", title: "Area", accept: "Pass", group: "New project", priority: "P2" });
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
-test("总管 reorders and creates projects after an existing project in one commit, while omitted after preserves defaults", async t => {
+test("Architect reorders and creates projects after an existing project in one commit, while omitted after preserves defaults", async t => {
   const { store, op, dir } = await board(t);
   const names = () => store.snapshot().board.projects.map(p => p.name);
   const initial = store.snapshot();
   let count = (await store.log()).length;
-  await op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "Whitefoot", "总管"]);
+  await op.updateProject({ author: architect, name: "Whitefoot", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "Whitefoot", "总管", "Architect"]);
   assert.deepEqual(store.snapshot().items, initial.items);
   assert.equal((await store.log()).length, ++count);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files, ["board.yaml"]);
-  await op.updateProject({ author: "总管", name: "总管", repo: "Org/Coordinator", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "总管", "Whitefoot"]);
+  await op.updateProject({ author: architect, name: "总管", repo: "Org/Coordinator", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "总管", "Whitefoot", "Architect"]);
   assert.equal(store.snapshot().board.projects[1]!.repo, "Org/Coordinator");
   assert.equal((await store.log()).length, ++count);
-  await op.createProject({ author: "总管", name: "Inserted", repo: "Org/Inserted", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot"]);
+  await op.createProject({ author: architect, name: "Inserted", repo: "Org/Inserted", after: "Firn" });
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect"]);
   assert.deepEqual(store.snapshot().board.projects[1], { name: "Inserted", repo: "Org/Inserted" });
   assert.equal((await store.log()).length, ++count);
   await op.createProject({ author: "Any caller", name: "Last" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Last"]);
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "Last"]);
   assert.equal((await store.log()).length, ++count);
   await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Last"]);
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "Last"]);
   assert.equal((await store.log()).length, ++count);
-  await op.updateProject({ author: "总管", name: "Firn", after: "Last" });
-  assert.deepEqual(names(), ["Inserted", "总管", "Whitefoot", "Last", "Firn"]);
+  await op.updateProject({ author: architect, name: "Firn", after: "Last" });
+  assert.deepEqual(names(), ["Inserted", "总管", "Whitefoot", "Architect", "Last", "Firn"]);
   assert.equal((await store.log()).length, ++count);
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
-test("project after rejects noncoordinators, unknown projects and self placement atomically", async t => {
+test("project after rejects every author but Architect, unknown projects and self placement atomically", async t => {
   const { store, op, dir } = await board(t), before = store.snapshot(), count = (await store.log()).length;
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
-    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), /after: only.*总管/],
-    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /after: only.*总管/],
-    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or 总管 may update its repo/],
-    [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), /after: only.*总管/],
-    [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), /after: only.*总管/],
-    [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed", after: "Missing" }), /after Missing.*configured/],
-    [() => op.createProject({ author: "总管", name: "New", after: "Missing" }), /after Missing.*configured/],
-    [() => op.updateProject({ author: "总管", name: "Missing", after: "Firn" }), /project Missing.*configured/],
-    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Whitefoot" }), /after.*cannot follow itself/],
-    [() => op.createProject({ author: "总管", name: "New", after: "New" }), /after.*cannot follow itself/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), /after: only Architect may reorder projects/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /after: only Architect may reorder projects/],
+    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or Architect may update its repo/],
+    [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), /after: only Architect may reorder projects/],
+    [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), /after: only Architect may reorder projects/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), /author 总管: this identity is retired; write as Architect/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed" }), /author 总管: this identity is retired; write as Architect/],
+    [() => op.createProject({ author: "总管", name: "New" }), /author 总管: this identity is retired; write as Architect/],
+    [() => op.updateProject({ author: architect, name: "Whitefoot", repo: "Org/Changed", after: "Missing" }), /after Missing.*configured/],
+    [() => op.createProject({ author: architect, name: "New", after: "Missing" }), /after Missing.*configured/],
+    [() => op.updateProject({ author: architect, name: "Missing", after: "Firn" }), /project Missing.*configured/],
+    [() => op.updateProject({ author: architect, name: "Whitefoot", after: "Whitefoot" }), /after.*cannot follow itself/],
+    [() => op.createProject({ author: architect, name: "New", after: "New" }), /after.*cannot follow itself/],
     [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot" }), /repo.*provide/],
   ];
   for (const [call, message] of cases) {
@@ -300,12 +303,12 @@ test("set_term adds and replaces a term in the author's own glossary and delete_
   }
   await committed(() => op.setTerm({ author, term: "孪生对照", definition: "同一构建的第二份副本，一起跑来显示噪声。" }), author, "set_term 孪生对照", "glossaries/Whitefoot.yaml");
   await committed(() => op.setTerm({ author, term: "否决线", definition: "旧的说法" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
-  await committed(() => op.setTerm({ author: "总管", term: "否决线", definition: "总管的说法" }), "总管", "set_term 否决线", "glossaries/总管.yaml");
+  await committed(() => op.setTerm({ author: architect, term: "否决线", definition: "架构师的说法" }), architect, "set_term 否决线", "glossaries/Architect.yaml");
   await committed(() => op.setTerm({ author, term: "否决线", definition: "性能比较里判定变慢的界线。" }), author, "set_term 否决线", "glossaries/Whitefoot.yaml");
   const entry = (term: string, definition: string, by = author) => ({ term, definition, updated: later, by });
   assert.deepEqual(store.snapshot().glossaries, {
     Whitefoot: { terms: [entry("孪生对照", "同一构建的第二份副本，一起跑来显示噪声。"), entry("否决线", "性能比较里判定变慢的界线。")], rev: 3 },
-    总管: { terms: [entry("否决线", "总管的说法", "总管")], rev: 1 },
+    Architect: { terms: [entry("否决线", "架构师的说法", architect)], rev: 1 },
   }, "a replaced term keeps its place, and another project's same term stays in its own glossary");
   assert.match(await readFile(join(dir, "glossaries/Whitefoot.yaml"), "utf8"), /term: 否决线\n {4}definition: 性能比较里判定变慢的界线。/);
   await committed(() => op.deleteTerm({ author, term: "孪生对照" }), author, "delete_term 孪生对照", "glossaries/Whitefoot.yaml");
@@ -442,7 +445,7 @@ test("targets enforce project ownership in every mode and support records withou
     await assert.rejects(op.setTargets({ author: "Firn", id: "a", ...mode }), /belongs to project Whitefoot/);
     assert.deepEqual(store.snapshot(), before);
   }
-  await op.createItem({ author, key: "record-with-targets", title: "Goal numbers", record: true, group: author, priority: "P1" });
+  await op.createItem({ author: architect, key: "record-with-targets", title: "Goal numbers", record: true, group: author, priority: "P1" });
   await op.setTargets({ author, id: "record-with-targets", target: goalNumbers });
   const s = store.snapshot(); assert.equal(s.items["record-with-targets"]!.targets![0]!.date, later);
   assert.equal(s.items["record-with-targets"]!.status, undefined); assert.equal(rules(s).statusOf("record-with-targets"), undefined);
@@ -520,10 +523,10 @@ test("multiple acceptance scenarios retain ordinary waits and insert new rows be
   await op.setPlan({ author, id: "a", row: { id: "scenario-b", accept: true, text: "Scenario B checked", state: "done", after: ["work"] } });
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["work", "prepare", "scenario-a", "scenario-b", "release"]);
   const beforeCancel = store.snapshot().items.a!.plan;
-  await op.setStatus({ author, id: "a", status: "cancelled", log: "Pause delivery while retaining the completed checks" });
+  await op.setStatus({ author: architect, id: "a", status: "cancelled", log: "Pause delivery while retaining the completed checks" });
   assert.deepEqual(store.snapshot().items.a!.plan, beforeCancel, "cancellation preserves every row, acceptance states, dates, waits and after edges included");
   assert.equal(rules(store.snapshot()).statusOf("a"), "cancelled");
-  await op.setStatus({ author, id: "a", status: "open", log: "Resume delivery with the same checks" });
+  await op.setStatus({ author: architect, id: "a", status: "open", log: "Resume delivery with the same checks" });
   assert.deepEqual(store.snapshot().items.a!.plan, beforeCancel, "reopening also leaves completed and doing acceptance scenarios unchanged");
   assert.equal(rules(store.snapshot()).statusOf("a"), "wip", "the doing acceptance scenario still supplies progress after reopening");
 });
@@ -545,7 +548,7 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
 
 test("create_item appends accept while allowing more acceptance scenarios in its initial plan", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "scenarios", group: author, title: "All scenarios pass", priority: "P1", accept: "Final scenario passes", plan: [
+  await op.createItem({ author: architect, key: "scenarios", group: author, title: "All scenarios pass", priority: "P1", accept: "Final scenario passes", plan: [
     { id: "scenario", accept: true, text: "Initial scenario passes", state: "todo", after: [] },
     { id: "merge", text: "Merge checked work", state: "todo" },
   ] });
@@ -592,7 +595,7 @@ test("owned rows need deliberate moves; removal names after users and transfers 
 
 test("creation adoption, requests and triage use plans and commit all structural effects together", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
-  await op.createItem({ author, key: "parent", title: "Combined", group: author, accept: "Both accepted", priority: "P0", children: ["a", "b"] });
+  await op.createItem({ author: architect, key: "parent", title: "Combined", group: author, accept: "Both accepted", priority: "P0", children: ["a", "b"] });
   const s = store.snapshot(); assert.equal(rules(s).parentOf("a"), "parent"); assert.equal(rules(s).parentOf("b"), "parent");
   assert.deepEqual(s.items.parent!.plan!.map(row => row.id), ["a", "b", "accept"]);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/parent.yaml", "numbers.yaml"], "the issued number's counter enters the creating commit");
@@ -605,16 +608,16 @@ test("creation adoption, requests and triage use plans and commit all structural
 
 test("record-owned backlog work refuses priority even with external dependents, and cancellation refuses open parts", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "backlog", title: "Backlog", group: author, record: true });
+  await op.createItem({ author: architect, key: "backlog", title: "Backlog", group: author, record: true });
   await op.moveItem({ author, id: "a", owner: "backlog" });
   await op.createRequest({ author: "Firn", project: author, key: "request", title: "Need", head: "Witness", accept: "Pass", why: "Need", from: "other" });
   await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: false, after: [] } });
   const r = rules(store.snapshot()); assert.equal(r.isRoot("a"), false); assert.equal(r.priorityOf("a"), "P1");
   await assert.rejects(op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, priority: "P2" }), /record-owned.*cannot store priority.*open shared dependents/);
-  await assert.rejects(op.setStatus({ author, id: "area", status: "cancelled", log: "Superseded" }), /owned items.*b/);
-  await op.setStatus({ author, id: "b", status: "cancelled", log: "Superseded" });
-  await op.setStatus({ author, id: "area", status: "cancelled", log: "Parts disposed" });
-  await op.setStatus({ author, id: "area", status: "open", log: "Resume" });
+  await assert.rejects(op.setStatus({ author: architect, id: "area", status: "cancelled", log: "Superseded" }), /owned items.*b/);
+  await op.setStatus({ author: architect, id: "b", status: "cancelled", log: "Superseded" });
+  await op.setStatus({ author: architect, id: "area", status: "cancelled", log: "Parts disposed" });
+  await op.setStatus({ author: architect, id: "area", status: "open", log: "Resume" });
   assert.equal(store.snapshot().items.area!.status, undefined);
 });
 
@@ -622,7 +625,7 @@ test("record mode preserves parts and logs removed acceptance; provisional full 
   const { store, op } = await board(t);
   await op.updateItem({ author, id: "area", rev: 1, record: true });
   const record = store.snapshot().items.area!; assert.equal(record.plan!.length, 2); assert.match(record.log.at(-1)!.text, /原验收：解释器目标通过/);
-  await assert.rejects(op.setStatus({ author, id: "area", status: "cancelled", log: "Drop" }), /record/);
+  await assert.rejects(op.setStatus({ author: architect, id: "area", status: "cancelled", log: "Drop" }), /record/);
   await assert.rejects(op.updateItem({ author, id: "area", rev: record.rev, record: false }), /accept/);
   await op.updateItem({ author, id: "area", rev: record.rev, record: false, accept: "Work verified" });
   const it = store.snapshot().items.a!;
@@ -674,9 +677,9 @@ test("writes enforce configured projects and nonempty values; removed parameters
   for (const extra of [{ parent: "area" }, { parentWhy: "Old" }, { sourceStatus: "todo" }, { deps: [] }, { migrated: true }]) {
     await assert.rejects(op.updateItem({ author, id: "a", rev: 1, title: "Revised", ...extra } as Parameters<Ops["updateItem"]>[0]), /removed by item plans/);
   }
-  await assert.rejects(op.createItem({ author, key: "missing-accept", group: author, title: "New", priority: "P1" }), /accept/);
-  await assert.rejects(op.createItem({ author, key: "record-accept", group: author, title: "Record", record: true, accept: "Wrong" }), /accept/);
-  await assert.rejects(op.createItem({ author, key: "old-status", group: author, title: "New", accept: "Pass", priority: "P1", status: "todo" } as Parameters<Ops["createItem"]>[0]), /no status argument/);
+  await assert.rejects(op.createItem({ author: architect, key: "missing-accept", group: author, title: "New", priority: "P1" }), /accept/);
+  await assert.rejects(op.createItem({ author: architect, key: "record-accept", group: author, title: "Record", record: true, accept: "Wrong" }), /accept/);
+  await assert.rejects(op.createItem({ author: architect, key: "old-status", group: author, title: "New", accept: "Pass", priority: "P1", status: "todo" } as Parameters<Ops["createItem"]>[0]), /no status argument/);
   assert.deepEqual(store.snapshot(), before); assert.deepEqual((await Store.open(dir)).snapshot(), before);
 });
 
@@ -698,7 +701,7 @@ test("card writes validate options, confidence, revisions and project ownership 
 test("priority is only stored on roots and is removed atomically when a new plan dependent appears", async t => {
   const { store, op } = await board(t);
   await assert.rejects(op.updateItem({ author, id: "a", rev: 1, priority: "P0" }), /只有.*根条目/);
-  await op.createItem({ author: "Firn", group: "Firn", key: "remote", title: "Root result", priority: "P2", accept: "Pass" });
+  await op.createItem({ author: architect, group: "Firn", key: "remote", title: "Root result", priority: "P2", accept: "Pass" });
   const changed = await op.setPlan({ author, id: "a", row: { item: "remote", own: false, after: [] } });
   assert.deepEqual(changed.dropped, [{ id: "remote", priority: "P2" }]); assert.equal(store.snapshot().items.remote!.priority, undefined);
   assert.equal(rules(store.snapshot()).priorityOf("remote"), "P1");
@@ -745,7 +748,7 @@ test("reopening a waiter refuses a new ownership violation on its unwritten shar
   const before = store.snapshot();
   assert.equal(before.items.loose!.priority, undefined, "priority cleanup must not turn the target into a written item");
   assert.ok(!rules(before).checks("loose").some(c => c.text.includes("没有条目拥有")));
-  await assert.rejects(op.setStatus({ author, id: "waiter", status: "open", log: "Resume waiting" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
+  await assert.rejects(op.setStatus({ author: architect, id: "waiter", status: "open", log: "Resume waiting" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before, "refusal preserves documents, revisions and head on disk too");
 });
@@ -761,16 +764,16 @@ test("reopening a child refuses a new ownership violation on its unwritten statu
   const before = store.snapshot();
   assert.equal(rules(before).statusOf("loose"), "done");
   assert.equal(before.items.loose!.priority, undefined);
-  await assert.rejects(op.setStatus({ author, id: "part", status: "open", log: "Resume part" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
+  await assert.rejects(op.setStatus({ author: architect, id: "part", status: "open", log: "Resume part" }), /item loose:.*同项目有条目在等它，却没有条目拥有它.*move_item/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
 });
 
 test("acceptance naming avoids collisions with valid ordinary rows", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "collision", group: author, title: "New", priority: "P1", accept: "Pass", plan: [{ id: "accept", text: "Ordinary work", state: "todo" }] });
+  await op.createItem({ author: architect, key: "collision", group: author, title: "New", priority: "P1", accept: "Pass", plan: [{ id: "accept", text: "Ordinary work", state: "todo" }] });
   assert.deepEqual(store.snapshot().items.collision!.plan.map(row => row.id), ["accept", "accept-1"]);
-  await op.createItem({ author, key: "record-collision", group: author, title: "Record", record: true, plan: [{ id: "accept", text: "Ordinary record entry", state: "todo" }] });
+  await op.createItem({ author: architect, key: "record-collision", group: author, title: "Record", record: true, plan: [{ id: "accept", text: "Ordinary record entry", state: "todo" }] });
   await op.updateItem({ author, id: "record-collision", rev: 1, record: false, accept: "Pass" });
   assert.deepEqual(store.snapshot().items["record-collision"]!.plan.map(row => row.id), ["accept", "accept-1"]);
 });
@@ -790,7 +793,7 @@ test("every ownership attachment triages pending requests atomically and records
     ] });
     else if (mode === "create-plan" || mode === "create-children") {
       owner = "new-owner";
-      await op.createItem({ author, key: owner, group: author, title: "Requested work owner", accept: "Owner passes", priority: "P0",
+      await op.createItem({ author: architect, key: owner, group: author, title: "Requested work owner", accept: "Owner passes", priority: "P0",
         ...(mode === "create-plan" ? { plan: [{ item: "incoming", own: true }] } : { children: ["incoming"] }),
       });
     } else if (mode === "move") await op.moveItem({ author, id: "incoming", owner });
@@ -810,53 +813,53 @@ test("every ownership attachment triages pending requests atomically and records
   });
 });
 
-test("coordinator pause and resume are atomic, server-stamped and preserve every plan row", async t => {
+test("Architect pause and resume are atomic, server-stamped and preserve every plan row", async t => {
   const { store, op, dir } = await board(t);
   await op.clearAsk({ author, id: "a", log: "Owner already approved" });
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Implementation", state: "doing" } });
   const before = store.snapshot(), plans = Object.fromEntries(Object.entries(before.items).map(([id, it]) => [id, it.plan]));
   const statuses = Object.fromEntries(["area", "a", "b"].map(id => [id, rules(before).statusOf(id)]));
   const count = (await store.log()).length;
-  const result = await op.setPause({ author: "总管", id: "area", paused: true, reason: "  Owner paused the project  " });
+  const result = await op.setPause({ author: architect, id: "area", paused: true, reason: "  Owner paused the project  " });
   const paused = store.snapshot();
   assert.equal((await store.log()).length, count + 1);
   assert.equal(result.commit, paused.head);
   assert.deepEqual(paused.items.area!.paused, { reason: "Owner paused the project", at: later });
-  assert.deepEqual(paused.items.area!.log.at(-1), { at: later, by: "总管", text: "暂停：Owner paused the project" });
+  assert.deepEqual(paused.items.area!.log.at(-1), { at: later, by: architect, text: "暂停：Owner paused the project" });
   for (const id of ["area", "a", "b"]) assert.equal(rules(paused).statusOf(id), "paused");
   assert.deepEqual(Object.fromEntries(Object.entries(paused.items).map(([id, it]) => [id, it.plan])), plans);
   assert.deepEqual((await Store.open(dir)).snapshot().items.area!.paused, paused.items.area!.paused);
-  await op.setPause({ author: "总管", id: "a", paused: false });
+  await op.setPause({ author: architect, id: "a", paused: false });
   assert.equal(store.snapshot().head, paused.head, "resuming an inherited pause changes nothing");
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner paused the project" });
+  await op.setPause({ author: architect, id: "area", paused: true, reason: "Owner paused the project" });
   assert.equal(store.snapshot().head, paused.head, "repeating the same pause adds no commit or log");
-  await op.setPause({ author: "总管", id: "area", paused: false });
+  await op.setPause({ author: architect, id: "area", paused: false });
   const resumed = store.snapshot();
   assert.equal((await store.log()).length, count + 2);
   assert.equal(resumed.items.area!.paused, undefined);
-  assert.deepEqual(resumed.items.area!.log.at(-1), { at: later, by: "总管", text: "恢复" });
+  assert.deepEqual(resumed.items.area!.log.at(-1), { at: later, by: architect, text: "恢复" });
   for (const id of ["area", "a", "b"]) assert.equal(rules(resumed).statusOf(id), statuses[id]);
   assert.deepEqual(Object.fromEntries(Object.entries(resumed.items).map(([id, it]) => [id, it.plan])), plans);
 });
 
 test("pause refusals preserve memory, disk and commits for authors, missing reason and closed or record targets", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, group: author, key: "record-pause", title: "Record", record: true });
-  await op.createItem({ author, group: author, key: "done-pause", title: "Done", priority: "P1", accept: "Done accepted" });
+  await op.createItem({ author: architect, group: author, key: "record-pause", title: "Record", record: true });
+  await op.createItem({ author: architect, group: author, key: "done-pause", title: "Done", priority: "P1", accept: "Done accepted" });
   await op.setPlan({ author, id: "done-pause", rows: [{ id: "accept", accept: true, text: "Done accepted", state: "done" }] });
-  await op.createItem({ author, group: author, key: "cancel-pause", title: "Cancelled", priority: "P1", accept: "Cancelled accepted" });
-  await op.setStatus({ author, id: "cancel-pause", status: "cancelled", log: "No longer needed" });
+  await op.createItem({ author: architect, group: author, key: "cancel-pause", title: "Cancelled", priority: "P1", accept: "Cancelled accepted" });
+  await op.setStatus({ author: architect, id: "cancel-pause", status: "cancelled", log: "No longer needed" });
   const cases: Array<[Parameters<Ops["setPause"]>[0], RegExp]> = [
-    [{ author, id: "a", paused: true, reason: "No permission" }, /author.*only 总管/],
-    [{ author, id: "a", paused: false }, /author.*only 总管/],
-    [{ author: "总管", id: "a", paused: true }, /reason.*required/],
-    [{ author: "总管", id: "a", paused: true, reason: "   " }, /reason.*(nonempty|required)/],
-    [{ author: "总管", id: "record-pause", paused: true, reason: "Record" }, /record cannot be paused/],
-    [{ author: "总管", id: "record-pause", paused: false }, /record cannot be paused/],
-    [{ author: "总管", id: "done-pause", paused: true, reason: "Done" }, /done or cancelled/],
-    [{ author: "总管", id: "cancel-pause", paused: true, reason: "Cancelled" }, /done or cancelled/],
-    [{ author: "总管", id: "done-pause", paused: false }, /done or cancelled/],
-    [{ author: "总管", id: "cancel-pause", paused: false }, /done or cancelled/],
+    [{ author, id: "a", paused: true, reason: "No permission" }, /author: only Architect may pause or resume/],
+    [{ author, id: "a", paused: false }, /author: only Architect may pause or resume/],
+    [{ author: architect, id: "a", paused: true }, /reason.*required/],
+    [{ author: architect, id: "a", paused: true, reason: "   " }, /reason.*(nonempty|required)/],
+    [{ author: architect, id: "record-pause", paused: true, reason: "Record" }, /record cannot be paused/],
+    [{ author: architect, id: "record-pause", paused: false }, /record cannot be paused/],
+    [{ author: architect, id: "done-pause", paused: true, reason: "Done" }, /done or cancelled/],
+    [{ author: architect, id: "cancel-pause", paused: true, reason: "Cancelled" }, /done or cancelled/],
+    [{ author: architect, id: "done-pause", paused: false }, /done or cancelled/],
+    [{ author: architect, id: "cancel-pause", paused: false }, /done or cancelled/],
   ];
   const before = store.snapshot(), count = (await store.log()).length;
   for (const [input, refusal] of cases) {
@@ -869,43 +872,43 @@ test("pause refusals preserve memory, disk and commits for authors, missing reas
 
 test("project cancellation and record conversion cannot clear an owner pause", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, group: author, key: "pause-cancel", title: "Work", priority: "P1", accept: "Check", plan: [{ id: "doing", text: "Implementation", state: "doing" }] });
-  await op.setPause({ author: "总管", id: "pause-cancel", paused: true, reason: "Parked" });
+  await op.createItem({ author: architect, group: author, key: "pause-cancel", title: "Work", priority: "P1", accept: "Check", plan: [{ id: "doing", text: "Implementation", state: "doing" }] });
+  await op.setPause({ author: architect, id: "pause-cancel", paused: true, reason: "Parked" });
   const paused = store.snapshot().items["pause-cancel"]!, plan = paused.plan, marker = paused.paused;
-  await op.setStatus({ author, id: "pause-cancel", status: "cancelled", log: "No longer needed" });
+  await op.setStatus({ author: architect, id: "pause-cancel", status: "cancelled", log: "No longer needed" });
   assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "cancelled");
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.paused, marker, "cancellation does not clear the owner's pause");
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
-  await op.setStatus({ author, id: "pause-cancel", status: "open", log: "Needed again" });
+  await op.setStatus({ author: architect, id: "pause-cancel", status: "open", log: "Needed again" });
   assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "paused", "reopening cannot silently resume the owner's pause");
-  await op.setPause({ author: "总管", id: "pause-cancel", paused: false });
+  await op.setPause({ author: architect, id: "pause-cancel", paused: false });
   assert.equal(rules(store.snapshot()).statusOf("pause-cancel"), "wip");
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
-  await op.setPause({ author: "总管", id: "a", paused: true, reason: "Parked" });
+  await op.setPause({ author: architect, id: "a", paused: true, reason: "Parked" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), /paused.*中文检查.*only the owner or 总管 can resume/);
+  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), /paused.*中文检查.*only the owner or Architect can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.setPause({ author: "总管", id: "a", paused: false });
+  await op.setPause({ author: architect, id: "a", paused: false });
   await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, record: true });
   assert.equal(store.snapshot().items.a!.paused, undefined);
   assert.equal(store.snapshot().items.a!.record, true);
 });
 
-test("only the coordinator can clear a retained pause after work completes or is cancelled", async t => {
+test("only Architect can clear a retained pause after work completes or is cancelled", async t => {
   const { store, op } = await board(t);
   for (const state of ["done", "cancelled"] as const) {
     const id = `pause-closed-${state}`;
-    await op.createItem({ author, group: author, key: id, title: "Closed work", priority: "P1", accept: "Check" });
-    await op.setPause({ author: "总管", id, paused: true, reason: "Owner paused" });
+    await op.createItem({ author: architect, group: author, key: id, title: "Closed work", priority: "P1", accept: "Check" });
+    await op.setPause({ author: architect, id, paused: true, reason: "Owner paused" });
     if (state === "done") await op.setPlan({ author, id, rows: [{ id: "accept", accept: true, text: "Check", state: "done" }] });
-    else await op.setStatus({ author, id, status: "cancelled", log: "Not needed" });
+    else await op.setStatus({ author: architect, id, status: "cancelled", log: "Not needed" });
     const before = store.snapshot(), plan = before.items[id]!.plan;
     assert.equal(rules(before).statusOf(id), state);
     assert.ok(before.items[id]!.paused, "ordinary closure retains the owner's marker");
-    await assert.rejects(op.setPause({ author, id, paused: false }), /only 总管/);
+    await assert.rejects(op.setPause({ author, id, paused: false }), /only Architect/);
     assert.deepEqual(store.snapshot(), before);
-    await op.setPause({ author: "总管", id, paused: false });
+    await op.setPause({ author: architect, id, paused: false });
     assert.equal(store.snapshot().items[id]!.paused, undefined);
     assert.equal(rules(store.snapshot()).statusOf(id), state);
     assert.deepEqual(store.snapshot().items[id]!.plan, plan);
@@ -913,15 +916,18 @@ test("only the coordinator can clear a retained pause after work completes or is
 });
 
 
-test("ordinary coordinator tools refuse cross-project writes without changing memory, disk or HEAD", async t => {
+test("other projects still refuse cross-project writes without changing memory, disk or HEAD", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   const before = store.snapshot(), count = (await store.log()).length;
   const calls = [
-    () => op.setPlan({ author: "总管", id: "a", row: { id: "accept", accept: true, text: "Changed acceptance", state: "todo" } }),
-    () => op.updateItem({ author: "总管", id: "a", rev: before.items.a!.rev, title: "Changed title" }),
-    () => op.setStatus({ author: "总管", id: "a", status: "cancelled", log: "Not needed" }),
-    () => op.moveItem({ author: "总管", id: "a", owner: "other" }),
-    () => op.ruleCard({ author: "总管", key: "choice", choice: "A", ruling: "Approved" }),
+    () => op.setPlan({ author: "Firn", id: "a", row: { id: "accept", accept: true, text: "Changed acceptance", state: "todo" } }),
+    () => op.updateItem({ author: "Firn", id: "a", rev: before.items.a!.rev, head: "Changed head", reason: "Foreign" }),
+    () => op.moveItem({ author: "Firn", id: "a", owner: "other" }),
+    () => op.appendLog({ author: "Firn", id: "a", text: "Foreign log" }),
+    () => op.writeCard({ author: "Firn", key: "foreign-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }),
+    () => op.ruleCard({ author: "Firn", key: "choice", choice: "A", ruling: "Approved" }),
+    () => op.replyNote({ author: "Firn", id: "note-1", reply: "Answer" }),
+    () => op.closeNote({ author: "Firn", id: "note-1", log: "Handled" }),
   ];
   for (const call of calls) {
     await assert.rejects(call(), /item a belongs to project Whitefoot; file a request into Whitefoot with create_request instead/);
@@ -930,61 +936,174 @@ test("ordinary coordinator tools refuse cross-project writes without changing me
     assert.equal(store.snapshot().head, before.head);
     assert.equal((await store.log()).length, count);
   }
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
-  assert.equal(rules(store.snapshot()).statusOf("area"), "paused", "set_pause keeps its explicit cross-project authority");
+});
+
+test("Architect writes any project's items, cards and note replies under its own name", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const lastAuthor = async () => (await store.log({ limit: 1 }))[0]!.author;
+  const mine = async (call: () => Promise<Result>) => { await call(); assert.equal(await lastAuthor(), architect, "the commit names Architect, not the item's project"); };
+  await mine(() => op.appendLog({ author: architect, id: "a", text: "Architect evidence" }));
+  assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: "Architect evidence" });
+  await mine(() => op.setPlan({ author: architect, id: "a", row: { id: "work", text: "Implementation", state: "doing" } }));
+  await mine(() => op.setTargets({ author: architect, id: "a", target: goalNumbers }));
+  await mine(() => op.updateItem({ author: architect, id: "a", rev: store.snapshot().items.a!.rev, head: "Revised by Architect", reason: "Scope settled" }));
+  assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: "改了 head：Scope settled" });
+  await mine(() => op.moveItem({ author: architect, id: "a", owner: "other" }));
+  assert.equal(rules(store.snapshot()).parentOf("a"), "other");
+  await mine(() => op.writeCard({ author: architect, key: "architect-card", item: "a", question: "Choose?", background: "Why", options: [{ key: "A", text: "A" }] }));
+  await mine(() => op.ruleCard({ author: architect, key: "architect-card", choice: "A", ruling: "Owner picked A" }));
+  await mine(() => op.replyNote({ author: architect, id: "note-1", reply: "Answer" }));
+  assert.equal(store.snapshot().notes["note-1"]!.repliedBy, architect);
+  await store.commit({ author: "Fixture", message: "Another sent note", puts: [{ kind: "note", id: "note-3", expectRev: null, doc: { target: "it:a", kind: "comment", text: "又一条意见", at, sentAt: at, state: "sent" } }] });
+  await mine(() => op.closeNote({ author: architect, id: "note-3", log: "Handled" }));
+  assert.equal(store.snapshot().notes["note-3"]!.repliedBy, architect);
+  await mine(() => op.setStatus({ author: architect, id: "b", status: "cancelled", log: "Superseded" }));
+  await mine(() => op.setStatus({ author: architect, id: "b", status: "open", log: "Resume" }));
+  await mine(() => op.setPause({ author: architect, id: "b", paused: true, reason: "Owner chose to wait" }));
+  await mine(() => op.createItem({ author: architect, key: "made-for-firn", group: "Firn", title: "Made for Firn", priority: "P1", accept: "Pass" }));
+  assert.equal(store.snapshot().items["made-for-firn"]!.group, "Firn", "the new item belongs to the project named by group, not to Architect");
+  for (const id of ["a", "b"]) assert.equal(store.snapshot().items[id]!.group, author, "Architect's writes never move an item to another project");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
+test("only Architect creates items, cancels or reopens them, changes a title, pauses or resumes, and changes the tag vocabulary", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const before = store.snapshot(), count = (await store.log()).length, rev = before.items.a!.rev;
+  const made = { key: "made", group: author, title: "Made", accept: "Pass", priority: "P1" as const };
+  const tag = { name: "新标签", meaning: "测试用" };
+  const cases: Array<[() => Promise<unknown>, RegExp]> = [];
+  // Each refusal holds for the item's own project and for another one, and comes before the ownership check.
+  for (const by of [author, "Firn"]) cases.push(
+    [() => op.createItem({ author: by, ...made }), /author: only Architect may create items/],
+    [() => op.setStatus({ author: by, id: "b", status: "cancelled", log: "Drop" }), /author: only Architect may cancel or reopen an item/],
+    [() => op.updateItem({ author: by, id: "a", rev, title: "Renamed" }), /author: only Architect may change an item's title/],
+    [() => op.setPause({ author: by, id: "a", paused: true, reason: "Wait" }), /author: only Architect may pause or resume an item/],
+    [() => op.setPause({ author: by, id: "a", paused: false }), /author: only Architect may pause or resume an item/],
+    [() => op.setTag({ author: by, ...tag }), /author: only Architect may change the tag vocabulary/],
+    [() => op.renameTag({ author: by, name: tag.name, to: "改名" }), /author: only Architect may change the tag vocabulary/],
+    [() => op.removeTag({ author: by, name: tag.name }), /author: only Architect may change the tag vocabulary/],
+  );
+  for (const [call, message] of cases) {
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+  // What the engineer writes stays open to the item's project: a head with the title unchanged, the log and plan progress.
+  await op.updateItem({ author, id: "a", rev, title: before.items.a!.title, head: "改动一节由工程师写", reason: "Changes recorded" });
+  await op.appendLog({ author, id: "a", text: "Evidence" });
+  await op.setPlan({ author, id: "a", row: { id: "work", text: "Implementation", state: "doing" } });
+  assert.equal(store.snapshot().items.a!.title, before.items.a!.title);
+  assert.equal(store.snapshot().items.a!.head, "改动一节由工程师写");
+});
+
+test("Architect's reach across projects keeps the same-project ownership rules", async t => {
+  const { store, op, dir } = await board(t);
+  const before = store.snapshot(), count = (await store.log()).length;
+  const cases: Array<[() => Promise<unknown>, RegExp]> = [
+    [() => op.createItem({ author: architect, key: "x", owner: "area", group: "Firn", title: "X", accept: "Pass" }), /owner: ownership must stay within the same project/],
+    [() => op.moveItem({ author: architect, id: "a", owner: "other" }), /owner: ownership must stay within the same project/],
+    [() => op.setPlan({ author: architect, id: "other", row: { item: "a", own: true } }), /跨项目拥有 a; use a shared row/],
+    [() => op.createItem({ author: architect, key: "x", group: "Firn", title: "X", accept: "Pass", priority: "P1", children: ["a"] }), /跨项目拥有 a; use a shared row/],
+  ];
+  for (const [call, message] of cases) {
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+});
+
+test("every write under the retired author 总管 is refused and changes nothing", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const before = store.snapshot(), count = (await store.log()).length, retired = "总管";
+  assert.ok(before.board.projects.some(p => p.name === retired), "the retired project is still configured, so only the retirement refuses");
+  const calls: Record<keyof Ops, () => Promise<unknown>> = {
+    createProject: () => op.createProject({ author: retired, name: "New" }),
+    updateProject: () => op.updateProject({ author: retired, name: "Whitefoot", repo: "Org/Changed" }),
+    createRequest: () => op.createRequest({ author: retired, project: "Firn", key: "req", title: "Req", head: "H", accept: "A", priority: "P1", why: "W" }),
+    triageRequest: () => op.triageRequest({ author: retired, id: "a", log: "L" }),
+    closeNote: () => op.closeNote({ author: retired, id: "note-1", log: "Handled" }),
+    createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass", priority: "P1" }),
+    appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),
+    setPlan: () => op.setPlan({ author: retired, id: "a", row: { id: "work", text: "Work", state: "doing" } }),
+    setTargets: () => op.setTargets({ author: retired, id: "a", target: goalNumbers }),
+    updateItem: () => op.updateItem({ author: retired, id: "a", rev: before.items.a!.rev, title: "Renamed" }),
+    setStatus: () => op.setStatus({ author: retired, id: "b", status: "cancelled", log: "Drop" }),
+    setTags: () => op.setTags({ author: retired, id: "a", tags: ["健全性"] }),
+    setTagsMany: () => op.setTagsMany({ author: retired, items: [{ id: "a", tags: ["健全性"] }] }),
+    setTag: () => op.setTag({ author: retired, name: "新标签", meaning: "测试用" }),
+    renameTag: () => op.renameTag({ author: retired, name: "健全性", to: "改名" }),
+    removeTag: () => op.removeTag({ author: retired, name: "健全性" }),
+    setPause: () => op.setPause({ author: retired, id: "a", paused: true, reason: "Wait" }),
+    moveItem: () => op.moveItem({ author: retired, id: "a", owner: "other" }),
+    clearAsk: () => op.clearAsk({ author: retired, id: "a", log: "Settled" }),
+    writeCard: () => op.writeCard({ author: retired, key: "new-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }),
+    postNotice: () => op.postNotice({ author: retired, text: "Notice" }),
+    ruleCard: () => op.ruleCard({ author: retired, key: "choice", choice: "A", ruling: "Approved" }),
+    replyNote: () => op.replyNote({ author: retired, id: "note-1", reply: "Answer" }),
+    setTerm: () => op.setTerm({ author: retired, term: "术语", definition: "定义" }),
+    deleteTerm: () => op.deleteTerm({ author: retired, term: "术语" }),
+  };
+  for (const [name, call] of Object.entries(calls)) {
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, /^author 总管: this identity is retired; write as Architect$/, name); return true; });
+    assert.deepEqual(store.snapshot(), before, name);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before, name);
+    assert.equal((await store.log()).length, count, name);
+  }
 });
 
 test("moving inherited paused work out requires an authorized resume first", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
-  await op.createItem({ author, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes", plan: [{ id: "work", text: "Implementation", state: "doing" }] });
-  await op.createItem({ author, key: "resume-owner", group: author, title: "Active release", priority: "P2", accept: "Active release passes" });
-  await op.setPause({ author: "总管", id: "pause-parent", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: architect, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
+  await op.createItem({ author: architect, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes", plan: [{ id: "work", text: "Implementation", state: "doing" }] });
+  await op.createItem({ author: architect, key: "resume-owner", group: author, title: "Active release", priority: "P2", accept: "Active release passes" });
+  await op.setPause({ author: architect, id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.moveItem({ author, id: "pause-child", owner: "resume-owner" }), /paused.*Paused implementation.*pause-child.*Paused release.*pause-parent.*only the owner or 总管 can resume/);
+  await assert.rejects(op.moveItem({ author, id: "pause-child", owner: "resume-owner" }), /paused.*Paused implementation.*pause-child.*Paused release.*pause-parent.*only the owner or Architect can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.setPause({ author: "总管", id: "pause-parent", paused: false });
+  await op.setPause({ author: architect, id: "pause-parent", paused: false });
   await op.moveItem({ author, id: "pause-child", owner: "resume-owner" });
   assert.equal(rules(store.snapshot()).statusOf("pause-child"), "wip");
   assert.deepEqual(store.snapshot().items["pause-child"]!.plan, before.items["pause-child"]!.plan);
-  await op.setPause({ author: "总管", id: "pause-parent", paused: true, reason: "Owner chose to wait" });
+  await op.setPause({ author: architect, id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   await op.moveItem({ author, id: "pause-child", owner: "pause-parent" });
   assert.equal(rules(store.snapshot()).statusOf("pause-child"), "paused", "moving into a paused chain remains allowed");
 });
 
 test("removing a paused parent's owning row cannot resume open child work", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
-  await op.createItem({ author, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes" });
-  await op.setPause({ author: "总管", id: "pause-parent", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: architect, key: "pause-parent", group: author, title: "Paused release", priority: "P1", accept: "Release passes" });
+  await op.createItem({ author: architect, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes" });
+  await op.setPause({ author: architect, id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.setPlan({ author, id: "pause-parent", remove: "pause-child" }), /paused.*Paused implementation.*Paused release.*pause-parent.*only the owner or 总管 can resume/);
+  await assert.rejects(op.setPlan({ author, id: "pause-parent", remove: "pause-child" }), /paused.*Paused implementation.*Paused release.*pause-parent.*only the owner or Architect can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
 });
 
-test("coordinator plans still require moving or cancelling their open owned children before removal", async t => {
+test("Architect plans still require moving or cancelling their open owned children before removal", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author: "总管", key: "coordinator-parent", group: "总管", title: "Coordinator release", priority: "P1", accept: "Release passes" });
-  await op.createItem({ author: "总管", key: "coordinator-child", owner: "coordinator-parent", title: "Coordinator work", accept: "Work passes" });
-  await op.setPause({ author: "总管", id: "coordinator-parent", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: architect, key: "architect-parent", group: author, title: "Architect release", priority: "P1", accept: "Release passes" });
+  await op.createItem({ author: architect, key: "architect-child", owner: "architect-parent", title: "Architect work", accept: "Work passes" });
+  await op.setPause({ author: architect, id: "architect-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.setPlan({ author: "总管", id: "coordinator-parent", remove: "coordinator-child" }), /coordinator-child is open; use move_item or cancel it before removing its owned row/);
+  await assert.rejects(op.setPlan({ author: architect, id: "architect-parent", remove: "architect-child" }), /architect-child is open; use move_item or cancel it before removing its owned row/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.moveItem({ author: "总管", id: "coordinator-child", priority: "P1" });
-  assert.equal(rules(store.snapshot()).parentOf("coordinator-child"), undefined);
-  assert.equal(rules(store.snapshot()).statusOf("coordinator-child"), "todo", "the coordinator's own move may resume its work");
+  await op.moveItem({ author: architect, id: "architect-child", priority: "P1" });
+  assert.equal(rules(store.snapshot()).parentOf("architect-child"), undefined);
+  assert.equal(rules(store.snapshot()).statusOf("architect-child"), "todo", "the Architect's own move may resume its work");
 });
 
 test("an inherited pause does not prevent converting work to a record while preserving descendant pause", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "record-descendant", owner: "a", title: "Descendant work", accept: "Result passes" });
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: architect, key: "record-descendant", owner: "a", title: "Descendant work", accept: "Result passes" });
+  await op.setPause({ author: architect, id: "area", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
   assert.equal(before.items.a!.paused, undefined);
   await op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true });
@@ -1000,15 +1119,15 @@ test("an inherited pause does not prevent converting work to a record while pres
 
 test("pause permission follows unwritten descendants when their record owner moves", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  await op.createItem({ author, key: "pause-record", owner: "area", title: "Work queue", record: true });
-  await op.createItem({ author, key: "pause-descendant", owner: "pause-record", title: "Queued work", accept: "Queue result passes" });
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "Owner chose to wait" });
+  await op.createItem({ author: architect, key: "pause-record", owner: "area", title: "Work queue", record: true });
+  await op.createItem({ author: architect, key: "pause-descendant", owner: "pause-record", title: "Queued work", accept: "Queue result passes" });
+  await op.setPause({ author: architect, id: "area", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.moveItem({ author, id: "pause-record", owner: "other" }), /paused.*Queued work.*解释器工作.*area.*only the owner or 总管 can resume/);
+  await assert.rejects(op.moveItem({ author, id: "pause-record", owner: "other" }), /paused.*Queued work.*解释器工作.*area.*only the owner or Architect can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.setPause({ author: "总管", id: "area", paused: false });
+  await op.setPause({ author: architect, id: "area", paused: false });
   await op.moveItem({ author, id: "pause-record", owner: "other" });
   assert.equal(rules(store.snapshot()).statusOf("pause-descendant"), "todo");
   assert.deepEqual(store.snapshot().items["pause-descendant"], before.items["pause-descendant"], "the descendant's plan is never rewritten by the move");
@@ -1018,12 +1137,12 @@ test("project cancellation and plan completion preserve an owner's retained paus
   const { store, op, dir } = await board(t);
   for (const status of ["done", "cancelled"] as const) {
     const id = `paused-close-${status}`;
-    await op.createItem({ author, key: id, group: author, title: "Paused work", priority: "P1", accept: "Result passes" });
-    await op.setPause({ author: "总管", id, paused: true, reason: "Owner chose to wait" });
+    await op.createItem({ author: architect, key: id, group: author, title: "Paused work", priority: "P1", accept: "Result passes" });
+    await op.setPause({ author: architect, id, paused: true, reason: "Owner chose to wait" });
     const before = store.snapshot(), count = (await store.log()).length;
     const result = status === "done"
       ? await op.setPlan({ author, id, rows: [{ id: "accept", accept: true, text: "Result passes", state: "done" }] })
-      : await op.setStatus({ author, id, status: "cancelled", log: "Not needed" });
+      : await op.setStatus({ author: architect, id, status: "cancelled", log: "Not needed" });
     const after = store.snapshot();
     assert.equal(rules(after).statusOf(id), status);
     assert.deepEqual(after.items[id]!.paused, before.items[id]!.paused);
@@ -1036,16 +1155,16 @@ test("project cancellation and plan completion preserve an owner's retained paus
 
 test("converting closed work to a record requires clearing its retained owner pause first", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "pause-closed-record", group: author, title: "Closed paused work", priority: "P1", accept: "Result passes" });
-  await op.setPause({ author: "总管", id: "pause-closed-record", paused: true, reason: "Owner chose to wait" });
-  await op.setStatus({ author, id: "pause-closed-record", status: "cancelled", log: "Not needed" });
+  await op.createItem({ author: architect, key: "pause-closed-record", group: author, title: "Closed paused work", priority: "P1", accept: "Result passes" });
+  await op.setPause({ author: architect, id: "pause-closed-record", paused: true, reason: "Owner chose to wait" });
+  await op.setStatus({ author: architect, id: "pause-closed-record", status: "cancelled", log: "Not needed" });
   const before = store.snapshot(), count = (await store.log()).length, item = before.items["pause-closed-record"]!;
   assert.equal(rules(before).isPaused("pause-closed-record"), false);
-  await assert.rejects(op.updateItem({ author, id: "pause-closed-record", rev: item.rev, record: true }), /paused.*Closed paused work.*pause-closed-record.*only the owner or 总管 can resume/);
+  await assert.rejects(op.updateItem({ author, id: "pause-closed-record", rev: item.rev, record: true }), /paused.*Closed paused work.*pause-closed-record.*only the owner or Architect can resume/);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
-  await op.setPause({ author: "总管", id: "pause-closed-record", paused: false });
+  await op.setPause({ author: architect, id: "pause-closed-record", paused: false });
   await op.updateItem({ author, id: "pause-closed-record", rev: store.snapshot().items["pause-closed-record"]!.rev, record: true });
   assert.equal(store.snapshot().items["pause-closed-record"]!.record, true);
   assert.equal(store.snapshot().items["pause-closed-record"]!.paused, undefined);
@@ -1053,9 +1172,9 @@ test("converting closed work to a record requires clearing its retained owner pa
 
 test("a project card ruling may complete an unwritten paused dependent without clearing its marker", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ author, key: "pause-card-dependent", group: author, title: "Paused card dependent", priority: "P1", accept: "Result passes", plan: [{ card: "choice" }] });
+  await op.createItem({ author: architect, key: "pause-card-dependent", group: author, title: "Paused card dependent", priority: "P1", accept: "Result passes", plan: [{ card: "choice" }] });
   await op.setPlan({ author, id: "pause-card-dependent", row: { id: "accept", accept: true, text: "Result passes", state: "done" } });
-  await op.setPause({ author: "总管", id: "pause-card-dependent", paused: true, reason: "Owner chose to wait" });
+  await op.setPause({ author: architect, id: "pause-card-dependent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
   const result = await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Approved" });
   const after = store.snapshot();

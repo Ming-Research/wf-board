@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, RETIRED_COORDINATOR, tagApplies, tagsRequired, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -74,7 +74,7 @@ const openDependents = (r: ReturnType<typeof rules>, id: string): string[] => r.
 /** The tags an item of `project` may carry, as a sentence for an error message. */
 function allowedTags(s: Snapshot, project: string): string {
   const names = boardTags(s.board).filter(t => tagApplies(t, project)).map(t => t.name);
-  return names.length ? `tags allowed for ${project}: ${names.join(", ")}` : `no tag is approved for ${project} yet; 总管 adds one after the owner approves it on a decision card`;
+  return names.length ? `tags allowed for ${project}: ${names.join(", ")}` : `no tag is approved for ${project} yet; ${ARCHITECT} adds one after the owner approves it on a decision card`;
 }
 /**
  * Validates the tags a write gives an item of `project`: unique, in the vocabulary and applicable to the project.
@@ -91,9 +91,11 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
   if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
-function only总管(author: string): void {
-  if (author !== "总管") throw new OpError("author: only 总管 may change the tag vocabulary, and only after the owner approves the change on a decision card");
+/** What the board reserves for the architect: every other author is refused, and `what` names the operation in the message. */
+function onlyArchitect(author: string, what: string): void {
+  if (author !== ARCHITECT) throw new OpError(`author: only ${ARCHITECT} may ${what}`);
 }
+const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
 
 function newKey(s: Snapshot, key: string): void {
   if (!Key.safeParse(key).success) throw new OpError("key: use 1–200 letters, digits, dots, underscores or hyphens, starting with a letter or digit");
@@ -168,7 +170,7 @@ function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
 function requireOwnership(s: Snapshot, project: string, author: string, id: string): void {
   const refusal = `item ${id} belongs to project ${project}; file a request into ${project} with create_request instead`;
   requireAuthor(s, author, author === project ? "" : `${refusal}. `);
-  if (author !== project) throw new OpError(refusal);
+  if (author !== project && author !== ARCHITECT) throw new OpError(refusal);
 }
 /** The author's own glossary, the only one it may change; an empty one when it has none yet. */
 function ownGlossary(s: Snapshot, author: string): Glossary {
@@ -212,6 +214,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
       if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
       if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
+      if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write as ${ARCHITECT}`);
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
@@ -268,12 +271,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         // Pause permission covers open work resumed through any indirect effect,
         // including unwritten descendants. Closing work is allowed when its
         // explicit marker stays intact; reopening will restore that pause.
-        if (a.author !== "总管") for (const id of checked) {
+        if (a.author !== ARCHITECT) for (const id of checked) {
           const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
           const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
           if (!clearedMarker && !resumedWork) continue;
           const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
-          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or 总管 can resume it`);
+          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} can resume it`);
         }
         for (const id of written) {
           const old = s.items[id], current = next.items[id]!;
@@ -323,8 +326,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   const itemPut = (id: string, doc: Item): Put => ({ kind: "item", id, doc: parse(Item, doc), expectRev: doc.rev });
   const entry = (author: string, at: string, text: string) => ({ at, by: author, text });
-  function edit(a: { author: string; session?: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = ""): Promise<Result> {
-    return run(a, async (s, at) => ({ id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author), s, at))] }), overwrite);
+  /** `reserved`: names an operation only the architect may do; its refusal comes before the ownership check. */
+  function edit(a: { author: string; session?: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = "", reserved?: string): Promise<Result> {
+    return run(a, async (s, at) => {
+      if (reserved) onlyArchitect(a.author, reserved);
+      return { id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author), s, at))] };
+    }, overwrite);
   }
   /** The item with its whole tag list set: the one rule set_tags and set_tags_many share; the item itself when unchanged. */
   function tagged(it: Item, s: Snapshot, at: string, given: string[]): Item {
@@ -384,7 +391,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.repo !== undefined && a.author !== a.name && a.author !== "总管") throw new OpError(`project ${a.name}: only that project or 总管 may update its repo`);
+      if (a.repo !== undefined && a.author !== a.name && a.author !== ARCHITECT) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} may update its repo`);
       if (a.repo === undefined && a.after === undefined) throw new OpError("repo: provide repo or after");
       const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }) } : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
@@ -422,12 +429,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       ] };
     }),
     createItem: a => run(a, (s, at) => {
+      onlyArchitect(a.author, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
       newKey(s, a.key);
       const owner = a.owner ? ownedItem(s, a.owner, a.author, "owner") : undefined;
       const group = a.group ?? owner?.group;
       if (!group) throw new OpError("group: a new top item requires its project");
-      requireProject(s, group); requireOwnership(s, group, a.author, a.key);
+      requireProject(s, group);
       if (a.owner && a.priority) throw derivedPriority(a.key, [a.owner]);
       if (!a.owner && !a.priority && !a.record) throw new OpError("priority: a new root requires a priority");
       if (a.record ? a.accept !== undefined : !a.accept) throw new OpError("accept: required for work, refused for records");
@@ -505,7 +513,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
     setTag: a => run(a, s => {
-      only总管(a.author);
+      onlyArchitect(a.author, TAG_VOCABULARY);
       const known = boardTags(s.board).find(t => t.name === a.name);
       const projects = a.projects === undefined ? known?.projects : a.projects ?? undefined;
       for (const name of projects ?? []) requireProject(s, name);
@@ -516,7 +524,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags }), puts: [], message: `set_tag ${a.name}` };
     }, false, true),
     renameTag: a => run(a, (s, at) => {
-      only总管(a.author);
+      onlyArchitect(a.author, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       parse(TagName, a.to);
       if (boardTags(s.board).some(t => t.name === a.to)) throw new OpError(`to ${a.to}: already a tag; choose an unused name, or remove ${a.name} with replace`);
@@ -526,7 +534,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.to, kind: "board", board: parse(Board, { ...s.board, tags }), puts, message: `rename_tag ${a.name} ${a.to}` };
     }, false, true),
     removeTag: a => run(a, (s, at) => {
-      only总管(a.author);
+      onlyArchitect(a.author, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       const carrying = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name));
       let replace: Tag | undefined;
@@ -543,6 +551,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags: boardTags(s.board).filter(t => t.name !== a.name) }), puts, message: `remove_tag ${a.name}${a.replace === undefined ? "" : ` → ${a.replace}`}` };
     }, false, true),
     updateItem: a => run(a, async (s, at) => {
+      if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyArchitect(a.author, "change an item's title");
       const it = ownedItem(s, a.id, a.author); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
@@ -573,9 +582,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       if (a.status === "cancelled") { doc.status = "cancelled"; delete doc.request; } else delete doc.status;
       return doc;
-    }, false, ` ${a.status}`),
+    }, false, ` ${a.status}`, "cancel or reopen an item"),
     setPause: a => run(a, (s, at) => {
-      if (a.author !== "总管") throw new OpError("author: only 总管 may pause or resume an item, at the owner's request");
+      onlyArchitect(a.author, "pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
       const it = requireItem(s, a.id);
       if (it.record) throw new OpError("paused: a record cannot be paused or resumed");

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
-import { board, author, later } from "./helpers.ts";
+import { board, author, architect, later } from "./helpers.ts";
 import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
 import type { Step } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
@@ -64,7 +64,7 @@ test("a step diff is git's own diff of the two commits, and asking again spawns 
 
 test("multi-document writes are separate steps and deletion keeps its before document", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "child", owner: "a", accept: "Child accepted", title: "new child" });
+  await op.createItem({ author: architect, key: "child", owner: "a", accept: "Child accepted", title: "new child" });
   await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "following write" } });
   const note = store.snapshot().notes["note-1"]!;
   const deleted = await store.commit({ author, message: "delete synthetic note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
@@ -138,7 +138,7 @@ test("a new commit reads only the documents of the step it creates or extends", 
 
 test("a status that became derived and changes the owner cannot see are not unread", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
+  await op.createItem({ author: architect, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
   const { rev, ...doc } = store.snapshot().items.other!;
   await store.commit({ author, message: "touch time only", puts: [{ kind: "item", id: "other", doc: { ...doc, updated: "2026-10-11T09:09:09Z" }, expectRev: rev }] });
   const steps = await unreadSteps(store, cursor);
@@ -271,7 +271,7 @@ test("document read marks exclude only marked documents and disappear from stop 
   const marked = await unreadSteps(store, cursor, { "item:b": second.commit });
   assert.deepEqual(marked.map(s => s.id), [first.commit], "the later document is read without reading the earlier item");
   assert.equal(unmarked.length, 2, "read marks do not mutate the cached unmarked steps");
-  const multi = await op.createItem({ author, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
+  const multi = await op.createItem({ author: architect, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
   const partial = await unreadSteps(store, cursor, { "item:a": multi.commit });
   assert.deepEqual(partial.find(s => s.id === multi.commit)!.docs.map(d => d.id).sort(), ["kid"], "other documents in a shared commit remain unread");
 });
@@ -422,7 +422,7 @@ test("the incremental unread list equals the from-scratch computation through wr
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
   await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "after the owner" } });
   await same("authors, board settings and owner actions break steps");
-  const multi = await op.createItem({ author, key: "child", owner: "a", accept: "Child accepted", title: "child" });
+  const multi = await op.createItem({ author: architect, key: "child", owner: "a", accept: "Child accepted", title: "child" });
   const note = store.snapshot().notes["note-1"]!;
   await store.commit({ author, message: "delete note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
   const { rev, ...other } = store.snapshot().items.other!;
@@ -485,10 +485,10 @@ test("a merged history the cached run cannot hold is read from git and gives the
 
 test("done and cancelled items retain unread changes and readable endpoint diffs", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.createItem({ author: architect, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
   await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
-  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
-  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  await op.createItem({ author: architect, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ author: architect, id: "cancelled-result", status: "cancelled", log: "Superseded" });
   const cursor = store.snapshot().head;
   await op.appendLog({ author, id: "done-result", text: "Evidence after completion" });
   await op.appendLog({ author, id: "cancelled-result", text: "Reason clarified after cancellation" });
