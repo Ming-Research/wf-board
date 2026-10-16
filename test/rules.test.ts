@@ -357,6 +357,16 @@ test("plan checks flag structural violations and conversion placeholders, withou
   for (const check of rules(s).checks("missing")) assert.ok(!/可解除阻塞|卡住了，但|标为进行中|正文没写/.test(check.text));
 });
 
+test("a title longer than 20 characters, spaces not counted, gets one check", () => {
+  const twenty = "一二三四五六七八九十一二三四五六七八九十", twentyOne = twenty + "十";
+  const s = snapshot({ exact: { title: twenty }, spaced: { title: "一二 三四五六七八九十一二三四五六七八九十" }, over: { title: twentyOne }, asciiOver: { title: "a".repeat(21) }, record: { title: twentyOne, record: true } });
+  assert.deepEqual(texts(s, "exact"), []);
+  assert.deepEqual(texts(s, "spaced"), []);
+  assert.deepEqual(texts(s, "over"), ["标题超过 20 个字（现在 21 个）"]);
+  assert.deepEqual(texts(s, "asciiOver"), ["标题超过 20 个字（现在 21 个）"]);
+  assert.deepEqual(texts(s, "record"), ["标题超过 20 个字（现在 21 个）"], "records have titles too");
+});
+
 test("inboxes omit records and closed requests and follow request dates", () => {
   const s = snapshot({ newer: { request: { by: "First", at: T2 } }, older: { request: { by: "First", at: T1 } }, closed: { request: { by: "First", at: T0 }, status: "cancelled" }, record: { request: { by: "First", at: T0 }, record: true }, other: { group: "First" } });
   const r = rules(s); assert.deepEqual(r.inbox("Default"), ["older", "newer"]); assert.equal(r.isRequest("record"), false); assert.equal(r.isRequest("closed"), false);
