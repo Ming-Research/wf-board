@@ -1,5 +1,5 @@
 // An item head's 参考 sections. A line starting 「**参考：」 opens one; it runs to the next such line or the end of the text.
-// The page folds each section, and its browser checks split heads the same way, so the rule lives here once.
+// The page folds each section; its browser checks read the same title rule through isRefTitle.
 
 /** Whether a line opens a 参考 section. */
 export function isRefTitle(line: string): boolean { return /^\*\*参考：/.test(line); }
