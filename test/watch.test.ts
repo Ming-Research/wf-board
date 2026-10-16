@@ -258,7 +258,7 @@ test("a merge row is an open item's step that says 合入 and names a PR its ite
 
 // --- What to tell ------------------------------------------------------------------------------------------------------------------
 
-test("a ready PR is told with the open blocking cards of its item and the cards its merge row waits on; red and main line likewise; drafts, conflicts, pending, no checks and unnamed PRs never", async t => {
+test("a ready PR is told with the open blocking cards of its item and the cards its merge row waits on; red and main line likewise; drafts, conflicts, pending and no checks never; unnamed PRs only as orphans", async t => {
   const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
   const states = [repoState(WB, {
     main: { branch: "claude/first-board", commit: "m1", checks: { state: "failure", failed: ["e2e"] } },
@@ -268,7 +268,8 @@ test("a ready PR is told with the open blocking cards of its item and the cards 
       pull(31, { draft: true, checks: { state: "failure", failed: ["test"] } }),
     ],
   }), repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", checks: green }, pulls: [pull(5, { base: "main" })] })];
-  const pushes = decide(s, r, states);
+  // Unnamed PRs are told as orphans, tested below; here the ready, red and main line pushes.
+  const pushes = decide(s, r, states).filter(p => p.event !== "pr-orphan");
   assert.deepEqual(pushes.map(p => [p.event, p.fields.number ?? p.fields.branch]), [["main-red", "claude/first-board"], ["pr-ready", 23], ["pr-red", 25], ["pr-ready", 5]], "#27 has no repository in the item's text, and #99 sits outside the section");
   const [main, ready, red, other] = pushes;
   assert.deepEqual(main!.fields, { repo: WB, project: "wf-board", branch: "claude/first-board", commit: "m1", failed: ["e2e"], url: `https://github.com/${WB}/commit/m1` });
@@ -308,6 +309,18 @@ test("approval cards are found through the rows the merge row follows, and a row
   const s = store.snapshot(), [ready] = decide(s, rules(s), [repoState(WB, { pulls: [pull(23)] })]);
   const approval = (ready!.fields.items as Array<{ approval: Array<{ card: string }> }>)[0]!.approval;
   assert.deepEqual(approval.map(a => a.card).sort(), ["approval", "late"]);
+});
+
+test("an open PR no open item names is told as an orphan, drafts too, once per PR; the PRs an open item names are not", async t => {
+  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
+  const pushes = decide(s, r, [repoState(WB, { pulls: [pull(23), pull(99), pull(100, { draft: true }), pull(101, { checks: { state: "failure", failed: ["test"] } })] })]);
+  assert.deepEqual(pushes.map(p => [p.event, p.fields.number]), [["pr-ready", 23], ["pr-orphan", 99], ["pr-orphan", 100], ["pr-orphan", 101]], "a red unnamed PR is an orphan, not a pr-red");
+  const [, orphan, draft] = pushes;
+  assert.deepEqual(orphan!.fields, { repo: WB, number: 99, project: "wf-board", title: "PR 99", url: `https://github.com/${WB}/pull/99`, draft: false });
+  assert.equal(draft!.fields.draft, true, "a draft is told too: its checks are the engineer's, its being open is not");
+  assert.equal(orphan!.key, `pr-orphan ${WB}#99`);
+  assert.equal(pushKey("pr-orphan", { repo: WB, number: 99, commit: "c1" }), pushKey("pr-orphan", { repo: WB, number: 99, commit: "c2" }), "once per PR, whatever commit it has");
+  assert.notEqual(pushKey("pr-orphan", { repo: WB, number: 99 }), pushKey("pr-red", { repo: WB, number: 99, commit: "c99" }));
 });
 
 test("a merge row is done when GitHub reports merged every PR that counts for it, and not before", async t => {

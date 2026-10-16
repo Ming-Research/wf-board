@@ -1579,7 +1579,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Six kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Seven kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1590,12 +1590,11 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), and one whose checks all passed and which can merge
-  (`pr-ready`).
+  (`pr-ready`), and an open pull request no open item names (`pr-orphan`).
 
 Not pushed: a new request, a blocking card (the owner is told on the Mac and in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: a pull request on no open item (wf-board item
-watch-github, its second row) and a slow board operation (item slow-op-alerts).
+table and one row below: a slow board operation (item slow-op-alerts).
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1617,6 +1616,7 @@ the forms the server sends:
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
+| `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -1749,15 +1749,20 @@ to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
 runs no pull request check for a pull request with a merge conflict, and a
 commit nobody has run yet looks the same.
 
-**The three pushes.** All are about non-draft pull requests; a draft's checks
-are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say
+**The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
+requests; a draft's checks are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say
 success and GitHub reports the pull request mergeable (not conflicting; still
 being computed counts as not yet). A pull request whose checks are pending or
 none, or that cannot merge, is told nothing. `main-red`: the checks of the main
 line's newest commit say failure. A push is made once per key: `main-red` per
-branch and commit, `pr-red` and `pr-ready` per pull request and newest commit.
+branch and commit, `pr-red` and `pr-ready` per pull request and newest commit, `pr-orphan` per pull request.
 The keys of the events still kept are read again at start, so a restart neither
 repeats a push nor loses one (an event the log dropped may be told once more).
+
+**The orphan push.** `pr-orphan`: an open pull request, draft or not, that no open
+item's 改动 section names. It is told once per pull request, whatever its checks
+and commits, so a draft nobody names is told too: nothing else reports it. A pull
+request an item names later is no orphan any more; the push is not taken back.
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
