@@ -714,10 +714,15 @@ stored priority.
 An open work item is *needed* when an unpaused root needs it: it is an unpaused
 root, or an unpaused, open item holds an item row (owned or shared) for it and
 is itself needed. An untriaged request is not work yet and is neither a root
-here nor needs anything. So backlog work, what hangs under it, paused work and
-work only a paused root needs are not needed; a root that is not started and
-has no stored priority is. The same walk decides which items 缺难度 asks a
-difficulty for and which items `brief` lists as startable.
+here nor needs anything, and a record is not work. So backlog work is needed
+only when a needed item other than its record also holds a row for it, and
+what hangs under backlog work only when that work is needed; paused work and
+work reached only through paused items are not needed; a root that is not
+started and has no stored priority is. The same walk
+decides which items 缺难度 asks a difficulty for and which items `brief`
+lists as startable. Whether an item is needed is part of the summary
+`affectedItems` compares, because a pause can change it for an item whose
+priority and checks stay the same.
 
 Effectively paused work keeps its own stored or derived displayed priority,
 but passes none through its item rows. Only open, not-paused dependents

@@ -13,6 +13,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Snapshot } from "../src/model.ts";
+import { board, author, at } from "./helpers.ts";
 
 const MINUTE = 60_000;
 /** Deterministic, so a failure replays. */
@@ -37,16 +38,25 @@ async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () =
   const tick = () => iso(time += Math.floor(rand() * 5 * MINUTE));
   const state = () => (["todo", "doing", "done"] as const)[Math.floor(rand() * 3)]!;
   const step = (id: string) => { const st = state(), at = tick(); return { id, text: `step ${id}`, state: st, ...(st === "doing" ? { since: at } : st === "done" ? { doneAt: at } : {}) }; };
+  // 缺难度 depends on what an unpaused root needs, so the board mixes rated and unrated items: the middle layer is rated, the
+  // first grandchild of each too. The third root of each project stores no priority, so pausing it moves no priority below
+  // it, and it waits on a rated item of the other project that owns an unrated one: the only change a pause makes there is
+  // whether that item is needed, which no check of the rated item shows.
+  for (const group of projects) {
+    const dep = `${group[0]}dep`, stamp = iso(start), work = { id: "w", text: "step w", state: "todo" }, accept = { id: "accept", text: "passes", state: "todo", accept: true };
+    puts.push({ kind: "item", id: dep, expectRev: null, doc: { title: `Item ${dep}`, group, difficulty: 2, plan: [{ id: `${dep}-leaf`, item: `${dep}-leaf`, own: true }, work, accept], created: stamp, updated: stamp, log: [] } });
+    puts.push({ kind: "item", id: `${dep}-leaf`, expectRev: null, doc: { title: `Item ${dep}-leaf`, group, plan: [work, accept], created: stamp, updated: stamp, log: [] } });
+  }
   for (const group of projects) {
     for (let r = 0; r < 3; r++) {
-      const root = `${group[0]}${r}`, children: string[] = [];
+      const root = `${group[0]}${r}`, children: string[] = [], waitsOn = `${projects.find(name => name !== group)![0]}dep`;
       for (let c = 0; c < 3; c++) {
         const child = `${root}-${c}`, grand = Array.from({ length: Math.floor(rand() * 3) }, (_, g) => `${child}-${g}`);
-        for (const id of grand) puts.push({ kind: "item", id, expectRev: null, doc: { title: `Item ${id}`, group, plan: [step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [{ at: tick(), text: "made" }] } });
-        puts.push({ kind: "item", id: child, expectRev: null, doc: { title: `Item ${child}`, group, plan: [...grand.map(id => ({ id, item: id, own: true })), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
+        for (const id of grand) puts.push({ kind: "item", id, expectRev: null, doc: { title: `Item ${id}`, group, ...(id.endsWith("-0") ? { difficulty: 2 } : {}), plan: [step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [{ at: tick(), text: "made" }] } });
+        puts.push({ kind: "item", id: child, expectRev: null, doc: { title: `Item ${child}`, group, difficulty: 2, plan: [...grand.map(id => ({ id, item: id, own: true })), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
         children.push(child);
       }
-      puts.push({ kind: "item", id: root, expectRev: null, doc: { title: `Root ${root}`, group, priority: (["P0", "P1", "P2"] as const)[r]!, plan: [...children.map(id => ({ id, item: id, own: true })), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
+      puts.push({ kind: "item", id: root, expectRev: null, doc: { title: `Root ${root}`, group, ...(r < 2 ? { priority: (["P0", "P1"] as const)[r]! } : {}), plan: [...children.map(id => ({ id, item: id, own: true })), ...(r === 2 ? [{ id: waitsOn, item: waitsOn, own: false }] : []), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
     }
   }
   await store.commit({ author: "Fixture", message: "Seed", puts });
@@ -115,8 +125,11 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async () => op.postNotice({ author: "Firn", text: "something changed" }),
     async () => op.setTerm({ author: "Firn", term: `词${made++}`, definition: "意思" }),
   ];
+  // The first rounds pause and resume the two roots that store no priority, whatever the seed draws later: nothing below them
+  // changes except whether it is needed, which only 缺难度 on an unrated item shows.
+  const forced = ["W2", "F2"].flatMap(id => [true, false].map(paused => async (s: Snapshot) => op.setPause({ author: "总管", id, paused, ...(paused ? { reason: "wait" } : {}) }) ));
   for (let round = 0; round < 140; round++) {
-    try { await pick(actions)(store.snapshot()); }
+    try { await (forced[round] ?? pick(actions))(store.snapshot()); }
     catch (error) { if (!(error instanceof OpError)) throw error; }
     for (const { change, after } of events.slice(handled)) {
     const before = previous;
@@ -165,6 +178,26 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
   assert.ok(compared > 60, `enough writes compared (${compared})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
+});
+
+test("the affected walk reaches work that a root with no priority stops needing, past a rated item that shows no change", async t => {
+  const { store, op } = await board(t);
+  const work = (title: string, group: string, fields: object, rows: object[] = []) => ({ title, group, plan: [...rows, { id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
+  // R stores no priority, so pausing it moves no priority below it. A is another project's item that only R waits on, and
+  // is rated, so no check of it moves and nothing pauses it. B, owned by A and not rated, is needed only through R.
+  await store.commit({ author: "Fixture", message: "Seed a chain", puts: [
+    { kind: "item", id: "r-root", expectRev: null, doc: work("Root", author, { difficulty: 2 }, [{ id: "r-mid", item: "r-mid", own: false }]) },
+    { kind: "item", id: "r-mid", expectRev: null, doc: work("Middle", "Firn", { difficulty: 2 }, [{ id: "r-leaf", item: "r-leaf", own: true }]) },
+    { kind: "item", id: "r-leaf", expectRev: null, doc: work("Leaf", "Firn", {}) },
+  ] });
+  const before = store.snapshot();
+  await op.setPause({ author: "总管", id: "r-root", paused: true, reason: "wait" });
+  const after = store.snapshot(), rb = rules(before), ra = rules(after);
+  assert.equal(rb.priorityOf("r-leaf"), "", "no priority moves"); assert.equal(ra.isPaused("r-mid"), false, "nothing pauses the middle item");
+  assert.equal(rb.checks("r-leaf").some(c => c.label === "缺难度"), true); assert.equal(ra.checks("r-leaf").some(c => c.label === "缺难度"), false);
+  assert.deepEqual(rb.checks("r-mid"), ra.checks("r-mid"), "the rated middle item shows no change");
+  assert.notEqual(presentationSignature(rb, before.decisions, "r-leaf"), presentationSignature(ra, after.decisions, "r-leaf"), "the leaf paints differently");
+  assert.equal(affectedItems(rb, ra, ["r-root"]).has("r-leaf"), true, "so the page re-signs it now, not at the next full scan");
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {

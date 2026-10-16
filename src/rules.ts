@@ -393,7 +393,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
     return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
-      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isRequest(id), r.checks(id)]);
+      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isRequest(id), r.isNeeded(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
   const examined = new Set<string>(), queue: string[] = [];

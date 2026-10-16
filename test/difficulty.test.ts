@@ -157,6 +157,64 @@ test("work that only a paused root needs raises no 缺难度, and work a second,
   assert.equal(rules(store.snapshot()).isNeeded("dep"), true);
 });
 
+test("缺难度 follows the whole chain from an unpaused root, two levels down, by owned rows and by shared rows", async t => {
+  const b = await withArchitect(t); const { store, op, unrated } = b;
+  const rate = (id: string) => op.setDifficulty({ author: architect, id, difficulty: 2, reason: "评中间一层" });
+  const pause = (id: string, paused: boolean) => op.setPause({ author: coordinator, id, paused, ...(paused ? { reason: "先放一放" } : {}) });
+  // Every item is made as a root, leaf first, and the chain is joined afterwards: the keys and the creation order both run
+  // against the chain, so a walk that visits items once in that order would stop after one level.
+  const root = (key: string, group = author) => op.createItem({ author: group, key, group, priority: "P2", title: `链上的 ${key}`, accept: "通过" });
+  for (const key of ["x-own-leaf", "y-own-mid", "z-own-root", "x-leaf", "y-mid", "z-top"]) await root(key, key === "y-mid" ? "Firn" : author);
+  for (const key of ["z-own-root", "y-own-mid", "z-top", "y-mid"]) await rate(key);
+  // Owned chain: root → mid (rated) → leaf (not rated).
+  await op.moveItem({ author, id: "x-own-leaf", owner: "y-own-mid" }); await op.moveItem({ author, id: "y-own-mid", owner: "z-own-root" });
+  assert.equal(missing(b, "x-own-leaf").length, 1, "the leaf asks for a difficulty two levels below a root");
+  assert.equal(missing(b, "y-own-mid").length, 0, "the rated middle asks for none");
+  // Shared chain across projects (a shared row inside one project needs an owner): the pause is not inherited by ownership, so only the walk from the roots can decide.
+  await op.setPlan({ author: "Firn", id: "y-mid", row: { item: "x-leaf", own: false, after: [] } });
+  await op.setPlan({ author, id: "z-top", row: { item: "y-mid", own: false, after: [] } });
+  assert.equal(rules(store.snapshot()).isRoot("y-mid"), false); assert.equal(rules(store.snapshot()).isRoot("x-leaf"), false);
+  assert.equal(missing(b, "x-leaf").length, 1);
+  for (const [top, mid, leaf] of [["z-own-root", "y-own-mid", "x-own-leaf"], ["z-top", "y-mid", "x-leaf"]] as const) {
+    await pause(top, true);
+    assert.equal(missing(b, leaf).length, 0, `${leaf}: the root is paused`); assert.equal(rules(store.snapshot()).isNeeded(leaf), false);
+    await pause(top, false);
+    assert.equal(missing(b, leaf).length, 1, `${leaf}: the root is back`);
+    await pause(mid, true);
+    assert.equal(missing(b, leaf).length, 0, `${leaf}: the middle item is paused`); assert.equal(rules(store.snapshot()).isNeeded(leaf), false);
+    await pause(mid, false);
+    assert.equal(missing(b, leaf).length, 1, `${leaf}: the middle item is back`);
+  }
+});
+
+test("a root with no stored priority is still a root: it and the work under it raise 缺难度, and pausing it stops that", async t => {
+  const b = await withArchitect(t); const { store, op } = b;
+  // create_item refuses a root without a priority; a root loses its priority by gaining and losing a dependent, so write the document as that leaves it.
+  await store.commit({ author: "Fixture", message: "Seed a root without priority", puts: [{ kind: "item", id: "bare", expectRev: null, doc: { title: "没写优先级的根", group: author, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: at } }] });
+  await op.createItem({ author, key: "bare-kid", owner: "bare", title: "底下", accept: "通过" });
+  const r = rules(store.snapshot());
+  assert.equal(r.isRoot("bare"), true); assert.equal(r.priorityOf("bare"), "", "it has no priority");
+  assert.deepEqual([r.isNeeded("bare"), r.isNeeded("bare-kid")], [true, true]);
+  assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [1, 1]);
+  await op.setPause({ author: coordinator, id: "bare", paused: true, reason: "先放一放" });
+  assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [0, 0]);
+});
+
+test("backlog work is needed once a needed item other than its record holds a row for it, and what hangs under it with it", async t => {
+  const b = await withArchitect(t); const { store, op, unrated } = b;
+  await op.createItem({ author, key: "rec", group: author, record: true, title: "待选池" });
+  await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
+  await op.createItem({ author, key: "under", owner: "backlog", title: "待选下面的", accept: "通过" });
+  await unrated("root");
+  const needed = () => ["backlog", "under"].map(id => rules(store.snapshot()).isNeeded(id));
+  assert.deepEqual(needed(), [false, false], "only its record holds it");
+  await op.setPlan({ author, id: "root", row: { item: "backlog", own: false, after: [] } });
+  assert.deepEqual(needed(), [true, true], "a root also waits on it, and what hangs under it follows");
+  assert.deepEqual([missing(b, "backlog").length, missing(b, "under").length], [1, 1]);
+  await op.setPause({ author: coordinator, id: "root", paused: true, reason: "先放一放" });
+  assert.deepEqual(needed(), [false, false], "the root that held it is paused");
+});
+
 test("brief lists as startable only items rated 1–5, and carries the difficulty on its rows", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await unrated("u"); await unrated("one"); await unrated("five"); await unrated("mine");
