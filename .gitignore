@@ -1,3 +1,10 @@
 node_modules
 web/dist/
 *.log
+scratch/
+.scratch/
+*.bak
+.env*
+!.env.example
+!.env.sample
+!.env.template

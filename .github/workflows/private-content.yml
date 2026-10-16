@@ -1,0 +1,30 @@
+name: private-content
+# Fails when a push to main or a pull request adds private content (scripts/check-private-content.ts). It is its own
+# workflow so that it runs without installing anything and apart from the test jobs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: private-content-${{ github.ref }}
+  # A push to main is checked from the commit before it, so a run for a push is never replaced by the next one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The check reads the commits and the diff between the base and the head of the change.
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Check what the change adds
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: node scripts/check-private-content.ts

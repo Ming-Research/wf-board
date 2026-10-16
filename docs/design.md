@@ -2127,6 +2127,8 @@ the board.
   presentation changed is among the affected items.
 - CI on GitHub-hosted runners for every push, with the write-path benchmark
   as a step that reports and never fails the run.
+- A private-content check on every pull request and every push to `main`
+  (below), in its own workflow.
 
 ### Three test layers
 
@@ -2213,3 +2215,40 @@ the bug. A fix is reversed by undoing its commit's hunks, or, where later
 work rewrote the lines around it, by a targeted edit that removes just the
 fix. A witness whose edits no longer match the current file fails and is
 updated or retired on purpose.
+
+### Private content check
+
+The repository is public, so what a commit adds stays visible in its history.
+`scripts/check-private-content.ts` (rules in `scripts/private-content-rules.ts`,
+workflow `.github/workflows/private-content.yml`) fails a pull request or a
+push to `main` that adds one of these kinds of thing:
+
+- an address on a private network, a user's home directory other than a
+  placeholder or the CI runner's, an SSH key file or option, a private key
+  block, a token in a known format, a secret assigned as a quoted literal, a
+  path to a key or token file, a link to the old board page;
+- a path under a directory named `scratch` or `.scratch`, a `.bak` file, an
+  environment file (`.env`, but not a template such as `.env.example`).
+
+It reads only what the change adds: the added lines of the diff between the
+base and the head, the added or changed paths, the messages of the commits in
+the range and, for a pull request, its title and body. What the history
+already holds is not read again, and author lines are not read (an author
+address carries the machine's host name, which is not private). It prints the
+rule and the place, never the matched text, because the log of a public
+repository is public. A line that must hold such a value on purpose, a
+fixture, carries the text `private-content: allow` and is skipped; the marker
+shows in review. `test/check-private-content.test.ts` holds, for every rule,
+a line it must flag and a line it must let through. `.gitignore` keeps the
+working-material paths out of `git add` in the first place.
+
+The rules are general and carry none of the owner's real values. The check
+runs in a public repository, so a list of real values (an address, a user
+name, a key file name) kept in the workflow would sit in the repository, and
+one kept in a secret could not be shown in the log; kinds of thing (any
+private address, any home directory) are public by nature. The cost is a miss
+for a private value that fits no kind, such as a host name or a person's
+name, which review still has to catch. Alternative: a secret list of real
+values for exact matches (`PRIVATE_EXTRA`); left out because it needs a secret
+kept current and nothing has needed it. The check is not a required status
+check; requiring it is a repository setting the owner decides.
