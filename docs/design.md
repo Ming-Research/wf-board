@@ -246,9 +246,9 @@ restart.
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
-  on the Mac, with the same notification code as the daemon, only when the
-  daemon does not answer, since then no daemon can push. The job only undoes
-  what it did to a checkout that is still the one it moved: on the main line's
+  on the Mac by a macOS notification, only when the daemon does not answer, since
+  then no daemon can push. The job only undoes what it did to a checkout that is
+  still the one it moved: on the main line's
   branch, without local changes to tracked files, and on the commit where the
   job last left it (the record keeps that, also while a move is under way), even
   when someone else's hand lands on the deploy's target or the commit to go back
@@ -707,8 +707,9 @@ log:
   line or the end of the text, fenced code excepted) is one block, whatever
   blank lines it holds. An item's head shows each one folded under its title;
   the sections a reader opened stay open across re-renders, kept in this
-  browser only. Added or changed blocks carry no colour of their own (the item's blue
-  line says it holds something new, and `n` lands on the first of them);
+  browser only. Added or changed blocks, a card's changed question included, carry a
+  blue line on their left, like the one beside an item's headline, and no colour of
+  their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
@@ -1920,7 +1921,7 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below).
 
-Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
+Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
 
@@ -1995,25 +1996,18 @@ neither repeats an alert nor forgets one.
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
-no-receipt alert. Each notice goes two ways:
-
-- To every open board page, as an `owner` event on `/api/events`, carrying the
-  title, the message and a target (`{kind: "card" | "item", key}`, or none).
-  The page shows a browser notification (Notification API) when the owner
-  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
-  title when the notice has no target, so open tabs show one notice for the
-  same card or item. A click focuses the page and opens the card or item,
-  or the home view when there is no target. The event is live only: a page that
-  connects later gets nothing from before its connection, and a reconnect does
-  not replay. A closed page gets nothing; Web Push is not used.
-- To the Mac, through `osascript` with a fixed script that shows a macOS
-  notification, passing the title (`挡事的卡 · <project>`) and message
-  (`<question>（挡住：<blocks>）`) as arguments, not spliced into the script, so
-  any text is safe. The daemon is a LaunchAgent in the owner's login session,
-  which is what lets it show one; a failed run is tried again, up to three
-  times, and then logged. Script Editor must be allowed to notify in System
-  Settings. This route goes once the browser route is checked (wf-board item
-  chrome-notify).
+no-receipt alert. Each notice goes to every open board page, as an `owner`
+event on `/api/events`, carrying the title, the message and a target
+(`{kind: "card" | "item", key}`, or none). The page shows a browser
+notification (Notification API) when the owner allowed notices. The
+notification's tag is `card:<key>` or `item:<key>`, or the title when the notice
+has no target, so open tabs show one notice for the same card or item. A click
+focuses the page and opens the card or item, or the home view when there is no
+target. The event is live only: a page that connects later gets nothing from
+before its connection, and a reconnect does not replay. A closed page gets
+nothing; Web Push is not used. The daemon shows no macOS notification of its own;
+the deploy job's notice on the Mac (section 4, Deploying) is the only one that runs `osascript`,
+and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
 or card of its oldest unanswered event: a `stalled` event's item, or the item or
@@ -2272,9 +2266,9 @@ both tools, the marker in the item schema, the inbox rules and the page's inbox
 are removed. Items in older commits can still hold the marker. Past commits
 are read as written (`show`, `diff`), and `comparisonSnapshot`, which
 validates a past commit's whole board with the current schema, drops the
-marker first and no other unknown field. Live data holding a marker is refused
-at start with the schema's own error, so nothing is read and silently
-discarded.
+marker, together with the other retired fields listed in the plan conversion
+section, and no other unknown field. Live data holding a marker is refused at
+start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
@@ -2448,6 +2442,15 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
+Older versions can also hold fields that the current schema does not accept:
+an item's area short name (`short`) and session (`agent`) and a project's
+session names (`agents`), which data-repository migration commits removed,
+and the removed inbox's `request` marker on an item. Normalizing a historical
+whole board omits exactly these named fields, in every shape, before the
+schema for that shape reads it, so those versions stay comparable. `show` and
+`diff` still return them as written. Any other unknown field still refuses the
+old version instead of being dropped, and current reads and writes stay
+strict.
 
 **Phase 1 mapping, item by item.**
 

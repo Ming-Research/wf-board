@@ -243,7 +243,11 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .plan-row.newbar::before { left: -6px; top: 0; bottom: 0; }
 .log-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
 .rich { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; font-size: 14px; min-width: 0; }
-.rich > .chg-add { display: flex; flex-direction: column; gap: 6px; }
+.rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }
+/* A changed block gets a blue line on its left, like the one beside an item's headline, and no colour of its own. A changed
+   card question is a flex item of the card's heading, and gets the same line. */
+.card h3 > .chg-add { position: relative; }
+.rich > .chg-add::before, .card h3 > .chg-add::before { content: ""; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 .rich p { margin: 0; }
 .rich ul, .rich ol { margin: 0; padding-left: 1.5em; display: flex; flex-direction: column; gap: 2px; }
 .rich .sub { font-family: var(--font-head); font-weight: 700; font-size: 14px; margin-top: 4px; }

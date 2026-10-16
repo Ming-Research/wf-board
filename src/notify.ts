@@ -10,7 +10,7 @@ export const NOTIFY_SCRIPT = ["on run argv", 'display notification (item 2 of ar
 /** osascript's argument list for one notification. `--` ends its option parsing, so a message that starts with "-" is an argument. */
 export const notifyArgs = (title: string, message: string): string[] => [...NOTIFY_SCRIPT.flatMap(line => ["-e", line]), "--", title, message.slice(0, 240)];
 
-/** A macOS notification through osascript. The daemon runs as a LaunchAgent in the owner's login session, which is what lets it
+/** A macOS notification through osascript. The deploy job runs as a LaunchAgent in the owner's login session, which is what lets it
  * show one. A failed run is tried again; after the last attempt the error goes to the log. */
 export function macNotify(options: { command?: string; attempts?: number; retryMs?: number; timeoutMs?: number } = {}): (title: string, message: string) => Promise<void> {
   const { command = "osascript", attempts = 3, retryMs = 5000, timeoutMs = 10_000 } = options;

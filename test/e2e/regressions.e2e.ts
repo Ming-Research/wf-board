@@ -10,7 +10,7 @@ import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { checkReload, checkWriting, checkLoop } from "./update.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -42,6 +42,38 @@ const ARROW_OLD = `    const all = stops();
 // `copy`: the check rebuilds the page it is served (test/e2e/update.ts), so the current page is served from a copy of the page directory.
 interface Witness { bug: string; reverts: Revert[]; family: string; copy?: true; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
+  {
+    bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
+    // The blue bar rule that marks a changed body block and a changed card question; removing it leaves both with no mark.
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed card questions lost their mark while changed body blocks kept theirs (fixed in head-change-bar)",
+    // The bar rule without its card selector: the body block keeps its line, the card question loses it.
+    reverts: [{ file: "web/index.html", edit: "the card question's blue bar", find: ", .card h3 > .chg-add::before {", replace: " {" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks' blue bar lost its place beside the block (fixed in head-change-bar)",
+    // Without absolute placement the bar falls into the block's flow, where it has no height and no place at the left.
+    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; ", replace: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; " }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks took a background colour (fixed in head-change-bar)",
+    // A background on the changed block itself is the green mark the owner removed.
+    reverts: [{ file: "web/index.html", edit: "a background on changed blocks", find: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }", replace: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; background: #e3f2e6; }" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
   {
     bug: "saving a comment on a card folded its comment list and hid the 发送 button (fixed in 1ecc074)",
     // The fix's two lines, removed where they stand now: opening a comment and saving one unfold the list.
