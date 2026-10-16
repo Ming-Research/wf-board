@@ -2340,14 +2340,15 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
-Older versions can also hold fields that no schema accepts any more: an
-item's area short name (`short`) and session (`agent`) and a project's session
-names (`agents`), which data-repository migration commits removed, and the
-removed inbox's `request` marker on an item. Normalizing a historical whole
-board omits exactly these named fields, in every shape, before the schema for
-that shape reads it, so those versions stay comparable. `show` and `diff` still
-return them as written. Any other unknown field still refuses the old version
-instead of being dropped, and current reads and writes stay strict.
+Older versions can also hold fields that the current schema does not accept:
+an item's area short name (`short`) and session (`agent`) and a project's
+session names (`agents`), which data-repository migration commits removed,
+and the removed inbox's `request` marker on an item. Normalizing a historical
+whole board omits exactly these named fields, in every shape, before the
+schema for that shape reads it, so those versions stay comparable. `show` and
+`diff` still return them as written. Any other unknown field still refuses the
+old version instead of being dropped, and current reads and writes stay
+strict.
 
 **Phase 1 mapping, item by item.**
 

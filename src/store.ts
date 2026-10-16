@@ -137,7 +137,7 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   return result.data;
 }
 
-/** Fields that past versions hold and no schema accepts any more, by where they sat. Whole-board historical comparison
+/** Fields that past versions hold and the current schema does not accept, by where they sat. Whole-board historical comparison
  * omits exactly these before parsing, in every shape, so an old version holding them still normalizes: show() and diff()
  * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
  * strict. Data-repository migration commits removed item `short` ("Drop area short names at the owner's request"), item
