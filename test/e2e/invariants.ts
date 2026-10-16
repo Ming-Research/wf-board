@@ -494,6 +494,7 @@ async function sectionViolations(bp: BoardPage, r: Rules, items: Snapshot["items
   const drawn = await bp.page.evaluate(() => [...document.querySelectorAll("#areas .group")].flatMap(group => [...group.querySelectorAll(":scope > ul.tree.lines")].flatMap(list =>
     [...list.querySelectorAll(":scope > li > .item")].map(e => ({ id: e.id.slice(3), under: !!list.previousElementSibling?.classList.contains("shared-sep") })))));
   const ended = (id: string) => /^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  console.log("TEMP-TRACE", JSON.stringify(drawn.filter(d => d.id.startsWith("kes-")).slice(0, 8)));
   // Two families, so a witness can name the direction it breaks: an item left above the line when it should be under, or under it when it should not.
   return drawn.filter(d => d.under !== r.dependents(d.id).some(w => !ended(w.id) && items[w.id]?.group !== items[d.id]?.group))
     .map(d => d.under ? `shared-section-under: ${d.id} is drawn under 被其他项目依赖, but no open item of another project depends on it`
