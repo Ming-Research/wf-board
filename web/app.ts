@@ -2334,7 +2334,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     next.set(id,current);
     if (!previous) return;
     if (previous.signature !== signature) scope.add("item:"+id);
-    if (previous.shown !== current.shown) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
+    if (previous.shown !== current.shown) { console.log("TRACE-SHOWN "+id+" "+previous.group+" "+current.group); scope.add("group:"+previous.group); scope.add("group:"+current.group); }
     // A top-level item changes between its project's own roots and the roots other projects depend on: that is the group's layout.
     if (previous.shared !== current.shared) scope.add("group:"+current.group);
   }
@@ -2412,6 +2412,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function renderPage(scope:Set<string>) {
     presentationScopes(scope);
+    console.log("TRACE-SCOPE "+[...scope].filter(k => !/^(item|head|tree|card|notes):/.test(k)).join(" ")+" items:"+[...scope].filter(k => k.startsWith("item:")).length+" has-kes1:"+scope.has("item:kes-1"));
     // Live updates rebuild the page; a text field being typed in keeps its focus and caret.
     const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
     const keep = a && a.id && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") ? { id: a.id, start: a.selectionStart, end: a.selectionEnd } : null;
