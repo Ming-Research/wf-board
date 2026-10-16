@@ -5,19 +5,8 @@
 // priority comes from dependents, and a parent listing its own cancelled sub-item
 // is not flagged. The verbatim test oracle preserves the old rules independently
 // of this implementation.
-import type { Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./legacy-model.ts";
+import type { Item, ItemStep, ItemStepInput, ItemTarget, ItemTargetInput, Note, Priority, Snapshot, Status } from "./legacy-model.ts";
 import { legacyPriority, rankOfPriority } from "./plan-legacy-priority.ts";
-
-/** Project list order is page order; only the coordinator may place a project after another. */
-export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
-  if (author !== "总管") throw new Error("after: only the coordinator project 总管 may reorder projects");
-  if (after === name) throw new Error("after: a project cannot follow itself");
-  const project = projects.find(p => p.name === name);
-  if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
-  const remaining = projects.filter(p => p.name !== name), index = remaining.findIndex(p => p.name === after);
-  if (index < 0) throw new Error(`after ${after}: choose a configured project with projects`);
-  return [...remaining.slice(0, index + 1), project, ...remaining.slice(index + 1)];
-}
 
 /** Only an unsent note can still be edited or deleted by its author. */
 export function draftEditable(note: Pick<Note, "state"> | undefined): boolean { return note?.state === "draft"; }

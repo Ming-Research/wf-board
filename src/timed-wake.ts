@@ -1,11 +1,9 @@
+import { ARCHITECT, ARCHITECT_SESSION } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import type { Store } from "./store.ts";
-import { ARCHITECT_SESSION } from "./wake.ts";
 import type { TimedMark } from "./wake.ts";
 
-/** The project whose items the timed wake lists whole, so the architect can check each against what is really going on. */
-export const ARCHITECT_PROJECT = "Architect";
 /** At most this many entries in each list; the rest are counted, never silently left out. */
 export const TIMED_LIST_LIMIT = 60;
 
@@ -59,7 +57,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   return {
     since: from,
     changed: capped(changed),
-    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT_PROJECT && r.statusOf(id) === "wip" && doing(id)).map(entry)),
-    architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT_PROJECT).map(entry)),
+    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.statusOf(id) === "wip" && doing(id)).map(entry)),
+    architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT).map(entry)),
   };
 }

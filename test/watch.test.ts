@@ -10,7 +10,7 @@ import { Wake } from "../src/wake.ts";
 import { GithubWatch, changesSection, decide, mergeRows, mergedRows, pushKey, watchedPulls } from "../src/watch.ts";
 import { ghSource, parseResponse, queryText, summarize } from "../src/github.ts";
 import type { Checks, Gh, GithubSource, PullState, RepoState } from "../src/github.ts";
-import { server, wakeSocket } from "./helpers.ts";
+import { asArchitect, server, wakeSocket } from "./helpers.ts";
 
 // --- GitHub's answer -------------------------------------------------------------------------------------------------------------
 // The shapes below are those of `gh api graphql` with the query from queryText, read from a live answer for a private repository.
@@ -107,10 +107,10 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   ] } });
   const op = ops(store), author = "wf-board";
   const accept = { id: "accept", accept: true as const, text: "验收通过", state: "todo" as const };
-  await op.createItem({ author, key: "watch", group: author, priority: "P1", title: "Watch it", head: heads.watch, accept: "验收通过" });
-  await op.createItem({ author, key: "second", group: author, priority: "P1", title: "Second", head: heads.second, accept: "验收通过" });
-  await op.createItem({ author, key: "gone", group: author, priority: "P1", title: "Cancelled", head: heads.gone, accept: "验收通过" });
-  await op.setStatus({ author, id: "gone", status: "cancelled", log: "not needed" });
+  await op.createItem({ ...asArchitect, key: "watch", group: author, priority: "P1", title: "Watch it", head: heads.watch, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "second", group: author, priority: "P1", title: "Second", head: heads.second, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "gone", group: author, priority: "P1", title: "Cancelled", head: heads.gone, accept: "验收通过" });
+  await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "not needed" });
   const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, background: "见正文", options: [{ key: "A", text: "是" }, { key: "B", text: "否" }], ...(blocks ? { blocks } : {}) });
   await card("approval", "合入停着"); await card("stop", "发布停着"); await card("plain"); await card("settled", "旧的");
   await op.ruleCard({ author, key: "settled", choice: "A", ruling: "同意" });
