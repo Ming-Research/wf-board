@@ -176,8 +176,7 @@ restart.
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
-  on the Mac, with the same notification code as the daemon, only when the
-  daemon does not answer, since then no daemon can push. The job only undoes
+  on the Mac by a macOS notification, only when the daemon does not answer, since then no daemon can push. The job only undoes
   what it did to a checkout that is still the one it moved: on the main line's
   branch, without local changes to tracked files, and on the commit where the
   job last left it (the record keeps that, also while a move is under way), even
@@ -1815,7 +1814,7 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below).
 
-Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
+Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below: a slow board operation (item slow-op-alerts).
 
@@ -1887,25 +1886,18 @@ neither repeats an alert nor forgets one.
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
-no-receipt alert. Each notice goes two ways:
-
-- To every open board page, as an `owner` event on `/api/events`, carrying the
-  title, the message and a target (`{kind: "card" | "item", key}`, or none).
-  The page shows a browser notification (Notification API) when the owner
-  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
-  title when the notice has no target, so open tabs show one notice for the
-  same card or item. A click focuses the page and opens the card or item,
-  or the home view when there is no target. The event is live only: a page that
-  connects later gets nothing from before its connection, and a reconnect does
-  not replay. A closed page gets nothing; Web Push is not used.
-- To the Mac, through `osascript` with a fixed script that shows a macOS
-  notification, passing the title (`挡事的卡 · <project>`) and message
-  (`<question>（挡住：<blocks>）`) as arguments, not spliced into the script, so
-  any text is safe. The daemon is a LaunchAgent in the owner's login session,
-  which is what lets it show one; a failed run is tried again, up to three
-  times, and then logged. Script Editor must be allowed to notify in System
-  Settings. This route goes once the browser route is checked (wf-board item
-  chrome-notify).
+no-receipt alert. Each notice goes to every open board page, as an `owner`
+event on `/api/events`, carrying the title, the message and a target
+(`{kind: "card" | "item", key}`, or none). The page shows a browser
+notification (Notification API) when the owner allowed notices. The
+notification's tag is `card:<key>` or `item:<key>`, or the title when the notice
+has no target, so open tabs show one notice for the same card or item. A click
+focuses the page and opens the card or item, or the home view when there is no
+target. The event is live only: a page that connects later gets nothing from
+before its connection, and a reconnect does not replay. A closed page gets
+nothing; Web Push is not used. The daemon shows no macOS notification of its own;
+the deploy job's notice on the Mac (above) is the only one that runs `osascript`,
+and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
 or card of its oldest unanswered event: a `stalled` event's item, or the item or
