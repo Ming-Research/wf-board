@@ -164,6 +164,14 @@ restart.
   outside the board's data directory, which only the daemon writes; one that
   does not parse is set aside as `deploy.json.corrupt` and the job starts empty.
 
+Known limit: if a reset itself fails (a stale `index.lock`) and someone then
+repairs the board in place by hand, or launchd restarts the daemon, before the
+next run, finishing the rollback can leave a half deploy: the daemon runs the
+target's code while the checkout and the page are back on the last healthy
+commit. The failure push is the signal; the architect checks the checkout and
+the daemon by hand. Recording the daemon's process id in the pending record
+would close it; that was judged not worth the added recovery logic.
+
 **Why a job beside the daemon.** The daemon cannot restart itself onto new code
 and also answer for whether that code runs; a deploy that fails must not depend
 on the new code to go back. If the job's own script is what breaks, a deploy
