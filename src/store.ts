@@ -146,7 +146,7 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
 const retiredFields = { item: ["short", "agent", "request"], project: ["agents"] } as const;
 function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => ![...keys, "unlisted"].includes(key)));
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 }
 function withoutRetiredFields(path: string, doc: unknown): unknown {
   if (path.startsWith("items/")) return without(doc, retiredFields.item);
@@ -1097,7 +1097,7 @@ export class Store {
     const path = docPath(kind, id);
     const hash = await this.resolveCommit(commit);
     // A past version is returned as written: it may hold fields a later schema dropped, which history must still show.
-    return structuredClone(await this.readAt(path, hash));
+    return structuredClone(withoutRetiredFields(path, await this.readAt(path, hash)));
   }
 
   /** Compare like formats directly. Only an endpoint spanning the schema change
