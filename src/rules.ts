@@ -551,7 +551,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     if (!target) return { state: "waiting", dropped: false, excluded: false };
     if (target.record) return { state: "resolved", dropped: false, excluded: row.own };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
-    const state = status === "done" || dropped ? "resolved" : status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
+    const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
     return { state, dropped, excluded: dropped, paused: status === "paused" };
   }
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
@@ -739,7 +739,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
     for (const { row, state } of planRows(id)) {
       if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
-      else if ("item" in row && state === "progress") down(row.item);
+      else if ("item" in row && row.own && state === "progress") down(row.item);
     }
     return [...out];
   }
