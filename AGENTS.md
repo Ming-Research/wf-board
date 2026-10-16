@@ -73,7 +73,6 @@ matches what the artifact board offered.
   (`test/web.test.ts`), fast but without CSS or layout; the page in a real
   browser on a generated board (`test/e2e`). A page bug gets its test in the
   lowest layer that can see it.
-- Run them locally only when small and needed; CI is the record.
 - Every page fix gets a real-browser regression witness
   (`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
   reversed.
