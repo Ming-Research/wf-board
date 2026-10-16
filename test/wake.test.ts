@@ -519,7 +519,7 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   await refused("no event", fields);
   await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes });
   await refused("an extra field", { ...deployed, extra: 1 });
-  await refused("another kind's fields", { event, ...deployFailed, event: event });
+  await refused("another kind's fields", { ...deployFailed, event });
   await refused("oversize", { ...deployFailed, reason: "x".repeat(20 * 1024) });
   for (const body of [[], null, "deployed", 5]) await refused(`body ${JSON.stringify(body)}`, body);
   const raw = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not json" });

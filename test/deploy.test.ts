@@ -109,7 +109,7 @@ test("a long list of changes is cut and the rest counted", async t => {
   const r = await repos(t), { w, deploy } = world(r);
   for (let i = 0; i < 23; i++) r.land({ [`docs/n${i}.md`]: String(i) }, `change ${i}`);
   await deploy();
-  const changes = (w.posts[0] as { changes: unknown[] }).changes;
+  const changes = w.posts[0]!.changes as unknown[];
   assert.equal(changes.length, 21);
   assert.deepEqual(changes[20], { more: 3 });
 });
@@ -170,7 +170,7 @@ test("a daemon that does not come up is rolled back: the code and the page go ba
   assert.deepEqual(w.posts, [{ event: "deployFailed", version: bad, running: r.first, reason: w.posts[0]!.reason }]);
   assert.match(String(w.posts[0]!.reason), /not healthy/);
   assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, r.first]);
-  assert.deepEqual(w.notices, [], "the owner is told only when the board cannot be brought back");
+  assert.equal(w.notices.length, 0, "the owner is told only when the board cannot be brought back");
 
   // The failed commit is not tried again, and nothing more is pushed, while the remote has nothing newer.
   const restarts = w.restarts;
@@ -213,7 +213,7 @@ test("when going back fails too the owner is told on the Mac, and the push says 
   assert.equal(w.restarts, 2);
   assert.equal(w.notices.length, 1);
   assert.equal(w.notices[0]![0], "看板起不来");
-  assert.match(w.notices[0]![1], new RegExp(`${bad.slice(0, 7)}.*${r.first.slice(0, 7)}`));
+  assert.match(w.notices[0]![1]!, new RegExp(`${bad.slice(0, 7)}.*${r.first.slice(0, 7)}`));
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", bad, null]]);
   assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, undefined], "nothing is recorded healthy when nothing was");
   assert.equal(await deploy(), "skipped", "and the failed commit is not tried again");
@@ -303,7 +303,7 @@ test("a push the daemon does not take is kept and sent first on the next run", a
   w.daemon.takes = false;
   const sha = r.land({ "docs/design.md": "new" }, "docs");
   assert.equal(await deploy(), "deployed");
-  assert.deepEqual(w.posts, []);
+  assert.equal(w.posts.length, 0);
   assert.equal(w.saved.outbox.length, 1, "kept in the state file");
   assert.equal(await deploy(), "current");
   assert.equal(w.saved.outbox.length, 1, "still kept while the daemon does not take it");
