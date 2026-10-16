@@ -44,10 +44,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");

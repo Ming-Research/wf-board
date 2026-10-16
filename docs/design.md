@@ -284,6 +284,24 @@ restart.
   page files, which it reads from disk on each request. Any other path restarts.
   A daemon that is down at the deploy is restarted whatever changed, since a
   deploy leaves the board up.
+- Pages open in the owner's browser are replaced after the deploy, and the job
+  does nothing for it. The page's version is a hash of the two files the daemon
+  serves, `web/index.html` and `web/dist/app.js` (`src/page-version.ts`): it
+  changes exactly when a page loaded now would differ from one loaded before, so
+  a deploy of docs or tests changes nothing for an open page, and a rebuilt page
+  changes it with no restart. `GET /` fills the version into the page's own text
+  (the `page-version` meta tag), and `GET /api/events` opens with a `page` event
+  that carries the version on disk at that moment, to that stream alone. When a
+  deploy ends, the `deployed` push (`deployFailed` after a rollback) arrives at
+  `POST /api/wake`; the daemon then reads the page files again and, when the
+  version differs from the last one it told, sends a `page` event to every open
+  page. The pages already open are told only then, never between the job's merge
+  and its build, where the two files do not agree yet: a page that connects in
+  that gap is told the version it sees, and is told again when the deploy ends.
+  A page that sees another version than its own reloads (section 7, Updating the
+  page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
+  the pages that connect afterwards, not the open ones: restarting the daemon
+  tells them too, since their streams reconnect.
 - The restart is `launchctl kickstart -k` on the daemon's own label, never a
   kill by process name. The daemon is healthy when launchd reports a process
   other than the one before, `/health` answers, and 5 seconds later the same
@@ -343,6 +361,13 @@ target's code while the checkout and the page are back on the last healthy
 commit. The failure push is the signal; the architect checks the checkout and
 the daemon by hand. Recording the daemon's process id in the pending record
 would close it; that was judged not worth the added recovery logic.
+
+**Why the page's version is a hash of its files.** A commit id would change on
+every deploy, and every open page would reload for a change to docs or tests. A
+page that asked the daemon for its version on a timer would wait up to a period
+for the new one and add a timer to every open page. The job reaches the daemon
+only through `POST /api/wake`, which it already uses when a deploy ends, so the
+hash needs no new route and no change to the job.
 
 **Why a job beside the daemon.** The daemon cannot restart itself onto new code
 and also answer for whether that code runs; a deploy that fails must not depend
@@ -733,9 +758,15 @@ log:
   (reason 建条目时评). `changes` shows every change
   of difficulty; unread shows a changed level but not a first rating (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
-  check and is not listed as startable (`brief.todo`); a work item rated
-  `architect` raises no check and is not listed either, since the architect
-  schedules its own items itself. Only the architect clears 缺难度.
+  check only when the rating is the only thing left before it can be
+  dispatched: the item is todo, and one of its ready steps (every step before
+  it done) is a todo text step with no `waits` text. A step that is another
+  item or a card, such as an unfinished study sub-item, is not such a step, so
+  the item raises no check until that sub-item is done. A blocked item, or
+  one with a step in progress, raises none either. Work is not listed as
+  startable (`brief.todo`) without a rating; a work item rated `architect`
+  raises no check and is not listed either, since the architect schedules its
+  own items itself. Only the architect clears 缺难度.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -1078,8 +1109,8 @@ only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
 started and has no stored priority is. The same walk
-decides which items 缺难度 asks a difficulty for and which items `brief`
-lists as startable. Whether an item is needed is part of the summary
+decides which items 缺难度 asks a difficulty for (with the state and next-step
+conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
 priority and checks stay the same.
 
@@ -1141,7 +1172,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1912,6 +1943,32 @@ level, and whether that someone is working, waiting or has gone quiet.
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
 
+### Updating the page
+
+The page's live updates carry data, never code, so a page left open through a
+deploy would run the old page until it was reloaded by hand. The daemon says
+which version of the page it serves in a `page` event on `/api/events`: when a
+stream opens, and when a deploy has changed the page files (section 4,
+Deploying). The page knows the version it was served as from the `page-version`
+meta tag that `GET /` fills in. A page served without a version (the bundle was
+being built) never acts on an announcement. The same version changes nothing.
+
+Another version makes the page reload itself (`web/update.ts`):
+
+- At once, unless the owner is writing: a comment box open, a comment typed and
+  not saved (also after Esc, which keeps the text), a saved draft being edited,
+  or a request to the server in flight. Then a line 「看板已更新」 shows at the
+  top, and the page reloads when the writing is done; it looks again every half
+  second. Drafts saved but not yet sent are on the server and do not hold the
+  reload.
+- Before the reload the page keeps in `sessionStorage` where the list and the
+  detail were scrolled, and the page that follows scrolls them back once it is
+  drawn (a position older than 30 seconds is ignored). The selected item, the
+  folds, the open comment lists and the filters are in `localStorage` already.
+- A reload toward a version that left the page on another version less than a
+  minute ago is not repeated: the line asks for a reload by hand. Without this,
+  a page and a daemon that disagree about the version would reload without end.
+
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
@@ -1983,7 +2040,9 @@ back. Only a kind the table marks `external` is taken (`deployed` and
 Another kind, a field set that is not exactly the kind's, a body that is not a
 JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
 Host and Origin rules are those of every other write, so only a program on this
-machine can ask.
+machine can ask. A `deployed` or `deployFailed` push also makes the daemon read the
+page files again and tell the open pages if their version changed (section 4,
+Deploying).
 
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all

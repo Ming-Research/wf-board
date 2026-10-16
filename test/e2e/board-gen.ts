@@ -248,7 +248,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   for (const it of roots) it.priority = r.pick(["P0", "P1", "P1", "P2"]);
   for (const it of order) if (it.record) it.priority = undefined;
 
-  // Rated like the real board: most work 1–5, a tenth 「架构师做」, a tenth unrated (which raises 缺难度). Taken from the
+  // Rated like the real board: most work 1–5, a tenth 「架构师做」, a tenth unrated (which raises 缺难度 when its rating is the next thing). Taken from the
   // item's index, not the random stream, so the rest of the board stays as it was.
   const difficultyOf = (it: ItemDraft) => it.record || it.index % 10 === 4 ? {} : { difficulty: it.index % 10 === 9 ? "architect" : 1 + it.index % 5 };
   const itemDoc = (it: ItemDraft): Record<string, unknown> => {

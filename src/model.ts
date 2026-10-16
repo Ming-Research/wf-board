@@ -228,7 +228,7 @@ export const Item = z.object({
    * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
    */
   tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
-  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists. */
+  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
