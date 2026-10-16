@@ -138,7 +138,8 @@ test("缺难度 is raised only for work an unpaused root needs, and not for a re
   assert.equal(rules(store.snapshot()).isNeeded("own"), false);
   // The exemptions end with their cause.
   await op.setPause({ ...asArchitect, id: "own", paused: false });
-  assert.equal(missing(b, "own").length, 1, "a root that is not started counts, whatever its priority"); assert.equal(missing(b, "child").length, 1);
+  // The root's next step is its unfinished child, so only the child asks for a rating.
+  assert.equal(missing(b, "own").length, 0, "a root whose next step is an unfinished sub-item asks for none"); assert.equal(missing(b, "child").length, 1);
 });
 
 test("work that only a paused root needs raises no 缺难度, and work a second, unpaused root needs does", async t => {
@@ -194,9 +195,34 @@ test("a root with no stored priority is still a root: it and the work under it r
   const r = rules(store.snapshot());
   assert.equal(r.isRoot("bare"), true); assert.equal(r.priorityOf("bare"), "", "it has no priority");
   assert.deepEqual([r.isNeeded("bare"), r.isNeeded("bare-kid")], [true, true]);
-  assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [1, 1]);
+  assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [0, 1], "bare's next step is bare-kid, so only bare-kid asks");
   await op.setPause({ ...asArchitect, id: "bare", paused: true, reason: "先放一放" });
   assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [0, 0]);
+});
+
+test("缺难度 waits while the next step is an unfinished sub-item, and comes back when that sub-item is done", async t => {
+  const b = await withArchitect(t); const { store, op, unrated } = b;
+  // A study: the root's next step is the owned sub-item, which the study agent does before any rating is due.
+  await unrated("study-root"); await unrated("study", { owner: "study-root", group: undefined, priority: undefined });
+  assert.equal(missing(b, "study-root").length, 0, "the next step is the sub-item, not an own step");
+  assert.equal(missing(b, "study").length, 1, "the sub-item itself asks for its rating");
+  await op.setPlan({ author, id: "study", row: { id: "accept", accept: true, text: "通过", state: "done" } });
+  assert.equal(rules(store.snapshot()).statusOf("study-root"), "todo");
+  assert.equal(missing(b, "study-root").length, 1, "once the sub-item is done, the root's own step is next and it asks");
+});
+
+test("缺难度 waits while the next step waits on another item, and while the next step's text says it waits", async t => {
+  const b = await withArchitect(t); const { store, op, unrated } = b;
+  await unrated("dep"); await unrated("waiter");
+  // Put the shared row to dep first, so the acceptance step after it is not ready and the item is blocked.
+  await store.commit({ author, message: "Seed a waiter", puts: [{ kind: "item", id: "waiter", expectRev: store.snapshot().items.waiter!.rev, doc: { title: "等别的条目的", group: author, priority: "P2", plan: [{ id: "dep", item: "dep", own: false, after: [] }, { id: "accept", accept: true, text: "通过", state: "todo" }], updated: at, head: "**完成条件**：通过" } }] });
+  assert.equal(rules(store.snapshot()).statusOf("waiter"), "blocked");
+  assert.equal(missing(b, "waiter").length, 0, "the next step waits on dep, so the rating is not what holds it");
+  assert.equal(missing(b, "dep").length, 1, "dep itself asks, as an unpaused root needs it");
+  // A todo step whose waits text says it waits is no next step either.
+  await unrated("texty");
+  await op.setPlan({ author, id: "texty", row: { id: "accept", accept: true, text: "通过", state: "todo", waits: "等 Firn 的结果" } });
+  assert.equal(missing(b, "texty").length, 0, "its next step's text says it waits, so the item is not startable apart from the rating");
 });
 
 test("backlog work is needed once a needed item other than its record holds a row for it, and what hangs under it with it", async t => {
@@ -209,7 +235,7 @@ test("backlog work is needed once a needed item other than its record holds a ro
   assert.deepEqual(needed(), [false, false], "only its record holds it");
   await op.setPlan({ author, id: "root", row: { item: "backlog", own: false, after: [] } });
   assert.deepEqual(needed(), [true, true], "a root also waits on it, and what hangs under it follows");
-  assert.deepEqual([missing(b, "backlog").length, missing(b, "under").length], [1, 1]);
+  assert.deepEqual([missing(b, "backlog").length, missing(b, "under").length], [0, 1], "backlog's next step is under, so only under asks");
   await op.setPause({ ...asArchitect, id: "root", paused: true, reason: "先放一放" });
   assert.deepEqual(needed(), [false, false], "the root that held it is paused");
 });
