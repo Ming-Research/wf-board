@@ -711,7 +711,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     writeCard: a => run(a, async (s, at) => {
       const item = ownedItem(s, a.item, a.author, "item");
       if (/[\r\n]/.test(a.question)) throw new OpError("question: write the question on one line; the grounds belong in the item's head");
-      const given = parse(z.array(z.object({ text: z.string().min(1), recommended: z.boolean().optional() }).strict()).min(1).max(26), a.options);
+      if (!a.options.length) throw new OpError("options: give at least one option name; fix and call again");
+      const given = parse(z.array(z.object({ text: z.string().min(1), recommended: z.boolean().optional() }).strict()).max(26), a.options);
       given.forEach((o, i) => {
         if (/[\r\n]/.test(o.text) || [...o.text.replace(/\s/g, "")].length > OPTION_MAX_CHARS) throw new OpError(`options.${i}.text: an option is a name of at most ${OPTION_MAX_CHARS} characters (spaces not counted) on one line; put what it does and why in the item's head`);
       });

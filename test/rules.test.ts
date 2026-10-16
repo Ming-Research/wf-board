@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, WAITS_TEXT_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -15,21 +15,23 @@ function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string
   return {
     board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), glossaries: {}, owner: {},
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
-    decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
+    decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
   };
 }
 const texts = (s: Snapshot, id: string) => rules(s).checks(id).map(c => c.text);
 
-test("cards belong to decision.item and sort by order, regardless of status", () => {
-  const r = rules(snapshot({ a: {}, b: {} }, {
-    later: { item: "a", order: 2 }, ruled: { item: "a", order: -1, status: "ruled" },
-    withtree: { item: "a", status: "withtree" }, elsewhere: { item: "b", status: "elsewhere" },
+test("cards belong to decision.item and follow its plan, then the cards with no row, regardless of status", () => {
+  const r = rules(snapshot({ a: { plan: workPlan([card("second"), card("first"), card("other")]) }, b: { plan: workPlan([card("withdrawn")]) } }, {
+    first: { item: "a", status: "ruled" }, second: { item: "a" }, other: { item: "b" },
+    withdrawn: { item: "b", status: "withdrawn" }, orphan: { item: "a" },
   }));
-  assert.deepEqual(r.cardsOf("a"), ["ruled", "withtree", "later"]);
-  assert.deepEqual(r.cardsOf("b"), ["elsewhere"]);
+  // The row `other` in a's plan names a card of b, so it is not a's card; `orphan` has no row and comes last.
+  assert.deepEqual(r.cardsOf("a"), ["second", "first", "orphan"]);
+  assert.deepEqual(r.cardsOf("b"), ["withdrawn", "other"]);
   assert.equal(r.needsOwner("a"), true);
-  assert.equal(r.needsOwner("b"), false);
+  assert.equal(r.needsOwner("b"), true);
+  assert.equal(rules(snapshot({ b: { plan: workPlan([card("withdrawn")]) } }, { withdrawn: { item: "b", status: "withdrawn" } })).needsOwner("b"), false, "a withdrawn card waits for no one");
 });
 
 test("asks require an exact page answer prefix and a sent or done note on the item", () => {
@@ -45,10 +47,10 @@ test("asks require an exact page answer prefix and a sent or done note on the it
   assert.equal(rules(snapshot({ a: {} })).needsOwner("a"), false);
 });
 
-test("open cards wait for a sent/done choice; comments and drafts do not answer", () => {
-  for (const status of ["open", "ruled", "withtree", "elsewhere"] as const) for (const state of ["draft", "sent", "done"] as const) {
+test("an open card waits for the owner whatever notes it has; a closed card does not", () => {
+  for (const status of ["open", "ruled", "withdrawn"] as const) for (const state of ["draft", "sent", "done"] as const) {
     const r = rules(snapshot({ a: {} }, { q: { item: "a", status } }, { n: { target: "q:q", kind: "choice", state } }));
-    assert.equal(r.needsOwner("a"), status === "open" && state === "draft", `${status}/${state}`);
+    assert.equal(r.needsOwner("a"), status === "open", `${status}/${state}`);
   }
   const r = rules(snapshot({ a: { ask: { text: "merge" } } }, { q: { item: "a" } }, { n: { target: "q:q", kind: "comment" } }));
   assert.equal(r.needsOwner("a"), true);
@@ -234,13 +236,13 @@ test("unpaused shared P0 dependents flag conflicts on paused targets and still g
   assert.equal(rules(s).checks("paused").some(check => check.label === "暂停冲突"), false);
 });
 
-test("cards and missing targets wait, and a sent choice does not resolve an open card row", () => {
+test("cards and missing targets wait, and only closing the card resolves its row", () => {
   const s = snapshot({ waiter: { plan: workPlan([card("q")]) }, missing: { plan: workPlan([shared("gone")]) }, missingCard: { plan: workPlan([card("gone-card")]) } }, { q: { item: "waiter" } }, { choice: { target: "q:q", kind: "choice", state: "sent" } });
   const r = rules(s);
-  assert.equal(r.cardWaiting("q"), false); assert.equal(r.statusOf("waiter"), "blocked");
+  assert.equal(r.cardWaiting("q"), true, "a choice note on an open card does not close it"); assert.equal(r.statusOf("waiter"), "blocked");
   for (const id of ["missing", "missingCard"]) { assert.equal(r.statusOf(id), "blocked"); assert.equal(r.depsOf(id)[0]!.open, true); assert.equal(r.depsOf(id)[0]!.missing, true); }
   assert.deepEqual(r.cardDependents("q"), [{ id: "waiter" }]);
-  for (const status of ["ruled", "withtree", "elsewhere"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo"); }
+  for (const status of ["ruled", "withdrawn"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo"); }
 });
 
 test("row ratios exclude dropped steps, cancelled owned work and owned records, while shared records count", () => {
@@ -307,7 +309,7 @@ test("only-acceptance and placeholder checks inspect every acceptance scenario",
 });
 
 test("priority flows across owned and shared item rows, including across projects, but not card rows", () => {
-  const s = snapshot({ far: { group: "Second", priority: "P2" }, mid: { plan: workPlan([shared("far")]) }, root: { priority: "P1", plan: workPlan([own("mid")]) }, urgent: { priority: "P0", plan: workPlan([shared("far"), card("q")]) }, host: {} }, { q: { item: "host" } });
+  const s = snapshot({ far: { group: "Second", priority: "P2" }, mid: { plan: workPlan([shared("far")]) }, root: { priority: "P1", plan: workPlan([own("mid")]) }, urgent: { priority: "P0", plan: workPlan([shared("far"), card("q")]) }, host: {} }, { q: { item: "urgent" } });
   const r = rules(s);
   assert.equal(r.priorityOf("mid"), "P1"); assert.equal(r.priorityOf("far"), "P0"); assert.equal(r.priorityOf("host"), "P2");
   assert.equal(r.isRoot("mid"), false); assert.equal(r.isRoot("far"), false); assert.equal(r.isRoot("root"), true);
@@ -461,9 +463,9 @@ test("a doing item's clock counts its own changes and its owned items in progres
   const changes: Array<(s: Snapshot) => void> = [
     s => { s.items.quiet!.updated = timeAt(2.5); },
     s => { s.items.quiet!.log.push({ at: timeAt(2.5), text: "Progress" }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2.5), rev: 1 }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", options: [{ key: "A", text: "Proceed" }], status: "open", updated: timeAt(2.5), rev: 1 }); },
     s => { s.notes.note = Note.parse({ target: "it:quiet", kind: "comment", text: "Progress", at: timeAt(2.5), state: "sent", rev: 1 }); },
-    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", background: "Evidence", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2.5), state: "done", rev: 1 }); },
+    s => { s.decisions.card = Decision.parse({ item: "quiet", question: "Decision", options: [{ key: "A", text: "Proceed" }], status: "open", updated: T0, rev: 1 }); s.notes.note = Note.parse({ target: "q:card", kind: "comment", text: "Progress", at: T0, repliedAt: timeAt(2.5), state: "done", rev: 1 }); },
     s => { s.activity!.items.quiet = timeAt(2.5); },
   ];
   for (const change of changes) { const s = activeBoard(); assert.equal(hasStalled(s), true); change(s); assert.equal(hasStalled(s), false); }
@@ -665,4 +667,47 @@ test("status target memoization never caches a cycle fallback as a target result
     assert.equal(r.statusOf(first), "wip");
     for (const id of ["a", "b", "outside"]) assert.equal(r.statusOf(id), "wip", `${first} must not poison ${id}`);
   }
+});
+
+test("a line holding only [[q:key]] places that card; a token in a sentence, a fenced line and a repeat place nothing more", () => {
+  assert.equal(cardMarker("[[q:first]]"), "first");
+  assert.equal(cardMarker("  [[q:first]]  "), "first");
+  assert.equal(cardMarker("see [[q:first]]"), undefined);
+  assert.equal(cardMarker("[[it:first]]"), undefined);
+  assert.equal(cardMarker("- [[q:first]]"), undefined);
+  assert.deepEqual(placedCards("Why.\n\n[[q:b]]\n\nThen [[q:no]] here\n```\n[[q:fenced]]\n```\n[[q:a]]\n[[q:b]]\r\n"), ["b", "a"]);
+  assert.deepEqual(placedCards(undefined), []);
+});
+
+test("an open card its item's head does not place gets one check; a closed card, or a placed one, none", () => {
+  const plan = workPlan([card("open"), card("done")]);
+  const s = snapshot({ a: { plan } }, { open: { item: "a" }, done: { item: "a", status: "ruled" } });
+  assert.deepEqual(rules(s).checks("a").filter(c => c.label === CARD_UNPLACED_LABEL).map(c => c.target), [{ kind: "card", id: "open" }]);
+  assert.match(texts(s, "a").join("\n"), /\[\[q:open\]\]/);
+  s.items.a = Item.parse({ ...s.items.a!, head: "The question comes here.\n\n[[q:open]]" });
+  assert.deepEqual(rules(s).checks("a").filter(c => c.label === CARD_UNPLACED_LABEL), []);
+  s.items.a = Item.parse({ ...s.items.a!, head: "Inside a sentence [[q:open]] is only a link." });
+  assert.equal(rules(s).checks("a").filter(c => c.label === CARD_UNPLACED_LABEL).length, 1);
+  s.decisions.open = Decision.parse({ ...s.decisions.open!, status: "withdrawn" });
+  assert.equal(rules(s).checks("a").filter(c => c.label === CARD_UNPLACED_LABEL).length, 0);
+});
+
+test("a card and its row that disagree get a check on the item: no row, or a row for another item's card", () => {
+  const s = snapshot({ a: { plan: workPlan([card("foreign")]) }, b: {} }, { foreign: { item: "b", status: "ruled" }, rowless: { item: "a", status: "ruled" } });
+  const mismatches = (id: string) => rules(s).checks(id).filter(c => c.label === CARD_MISMATCH_LABEL).map(c => c.text);
+  assert.deepEqual(mismatches("a"), ["卡和计划对不上：rowless 没有计划行；foreign 属于条目 b"]);
+  assert.deepEqual(mismatches("b"), ["卡和计划对不上：foreign 没有计划行"]);
+  s.items.a = Item.parse({ ...s.items.a!, plan: workPlan([card("rowless")]) });
+  s.items.b = Item.parse({ ...s.items.b!, plan: workPlan([card("foreign")]) });
+  assert.deepEqual([mismatches("a"), mismatches("b")], [[], []]);
+});
+
+test("the presentation of an item changes when a card row's pick changes", () => {
+  const s = snapshot({ a: { plan: workPlan([card("q")]) } }, { q: { item: "a", options: [{ key: "A", text: "First" }, { key: "B", text: "Second" }] } });
+  const open = presentationSignature(rules(s), s.decisions, "a");
+  s.decisions.q = Decision.parse({ ...s.decisions.q!, status: "ruled", choice: "A" });
+  const first = presentationSignature(rules(s), s.decisions, "a");
+  s.decisions.q = Decision.parse({ ...s.decisions.q!, choice: "B" });
+  const second = presentationSignature(rules(s), s.decisions, "a");
+  assert.equal(new Set([open, first, second]).size, 3);
 });

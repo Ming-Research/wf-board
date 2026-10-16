@@ -63,7 +63,7 @@ test("setDraft validates runtime inputs and choices before mutating any draft", 
     assert.deepEqual(store.snapshot(), before);
   }
   const card = before.decisions.choice!;
-  await store.commit({ author, message: "Rule card while draft remains", puts: [{ kind: "decision", id: "choice", expectRev: card.rev, doc: { ...card, status: "ruled", ruling: "A", ruledAt: later } }] });
+  await store.commit({ author, message: "Rule card while draft remains", puts: [{ kind: "decision", id: "choice", expectRev: card.rev, doc: { ...card, status: "ruled", choice: "A", ruledAt: later } }] });
   assert.deepEqual((await own.setDraft({ target: "q:choice", kind: "choice", on: false, text: "" })).deleted, [first.id]);
 });
 
@@ -74,12 +74,13 @@ test("setDraft preserves sent and done answers and follows each control's availa
     const draft = await own.createNote({ target, kind, text: "answer", ...(kind === "choice" ? { choice: "A" } : {}) });
     await own.send();
     const snapshot = store.snapshot();
-    await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", ...(kind === "choice" ? { choice: "B" } : {}) }), /already sent/);
+    // A sent pick closes its card, so a second pick is refused for the card; the other answers are refused as sent.
+    await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", ...(kind === "choice" ? { choice: "B" } : {}) }), kind === "choice" ? /open decision card/ : /already sent/);
     assert.deepEqual(store.snapshot(), snapshot);
     await op.replyNote({ author, id: draft.id, reply: "handled" });
     if (kind === "choice") {
       const handled = store.snapshot();
-      await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", choice: "B" }), /already sent/);
+      await assert.rejects(own.setDraft({ target, kind, on: true, text: "new answer", choice: "B" }), /open decision card/);
       assert.deepEqual(store.snapshot(), handled);
     } else {
       const replacement = await own.setDraft({ target, kind, on: true, text: "new request answer" });
@@ -497,4 +498,40 @@ test("document reads compact across internal logs without making them unread aga
 test("owner reading schema rejects removed archive state", () => {
   assert.deepEqual(OwnerState.parse({}), {});
   assert.equal(OwnerState.safeParse({ archived: {} }).success, false);
+});
+
+test("sending a pick closes its card in the same commit with the chosen option and the send time", async t => {
+  const { store } = await board(t), sentAt = "2026-10-12T05:06:07.000Z", own = ownerOps(store, () => sentAt);
+  const pick = await own.createNote({ target: "q:choice", kind: "choice", text: "选 B", choice: "B" });
+  const comment = await own.createNote({ target: "it:a", kind: "comment", text: "Also this" });
+  const before = store.snapshot(), changes: Array<Parameters<Parameters<typeof store.onChange>[0]>[0]> = [];
+  t.after(store.onChange(change => changes.push(change)));
+  await own.send();
+  const after = store.snapshot();
+  assert.equal(changes.length, 1, "one commit holds the notes and the card");
+  assert.deepEqual(changes[0]!.changed.map(c => `${c.kind}:${c.id}`).sort(), [`decision:choice`, `note:${comment.id}`, `note:${pick.id}`].sort());
+  assert.deepEqual({ status: after.decisions.choice!.status, choice: after.decisions.choice!.choice, ruledAt: after.decisions.choice!.ruledAt, updated: after.decisions.choice!.updated }, { status: "ruled", choice: "B", ruledAt: sentAt, updated: sentAt });
+  assert.deepEqual(after.decisions.choice!.options, before.decisions.choice!.options, "the options stay as written");
+  assert.equal(after.notes[pick.id]!.sentAt, sentAt);
+  assert.equal(rules(after).cardWaiting("choice"), false, "the card no longer waits");
+  assert.equal(rules(after).planRows("a").find(row => row.row.id === "choice")!.state, "resolved", "its plan row is done");
+});
+
+test("a pick on a card that is no longer open is still sent and leaves the card as it was", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const pick = await own.createNote({ target: "q:choice", kind: "choice", text: "选 A", choice: "A" });
+  const card = store.snapshot().decisions.choice!;
+  // The architect ruled it in chat after the owner chose on the page but before sending.
+  await store.commit({ author, message: "Rule in chat", puts: [{ kind: "decision", id: "choice", expectRev: card.rev, doc: { ...card, status: "ruled", choice: "B", ruledAt: "2026-10-11T03:00:00Z" } }] });
+  const ruled = store.snapshot().decisions.choice!;
+  assert.deepEqual((await own.send()).sent.map(n => n.id), [pick.id]);
+  assert.deepEqual(store.snapshot().decisions.choice, ruled);
+  assert.equal(store.snapshot().notes[pick.id]!.state, "sent");
+});
+
+test("comments and explain requests on an open card do not close it", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  await own.createNote({ target: "q:choice", kind: "comment", text: "Question" });
+  await own.send();
+  assert.equal(store.snapshot().decisions.choice!.status, "open");
 });
