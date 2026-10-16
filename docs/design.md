@@ -119,7 +119,7 @@ A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) a
 with the network down, never ends. In the queue, it held every write: in CI with a fake
 ssh, a write made 300 ms into a push waited 3.4 s when each connection took 1.2 s,
 8.8 s when each took 3 s, and did not finish within 20 s when a connection never
-answered. Writes have a 2 s limit (item slow-op-alerts), so the queue must not wait
+answered. Writes have a 2 s limit (Time limits), so the queue must not wait
 for the network.
 
 **The rule: no task of the write queue waits for the network.** Every git command that
@@ -175,6 +175,59 @@ sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
 
+**Time limits.** Every page request and every MCP tool call is timed at the one
+place each passes through: the request handler in `src/http.ts`, and `register` in
+`src/mcp.ts`, which every tool goes through. One line of the service log says what
+ran, how it ended and for how many milliseconds: `GET /api/snapshot 200 62 ms`,
+`tool context ok 12 ms` (`error` for a tool that failed). A request whose
+connection closed before the answer went out ends as `closed`, with the time it
+had run, so a page that gave up waiting is timed too. `SlowOps`
+(`src/slow-ops.ts`) does the timing, the logging and the telling.
+
+An operation has a class, and is slow when it takes more than its class's limit:
+
+| Class | Limit | Operations |
+|---|---|---|
+| read | 1 s | `GET /`, `/app.js`, `/health`, `/api/snapshot`; every tool that reads the board except those of the next row |
+| history | 10 s | `GET /api/unread`, `GET /api/step`; the tools `changes`, `history` and `diff`, which read the git history |
+| write | 2 s | `POST /api/notes`, `/api/draft`, `/api/send`, `/api/read`, `/api/wake`; `DELETE /api/notes/<id>`; every tool that changes the board |
+
+`POST /api/read`, the owner's mark-read key, has a limit of its own, 0.3 s, since
+the owner waits on it. The key that jumps to the next unread change sends no
+request, so it has none here. The event stream (`GET /api/events`) and the
+requests of the MCP transport (`/mcp`) last as long as their client does, and a
+tool call is timed as its tool: they are logged with their time and never held
+to a limit. The wake socket (an upgrade, not a request) is not timed. The log
+line of a request carries its path without the query, and the operation's name
+(what the one-hour rule and the push go by) drops ids: a path the board does not
+serve is counted under one name, `<method> (unknown route)`, and
+`DELETE /api/notes/<id>` under `DELETE /api/notes/:id`, so the names stay a small
+fixed set. The routes the board serves are that one list (`PAGE_ROUTES` in
+`src/slow-ops.ts`, the table above with its streams): the router answers 404 to a
+request that matches no row of it, so a route cannot be served without a class,
+and the classes are never out of step with the routes.
+
+An operation over its limit is logged on a `slow` warning line with a summary of
+its parameters, and told to the architect as a `slow-op` push (section 8): its
+name, its time, its limit and the summary. One operation is told once an hour;
+its later slow calls are only logged, so one slow stretch does not become a string
+of pushes. The hour is counted from the pushes the board keeps, so a restart does
+not tell again. The summary holds no body text: numbers and the names of things
+(an id, a project, a kind, a filter, a search query cut at 60 characters) are
+written out, any other string shows only as its length (`head(2100 chars)`), and
+a list as its count.
+
+The 1, 2 and 10 seconds are starting values, not measurements. After a day on the
+live board, the times in the log show which ordinary operations exceed them; each
+is then looked at to see whether it is slow, and the number changed or the
+slowness fixed. No write waits for a push to the remote: the push runs beside the
+write queue (Storage).
+
+**Why at the entries.** The request handler and `register` are the places every
+operation already passes. A timer inside each tool or route would miss the next
+one someone adds. Logging alone leaves the architect to read the log; a timed
+probe of `/health` from outside cannot say which operation was slow.
+
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
@@ -220,9 +273,9 @@ restart.
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
-  on the Mac, with the same notification code as the daemon, only when the
-  daemon does not answer, since then no daemon can push. The job only undoes
-  what it did to a checkout that is still the one it moved: on the main line's
+  on the Mac by a macOS notification, only when the daemon does not answer, since
+  then no daemon can push. The job only undoes what it did to a checkout that is
+  still the one it moved: on the main line's
   branch, without local changes to tracked files, and on the commit where the
   job last left it (the record keeps that, also while a move is under way), even
   when someone else's hand lands on the deploy's target or the commit to go back
@@ -674,8 +727,9 @@ log:
   line or the end of the text, fenced code excepted) is one block, whatever
   blank lines it holds. An item's head shows each one folded under its title;
   the sections a reader opened stay open across re-renders, kept in this
-  browser only. Added or changed blocks carry no colour of their own (the item's blue
-  line says it holds something new, and `n` lands on the first of them);
+  browser only. Added or changed blocks, a card's changed question included, carry a
+  blue line on their left, like the one beside an item's headline, and no colour of
+  their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
@@ -1840,7 +1894,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Eleven kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Twelve kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1852,6 +1906,8 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+- a page request or tool call that took longer than its time limit (`slow-op`,
+  section 4, Time limits), once per operation per hour;
 - a remote copy of the board's data that has stayed behind for an hour
   (`backup-behind`; section 4, Storage);
 - what the look at the Actions billing finds (Watching Actions usage, below):
@@ -1861,9 +1917,9 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below).
 
-Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
+Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: a slow board operation (item slow-op-alerts).
+table and one row below.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1895,6 +1951,7 @@ the forms the server sends:
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
+| `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
 | `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
@@ -1934,25 +1991,18 @@ neither repeats an alert nor forgets one.
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
-no-receipt alert. Each notice goes two ways:
-
-- To every open board page, as an `owner` event on `/api/events`, carrying the
-  title, the message and a target (`{kind: "card" | "item", key}`, or none).
-  The page shows a browser notification (Notification API) when the owner
-  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
-  title when the notice has no target, so open tabs show one notice for the
-  same card or item. A click focuses the page and opens the card or item,
-  or the home view when there is no target. The event is live only: a page that
-  connects later gets nothing from before its connection, and a reconnect does
-  not replay. A closed page gets nothing; Web Push is not used.
-- To the Mac, through `osascript` with a fixed script that shows a macOS
-  notification, passing the title (`挡事的卡 · <project>`) and message
-  (`<question>（挡住：<blocks>）`) as arguments, not spliced into the script, so
-  any text is safe. The daemon is a LaunchAgent in the owner's login session,
-  which is what lets it show one; a failed run is tried again, up to three
-  times, and then logged. Script Editor must be allowed to notify in System
-  Settings. This route goes once the browser route is checked (wf-board item
-  chrome-notify).
+no-receipt alert. Each notice goes to every open board page, as an `owner`
+event on `/api/events`, carrying the title, the message and a target
+(`{kind: "card" | "item", key}`, or none). The page shows a browser
+notification (Notification API) when the owner allowed notices. The
+notification's tag is `card:<key>` or `item:<key>`, or the title when the notice
+has no target, so open tabs show one notice for the same card or item. A click
+focuses the page and opens the card or item, or the home view when there is no
+target. The event is live only: a page that connects later gets nothing from
+before its connection, and a reconnect does not replay. A closed page gets
+nothing; Web Push is not used. The daemon shows no macOS notification of its own;
+the deploy job's notice on the Mac (section 4, Deploying) is the only one that runs `osascript`,
+and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
 or card of its oldest unanswered event: a `stalled` event's item, or the item or
@@ -2211,9 +2261,9 @@ both tools, the marker in the item schema, the inbox rules and the page's inbox
 are removed. Items in older commits can still hold the marker. Past commits
 are read as written (`show`, `diff`), and `comparisonSnapshot`, which
 validates a past commit's whole board with the current schema, drops the
-marker first and no other unknown field. Live data holding a marker is refused
-at start with the schema's own error, so nothing is read and silently
-discarded.
+marker, together with the other retired fields listed in the plan conversion
+section, and no other unknown field. Live data holding a marker is refused at
+start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
@@ -2387,6 +2437,15 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
+Older versions can also hold fields that the current schema does not accept:
+an item's area short name (`short`) and session (`agent`) and a project's
+session names (`agents`), which data-repository migration commits removed,
+and the removed inbox's `request` marker on an item. Normalizing a historical
+whole board omits exactly these named fields, in every shape, before the
+schema for that shape reads it, so those versions stay comparable. `show` and
+`diff` still return them as written. Any other unknown field still refuses the
+old version instead of being dropped, and current reads and writes stay
+strict.
 
 **Phase 1 mapping, item by item.**
 

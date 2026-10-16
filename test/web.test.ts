@@ -825,6 +825,27 @@ test("a project lists its own roots first, then a rule and the roots other proje
   assert.equal(descendants(section("Other")).filter(e=>e.className==="shared-sep").length,0,"a project with none shows no rule");
 });
 
+test("a root another project starts to depend on moves under the rule while the page stays open, and back when the dependency goes", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
+  const root=(title:string,group:string,priority:"P0"|"P2"):FixtureItem => ({title,group,priority,updated:at,rev:1,deps:[],links:[],log:[],plan:planWork([planStep("work")])});
+  s.items.own=root("Own root","Project","P2"); s.items.needed=root("Needed root","Project","P2"); s.items.user=root("Other root","Other","P0");
+  const p=await page(s,[]);
+  const section=(g:string) => p.all().find(e=>e.className==="group" && e.dataset.group===g)!;
+  const projectTops=() => descendants(section("Project")).filter(e=>e.id.startsWith("it-") || e.className==="shared-sep").map(e=>e.className==="shared-sep" ? "|" : e.id.slice(3)).filter(k=>["area","own","needed","|"].includes(k));
+  const user=(rows:PlanRow[],rev:number,status?:"cancelled") => ({...nativeFixture({...s,items:{...s.items,user:{...s.items.user!,plan:planWork(rows),...(status ? {status} : {})}}}).items.user!,rev});
+  const write=async (rev:number,rows:PlanRow[],status?:"cancelled") => { await p.change(String(rev).repeat(40),[{kind:"item",id:"user",after:user(rows,rev,status)}]); await p.flush(); };
+  assert.deepEqual(projectTops(),["area","own","needed"],"before: both roots are the project's own");
+  await write(2,[sharedRow("needed")]);
+  assert.deepEqual(projectTops(),["area","own","|","needed"],"the root the other project now waits on sits under the rule, with no reload");
+  // A cancelled waiter no longer needs the root, which is the project's own again; reopened, it needs it again.
+  await write(3,[sharedRow("needed")],"cancelled");
+  assert.deepEqual(projectTops(),["area","own","needed"],"a cancelled waiter does not hold the root under the rule");
+  await write(4,[sharedRow("needed")]);
+  assert.deepEqual(projectTops(),["area","own","|","needed"],"the reopened waiter holds it there again");
+  await write(5,[]);
+  assert.deepEqual(projectTops(),["area","own","needed"],"after the row goes it is the project's own root again, and the rule is gone");
+});
+
 test("project page follows board project list order on load and live reorder, with new projects last", async () => {
   const s = snapshot();
   s.board.projects = [{ name: "Z first" }, ...s.board.projects, { name: "A last" }];
@@ -1076,11 +1097,11 @@ function cssContract(html:string) {
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
   // The owner never asked for a green background on new or changed text and does not want it: .chg-add only marks
-  // where n lands and carries no colour.
-  assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
+  // where n lands and carries no colour; its ::before is the blue bar.
+  assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v)&&!/::before$/.test(v.trim()))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
   // The owner does not want removed content shown, struck through in red or otherwise.
   assert.ok(!/chg-del|title-was/.test(html),"no red deleted-text styling");
-  for (const sel of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
+  for (const sel of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh",".rich > .chg-add",".card h3 > .chg-add"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
   for (const sel of [".waittag",".sbtn.s-block"]) assert.ok(has(sel,/background:\s*var\(--blockwait\)/),sel+" is the filled purple chip");
@@ -1100,7 +1121,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
   await t.test("red deleted text comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-del { text-decoration: line-through; }\n</style>"))); });
   await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
-  for (const selector of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
+  for (const selector of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh",".rich > .chg-add",".card h3 > .chg-add"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
@@ -1156,7 +1177,8 @@ test("added rich blocks retain vertical spacing without extra visual styling", a
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === ".rich > .chg-add");
   assert.ok(rule,"changed rich blocks have their own layout rule");
-  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
+  // position: relative is only the containing block of the blue bar; no colour, border or background is added.
+  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["position: relative","display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
 });
 test("page and read-cursor documentation agree on short detail lines and number-only chips", async t => {
   const doc=await readFile("docs/design.md","utf8");

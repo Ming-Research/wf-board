@@ -9,7 +9,7 @@ import { ops } from "../../src/ops.ts";
 import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -40,6 +40,38 @@ const ARROW_OLD = `    const all = stops();
 `;
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
+  {
+    bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
+    // The blue bar rule that marks a changed body block and a changed card question; removing it leaves both with no mark.
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed card questions lost their mark while changed body blocks kept theirs (fixed in head-change-bar)",
+    // The bar rule without its card selector: the body block keeps its line, the card question loses it.
+    reverts: [{ file: "web/index.html", edit: "the card question's blue bar", find: ", .card h3 > .chg-add::before {", replace: " {" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks' blue bar lost its place beside the block (fixed in head-change-bar)",
+    // Without absolute placement the bar falls into the block's flow, where it has no height and no place at the left.
+    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; ", replace: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; " }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks took a background colour (fixed in head-change-bar)",
+    // A background on the changed block itself is the green mark the owner removed.
+    reverts: [{ file: "web/index.html", edit: "a background on changed blocks", find: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }", replace: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; background: #e3f2e6; }" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
   {
     bug: "saving a comment on a card folded its comment list and hid the 发送 button (fixed in 1ecc074)",
     // The fix's two lines, removed where they stand now: opening a comment and saving one unfold the list.
@@ -156,6 +188,18 @@ const WITNESSES: Witness[] = [
       const sel = await bp.selected();
       return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
     },
+  },
+  {
+    bug: "a root another project began to depend on stayed among its project's own roots until the page was reloaded (owner, 2026-10-15)",
+    // Without the comparison, a change between the project's own roots and the roots other projects depend on repaints no group.
+    reverts: [{ file: "web/app.ts", edit: "an item changing section repaints its group", find: '    if (previous.shared !== current.shared) scope.add("group:"+current.group);\n', replace: "" }], family: "shared-section-above",
+    run: async (bp, b) => checkSharedSection(bp, b),
+  },
+  {
+    bug: "a root stayed under the line for the roots other projects depend on after the shared row to it was removed (review of wf-board#44)",
+    // Only a root that becomes depended on repaints its group; one that stops being depended on does not.
+    reverts: [{ file: "web/app.ts", edit: "only an item moving under the line repaints its group", find: 'if (previous.shared !== current.shared) scope.add("group:"+current.group);', replace: 'if (!previous.shared && current.shared) scope.add("group:"+current.group);' }], family: "shared-section-under",
+    run: async (bp, b) => checkSharedSection(bp, b),
   },
 ];
 

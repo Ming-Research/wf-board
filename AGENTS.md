@@ -41,13 +41,17 @@ matches what the artifact board offered.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
+- `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
+  time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
+  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/wake.ts`: the architect's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
-  `src/timed-wake.ts`: what the half-hourly wake carries; `src/notify.ts`: the
-  owner's notifications on the Mac. The protocol is `docs/design.md`, section 8.
+  `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
+  `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
+  deploy job shows the owner when the board does not answer.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
   `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
   the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.

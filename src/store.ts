@@ -139,6 +139,25 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   return result.data;
 }
 
+/** Fields that past versions hold and the current schema does not accept, by where they sat. Whole-board historical comparison
+ * omits exactly these before parsing, in every shape, so an old version holding them still normalizes: show() and diff()
+ * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
+ * strict. Data-repository migration commits removed item `short` ("Drop area short names at the owner's request"), item
+ * `agent` ("Drop item agents: responsibility moves to each project's configuration") and project `agents` ("Projects
+ * are identified by themselves: drop session names (agents)"); the removed inbox left the item `request` marker. */
+const retiredFields = { item: ["short", "agent", "request"], project: ["agents"] } as const;
+function without(value: unknown, keys: readonly string[]): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+function withoutRetiredFields(path: string, doc: unknown): unknown {
+  if (path.startsWith("items/")) return without(doc, retiredFields.item);
+  if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
+  const { projects } = doc as { projects?: unknown };
+  if (!Array.isArray(projects) || !projects.some(project => without(project, retiredFields.project) !== project)) return doc;
+  return { ...doc, projects: projects.map(project => without(project, retiredFields.project)) };
+}
+
 /** Old records can also carry retired fields; record alone does not identify a format. */
 function retiredItemShape(doc: unknown): boolean {
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
@@ -1100,8 +1119,8 @@ export class Store {
     return cachedPromise(this.compared, hash, comparedSnapshotLimit, async () => {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
-      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
-      const loaded = parsePlanData(raw, hash, true);
+      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = withoutRetiredFields(path, await this.readAt(path, hash));
+      const loaded = parsePlanData(raw, hash);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
         const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
@@ -1211,15 +1230,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-/** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
-function withoutRequestMarker(doc: unknown): unknown {
-  if (!doc || typeof doc !== "object" || Array.isArray(doc) || !Object.hasOwn(doc, "request")) return doc;
-  const { request: _request, ...rest } = doc as Record<string, unknown>;
-  return rest;
-}
-/** `historical`: the data is a past commit's, whose items may hold fields the schema has since dropped; only
- * comparisonSnapshot reads data this way, and the live data stays strictly validated. */
-function parsePlanData(raw: Record<string, unknown>, head: string, historical = false): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
+function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
 
   const legacy=retiredBoardShape(raw["board.yaml"]) || items.some(([,doc])=>retiredItemShape(doc));
@@ -1244,7 +1255,7 @@ function parsePlanData(raw: Record<string, unknown>, head: string, historical = 
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,historical&&!legacy&&collection==="items"?withoutRequestMarker(doc):doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);

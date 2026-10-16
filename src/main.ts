@@ -7,13 +7,13 @@ import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
-import { macNotify } from "./notify.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghBilling } from "./billing.ts";
 import { UsageWatch } from "./usage-watch.ts";
 import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
+import { SlowOps } from "./slow-ops.ts";
 
 async function main() {
   // Every line of the service log carries its time, and the start reports how long each step took.
@@ -30,13 +30,15 @@ async function main() {
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup });
   lap("open store");
   const op = ops(store);
-  // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart; the owner's notifications go through osascript.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
+  // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
   // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the architect at its levels.
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, createMcp: () => createMcpServer({ store, ops: op, wake }) });
+  // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
+  const slow = new SlowOps({ wake });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, createMcp: () => createMcpServer({ store, ops: op, wake, slow }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside

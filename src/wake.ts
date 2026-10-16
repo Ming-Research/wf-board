@@ -1,6 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Notify } from "./notify.ts";
 
 /** Every kind of push the architect's channel carries, in one place: `label` names it in the no-receipt alert, `fields` are
  * the frame's fields besides n, at and event, and `external` marks a kind another process may ask for through POST /api/wake
@@ -14,6 +13,7 @@ export const WAKE_KINDS = {
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"] },
   "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"] },
   "pr-orphan": { label: "PR 没挂在条目上", fields: ["repo", "number", "project", "title", "url", "draft"] },
+  "slow-op": { label: "操作太慢", fields: ["op", "ms", "limitMs", "params"] },
   "backup-behind": { label: "备份落后", fields: ["commits", "lastSuccess", "reason"] },
   "actions-usage": { label: "Actions 用量", fields: ["org", "reason", "level", "month", "day", "used", "included", "today", "budget", "text"] },
   deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], external: true },
@@ -42,8 +42,6 @@ export interface WakeOptions {
   /** Where events, receipts and alerts are kept so numbers continue across a restart; without it they live in memory only. */
   file?: string;
   now?: () => number;
-  /** How the owner is told: a blocking card, and no receipt for `receiptLimitMs`. */
-  notify?: Notify;
   /** Most events kept, and most bytes of them; the oldest go first. */
   retain?: number;
   retainBytes?: number;
@@ -55,7 +53,6 @@ export class Wake {
   readonly receiptLimitMs: number;
   private readonly file?: string;
   private readonly now: () => number;
-  private readonly notify: Notify;
   private readonly retain: number;
   private readonly retainBytes: number;
   private frames: Array<{ frame: WakeFrame; bytes: number }> = [];
@@ -70,7 +67,6 @@ export class Wake {
   constructor(options: WakeOptions = {}) {
     this.file = options.file;
     this.now = options.now ?? Date.now;
-    this.notify = options.notify ?? (() => {});
     this.retain = options.retain ?? 1000;
     this.retainBytes = options.retainBytes ?? 2 * 1024 * 1024;
     this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
@@ -186,10 +182,8 @@ export class Wake {
     this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
-  /** Tell the owner, and tell every listener (the open pages). A failure is logged and never reaches the write that caused it. */
+  /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */
   tell(title: string, message: string, target?: Told["target"]): void {
-    try { void Promise.resolve(this.notify(title, message)).catch(error => console.error("notify failed", error)); }
-    catch (error) { console.error("notify failed", error); }
     const told: Told = target ? { title, message, target } : { title, message };
     for (const listener of this.tellListeners) {
       try { listener(told); }

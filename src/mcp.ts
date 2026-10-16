@@ -9,6 +9,8 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
+import { summarize, toolClass } from "./slow-ops.ts";
+import type { SlowOps } from "./slow-ops.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -109,7 +111,7 @@ const count = (description: string) => z.number().int().nonnegative().describe(d
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: Ops; now?: () => string; wake?: Wake }): McpServer {
+export function createMcpServer({ store, ops, now, wake, slow }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -123,12 +125,16 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     const full = "session" in shape ? shape : { ...shape, session };
     const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
+      // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
+      const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
+      let outcome = "ok";
       try {
         const args = schema.parse(a);
         if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
       }
-      catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      finally { timed?.(outcome, () => summarize(a)); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));
@@ -243,7 +249,7 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
   register("clear_ask", "Remove a legacy ask after the project has replaced it with a decision card or settled it; log the outcome in the same commit.", { author, session, id, log: text("Which decision card replaced the legacy ask or what settled it, and why it can be removed.") }, a => result(ops.clearAsk(a)), true);
   register("write_card", "Create a decision card, or revise an open card using its rev from context. State the evidence and options; recommend at most one.", {
     author, session, key: Key.describe("Unused new decision key, or an existing open card key with rev."), rev: z.number().int().positive().describe("Required to revise an open card; omit only for creation.").optional(), item: Key.describe("Existing item this decision belongs to."), question: text("The choice the owner needs to settle."), background: text("Problem, evidence and context the choice turns on."), options: z.array(Option).describe("Options with unique key, text (action, costs and risks), and optional recommended boolean."), confidence: z.object({ score: z.number().int().min(1).max(5).describe("Confidence from 1 (judgment) to 5 (settled by evidence).").optional(), reason: text("Evidence for confidence and what could overturn it.") }).strict().describe("Confidence and its grounds.").optional(),
-    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card; leave it out when sessions proceed on the recommendation. A card with blocks is blocking: the page shows it purple and the owner is told on the Mac. When revising, text sets it, null clears it, omitted keeps it."),
+    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card; leave it out when sessions proceed on the recommendation. A card with blocks is blocking: the page shows it purple and the owner is told in the open board pages. When revising, text sets it, null clears it, omitted keeps it."),
   }, a => result(ops.writeCard(a)), true);
   register("rule_card", "Record the owner's ruling on an open decision card. A choice must name one of its option keys; a prose ruling may omit choice. Rulings may complete paused work; the retained pause marker stays unchanged, and author ownership checks apply.", { author, session, key: Key.describe("Existing open decision card key."), choice: text("Chosen option key, if the owner selected an option.").optional(), ruling: text("Owner's ruling and its reasons.") }, a => result(ops.ruleCard(a)), true);
   register("reply_note", "Answer an owner's note and mark it done. The server stamps repliedAt and records your project as repliedBy.", { author, session, id: text("Existing owner note id found with notes or context."), reply: text("Answer to the owner's note."), replace: z.boolean().describe("Explicitly replace an existing reply; otherwise an already answered note is refused.").optional() }, a => result(ops.replyNote(a)), true);

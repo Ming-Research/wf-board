@@ -3,6 +3,7 @@
 // rules (src/rules.ts) and the server's unread history (src/history.ts). A check returns its violations, each opening
 // with the family name, so a test can assert none and a regression witness can assert the one its bug causes.
 
+import { ops } from "../../src/ops.ts";
 import { rules } from "../../src/rules.ts";
 import type { Rules } from "../../src/rules.ts";
 import { unreadSteps } from "../../src/history.ts";
@@ -487,6 +488,52 @@ export async function checkEmptyRows(bp: BoardPage, items: string[]): Promise<st
   return v;
 }
 
+/** A project's top-level items sit under its 被其他项目依赖 line exactly when an open item of another project depends on
+ * them (the rules); the page is read as drawn, so a stale layout after a live change is a violation. */
+async function sectionViolations(bp: BoardPage, r: Rules, items: Snapshot["items"]): Promise<string[]> {
+  const drawn = await bp.page.evaluate(() => [...document.querySelectorAll("#areas .group")].flatMap(group => [...group.querySelectorAll(":scope > ul.tree.lines")].flatMap(list =>
+    [...list.querySelectorAll(":scope > li > .item")].map(e => ({ id: e.id.slice(3), under: !!list.previousElementSibling?.classList.contains("shared-sep") })))));
+  const ended = (id: string) => /^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  // Two families, so a witness can name the direction it breaks: an item left above the line when it should be under, or under it when it should not.
+  return drawn.filter(d => d.under !== r.dependents(d.id).some(w => !ended(w.id) && items[w.id]?.group !== items[d.id]?.group))
+    .map(d => d.under ? `shared-section-under: ${d.id} is drawn under 被其他项目依赖, but no open item of another project depends on it`
+      : `shared-section-above: ${d.id} is drawn above 被其他项目依赖, but an open item of another project depends on it`);
+}
+/** A root another project starts to depend on moves under its project's 被其他项目依赖 line while the page stays open,
+ * and returns to the project's own roots when the shared row goes. Writes to the board: a shared row on an item of
+ * another project and its removal. */
+export async function checkSharedSection(bp: BoardPage, b: BoardServer): Promise<string[]> {
+  const s = b.store.snapshot(), r = rules(s), drawn = new Set(await bp.treeRows());
+  const v = await sectionViolations(bp, r, s.items);
+  const live = (id: string) => !s.items[id]!.record && !/^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  const group = (id: string) => s.items[id]!.group;
+  // A drawn open root no other project depends on yet; the first item of another project that can take a shared row to it
+  // (the write refuses one that would close a cycle).
+  const root = r.areas().find(id => drawn.has(id) && live(id) && !r.dependents(id).some(w => group(w.id) !== group(id)));
+  if (!root) return [...v, "witness setup: the board draws no open root that no other project depends on"];
+  // The first commit after the board is seeded also carries the owner's pending read cursor, and the page answers an owner
+  // change by repainting everything, which would put the root in its place even without the group repaint under test. An
+  // unrelated write takes that commit first (found by tracing the repaint scopes in CI).
+  const base = await bp.changes(), idle = Object.keys(s.items).sort().filter(id => live(id)).at(-1)!;
+  await ops(b.store).appendLog({ author: group(idle), id: idle, text: "A write unrelated to the root, so the next change repaints only what it changes." });
+  await bp.waitChanges(base + 1);
+  let waiter: string | undefined;
+  for (const id of Object.keys(s.items).sort().filter(id => id !== root && group(id) !== group(root) && live(id))) {
+    try { await ops(b.store).setPlan({ author: group(id), id, row: { item: root, own: false } }); waiter = id; break; } catch { /* closes a cycle or is refused: try the next item */ }
+  }
+  if (!waiter) return [...v, "witness setup: no item of another project takes a shared row to the root"];
+  await bp.waitChanges(base + 2);
+  let now = b.store.snapshot();
+  if (!rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: the shared row did not make the other project's item depend on the root");
+  v.push(...await sectionViolations(bp, rules(now), now.items));
+  await ops(b.store).setPlan({ author: group(waiter), id: waiter, remove: root });
+  await bp.waitChanges(base + 3);
+  now = b.store.snapshot();
+  if (rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: removing the shared row left the dependency");
+  v.push(...await sectionViolations(bp, rules(now), now.items));
+  return v;
+}
+
 /** Tag chips name the item's tags, and their text contrasts with what is behind it at least 4.5:1 (WCAG AA), in
  * light and dark themes. Chips in dimmed rows (a context row of a filter, a closed item on the path to open work) are
  * faded on purpose and left out. */
@@ -591,4 +638,35 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
     { kind: "item", id: owner, expectRev: rev, doc: { ...odoc, plan: [{ id: child, item: child, own: true }, ...o.plan], updated: at } },
   ]);
   return commits;
+}
+
+/** A changed body block, and a changed card question, carry a blue bar on its left, as tall as the block, and no
+ * background of their own. The page holds none of them to look at, so probes are added at the end of the page and taken
+ * out again. The bar rules are not scoped to an item, so the probes test the same rules the page's text gets. */
+export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
+  const v: string[] = [];
+  const probe = await bp.page.evaluate(() => {
+    const measure = (block: HTMLElement) => {
+      const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
+      return { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: parseFloat(bar.height), blockHeight: block.getBoundingClientRect().height, own: own.backgroundColor };
+    };
+    const rich = document.createElement("div"); rich.className = "rich"; document.body.appendChild(rich);
+    const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
+    rich.appendChild(block);
+    const body = measure(block); rich.remove();
+    const card = document.createElement("div"); card.className = "card";
+    const heading = document.createElement("h3"); card.appendChild(heading);
+    const question = document.createElement("span"); question.className = "chg-add"; question.textContent = "probe";
+    heading.appendChild(question); document.body.appendChild(card);
+    const title = measure(question); card.remove();
+    return { body, title };
+  });
+  for (const [what, p] of [["a changed block", probe.body], ["a changed card question", probe.title]] as const) {
+    if (p.bar === "rgba(0, 0, 0, 0)" || p.bar === "transparent") v.push(`changed-block: ${what} has no blue bar`);
+    if (p.width !== "3px") v.push(`changed-block: ${what}'s bar is ${p.width} wide, expected 3px`);
+    if (p.position !== "absolute" || p.left !== "-7px") v.push(`changed-block: ${what}'s bar is at ${p.left} (${p.position}), not beside its left edge at -7px`);
+    if (Math.abs(p.height - (p.blockHeight - 6)) > 0.5) v.push(`changed-block: ${what}'s bar is ${p.height}px tall, expected the block's height less 6px (${p.blockHeight - 6}px)`);
+    if (p.own !== "rgba(0, 0, 0, 0)" && p.own !== "transparent") v.push(`changed-block: ${what} has a background ${p.own}`);
+  }
+  return v;
 }
