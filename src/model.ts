@@ -233,21 +233,6 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
-/** An important non-blocking change the owner should know, written by a session and marked read by the owner. */
-export const Notice = z.object({
-  /** One or two sentences; inline markdown and [[it:key]] references. */
-  text: z.string().min(1),
-  /** The related item. */
-  item: Key.optional(),
-  /** The writing project. */
-  author: z.string().min(1),
-  at: Time,
-  /** When the owner marked it read. */
-  read: Time.optional(),
-  rev: z.number().int().positive(),
-}).strict();
-export type Notice = z.infer<typeof Notice>;
-
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
@@ -256,7 +241,7 @@ export type Project = z.infer<typeof Project>;
 
 /** The architect's author name, a configured project like any other. */
 export const ARCHITECT = "Architect";
-/** The session name the architect writes from. */
+/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
 export const ARCHITECT_SESSION = "架构师";
 /**
  * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
@@ -318,7 +303,6 @@ export interface Snapshot {
   items: Record<string, Item>;
   decisions: Record<string, Decision>;
   notes: Record<string, Note>;
-  notices: Record<string, Notice>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
   owner: OwnerState;
