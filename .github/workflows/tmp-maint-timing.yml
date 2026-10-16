@@ -1,8 +1,6 @@
 name: tmp-maint-timing
 on:
-  push:
-    branches: [e2e-git-tmp-flake]
-    paths: [".github/workflows/tmp-maint-timing.yml"]
+  workflow_dispatch:
 jobs:
   timing:
     runs-on: ubuntu-latest
