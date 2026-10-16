@@ -236,10 +236,11 @@ test("brief lists as startable only items rated 1–5, and carries the difficult
 
 test("every section of brief carries the difficulty, and only an item a root needs is startable", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
-  // wip: a doing step. paused: an explicit pause. progress: a blocked item and a record cannot carry one.
+  // wip: a doing step. paused: an explicit pause. progress: a blocked item (its card has three options, so the item carries no
+  // option check and is not listed under checks instead) and a record cannot carry one.
   await unrated("working"); await op.setPlan({ author, id: "working", row: { id: "go", text: "进行", state: "doing" } });
   await unrated("held"); await op.setPause({ ...asArchitect, id: "held", paused: true, reason: "先放一放" });
-  await unrated("waits"); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", background: "背景", options: [{ key: "A", text: "甲" }], blocks: "停着" });
+  await unrated("waits"); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", background: "背景", options: [{ key: "A", text: "甲" }, { key: "B", text: "乙" }, { key: "C", text: "丙" }], blocks: "停着" });
   await op.setPlan({ author, id: "waits", row: { card: "wait-card", after: [] } });
   await op.createRequest({ author: "Firn", project: author, key: "inbox-one", title: "收件箱里的", head: "h", accept: "通过", priority: "P1", why: "w" });
   await op.createRequest({ author, project: "Firn", key: "outgoing-one", title: "送出去的", head: "h", accept: "通过", priority: "P1", why: "w" });
