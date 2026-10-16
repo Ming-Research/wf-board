@@ -625,19 +625,30 @@ owned row still requires moving or cancelling its target first.
   a second owned row is refused, naming the current owner and directing the
   caller to `move_item`; a stored violation shows 被多个条目拥有.
 - **No cross-project ownership.** An owned row's target belongs to the same
-  project as the plan's item. Cross-project needs are always shared rows
-  pointing at the other project's collecting item (the item collecting
-  everything one project needs from another). A write is refused otherwise;
-  a stored violation shows 跨项目拥有.
+  project as the plan's item. A cross-project need is a shared row, which may
+  point at any item of the other project; the usual target is the item
+  collecting what one project needs from another, but nothing requires it
+  (an item that moves to another project leaves such rows behind, below).
+  A write that owns across projects is refused; a stored violation shows
+  跨项目拥有.
 - **Changing project.** `move_item_project` changes the `group` of an item and of everything it owns, so an
   owned part never straddles two projects. Its key, number, history, notes and cards stay with it, because each is
-  addressed by the item's key. An owner that stays behind keeps its row as a shared row in the same place, since the
-  owner still needs the result and ownership cannot cross projects. The item arrives as a top item of the new
-  project. Placing it under an owner there is that project's `move_item`: a call that named the new owner would write
-  an item of the other project, and each project writes only its own items. When an open item of the new project
-  already waits on the moved item, the move is refused for the same reason as in `move_item`: the arriving item would
-  be owned by no item. Rejected: moving only the named item and leaving what it owns behind (the owned rows would
-  become cross-project ownership), and a new owner argument (above).
+  addressed by the item's key.
+  - Rows. An owner that stays behind (the item's owner, or a backlog record) keeps its row as a shared row in the same
+    place, since it still needs the result and ownership cannot cross projects. An item left behind may also wait on a
+    moved part through an existing shared row; it stays valid (see the previous bullet).
+  - Arrival. The item arrives as a top item of the new project. Placing it under an owner there is that project's
+    `move_item`: a call that named the new owner would write an item of the other project, and each project writes only
+    its own items. When an open item of the new project already waits on the moved item through a shared row, the item
+    would arrive owned by no item, so the move is refused, naming those items. Two ways out, both in the new project's
+    hands: drop the row first with `set_plan` and, if the item still matters there, let the item that needs it own it
+    with an owned row after the move; or leave the dependency out.
+  - Priority. An item that lands as an open root keeps the `priority` it stores, and one with none needs it given. A
+    given `priority` replaces the stored one and the log says so; it is refused when the item does not land as a root,
+    as in `move_item` without an owner. Work owned by a backlog record has no stored priority, and a record is not
+    open work, so it lands as a root and needs one.
+  - Rejected: moving only the named item and leaving what it owns behind (the owned rows would become cross-project
+    ownership), and an argument naming the new owner (above).
 - **Top items.** An item no row owns is a top item (what earlier sections
   call an area), drawn at the top level of its project. A top item is one of: a root (below); an item another
   project's shared row waits on, such as a collecting item (drawn under the
@@ -770,6 +781,9 @@ three manual-status checks listed under Status.
   deliberate call logged on both sides. Removing an owned row, or turning it
   into a shared row, is refused while the target is open (use `move_item`, or
   cancel the target first); for a closed target it leaves a closed top item.
+  The one exception is `move_item_project`: when the target changes project,
+  its owner's owned row becomes a shared row in the same call (see Changing
+  project above).
 - A replacement preserves matching rows' dates by id; duplicate ids are
   refused; a call whose result equals the current plan changes nothing, not
   even `updated`, and writes no commit.
@@ -1104,7 +1118,7 @@ item and card writes retain the normal project ownership checks.
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `总管`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
-| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | The item's own project (the author check every item write shares); the project is configured and differs from the item's; every moved item belongs to that project; every tag of a moved item applies to the new project; refused, naming them, while an open item of the new project waits on the item through a shared row, since it would arrive owned by no item; `priority` is required when the item becomes an open root without a stored priority and refused otherwise (as `move_item` without `owner`); work leaving a paused chain follows the pause rule |
+| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | The item's own project (the author check every item write shares); the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused while an open item of the new project waits on the item through a shared row, naming them and what to do first (the existing 同项目有条目在等它，却没有条目拥有它 check); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one with a log line and is refused when the item does not land as a root; work leaving a paused chain follows the pause rule |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
