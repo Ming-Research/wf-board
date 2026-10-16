@@ -242,6 +242,8 @@ wf-board-data/
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/github-watch.json   the time of the last look at GitHub (same)
+  state/actions-usage.json  the time of the last look at the Actions billing and the month's account (same)
   import/                 the original artifact export, kept as provenance
 ```
 
