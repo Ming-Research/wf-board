@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -39,6 +39,7 @@ const run = promisify(execFile);
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
+/** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
 export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
 
 // History grows for the lifetime of the daemon. Retain recent parsed documents,
@@ -388,78 +389,9 @@ export class Store {
     store.committedOwner = persistedOwner === null ? {} : validated(OwnerState, persistedOwner, "state/owner.yaml");
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
-    await store.migrateCoordinator();
-    await store.retireNotices();
     await store.numberExisting();
     await store.loadActivity();
     return store;
-  }
-
-  /** Remove once the live board has migrated from 跨项目 to 总管. */
-  private async migrateCoordinator(): Promise<void> {
-    const oldName = "跨项目", newName = "总管";
-    if (!this.state.board.projects.some(p => p.name === oldName)) return;
-    if (this.state.board.projects.some(p => p.name === newName) || Object.hasOwn(this.state.glossaries, newName)) {
-      throw new Error(`Cannot rename coordinator project ${oldName} to ${newName}: destination project or glossary already exists`);
-    }
-    const rename = (name: string): string => name === oldName ? newName : name;
-    const puts: Put[] = [], deletes: Del[] = [];
-    for (const [id, original] of Object.entries(this.state.items)) {
-      const doc = structuredClone(original);
-      if (doc.group === oldName) doc.group = newName;
-      if (doc.request?.by === oldName) doc.request.by = newName;
-      for (const entry of doc.log) if (entry.by === oldName) entry.by = newName;
-      if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "item", id, doc, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.notes)) {
-      if (original.repliedBy === oldName) puts.push({ kind: "note", id, doc: { ...original, repliedBy: newName }, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.glossaries)) {
-      const doc = { ...original, terms: original.terms.map(term => ({ ...term, by: rename(term.by) })) };
-      if (id === oldName) {
-        puts.push({ kind: "glossary", id: newName, doc, expectRev: null });
-        deletes.push({ kind: "glossary", id, expectRev: original.rev });
-      } else if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "glossary", id, doc, expectRev: original.rev });
-    }
-    await this.commit({ author: newName, message: `Rename coordinator project ${oldName} to ${newName}`, board: {
-      ...this.state.board, projects: this.state.board.projects.map(p => p.name === oldName ? { ...p, name: newName } : p),
-    }, puts, deletes });
-  }
-
-  /** The 要你知道 list and its notices were removed (wf-board item push-to-architect). Every notice had been read by the owner and
-   * its content is on the item it points to, so the files are deleted once, in one commit; git history keeps them. Only when
-   * everything in notices/ is committed, unchanged and read: otherwise nothing is deleted and the start goes on after a line in
-   * the log. A failed deletion puts the index and the files back. Remove this once the live board has started with it. */
-  private async retireNotices(): Promise<void> {
-    const files = await readdir(join(this.dir, "notices")).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
-    if (!files.length) return;
-    try {
-      const blocker = await this.noticesBlocker(files);
-      if (blocker) { console.error(`notices/ not deleted: ${blocker}`); return; }
-      try {
-        await this.git(["rm", "-q", "-r", "--", "notices"]);
-        await this.git(["-c", "commit.gpgsign=false", "commit", "--author", "wf-board <wf-board@wf-board.invalid>", "-m", RETIRE_NOTICES_MESSAGE], "wf-board");
-      } catch (error) {
-        await this.git(["reset", "-q", "HEAD", "--", "notices"]);
-        await this.git(["checkout", "--", "notices"]);
-        throw error;
-      }
-      // git removes the emptied directory itself; this only covers a directory it left behind.
-      try { rmdirSync(join(this.dir, "notices")); } catch { /* gone already, or it holds files git does not know */ }
-    } catch (error) { console.error("notices/ not deleted", error); }
-    this.state = sealed({ ...this.state, head: (await this.git(["rev-parse", "HEAD"])).trim() });
-  }
-
-  /** Why notices/ must not be deleted now, or undefined: a file git does not hold as it is, one that is not a notice, or a notice the owner has not read. */
-  private async noticesBlocker(files: string[]): Promise<string | undefined> {
-    if ((await this.git(["status", "--porcelain", "--", "notices"])).trim()) return "it holds files that are not committed as they are";
-    for (const file of files) {
-      let notice: unknown;
-      try { notice = file.endsWith(".yaml") ? parse(await readFile(join(this.dir, "notices", file), "utf8"), { version: "1.2", schema: "core" }) : undefined; }
-      catch { return `notices/${file} cannot be read`; }
-      if (!notice || typeof notice !== "object" || typeof (notice as { read?: unknown }).read !== "string") return `notices/${file} is not a notice the owner has read`;
-    }
-    return undefined;
   }
 
   /** Give every unnumbered item and card a short number, oldest first, in one commit. On a board written before
@@ -1127,10 +1059,9 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
     const files = await readdir(join(dir,collection)).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
     for (const file of files.sort()) {
       const path=`${collection}/${file}`;
-      // The retired notices are no document of the board: a file there that is no notice, or cannot be read, is for
-      // retireNotices to refuse, never a failed start.
+      // The retired notices are no document of the board: a file there that is no notice, or cannot be read, is left out, never a failed start.
       if(collection==="notices"){
-        if(file.endsWith(".yaml"))try{raw[path]=parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"});}catch{/* left to retireNotices */}
+        if(file.endsWith(".yaml"))try{raw[path]=parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"});}catch{/* left out of the snapshot */}
         continue;
       }
       if(!file.endsWith(".yaml")){invalid.push({path,issues:"Expected a .yaml document"});continue;}
