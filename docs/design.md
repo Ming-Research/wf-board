@@ -341,13 +341,13 @@ log:
   cards without `blocks`), the item included. `write_card` sets `blocks` on
   create or revision; a revision omitting it keeps it and `null` clears it.
   `context` and `brief` show it.
-- **Notices (retired).** A notice was a non-blocking change posted for the
-  owner's 要你知道 list. The list and `post_notice` are gone: a change the owner
-  must act on is a decision card, and one the owner only should know goes in the
-  architect's journal. At the next start the daemon deleted the ten stored
-  notices in one commit (the owner had read all of them and their content is on
-  the items they point to); git history keeps them. Their files still count as
-  content writes in the history that has them, so active time does not change.
+- **No notices.** The board has no notice documents: the 要你知道 list and
+  `post_notice` are gone. A change the owner must act on is a decision card;
+  one the owner only should know goes in the architect's journal. Notice files
+  in history still count as content writes. A start that finds a `notices/`
+  directory deletes it in one commit (not a write), but only when every file
+  there is committed, unchanged and a notice the owner has read; otherwise it
+  deletes nothing and logs why.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -1465,7 +1465,7 @@ the forms the server sends:
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
-| `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client reads the board for what it missed |
+| `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
 `connected` and `gap` carry no number and are not events.
 
@@ -1474,8 +1474,9 @@ most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
 continue across a restart. A client remembers the `n` of the last event it
 handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
-event missed or sent twice between replay and live. Without `after` the client
-gets live events only. Every connected client gets every event. The server pings every 25
+event missed or sent twice between replay and live. A client drops an event
+numbered at or below the one it remembers (a repeat); a gap frame sets that number
+first, as above. Without `after` the client gets live events only. Every connected client gets every event. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.

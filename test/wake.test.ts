@@ -73,6 +73,13 @@ test("past the count and byte limits the oldest events go, the file shrinks with
   const small = new Wake({ now: () => T0, retainBytes: 300 });
   for (let i = 1; i <= 6; i++) small.push("note", noteFields("n" + i));
   assert.ok(small.since(0).frames.length < 6 && small.since(0).frames.at(-1)!.n === 6);
+  // The limit counts bytes, not characters: Chinese text is three bytes a character, and the doc's 2 MiB is bytes.
+  const chinese = { ...noteFields("n"), title: "中".repeat(100) }, wide = new Wake({ now: () => T0 }), one = wide.push("note", chinese);
+  const bytes = Buffer.byteLength(JSON.stringify(one)), characters = JSON.stringify(one).length;
+  assert.ok(bytes > 1.5 * characters);
+  const counted = new Wake({ now: () => T0, retainBytes: Math.floor(2.5 * bytes) });
+  for (let i = 0; i < 5; i++) counted.push("note", chinese);
+  assert.deepEqual(counted.since(0).frames.map(f => f.n), [4, 5], "two events fit in 2.5 events' bytes, though four would by characters");
   // An event that alone is over the limit is kept.
   const tiny = new Wake({ now: () => T0, retainBytes: 1 });
   tiny.push("note", noteFields("n1")); tiny.push("note", noteFields("n2"));
@@ -212,6 +219,16 @@ test("a client that comes back with its last number gets what followed, a gap fr
   await api("/api/notes", { target: "it:a", kind: "comment", text: "four" }); await api("/api/send", {});
   for (const client of [live, resumed, behind, ahead, current]) await client.sync();
   assert.deepEqual([live, resumed, behind, ahead, current].map(c => c.events().map(f => f.n)), [[4], [3, 4], [2, 3, 4], [4], [4]]);
+  // The client rule the doc gives: drop an event numbered at or below the one remembered; a gap frame sets it to oldest − 1.
+  const handled = (frames: Array<Record<string, unknown>>, after: number) => {
+    let seen = after; const taken: number[] = [];
+    for (const frame of frames) {
+      if (frame.event === "gap") seen = (frame.oldest as number) - 1;
+      else if (typeof frame.n === "number" && frame.n > seen) { taken.push(frame.n); seen = frame.n; }
+    }
+    return taken;
+  };
+  assert.deepEqual([handled(resumed.frames, 2), handled(behind.frames, 0), handled(ahead.frames, 99), handled(current.frames, 3)], [[3, 4], [2, 3, 4], [4], [4]], "no event lost to a repeat check, whichever way the number was wrong");
   const bad = new WebSocket(url.replace("http:", "ws:") + "/wake?after=x");
   bad.on("error", () => {}); t.after(() => bad.terminate());
   const [, response] = await once(bad, "unexpected-response");
