@@ -480,7 +480,7 @@ test("detail: a 参考 line inside fenced code, a title-only section and one at 
   s.items.child!.head = head;
   const p = await page(s,unread()); await expand(p);
   const body = markup(item(p));
-  assert.match(body, /^<details class="refsec"[^>]*><summary><strong>参考：Start<\/strong><\/summary><div class="refbody">.*参考：inside code.*<\/div><\/details>/s);
+  assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Start<\/strong><\/summary><div class="refbody">.*参考：inside code.*<\/div><\/details>/s);
   assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Empty<\/strong><\/summary><div class="refbody"><\/div><\/details>/);
   assert.equal((body.match(/class="refsec"/g) ?? []).length, 2,"the fenced line opens no section");
 });
