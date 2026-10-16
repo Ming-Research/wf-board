@@ -7,6 +7,7 @@
   <key>WorkingDirectory</key><string>{{REPO}}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>1</integer>
   <key>StandardOutPath</key><string>{{HOME}}/Library/Logs/wf-board.log</string>
   <key>StandardErrorPath</key><string>{{HOME}}/Library/Logs/wf-board.log</string>
 </dict></plist>

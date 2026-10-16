@@ -5,6 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { ops } from "../../src/ops.ts";
+import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkChangedBlocks } from "./invariants.ts";
@@ -148,6 +150,44 @@ const WITNESSES: Witness[] = [
     bug: "a 参考 section the reader opened folded again after the item re-rendered (ref-fold)",
     reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    refOpen[d.dataset.ref!] = d.open;\n    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}\n', replace: "" }], family: "ref-fold-keep",
     run: async (bp, b) => checkRefFold(bp, b),
+  },
+  {
+    bug: "the agent list took its place in the page even when empty, because its display rule overrode the hidden attribute (agent list, review of wf-board#37)",
+    reverts: [{ file: "web/index.html", edit: "the hidden agent list takes no space", find: ".agents[hidden] { display: none; }\n", replace: "" }], family: "agents-hidden",
+    // No session has written: the list is hidden, and a hidden list is not displayed.
+    run: async bp => {
+      const display = await bp.page.evaluate(() => getComputedStyle(document.getElementById("agents")!).display);
+      return display === "none" ? [] : [`agents-hidden: the empty agent list is displayed as ${display}`];
+    },
+  },
+  {
+    bug: "a key command with nothing selected took the first item row it found, an unfolded row of the agent list, for a tree row (agent list, review of wf-board#37)",
+    reverts: [{ file: "web/app.ts", edit: "the list's rows count as a place on screen", find: 'find(e => { if (e.closest("#agents")) return false; const r =', replace: "find(e => { const r =" }], family: "agents-key",
+    // An agent's cell is unfolded so its item rows sit above the tree, nothing is selected, and c asks for the item on screen.
+    run: async (bp, b) => {
+      const s = b.store.snapshot(), r = rules(s), rows = await bp.treeRows();
+      const id = rows.find(x => !s.items[x]!.record && s.items[x]!.group && r.children(x).some(c => rows.includes(c)));
+      if (!id) return ["witness setup: the board draws no item with a drawn sub-item"];
+      const base = await bp.changes();
+      await ops(b.store).appendLog({ author: s.items[id]!.group, session: "agent-x", id, text: "agent-x wrote here" });
+      await bp.waitChanges(base + 1);
+      await bp.page.locator('#agents [data-agent="agent-x"] .agitem-caret').first().click();
+      await bp.settle();
+      await bp.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+      if (await bp.selected() !== null) return ["witness setup: an item is already selected"];
+      // The unfolded list nearly fills the screen: scroll its first item row near the top (a little below it, so rounding cannot push it out of range), so that the tree's first row is on screen too.
+      const shown = await bp.page.evaluate(() => {
+        const pane = document.getElementById("page-left")!, row = document.querySelector("#agents .item")!, tree = document.querySelector("#areas .item")!;
+        pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - 24;
+        const p = pane.getBoundingClientRect(), t = tree.getBoundingClientRect();
+        return t.top >= p.top && t.top < p.bottom;
+      });
+      if (!shown) return ["witness setup: no tree row is on screen with the list's row near the top"];
+      await bp.page.keyboard.press("c");
+      await bp.settle();
+      const sel = await bp.selected();
+      return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
+    },
   },
 ];
 

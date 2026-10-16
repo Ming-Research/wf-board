@@ -20,9 +20,21 @@ import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
+import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
+import type { UsageWatch } from "./usage-watch.ts";
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch }): http.Server {
+/** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
+const MAX_EXTERNAL_PUSH = 16 * 1024;
+
+/** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
+export const SHUTDOWN_GRACE_MS = 2000;
+
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
+  // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
+  const slow = deps.slow ?? new SlowOps({ now });
+  // Set by `close`: from then on every new request is refused, so no client starts a session in a process that is about to exit.
+  let closing = false;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; mcp: McpServer }>();
@@ -46,8 +58,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if ((req.method === "POST" || req.method === "DELETE" || req.headers.upgrade) && req.headers.origin !== undefined && req.headers.origin !== `http://${req.headers.host}`) return false;
     return true;
   }
-  function json(res: ServerResponse, status: number, data: unknown) {
-    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  function json(res: ServerResponse, status: number, data: unknown, headers: http.OutgoingHttpHeaders = {}) {
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
     res.end(JSON.stringify(data));
   }
   async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
@@ -67,6 +79,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   async function route(req: IncomingMessage, res: ServerResponse) {
     if (!security(req)) { json(res, 403, { error: "Host or Origin refused" }); return; }
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`), path = url.pathname, method = req.method;
+    // What the board serves is the list in src/slow-ops.ts, which classes every route for the time limits: a branch below that the list lacks is never reached.
+    if (!pageRoute(method ?? "", path)) { json(res, 404, { error: "Unknown route" }); return; }
     if (path === "/mcp" && ["POST", "GET", "DELETE"].includes(method ?? "")) {
       const id = req.headers["mcp-session-id"];
       if (typeof id === "string") {
@@ -97,7 +111,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const data = await readFile(join(deps.webDir, path === "/" ? "index.html" : "dist/app.js"));
         res.writeHead(200, { "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(data); return;
       }
-      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}) }); return; }
+      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }
       if (path === "/api/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -124,12 +138,26 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, result); return;
       }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
+      // A push from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly their fields.
+      if (path === "/api/wake") {
+        const { event, ...fields } = args<Record<string, unknown>>(await body(req));
+        if (!Wake.isExternal(event)) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
+        if (JSON.stringify(fields).length > MAX_EXTERNAL_PUSH) throw new OpError(`Wake event ${event} exceeds ${MAX_EXTERNAL_PUSH} bytes`);
+        let frame;
+        try { frame = wake.push(event, fields); } catch (error) { throw new OpError(error instanceof Error ? error.message : String(error)); }
+        json(res, 200, { n: frame.n }); return;
+      }
     }
     if (method === "DELETE" && path.startsWith("/api/notes/")) { await ownerOps.deleteNote({ id: decodeURIComponent(path.slice(11)) }); json(res, 200, { ok: true }); return; }
     json(res, 404, { error: "Unknown route" });
   }
   const server = http.createServer((req, res) => {
-    res.on("finish", () => console.info(`${req.method} ${(req.url ?? "/").split("?")[0]} ${res.statusCode}`));
+    // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
+    const ended = slow.start(pageOperation(req.method ?? "", pathnameOf(req.url)));
+    res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
+    // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
+    res.on("finish", () => { if (closing) server.closeIdleConnections(); });
+    if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }
     void route(req, res).catch(error => {
       console.error(error);
       if (res.headersSent) { res.destroy(); return; }
@@ -137,6 +165,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     });
   });
   server.on("upgrade", (req, socket, head) => {
+    if (closing) { socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 2\r\n\r\n"); return; }
     if (!security(req)) { socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return; }
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     if (url.pathname !== "/wake") { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
@@ -230,7 +259,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
     timing = true;
     try {
-      const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, now()), last, started);
+      const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line());
       wake.push("timed", { ...fields });
       wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
@@ -241,15 +270,26 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
-  // Close long-lived transports before http.close waits for their sockets.
+  // The look at the Actions billing (src/usage-watch.ts) runs on its own timer, every half hour.
+  deps.usage?.start();
+  // Stopping (design section 4): no new request is served; what is running gets the grace to finish; then every connection is closed.
   const close = server.close.bind(server);
   server.close = callback => {
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); off(); unsubscribe(); unsubscribeTold();
+    if (closing) return close(callback);
+    closing = true;
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeTold();
+    // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
+    // session is not one of them: it answers on its own request, and the session closes when the server has closed.
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
-    for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);
+    for (const { transport } of sessions.values()) transport.closeStandaloneSSEStream();
     ws.close();
-    return close(callback);
+    const cut = setTimeout(() => server.closeAllConnections(), deps.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
+    return close(error => {
+      clearTimeout(cut);
+      for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);
+      callback?.(error);
+    });
   };
   return server;
 }

@@ -1,6 +1,6 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
-import type { Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
 import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
@@ -59,6 +59,123 @@ export function countedPulls(inRow: readonly string[], inChanges: readonly strin
 /** A merge row is done when PRs count for it and GitHub reports every one of them merged. */
 export function mergeRowDone(counted: readonly string[], merged: ReadonlySet<string>): boolean {
   return counted.length > 0 && counted.every(key => merged.has(key));
+}
+
+// --- GitHub Actions usage (docs/design.md, Watching Actions usage) ----------------------------------------------------------------
+
+/** The minutes an organization's plan includes each month (GitHub Team): the one number the usage is held against. */
+export const ACTIONS_INCLUDED_MINUTES = 3000;
+/** The percentages of the included minutes whose first crossing in a month is told. */
+export const USAGE_LEVELS: readonly number[] = [50, 75, 90];
+/** More counted minutes than this in one UTC day is told, once for that day. */
+export const USAGE_DAY_LIMIT = 300;
+/** How many included minutes one minute of a runner uses, by the usage report's sku, lower case. The names are those of the
+ * organization's own report, read on 2026-10-16: it holds "Actions Linux", "Actions Windows" and "Actions macOS 3-core" rows. GitHub's
+ * page on how Actions is billed (docs.github.com/en/billing/concepts/product-billing/github-actions, "baseline minute costs")
+ * names the same runners and prices them per minute: Linux 2-core $0.006, Windows 2-core $0.010, macOS 3-core or 4-core $0.062.
+ * It states no multipliers. Source of the 2 and 10: GitHub's earlier billing description (Windows minutes count twice, macOS
+ * ten times against the included minutes), not found on today's page and not checked against a bill. Provisional: no private
+ * repository here runs Windows or macOS, so they change no figure today, and counting too many is the safer error (an early
+ * push, not a missed one). When a private repository first runs Windows or macOS, check the line against that month's
+ * included-usage figure on the billing page and replace the 2 and 10 by what that shows.
+ * A sku not listed is not guessed at: the account leaves it out and `unknownSkus` names it. */
+const USAGE_MULTIPLIER: ReadonlyMap<string, number> = new Map([["actions linux", 1], ["actions windows", 2], ["actions macos 3-core", 10]]);
+const multiplierOf = (sku: string): number | undefined => USAGE_MULTIPLIER.get(sku.toLowerCase());
+
+export type Visibility = "public" | "private" | "internal";
+/** One line of the usage report: the minutes of one runner type in one repository on one day (`date` is UTC). */
+export interface UsageRow { date: string; repo: string; sku: string; minutes: number }
+/** What one look at an organization's billing read. `visibility` is by repository name in lower case. */
+export interface UsageReading {
+  org: string; /** UTC month of the report, `2026-10`. */ month: string; /** When it was read. */ at: string;
+  rows: UsageRow[];
+  visibility: Record<string, Visibility>;
+  /** The organization's Actions budget; none when none is set. */
+  budget?: { amount: number; stop: boolean };
+}
+/** The board's own account of one organization's month. The report gives no history of a repository's visibility, so each look
+ * adds what the report grew by since the last look, counted only if the repository is not public at that look. */
+export interface OrgBooks {
+  month: string; /** When the books were started: the first look of the month. */ since: string;
+  /** Per repository (lower case) and day: the included minutes the report showed at the last look, and the part counted. */
+  entries: Array<{ day: string; repo: string; seen: number; counted: number }>;
+  /** The keys (`usageKey`) of the pushes told this month: kept with the account, which is new each month, so a restart does not
+   * tell them again however long ago they were told. */
+  told: string[];
+}
+
+/** The skus of the Actions minutes in a reading that the account does not know, in repositories that are not public: they may use
+ * some of the included minutes, and the account leaves them out. */
+export function unknownSkus(reading: Pick<UsageReading, "rows" | "visibility">): string[] {
+  const out = new Set<string>();
+  for (const row of reading.rows) if (multiplierOf(row.sku) === undefined && reading.visibility[row.repo.toLowerCase()] !== "public") out.add(row.sku);
+  return [...out].sort();
+}
+
+/** The books after one more look. A new month starts new books. */
+export function advanceBooks(books: OrgBooks | undefined, reading: UsageReading): OrgBooks {
+  const fresh = !books || books.month !== reading.month;
+  const shown = new Map<string, { day: string; repo: string; minutes: number }>();
+  for (const row of reading.rows) {
+    const factor = multiplierOf(row.sku), day = row.date.slice(0, 10), repo = row.repo.toLowerCase();
+    if (factor === undefined || !day.startsWith(reading.month)) continue;
+    const key = `${day} ${repo}`, entry = shown.get(key) ?? { day, repo, minutes: 0 };
+    entry.minutes += row.minutes * factor; shown.set(key, entry);
+  }
+  const entries = new Map<string, OrgBooks["entries"][number]>((fresh ? [] : books.entries).map(e => [`${e.day} ${e.repo}`, e]));
+  for (const [key, { day, repo, minutes }] of shown) {
+    const before = entries.get(key) ?? { day, repo, seen: 0, counted: 0 };
+    // A report revised downwards adds nothing; what was counted stays.
+    const added = Math.max(0, minutes - before.seen);
+    entries.set(key, { day, repo, seen: minutes, counted: before.counted + (reading.visibility[repo] === "public" ? 0 : added) });
+  }
+  return { month: reading.month, since: fresh ? reading.at : books.since, entries: [...entries.values()], told: fresh ? [] : [...books.told] };
+}
+
+/** What the books say at the time of a reading. */
+export interface UsageFigures {
+  org: string; month: string; /** The UTC day of the reading. */ day: string; since: string;
+  /** The included minutes used this month and this day. */ used: number; today: number; included: number;
+  budget: { amount: number; stop: boolean } | null;
+  /** The skus the account does not know (`unknownSkus`). */
+  unknown: string[];
+}
+export function usageFigures(books: OrgBooks, reading: Pick<UsageReading, "org" | "at" | "budget" | "rows" | "visibility">): UsageFigures {
+  const day = reading.at.slice(0, 10);
+  const used = books.entries.reduce((sum, e) => sum + e.counted, 0), today = books.entries.reduce((sum, e) => sum + (e.day === day ? e.counted : 0), 0);
+  return { org: reading.org, month: books.month, day, since: books.since, used: Math.round(used), today: Math.round(today), included: ACTIONS_INCLUDED_MINUTES, budget: reading.budget ?? null, unknown: unknownSkus(reading) };
+}
+
+const budgetText = (budget: UsageFigures["budget"]): string => !budget ? "未设" : `${budget.amount} 美元${budget.stop ? "，到上限就拦" : ""}`;
+/** The line the timed wake carries, with the skus the account does not know when there are any. `several`: more than one organization is read, so each line names its own. */
+export function usageLine(f: UsageFigures, several = false): string {
+  return `${several ? `${f.org}：` : ""}Actions 本月已用 ${f.used} / ${f.included}（从 ${f.since.slice(5, 10)} 起记账），今天 ${f.today}，预算 ${budgetText(f.budget)}${f.unknown.length ? `；有不认识的计费项：${f.unknown.join("、")}` : ""}`;
+}
+
+export type UsageReason = "month" | "day" | "cap";
+/** The fields of an `actions-usage` push; `level` is the percentage crossed for `month`, else null. */
+export interface UsagePushFields { org: string; reason: UsageReason; level: number | null; month: string; day: string; used: number; included: number; today: number; budget: UsageFigures["budget"]; text: string }
+export interface UsagePush { key: string; fields: UsagePushFields }
+/** What makes a push the same push again: a month level once a month, the day limit once a day, the cap once a month. */
+export function usageKey(f: Pick<UsagePushFields, "org" | "reason" | "level" | "month" | "day">): string {
+  return f.reason === "month" ? `actions-usage ${f.org} month ${f.month} ${f.level}` : f.reason === "day" ? `actions-usage ${f.org} day ${f.day}` : `actions-usage ${f.org} cap ${f.month}`;
+}
+
+/** What to tell the architect now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
+ * it as well, so a first look at 88% is one push, not two). Day: more than the day limit counted today. Cap: all the included
+ * minutes used and a budget of 0, which stops the private repositories' CI. `announced` holds the keys already told. */
+export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): UsagePush[] {
+  const out: UsagePush[] = [];
+  const push = (reason: UsageReason, level: number | null, text: string) => {
+    const fields: UsagePushFields = { org: f.org, reason, level, month: f.month, day: f.day, used: f.used, included: f.included, today: f.today, budget: f.budget, text };
+    out.push({ key: usageKey(fields), fields });
+  };
+  const percent = f.included > 0 ? 100 * f.used / f.included : 0, crossed = USAGE_LEVELS.filter(level => percent >= level), top = crossed.at(-1);
+  const total = `已用 ${f.used} / ${f.included}（从 ${f.since.slice(5, 10)} 起记账），今天 ${f.today}，预算 ${budgetText(f.budget)}`;
+  if (top !== undefined && !USAGE_LEVELS.filter(level => level >= top).some(level => announced.has(usageKey({ org: f.org, reason: "month", level, month: f.month, day: f.day })))) push("month", top, `${f.org} 的 Actions 本月用量到 ${top}%：${total}`);
+  if (f.today > USAGE_DAY_LIMIT) push("day", null, `${f.org} 的 Actions 今天用了 ${f.today} 分钟，超过单日 ${USAGE_DAY_LIMIT}：${total}`);
+  if (f.used >= f.included && f.budget?.amount === 0) push("cap", null, `${f.org} 的 Actions 本月用量到顶，预算是 0：${total}`);
+  return out.filter(p => !announced.has(p.key));
 }
 
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
@@ -149,10 +266,8 @@ export interface Rules {
   lineOf(id: string): string;
   groupOf(id: string): string;
   projectOf(id: string): string;
-  isRequest(id: string): boolean;
   /** An existing work item whose status is neither done nor cancelled. Records are not open work. */
   isOpenWork(id: string): boolean;
-  inbox(project: string): string[];
   isLeaf(id: string): boolean;
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
@@ -165,10 +280,10 @@ export interface Rules {
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
-  /** Open work an unpaused root needs: an unpaused root that is not an untriaged request, or work such a root waits on
+  /** Open work an unpaused root needs: an unpaused root, or work such a root waits on
    * through open, unpaused rows, owned or shared. Backlog work is needed only when a needed item other than its record
    * also holds a row for it, and what hangs under it only when that work is; paused work and what only a paused root
-   * needs are not needed. A request not yet triaged is not work yet. */
+   * needs are not needed. */
   isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
@@ -176,7 +291,7 @@ export interface Rules {
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
-  /** The checks of one open decision card (too few options); the item of the card lists them too. */
+  /** The checks of one open decision card (too few options), none for a card of a cancelled item. */
   cardChecks(key: string): Check[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
@@ -190,7 +305,10 @@ export interface Rules {
   /** Waiting cards without `blocks` in the item's subtree, the item included. */
   nonBlockingBelow(id: string): number;
   onCycle(id: string): boolean;
+  /** The checks shown for an item: none for a cancelled item. Writes use refusals, which are not filtered. */
   checks(id: string): Check[];
+  /** The same checks unfiltered: the write-time refusals of ops read these, cancelled items included. */
+  refusals(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
   /** Items whose plan step text names this item with [[it:key]], any state. */
@@ -401,14 +519,15 @@ export function withSorted(list: readonly string[], value: string): string[] {
 /** How one commit changed Snapshot["activity"]: the content write's time (absent for an owner-only commit), the items
  * whose last change moved, and each item whose pause spans changed with its whole new list. `from` is the head before
  * the commit: the delta applies only to the snapshot at that head. */
-export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }> }
+export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }>; agents?: Record<string, AgentTouch[]> }
 /** The activity after `delta`, equal to the store's (docs/design.md, live updates); unchanged activity stays the same object. */
 export function applyActivityDelta(activity: Snapshot["activity"], delta: ActivityDelta): Snapshot["activity"] {
-  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length) return activity;
+  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length && !Object.keys(delta.agents ?? {}).length) return activity;
   const base = activity ?? { writes: [], items: {} };
   const pauses = base.pauses || Object.keys(delta.pauses).length ? { ...base.pauses, ...delta.pauses } : undefined;
   const sessions = base.sessions || Object.keys(delta.sessions ?? {}).length ? { ...base.sessions, ...delta.sessions } : undefined;
-  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}) };
+  const agents = base.agents || Object.keys(delta.agents ?? {}).length ? { ...base.agents, ...delta.agents } : undefined;
+  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
 }
 
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
@@ -442,7 +561,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
     return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
-      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isRequest(id), r.isNeeded(id), r.checks(id)]);
+      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
   const examined = new Set<string>(), queue: string[] = [];
@@ -590,10 +709,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function isPaused(id: string): boolean { return statusOf(id) === "paused"; }
   function groupOf(id: string): string { return item(id)?.group || ""; }
-  function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
-      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
+      const list = kids("").filter(id => !include || include(id)), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
       return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
     }
@@ -735,7 +853,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   function neededSet(): Set<string> {
     return cached("needed", "", () => {
       const ids = [...index().items.keys()], out = new Set<string>();
-      const eligible = (id: string): boolean => isOpenWork(id) && !isRequest(id) && !isPaused(id);
+      const eligible = (id: string): boolean => isOpenWork(id) && !isPaused(id);
       for (const id of ids) if (eligible(id) && isRoot(id)) out.add(id);
       for (let changed = true; changed;) {
         changed = false;
@@ -838,6 +956,12 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
     });
   }
+  // The card checks shown: none for a card of a cancelled item. Refusals keep them.
+  function shownCardChecks(key: string): Check[] {
+    const d = index().decisions.get(key);
+    return d && statusOf(d.item) === "cancelled" ? [] : cardChecks(key).map(c => ({ ...c }));
+  }
+  function copyChecks(list: Check[]): Check[] { return list.map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }); }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
@@ -875,7 +999,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
         // Work an unpaused root needs gets a difficulty before it is dispatched. What no such root needs (backlog work,
-        // what hangs under it, paused work, an untriaged request) is not about to be, so it is not asked for one yet.
+        // what hangs under it, paused work) is not about to be, so it is not asked for one yet.
         if (it.difficulty === undefined && neededSet().has(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
@@ -889,14 +1013,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
+    isOpenWork,
     isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), cardChecks: key => cardChecks(key).map(c => ({ ...c })), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    cardsOf: id => cardsOf(id).slice(), cardChecks: key => shownCardChecks(key), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
-    checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
+    checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
+    refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };
 }

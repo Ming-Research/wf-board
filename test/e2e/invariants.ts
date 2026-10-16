@@ -531,7 +531,7 @@ export async function checkTagChips(bp: BoardPage, o: Oracle): Promise<string[]>
  * beside the tags, and an unrated item has none. Checked on an item of each kind that also has tags. */
 export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page;
-  const work = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && o.r.isOpenWork(id) && !o.r.isRequest(id) && o.s.items[id]!.tags?.length);
+  const work = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && o.r.isOpenWork(id) && o.s.items[id]!.tags?.length);
   const kinds: Array<[string, (d: unknown) => boolean]> = [["rated 1–5", d => typeof d === "number"], ["架构师做", d => d === "architect"], ["unrated", d => d === undefined]];
   for (const [kind, matches] of kinds) {
     const id = work.find(id => matches(o.s.items[id]!.difficulty));

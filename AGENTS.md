@@ -20,15 +20,25 @@ matches what the artifact board offered.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
   runs git.
+- `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
+  metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
+  line and the start-up step timings.
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   priority from open work plans, parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
+- `src/agents.ts`: the agent list at the top of the page: how the per-session
+  index of the last two items written is advanced, and the rows (who is listed,
+  the state word, the level) derived from it, the steps in progress and the
+  dispatch records. Imported by the server and bundled into the page.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
+- `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
+  time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
+  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
@@ -36,6 +46,9 @@ matches what the artifact board offered.
   events kept in a local file, receipts, the no-receipt alert);
   `src/timed-wake.ts`: what the half-hourly wake carries; `src/notify.ts`: the
   owner's notifications on the Mac. The protocol is `docs/design.md`, section 8.
+- `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
+  `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
+  the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
@@ -51,6 +64,11 @@ matches what the artifact board offered.
   of the live board's size; the `bench` workflow runs it by hand
   (`workflow_dispatch`) on this tree and on a base commit, as a step that
   never fails the run.
+- `scripts/check-private-content.ts`, with its rules in
+  `scripts/private-content-rules.ts`: the CI check that a push or a pull
+  request adds nothing private to this public repository (design section
+  11). It reads only added lines, paths, commit messages and the pull request's
+  title and body, and prints the rule and place, never the matched text.
 
 ## Checks
 
@@ -65,7 +83,6 @@ matches what the artifact board offered.
   (`test/web.test.ts`), fast but without CSS or layout; the page in a real
   browser on a generated board (`test/e2e`). A page bug gets its test in the
   lowest layer that can see it.
-- Run them locally only when small and needed; CI is the record.
 - Every page fix gets a real-browser regression witness
   (`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
   reversed.
@@ -92,9 +109,30 @@ matches what the artifact board offered.
 
 ## Deploy
 
-The architect deploys after merging. Fast-forward `~/dev/wf/wf-board` to the
-merged head of `main` and run `npm run -s build:web` there (the
-bundle is not in git). When server code changed, restart the daemon
+A launchd job, `org.ming-research.wf-board-deploy`, deploys every merge within
+five minutes (`docs/design.md`, section 4, Deploying). It fast-forwards
+`~/dev/wf/wf-board` to `main`, builds the page, restarts the
+daemon when a changed path needs it, waits for `/health`, and goes back to the
+last healthy commit when the daemon does not come up. Its log is
+`~/Library/Logs/wf-board-deploy.log`.
+
+The architect does not deploy by hand. It gets one push per deploy:
+`deployed` names the version now served and the changes, and the architect
+checks the change on the live page; `deployFailed` says why nothing was
+deployed (a null version means the job itself could not run, as when its fetch
+fails; the log has the detail). The job leaves a checkout alone that is on another branch, has local
+changes to tracked files or has a commit the main line lacks, and pushes
+`deployFailed` once; fix the checkout and the next run deploys.
+
+Install once, after the PR that adds the job has been deployed by hand (the
+merge does not install it):
+`WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts deploy`
+writes the plist and prints the `launchctl bootstrap` command to run.
+
+By hand, when the job is off or its own script broke: fast-forward
+`~/dev/wf/wf-board` to the merged head of `main` and run
+`npm run -s build:web` there (the bundle is not in git). When server code
+changed, restart the daemon
 (`launchctl kickstart -k gui/$(id -u)/org.ming-research.wf-board`; log
 `~/Library/Logs/wf-board.log`) and wait until
 `curl -s http://127.0.0.1:7417/health` answers, which can take more than ten
