@@ -266,6 +266,44 @@ log:
   optional plan without an acceptance step, targets and log, and no status;
   creation and `update_item` can set it. Records are defined with the plan in
   [Item plans](#item-plans).
+- **Dispatch records.** An item may carry `dispatches`, oldest first: one
+  entry per agent session the architect started on it (a dispatch), in the
+  columns of the dispatch format the architect keeps. An entry holds
+  `agentId` (the session's full id, unique on the whole board), `agent` (its
+  name), `role` (`工程师` or `审查`), `level` (1–5), `model`, optional
+  `effort`, `worktree`, `started` and `did` (which rows of the item the
+  session does, one line), and once the session has ended a `finish` block:
+  `ended`; `result` (`一次通过`, `返工后通过`, `换人` or `放弃`); the counts,
+  `reports` and `kickbacks` for an engineer and `rounds` for a review, never
+  the other role's; optional `waited` minutes (spent waiting for the owner,
+  the 14900K or a dependency); `signals`, none or several of `验收没过`,
+  `架构师打回`, `做法被否`, `长时间没进展`, `换模型`, each at most once and
+  each with an optional note; `usage` (`input`, `cacheWrite`, `cacheRead`,
+  `output` tokens); `cost`; and an optional `note`. The fixed options are the
+  dispatch format's own and nothing else is accepted for them. Decisions:
+  - Stored on the item, not as a new document kind: an item already has its
+    history, `changes`, retried writes and project ownership check, while a
+    new kind would also change the store's reads and writes, the snapshot,
+    the events sent to the page and the page's snapshot. The cost is about
+    fifteen more lines in the item file per dispatch.
+  - Historical detail, like the log: `withoutHistoricalDetail` drops
+    `dispatches` with `log` before any owner-facing comparison, so a dispatch
+    write is never news to the owner. The page shows neither the field nor a
+    summary of it.
+  - `cost` is US dollars with at most three decimals (a longer value is
+    rounded when written) and is added up as whole thousandths, so a printed
+    total always equals its printed rows added up. The board holds no price
+    table: a price depends on each message's prompt length (Haiku is tiered),
+    which only the session transcript shows, so the caller measures `usage`
+    and `cost` and the board records them.
+  - `dispatch_start` and `dispatch_finish` each append a generated line to the
+    item's log (`起：…`, `收：…`), the architect's hand-written line in
+    machine form: the owner reads only the page, which shows logs and not
+    dispatches.
+  - Not stored: the judgment records for "research first or do directly"
+    (item, what was judged and why, how the misjudgment showed, what it should
+    have been). They are a different record and stay written by hand in the
+    calibration item's log.
 - **Projects.** Every item stores its project in `group`; an item's project
   never changes, and ownership never crosses projects, so the stored field and
   the ownership chain always agree. The legacy `area` was folded into
@@ -1105,6 +1143,7 @@ instructions within the limit and free of rule text.
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?, status?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
+| `dispatches(filters?, rows?)` | How have the sessions the architect started done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items, open items by status and inbox counts |
 | `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
@@ -1137,6 +1176,8 @@ item and card writes retain the normal project ownership checks.
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `总管`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `总管`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
+| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
+| `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Architect project only; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
