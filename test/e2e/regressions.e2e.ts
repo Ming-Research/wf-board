@@ -104,7 +104,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "a head's 参考 sections showed their whole text instead of folding shut under their titles (feature, ref-fold)",
     // Without the split, the head is one run of text: a 参考 line is ordinary bold text and nothing folds.
-    reverts: [{ file: "web/app.ts", edit: "the head is not split into sections", find: "const [head = [], ...refs] = refSplit(lines);", replace: "const [head = [], ...refs] = [lines];" }], family: "ref-fold-split",
+    reverts: [{ file: "web/app.ts", edit: "the head is not split into sections", find: "const [head = [], ...refs] = refSplit(lines), at = scope;", replace: "const [head = [], ...refs] = [lines], at = scope;" }], family: "ref-fold-split",
     run: async (bp, b) => checkRefFold(bp, b, await oracle(b.store)),
   },
   {
