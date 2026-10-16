@@ -123,6 +123,17 @@ const KEEP_EDITS: Revert[] = [
   { file: "web/app.ts", edit: "renderNow keeps rules", find: "function renderNow(...scope:string[]) { invalidate();", replace: "function renderNow(...scope:string[]) { memo = {};" },
   { file: "web/app.ts", edit: "the minute tick still refreshes", find: "setInterval(() => { rulePresentationDirty = true;", replace: "setInterval(() => { invalidate(); rulePresentationDirty = true;" },
 ];
+const COUNT_EDITS: Revert[] = [
+      { file: "web/app.ts", edit: "count invalidate", find: "function invalidate() { memo = {};", replace: "function invalidate() { ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }).inv++; memo = {};" },
+      { file: "web/app.ts", edit: "time renderPage", find: "function renderPage(scope:Set<string>) {", replace: "function renderPage(scope:Set<string>) { const __t = performance.now(); try { renderPageInner(scope); } finally { const c = ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }); c.render++; c.scopes.push([...scope].slice(0, 4).join(\",\") + \" \" + (performance.now() - __t).toFixed(0) + \"ms\"); } }\n  function renderPageInner(scope:Set<string>) {" },
+    ];
+// Navigation draws once for what it opens, selects and expands, instead of once for each of the three.
+const COALESCE_EDITS: Revert[] = [
+  { file: "web/app.ts", edit: "openPath draws with the rest", find: "if (outer) renderNow(get(\"it-\"+outer)", replace: "if (outer) scheduleRender(get(\"it-\"+outer)" },
+  { file: "web/app.ts", edit: "selectItem draws with the rest", find: "if (detailDirty) renderNow(\"detail\");", replace: "if (detailDirty) scheduleRender(\"detail\");" },
+];
+// Marking a document read refreshes the unread list only, not the whole board.
+const MARK_EDIT: Revert = { file: "web/app.ts", edit: "mark read without the board", find: "      unreadGeneration++; unreadFlight = undefined;\n      void refreshOwner().catch(showError);", replace: "      unreadGeneration++; unreadFlight = undefined;\n      void refreshUnread().catch(showError);" };
 const FILTER_EDIT: Revert = { file: "web/app.ts", edit: "no filter row redraw", find: "if (filters) filters.replaceWith(filterRow(g.name));", replace: "if (filters && scope.has(\"all\")) filters.replaceWith(filterRow(g.name));" };
 
 const INIT = `(() => {
@@ -200,7 +211,7 @@ function report(label: string, runs: Run[]) {
     if (run.control.length) out(`  control (no press, same writes, 450 ms window): median ${f(median(run.control))} max ${f(Math.max(...run.control))}`);
     out(`  busy per press: ${busy.map(x => x.toFixed(0)).join(" ")}`);
     const landings = run.presses.filter(p => p.busy > 30 && p.cnt);
-    if (landings.length && run.variant === "count") {
+    if (landings.length && run.variant.endsWith("count")) {
       out(`  per landing press: invalidate() ${f(median(landings.map(p => p.cnt!.inv)))} times, renderPage() ${f(median(landings.map(p => p.cnt!.render)))} times (medians over ${landings.length} landings)`);
       for (const p of landings.slice(5, 8)) out(`    landing busy ${p.busy.toFixed(0)} ms, renders: ${p.cnt!.scopes.join(" | ")}`);
     }
@@ -295,15 +306,16 @@ try {
   for (const v of args.variants!.split(",").filter(Boolean)) {
     if (v === "head") pages.set(v, join(ROOT, "web"));
     else if (v === "noagents") pages.set(v, await variantWeb(t, [{ file: "web/app.ts", edit: "no agent list", find: "function renderAgents() {\n    const host = get(\"agents\"); if (!host) return;", replace: "function renderAgents() { return;\n    const host = get(\"agents\"); if (!host) return;" }]));
-    else if (v === "count") pages.set(v, await variantWeb(t, [
-      { file: "web/app.ts", edit: "count invalidate", find: "function invalidate() { memo = {};", replace: "function invalidate() { ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }).inv++; memo = {};" },
-      { file: "web/app.ts", edit: "time renderPage", find: "function renderPage(scope:Set<string>) {", replace: "function renderPage(scope:Set<string>) { const __t = performance.now(); try { renderPageInner(scope); } finally { const c = ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }); c.render++; c.scopes.push([...scope].slice(0, 4).join(\",\") + \" \" + (performance.now() - __t).toFixed(0) + \"ms\"); } }\n  function renderPageInner(scope:Set<string>) {" },
-    ]));
+    else if (v === "count") pages.set(v, await variantWeb(t, COUNT_EDITS));
     // The falsifier for the suspected cause: a render that changes only the view keeps the derived rules of the unchanged board.
     else if (v === "keeprules") pages.set(v, await variantWeb(t, KEEP_EDITS));
     // The filter counts of every project are not redrawn at each render (their upper bound: never outside the first draw).
     else if (v === "nofilter") pages.set(v, await variantWeb(t, [FILTER_EDIT]));
     else if (v === "keepnofilter") pages.set(v, await variantWeb(t, [...KEEP_EDITS, FILTER_EDIT]));
+    else if (v === "coalesce") pages.set(v, await variantWeb(t, COALESCE_EDITS));
+    else if (v === "all3") pages.set(v, await variantWeb(t, [...KEEP_EDITS, FILTER_EDIT, ...COALESCE_EDITS]));
+    else if (v === "all3count") pages.set(v, await variantWeb(t, [...KEEP_EDITS, FILTER_EDIT, ...COALESCE_EDITS, ...COUNT_EDITS]));
+    else if (v === "markslim") pages.set(v, await variantWeb(t, [MARK_EDIT]));
     else throw new Error("unknown variant " + v);
   }
   for (const c of args.commits!.split(",").filter(Boolean)) pages.set(c, await pageAt(c));
