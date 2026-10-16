@@ -43,7 +43,7 @@ test("seeding: automatic maintenance ends before the next git add starts", async
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   t.after(() => rm(traceDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const trace = join(traceDir, "trace2.jsonl");
-  const env = { GIT_TRACE2_EVENT: trace, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "gc.auto", GIT_CONFIG_VALUE_0: "1" };
+  const env = { GIT_TRACE2_EVENT: trace, GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "gc.auto", GIT_CONFIG_VALUE_0: "1", GIT_CONFIG_KEY_1: "maintenance.auto", GIT_CONFIG_VALUE_1: "false" };
   const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
   Object.assign(process.env, env);
   t.after(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
