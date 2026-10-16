@@ -56,7 +56,7 @@ test("seeding: automatic maintenance ends before the next git add starts", async
   const exitTime = (sid: string, from: string) => events.find(e => e.event === "exit" && e.sid === sid && e.time >= from)?.time ?? "￿";
   const maintenance = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack"))
     .map(e => ({ from: e.time, to: exitTime(e.sid, e.time) }));
-  const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.time);
+  const adds = events.filter(e => e.event === "start" && e.argv?.includes("addzz")).map(e => e.time);
   assert.ok(maintenance.length > 0, "automatic maintenance ran: " + maintenance.length);
   assert.ok(adds.length > 0, "git add ran: " + adds.length);
   const overlaps = adds.filter(a => maintenance.some(m => a >= m.from && a < m.to));
