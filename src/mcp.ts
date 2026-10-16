@@ -177,6 +177,8 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     if (res.rev === undefined) return lines.join("\n");
     const kind = Object.hasOwn(after.snapshot.items, res.id) ? "item" : Object.hasOwn(after.snapshot.decisions, res.id) ? "card" : "note";
     if (kind !== "note") lines.push(formatRow(q.row(after.snapshot, after.rules, kind, res.id)));
+    // The card writer sees its own option check now, not only on the next read.
+    if (kind === "card") for (const check of after.rules.cardChecks(res.id)) lines.push(`check: ${check.text}`);
     if (kind === "item") for (const a of after.rules.ancestors(res.id)) {
       const was = Object.hasOwn(before.snapshot.items, a) ? `${label(before.rules.statusOf(a))} ${before.rules.priorityOf(a)}` : "";
       const now = `${label(after.rules.statusOf(a))} ${after.rules.priorityOf(a)}`;
