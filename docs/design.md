@@ -839,7 +839,8 @@ item in the default tree.
 #### Checks
 
 The checks touching plans, replacing the dependency and completion-condition
-checks. A cancelled item, and each card of one, raises none of them:
+checks. A cancelled item, and each card of one, shows none of them; the
+write-time refusals in the last column still apply to it:
 
 | Check | Refused when newly introduced |
 |---|---|
