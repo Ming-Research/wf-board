@@ -256,7 +256,7 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
       if (!m.note || !m.note.includes("没标位置") || !m.note.includes(`[[q:${card}]]`)) v.push(`card-unplaced: card ${card} has no line in the head but no line before it says so, it has "${m.note}"`);
       if (!m.afterHead && item.head) v.push(`card-unplaced: card ${card} has no line in the head but does not follow the head`);
     } else if (m.note) v.push(`card-place: card ${card} has its line in the head but a line before it says it has no place`);
-    if (placed) {
+    if (placed && m.inHead) {
       // The card follows the paragraph that precedes its line and comes before the one after it.
       const lines = (item.head ?? "").split("\n"), at = lines.findIndex(l => l.trim() === `[[q:${card}]]`);
       // Plain text only: a line with a reference or another card's line shows as a link or a card, not as its source.
