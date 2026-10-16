@@ -9,7 +9,7 @@ import { brief, context, list } from "../src/query.ts";
 import { unreadSteps, piecesOf } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, at, architect, asArchitect } from "./helpers.ts";
+import { board, author, at, architect, architectSession, asArchitect } from "./helpers.ts";
 
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
@@ -46,8 +46,9 @@ test("only Architect from the session 架构师 sets a difficulty, on an item of
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
   const refusal = /only Architect with session 架构师 may set an item's difficulty/;
-  // A project author, the architect's project from another session or from none, and the retired coordinator are all refused.
-  for (const who of [{ author }, { author: "Firn" }, { author: architect }, { author: architect, session: "另一个会话" }]) {
+  // A project author, a project author borrowing the architect's session, the architect's project from another session or
+  // from none, and the retired coordinator are all refused.
+  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author: architect }, { author: architect, session: "另一个会话" }]) {
     await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
     await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }
