@@ -157,7 +157,8 @@ test("a request path is parsed as the router parses it, so a path served is a pa
   assert.equal(pathnameOf("/api/notes/../snapshot"), "/api/snapshot");
   assert.equal(pathnameOf("http://localhost:7417/health"), "/health");
   assert.equal(pathnameOf(undefined), "/");
-  assert.equal(pathnameOf("http://[bad"), "/");
+  assert.equal(pathnameOf("http://[bad"), undefined, "a URL that does not parse has no path, and is not the path of a route that exists");
+  assert.deepEqual(pageOperation("GET", pathnameOf("http://[bad")), { name: "GET (unknown route)", label: "GET (unreadable path)", cls: "read" });
 });
 
 test("tools are classed: the history readers by name, writes by their flag, the rest reads", () => {
@@ -289,6 +290,8 @@ test("a request is logged under the path it had, and a path with dot segments is
   const raw = (path: string) => new Promise<number>((resolve, reject) => { rawRequest({ host: "127.0.0.1", port, path }, res => { res.resume(); res.on("end", () => resolve(res.statusCode!)); }).on("error", reject).end(); });
   const { info } = await logged(async () => {
     assert.equal(await raw("/api/./snapshot"), 200);
+    // A URL that does not parse reaches the handler, and the router fails it: it is not counted as a request for the page at "/".
+    assert.equal(await raw("http://[bad"), 500);
     assert.equal((await fetch(url + "/wp-login.php")).status, 404);
     assert.equal((await fetch(url + "/api/notes/some-note-id", { method: "DELETE" })).status, 404);
     await sleep(20);
@@ -296,6 +299,8 @@ test("a request is logged under the path it had, and a path with dot segments is
   assert.ok(info.some(line => /^GET \/api\/snapshot 200 \d+ ms$/.test(line)), info.join("\n"));
   assert.ok(info.some(line => /^GET \/wp-login\.php 404 \d+ ms$/.test(line)), "the path an unknown request had, not a name for the lot");
   assert.ok(info.some(line => /^DELETE \/api\/notes\/some-note-id 404 \d+ ms$/.test(line)));
+  assert.ok(info.some(line => /^GET \(unreadable path\) 500 \d+ ms$/.test(line)), info.join("\n"));
+  assert.ok(!info.some(line => /^GET \/ /.test(line)), "not the page at /");
   assert.ok(!info.some(line => line.includes("unknown route")), info.join("\n"));
 });
 
@@ -358,7 +363,8 @@ test("a tool that fails is timed as an error; one over its limit is told all the
   assert.ok(info.some(line => /^tool append_log error \d+ ms$/.test(line)));
   const [frame] = slowFrames(wake);
   assert.equal(frame!.op, "tool append_log");
-  assert.ok((frame!.ms as number) >= 300);
+  // The operation fails as soon as its wait is over, so no work after the wait pads the time: what matters is that it is over its limit.
+  assert.ok((frame!.ms as number) > (frame!.limitMs as number), `${String(frame!.ms)} ms against a limit of ${String(frame!.limitMs)}`);
   assert.equal(slowFrames(wake).length, 1);
 });
 
