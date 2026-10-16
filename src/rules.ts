@@ -763,9 +763,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
-        // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists them.
-        const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row] : []);
-        if (isOpenWork(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出：等别的条目就用共享依赖，等主人就出卡，暂时不做就挪进待选。写了在等的行：${waiting.map(row => `「${row.text}」等${row.waits}`).join("；")}`, label: WAITS_TEXT_LABEL });
+        // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
+        const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
+        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       }
       return out;

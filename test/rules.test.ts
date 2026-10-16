@@ -476,21 +476,35 @@ test("current notice and note write times count as active windows across project
   assert.equal(hasStalled(s), true);
 });
 
-test("a todo step that writes its waits as text gets one check per open item, listing its rows", () => {
+test("a todo step that writes its waits as text gets one check per open item, listing its rows by id", () => {
   const s = snapshot({
-    two: { plan: workPlan([step("ci", "todo", { text: "Run CI", waits: "CI" }), step("pr", "todo", { text: "Open PR", waits: "Owner card" })]) },
-    doing: { plan: workPlan([step("ci", "doing", { text: "Run CI", waits: "CI", since: T0 })]) },
-    plain: { plan: workPlan([step("write", "todo", { text: "Write docs" })]) },
-    cancelled: { status: "cancelled", plan: workPlan([step("ci", "todo", { text: "Run CI", waits: "CI" })]) },
-    record: { record: true, plan: [step("ci", "todo", { text: "Run CI", waits: "CI" })] },
+    two: { plan: workPlan([step("ci", "todo", { waits: "CI" }), step("pr", "todo", { waits: "Owner card" })]) },
+    mixed: { plan: workPlan([step("run", "doing", { waits: "CI", since: T0 }), step("review", "todo", { waits: "Review" })]) },
+    doneOnly: { plan: workPlan([step("old", "done", { waits: "CI" })]) },
+    droppedOnly: { plan: workPlan([step("gone", "dropped", { waits: "CI" })]) },
+    doingOnly: { plan: workPlan([step("ci", "doing", { waits: "CI", since: T0 })]) },
+    plain: { plan: workPlan([step("write", "todo")]) },
+    acceptWaits: { plan: [{ ...accept("todo"), waits: "Owner card" }] },
+    cancelled: { status: "cancelled", plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    record: { record: true, plan: [step("ci", "todo", { waits: "CI" })] },
+    paused: { paused: { reason: "Owner deferred", at: T1 }, plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    owned: { plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    backlogHolder: { record: true, plan: [own("owned")] },
   });
   const r = rules(s);
   const waitsChecks = (id: string) => r.checks(id).filter(check => check.label === WAITS_TEXT_LABEL);
-  assert.deepEqual(waitsChecks("two"), [{ label: WAITS_TEXT_LABEL, text: "在等的事写在文字里，看板看不出：等别的条目就用共享依赖，等主人就出卡，暂时不做就挪进待选。写了在等的行：「Run CI」等CI；「Open PR」等Owner card" }]);
-  assert.deepEqual(waitsChecks("doing"), [], "a doing step's waits is a live wait, not a check");
+  const hint = "在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：";
+  assert.deepEqual(waitsChecks("two"), [{ label: WAITS_TEXT_LABEL, text: hint + "ci、pr" }]);
+  assert.deepEqual(waitsChecks("mixed"), [{ label: WAITS_TEXT_LABEL, text: hint + "review" }], "only the todo row is listed, not the doing row beside it");
+  assert.deepEqual(waitsChecks("doingOnly"), [], "a doing step's waits is a live wait, not a check");
+  assert.deepEqual(waitsChecks("doneOnly"), [], "a done step's waits is history");
+  assert.deepEqual(waitsChecks("droppedOnly"), [], "a dropped step's waits is history");
   assert.deepEqual(waitsChecks("plain"), [], "a todo step without waits text passes");
+  assert.deepEqual(waitsChecks("acceptWaits"), [{ label: WAITS_TEXT_LABEL, text: hint + "accept" }], "an acceptance row waiting in text is listed like any other");
   assert.deepEqual(waitsChecks("cancelled"), [], "cancelled items stay silent");
   assert.deepEqual(waitsChecks("record"), [], "records are not work");
+  assert.deepEqual(waitsChecks("paused"), [], "a paused item stays silent until resumed");
+  assert.deepEqual(waitsChecks("owned"), [], "work in the backlog stays silent");
 });
 
 test("step text and days retain state markers, dates, waits and whole-day boundaries", () => {
