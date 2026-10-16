@@ -776,6 +776,7 @@ checks:
 | 拥有它的条目已关闭 | no |
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
+| 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |

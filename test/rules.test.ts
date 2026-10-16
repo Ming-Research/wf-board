@@ -680,3 +680,15 @@ test("open decision cards with fewer than three options get a check on the card 
   assert.equal(card?.label, "选项不足");
   assert.deepEqual(r.checks("owner").filter(c => c.label === "选项不足"), [{ ...card, target: { kind: "card", id: "two" } }]);
 });
+
+test("the option check covers one-option cards and stops once the owner has chosen", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    one: { item: "owner", options: [{ key: "A", text: "Do" }] },
+    chosen: { item: "owner", options, status: "open" },
+  }, {
+    answer: { target: "q:chosen", kind: "choice", text: "A", at: T0, state: "sent", rev: 1 },
+  });
+  assert.equal(rules(s).cardChecks("one")[0]?.label, "选项不足", "a one-option card is checked");
+  assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has already answered is not checked before the ruling");
+});
