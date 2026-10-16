@@ -42,7 +42,7 @@ const WITNESSES: Witness[] = [
     bug: "changed body blocks lost their mark once the green background was removed (fixed in this change)",
     // The blue bar rule that marks a changed body block; removing it leaves the block with no mark at all.
     reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
-    family: "changed-block-bar",
+    family: "changed-block",
     storage: b => openAll(b),
     run: async bp => checkChangedBlocks(bp),
   },
