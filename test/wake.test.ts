@@ -10,7 +10,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, author, later, server, wakeSocket } from "./helpers.ts";
 import { Item } from "../src/model.ts";
-import { Wake, WAKE_KINDS, CONTROL_FRAMES, ARCHITECT_SESSION } from "../src/wake.ts";
+import { Wake, WAKE_KINDS, CONTROL_FRAMES } from "../src/wake.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
 import { macNotify, notifyArgs, NOTIFY_SCRIPT } from "../src/notify.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -281,8 +282,7 @@ test("the timed wake lists what changed since the last one without the architect
   let clock = T0;
   const wake = new Wake({ file, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
-  // The Architect project, one of its items, and an item with a step being worked on.
-  await store.commit({ author: "总管", message: "Add the Architect project", board: { ...store.snapshot().board, projects: [...store.snapshot().board.projects, { name: "Architect" }] } });
+  // One item of the Architect project (the fixture board has it), and an item with a step being worked on.
   const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
@@ -354,6 +354,8 @@ test("a call carrying the architect's session, read or write, is the receipt for
   const refused = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION, unknown: 1 } });
   assert.equal(refused.isError, true);
   assert.equal(wake.receiptedUpTo(), 3, "a call the schema refuses is not a receipt");
+  await client.callTool({ name: "projects", arguments: { session: `  ${ARCHITECT_SESSION}  ` } });
+  assert.equal(wake.receiptedUpTo(), 4, "a session name padded with spaces counts, as it does for the permission rule");
 });
 
 test("every tool takes an optional session, and post_notice is gone", async t => {
