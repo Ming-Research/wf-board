@@ -87,7 +87,7 @@ test("stopping ends the push that runs, tells nobody and starts no other", async
   const running = backup.round();
   while (w.pushes.length === 0) await new Promise(resolve => setImmediate(resolve));
   backup.stop();
-  await running;
+  await Promise.race([running, new Promise((_resolve, reject) => setTimeout(() => reject(new Error("the round did not end after stop()")), 3000))]);
   assert.deepEqual(frames(), [], "a push stopped by the shutdown is no failure of the copy");
   await round(130);
   assert.equal(w.pushes.length, 1, "no push is started after the stop");

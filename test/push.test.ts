@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,7 +125,7 @@ test("a git command that outlives its cap is killed with its ssh, and says so", 
   const f = await fixture(t);
   await f.ssh.set("stall");
   const started = performance.now();
-  const result = await netGit(["ls-remote", "origin"], { cwd: f.dir, capMs: 1000, killGraceMs: 300 });
+  const result = await within(netGit(["ls-remote", "origin"], { cwd: f.dir, capMs: 1000, killGraceMs: 300 }), 10_000, "the command with a cap");
   const lasted = performance.now() - started;
   assert.equal(result.killedBy, "cap");
   assert.ok(lasted >= 900 && lasted < 5000, `ended after ${Math.round(lasted)} ms`);
@@ -146,6 +146,25 @@ test("a command that ignores SIGTERM is sent SIGKILL after the grace, whole grou
   assert.equal(result.killedBy, "signal");
   assert.ok(lasted >= 350, `SIGTERM alone did not end it: it ended after ${Math.round(lasted)} ms, the grace being 400`);
   await f.ssh.gone();
+});
+
+test("a git command run by netGit never starts git's automatic maintenance, where the same command run plainly does", async t => {
+  const f = await fixture(t);
+  await write(f.store); await write(f.store);
+  assert.equal(await f.store.push(), true);
+  // Every loose object is over the threshold; the remote's own receive-pack is kept from starting maintenance in the same trace.
+  await git(f.dir, "config", "gc.auto", "1");
+  await git(f.remote, "config", "receive.autogc", "false"); await git(f.remote, "config", "gc.auto", "0");
+  const trace = join(f.base, "trace.json");
+  const started = async (run: (env: NodeJS.ProcessEnv) => Promise<unknown>) => {
+    await writeFile(trace, "");
+    await run({ ...process.env, GIT_TRACE2_EVENT: trace });
+    await sleep(500);
+    return (await readFile(trace, "utf8")).split("\n").filter(line => /"argv":\["[^"]*","maintenance","run","--auto"/.test(line)).length;
+  };
+  const fetch = ["fetch", "--no-tags", "origin", "refs/heads/main"];
+  assert.ok(await started(env => exec("git", fetch, { cwd: f.dir, env })) > 0, "control: a plain fetch starts maintenance here");
+  assert.equal(await started(env => netGit(fetch, { cwd: f.dir, env })), 0);
 });
 
 test("a command given a signal that is already aborted is not started", async t => {
