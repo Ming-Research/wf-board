@@ -413,7 +413,7 @@ export class Store {
     const commits = (await this.log()).reverse();
     for (const commit of commits) {
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE) continue;
+      if (commit.message === NUMBERING_MESSAGE) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
