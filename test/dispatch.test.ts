@@ -8,12 +8,12 @@ import { unreadSteps } from "../src/history.ts";
 import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
 import { Item, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
-import { board, author } from "./helpers.ts";
+import { board, author, asArchitect } from "./helpers.ts";
 
 const architect = "架构师";
-const start = { author, session: architect, id: "a", role: "工程师" as const, level: 2, model: "Sonnet", effort: "xhigh", agent: "a-worker", agentId: "47664fad-ae80", worktree: "~/dev/wf/worktrees/a", startedAt: "2026-10-16T09:02Z", did: "实现一行" };
-const usage = { input: 150, cacheWrite: 104270, cacheRead: 6872481, output: 26823 };
-const finish = { author, session: architect, id: "a", agentId: "47664fad-ae80", result: "返工后通过" as const, usage, cost: 0.3654, reports: 3, kickbacks: 1, waited: 15, endedAt: "2026-10-16T09:50Z", signals: [{ kind: "架构师打回" as const, note: "审查要已完成的条目不查" }, { kind: "做法被否" as const }], note: "等级合适" };
+const start = { author, session: architect, id: "a", role: "工程师" as const, level: 2, model: "Sonnet", effort: "xhigh", agent: "a-worker", agentId: "agent-0001", worktree: "~/dev/wf/worktrees/a", startedAt: "2026-10-16T09:02Z", did: "实现一行" };
+const usage = { input: 120, cacheWrite: 90000, cacheRead: 5000000, output: 20000 };
+const finish = { author, session: architect, id: "a", agentId: "agent-0001", result: "返工后通过" as const, usage, cost: 0.3654, reports: 3, kickbacks: 1, waited: 15, endedAt: "2026-10-16T09:50Z", signals: [{ kind: "架构师打回" as const, note: "审查要求补一条用例" }, { kind: "做法被否" as const }], note: "等级合适" };
 
 // A board whose clock the test sets; the helper's fixed clock cannot place a start and an end apart.
 async function clocked(t: Parameters<typeof board>[0], now = "2026-10-16T10:00:00Z") {
@@ -28,8 +28,8 @@ test("dispatch_start records every column on the item and appends the start line
   await op.dispatchStart(start);
 
   const it = store.snapshot().items.a!;
-  assert.deepEqual(it.dispatches, [{ agentId: "47664fad-ae80", agent: "a-worker", role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", worktree: "~/dev/wf/worktrees/a", started: "2026-10-16T09:02:00Z", did: "实现一行" }]);
-  assert.deepEqual(it.log.at(-1), { at: "2026-10-16T10:00:00Z", by: author, text: "起：会话 a-worker（号 47664fad-ae80），工程师，2 级 Sonnet，推理强度 xhigh，工作树 ~/dev/wf/worktrees/a，2026-10-16T09:02Z，做：实现一行" });
+  assert.deepEqual(it.dispatches, [{ agentId: "agent-0001", agent: "a-worker", role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", worktree: "~/dev/wf/worktrees/a", started: "2026-10-16T09:02:00Z", did: "实现一行" }]);
+  assert.deepEqual(it.log.at(-1), { at: "2026-10-16T10:00:00Z", by: author, text: "起：会话 a-worker（号 agent-0001），工程师，2 级 Sonnet，推理强度 xhigh，工作树 ~/dev/wf/worktrees/a，2026-10-16T09:02Z，做：实现一行" });
   // What the file holds is what the snapshot holds: the committed YAML parses back to the same dispatches.
   const committed = await store.show("item", "a", store.snapshot().head) as Item;
   assert.deepEqual(committed.dispatches, it.dispatches);
@@ -48,8 +48,8 @@ test("dispatch_start refuses what the format does not allow, naming the reason, 
   await op.dispatchStart(start);
   const before = store.snapshot();
   const cases: Array<[string, Parameters<typeof op.dispatchStart>[0], RegExp]> = [
-    ["an agentId already on this item", { ...start, agent: "other" }, /agentId 47664fad-ae80: already recorded on a for session a-worker/],
-    ["an agentId already on another item", { ...start, id: "b" }, /agentId 47664fad-ae80: already recorded on a/],
+    ["an agentId already on this item", { ...start, agent: "other" }, /agentId agent-0001: already recorded on a for session a-worker/],
+    ["an agentId already on another item", { ...start, id: "b" }, /agentId agent-0001: already recorded on a/],
     ["a role the format lacks", { ...start, agentId: "x1", role: "架构师" as never }, /role: fix/],
     ["a level beyond 5", { ...start, agentId: "x2", level: 6 }, /level: fix/],
     ["a fractional level", { ...start, agentId: "x3", level: 2.5 }, /level: fix/],
@@ -70,8 +70,8 @@ test("dispatch_finish completes an engineer dispatch, rounds the cost to thousan
   await op.dispatchFinish(finish);
 
   const [d] = store.snapshot().items.a!.dispatches!;
-  assert.deepEqual(d!.finish, { ended: "2026-10-16T09:50:00Z", result: "返工后通过", reports: 3, kickbacks: 1, waited: 15, signals: [{ kind: "架构师打回", note: "审查要已完成的条目不查" }, { kind: "做法被否" }], usage, cost: 0.365, note: "等级合适" });
-  assert.deepEqual(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-worker（工程师），返工后通过，报告 3 次，打回 1 次，2026-10-16T09:02Z–2026-10-16T09:50Z，等待 15 分钟，用量 输入 150，写缓存 104270，读缓存 6872481，输出 26823，花费 $0.365，失败信号：架构师打回（审查要已完成的条目不查）、做法被否，备注：等级合适");
+  assert.deepEqual(d!.finish, { ended: "2026-10-16T09:50:00Z", result: "返工后通过", reports: 3, kickbacks: 1, waited: 15, signals: [{ kind: "架构师打回", note: "审查要求补一条用例" }, { kind: "做法被否" }], usage, cost: 0.365, note: "等级合适" });
+  assert.deepEqual(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-worker（工程师），返工后通过，报告 3 次，打回 1 次，2026-10-16T09:02Z–2026-10-16T09:50Z，等待 15 分钟，用量 输入 120，写缓存 90000，读缓存 5000000，输出 20000，花费 $0.365，失败信号：架构师打回（审查要求补一条用例）、做法被否，备注：等级合适");
   const committed = await store.show("item", "a", store.snapshot().head) as Item;
   assert.deepEqual(committed.dispatches, store.snapshot().items.a!.dispatches);
 });
@@ -83,7 +83,7 @@ test("dispatch_finish of a review carries rounds, no signals by default, and tak
   await op.dispatchFinish({ author, id: "a", agentId: "rv-1", result: "一次通过", usage, cost: 3.53, rounds: 1 });
   const d = store.snapshot().items.a!.dispatches![0]!;
   assert.deepEqual(d.finish, { ended: "2026-10-16T10:20:30Z", result: "一次通过", rounds: 1, signals: [], usage, cost: 3.53 });
-  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-review（审查），一次通过，来回 1 次，2026-10-16T10:00Z–2026-10-16T10:20Z，用量 输入 150，写缓存 104270，读缓存 6872481，输出 26823，花费 $3.530，失败信号：无");
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-review（审查），一次通过，来回 1 次，2026-10-16T10:00Z–2026-10-16T10:20Z，用量 输入 120，写缓存 90000，读缓存 5000000，输出 20000，花费 $3.530，失败信号：无");
 });
 
 test("dispatch_finish refuses wrong-role counts, missing counts and values outside the fixed options, and writes nothing", async t => {
@@ -93,7 +93,7 @@ test("dispatch_finish refuses wrong-role counts, missing counts and values outsi
   const before = store.snapshot();
   const review = { ...finish, agentId: "rv-1", reports: undefined, kickbacks: undefined, rounds: 2 };
   const cases: Array<[string, Parameters<typeof op.dispatchFinish>[0], RegExp]> = [
-    ["an agentId the item lacks", { ...finish, agentId: "ghost" }, /agentId ghost: not dispatched on a; recorded here: 47664fad-ae80 \(a-worker\), rv-1 \(a-review\)/],
+    ["an agentId the item lacks", { ...finish, agentId: "ghost" }, /agentId ghost: not dispatched on a; recorded here: agent-0001 \(a-worker\), rv-1 \(a-review\)/],
     ["an engineer without reports", { ...finish, reports: undefined }, /reports: an engineer dispatch ends with reports and kickbacks/],
     ["an engineer without kickbacks", { ...finish, kickbacks: undefined }, /kickbacks: an engineer dispatch ends with reports and kickbacks/],
     ["an engineer with rounds", { ...finish, rounds: 2 }, /rounds: only a review dispatch carries rounds/],
@@ -120,7 +120,7 @@ test("an ended dispatch is changed only with replace, which replaces the whole r
   await op.dispatchFinish(finish);
   await assert.rejects(() => op.dispatchFinish({ ...finish, result: "一次通过" }), refused(/already ended at 2026-10-16T09:50:00Z as 返工后通过; pass replace: true/));
 
-  await op.dispatchFinish({ author, id: "a", agentId: "47664fad-ae80", result: "一次通过", usage, cost: 1, reports: 2, kickbacks: 0, replace: true });
+  await op.dispatchFinish({ author, id: "a", agentId: "agent-0001", result: "一次通过", usage, cost: 1, reports: 2, kickbacks: 0, replace: true });
   const d = store.snapshot().items.a!.dispatches![0]!;
   // The signals, note and wait of the first record are gone: a correction states the whole record again.
   assert.deepEqual(d.finish, { ended: "2026-10-16T10:00:00Z", result: "一次通过", reports: 2, kickbacks: 0, signals: [], usage, cost: 1 });
@@ -134,6 +134,15 @@ test("only the item's own project writes its dispatches", async t => {
   await op.dispatchStart(start);
   await assert.rejects(() => op.dispatchFinish({ ...finish, author: "Firn" }), refused(/item a belongs to project Whitefoot/));
   assert.equal(store.snapshot().items.a!.dispatches![0]!.finish, undefined);
+});
+
+test("the architect, with its session, records on any project's item; without the session it is refused like any other project", async t => {
+  const { store, op } = await clocked(t);
+  await op.dispatchStart({ ...start, ...asArchitect, id: "other" });
+  assert.equal(store.snapshot().items.other!.dispatches![0]!.agentId, "agent-0001");
+  await op.dispatchFinish({ ...finish, ...asArchitect, id: "other" });
+  assert.equal(store.snapshot().items.other!.dispatches![0]!.finish!.result, "返工后通过");
+  await assert.rejects(() => op.dispatchStart({ ...start, agentId: "agent-0002", id: "other", author: "Architect", session: undefined }), refused(/item other belongs to project Firn/));
 });
 
 test("an item's dispatches must have unique agentIds in the schema as well", async t => {
@@ -166,8 +175,8 @@ function prng(seed: number): () => number { let x = seed; return () => (x = (x *
 async function manyDispatches(t: Parameters<typeof board>[0], count = 60) {
   const fixture = await clocked(t), { op, store } = fixture, rnd = prng(7);
   const pick = <T>(list: readonly T[]) => list[Math.floor(rnd() * list.length)]!;
-  await op.setTag({ author: "总管", name: "看板", meaning: "m" });
-  await op.setTag({ author: "总管", name: "协作流程", meaning: "m" });
+  await op.setTag({ ...asArchitect, name: "看板", meaning: "m" });
+  await op.setTag({ ...asArchitect, name: "协作流程", meaning: "m" });
   const owners: Record<string, string> = { a: "Whitefoot", b: "Whitefoot", area: "Whitefoot", other: "Firn" };
   await op.setTags({ author: "Whitefoot", id: "a", tags: ["看板", "协作流程"] });
   await op.setTags({ author: "Whitefoot", id: "b", tags: ["看板"] });
@@ -312,7 +321,7 @@ test("the three tools round-trip over MCP, with the refusal text reaching the ca
   assert.equal(ended.isError, undefined, text(ended));
   const report = text(await call("dispatches", { rows: true }));
   assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均来回 - · 花费 \$0\.365/);
-  assert.match(report, /2026-10-16T09:02Z–2026-10-16T09:50Z · a · 会话 a-worker（号 47664fad-ae80） · 工程师 · 2 级 Sonnet xhigh · 报告 3 次，打回 1 次 · 返工后通过/);
+  assert.match(report, /2026-10-16T09:02Z–2026-10-16T09:50Z · a · 会话 a-worker（号 agent-0001） · 工程师 · 2 级 Sonnet xhigh · 报告 3 次，打回 1 次 · 返工后通过/);
   assert.match(text(await call("dispatches", { filters: { id: "b" } })), /No dispatches\./);
   const unknown = await call("dispatches", { filters: { id: "nope" } });
   assert.equal(unknown.isError, true);

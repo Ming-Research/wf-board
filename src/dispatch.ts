@@ -72,7 +72,7 @@ export interface Summary {
   total: Tally;
   byLevel: Tally[];
   byRole: Tally[];
-  /** An item with several tags counts once under each, so these tallies add up to more than the total. */
+  /** An item with several tags counts once under each, so these tallies can add up to more than the total. */
   byTag: Tally[];
   /** Ended dispatches carrying each failure signal. */
   signals: Record<Signal, number>;
@@ -109,7 +109,7 @@ export function dispatchReport(rows: readonly DispatchRow[], withRows = false): 
   const s = summarize(rows);
   const out = [tallyLine(s.total), `失败信号（已结束的派活里各有几次）：${DISPATCH_SIGNALS.map(sig => `${sig} ${s.signals[sig]}`).join(" · ")}`];
   out.push("", "按等级", ...s.byLevel.map(tallyLine), "", "按角色", ...s.byRole.map(tallyLine));
-  out.push("", "按条目的标签（条目有几个标签就每个标签各算一次，所以这张表加起来比合计多）", ...s.byTag.map(tallyLine));
+  out.push("", "按条目的标签（条目有几个标签就每个标签各算一次，所以这张表加起来可能比合计多）", ...s.byTag.map(tallyLine));
   if (withRows) out.push("", "逐行", ...rows.map(dispatchLine));
   return out.join("\n");
 }

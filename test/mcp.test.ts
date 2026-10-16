@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
-import { board, author, later } from "./helpers.ts";
+import { board, author, architect, asArchitect, later } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 test("changes output stops at the limit and says how many documents it left out", () => {
@@ -16,7 +16,7 @@ test("changes output stops at the limit and says how many documents it left out"
   assert.doesNotMatch(formatChanges(groups), /more changed documents/);
 });
 
-test("project MCP after parameters reorder existing and newly created projects with coordinator-only placement", async t => {
+test("project MCP after parameters reorder existing and newly created projects with Architect-only placement", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Project order test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
@@ -26,22 +26,25 @@ test("project MCP after parameters reorder existing and newly created projects w
     const tool = tools.find(tool => tool.name === name)!;
     assert.ok(tool.inputSchema.properties!.after);
     assert.ok(!tool.inputSchema.required?.includes("after"));
-    assert.match(tool.description!, /总管.*after/);
+    assert.match(tool.description!, /Architect.*after/);
   }
-  const moved = await client.callTool({ name: "update_project", arguments: { author: "总管", name: "Whitefoot", after: "Firn" } });
+  const moved = await client.callTool({ name: "update_project", arguments: { ...asArchitect, name: "Whitefoot", after: "Firn" } });
   assert.equal(moved.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管"]);
-  const created = await client.callTool({ name: "create_project", arguments: { author: "总管", name: "New", after: "Firn" } });
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管", "Architect"]);
+  const created = await client.callTool({ name: "create_project", arguments: { ...asArchitect, name: "New", after: "Firn" } });
   assert.equal(created.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管"]);
-  for (const [name, args] of [
-    ["update_project", { author: "Firn", name: "Firn", after: "New" }],
-    ["create_project", { author: "Firn", name: "Refused", after: "New" }],
-    ["update_project", { author: "总管", name: "Firn", after: "Missing" }],
-  ] as const) {
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect"]);
+  const refused: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["update_project", { author: "Firn", name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
+    ["create_project", { author: "Firn", name: "Refused", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
+    ["update_project", { author: architect, name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
+    ["update_project", { ...asArchitect, name: "Firn", after: "Missing" }, /after Missing: choose a configured project/],
+    ["update_project", { author: "总管", name: "Firn", after: "New" }, /author 总管: this identity is retired; write as Architect/],
+  ];
+  for (const [name, args, message] of refused) {
     const before = store.snapshot(), result = await client.callTool({ name, arguments: args });
-    assert.equal(result.isError, true);
-    assert.match((result.content as Array<{ text: string }>).map(c => c.text).join("\n"), /after.*(总管|configured)/);
+    assert.equal(result.isError, true, name);
+    assert.match((result.content as Array<{ text: string }>).map(c => c.text).join("\n"), message, name);
     assert.deepEqual(store.snapshot(), before);
   }
 });
@@ -259,7 +262,7 @@ test("writes answer with their produced plan state; refusals and context identif
   // Reopening an owned part makes its owner open even when acceptance stays done.
   await write("a", "todo");
   const before = store.snapshot();
-  const refused = await client.callTool({ name: "set_status", arguments: { author, id: "area", status: "cancelled", log: "Drop" } });
+  const refused = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "area", status: "cancelled", log: "Drop" } });
   assert.equal(refused.isError, true);
   assert.match(text(refused), /owned items are still open: a, b; cancel or move each part first/);
   assert.deepEqual(store.snapshot(), before);
@@ -277,30 +280,39 @@ test("writes answer with their produced plan state; refusals and context identif
 
 test("MCP creates acceptance, adopts children, moves owners and cancels or reopens only", async t => {
   const { client, text, store } = await connected(t);
-  const created = await client.callTool({ name: "create_item", arguments: { author, key: "new", title: "New", group: author, accept: "Pass", priority: "P0", children: ["a"] } });
+  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "new", title: "New", group: author, accept: "Pass", priority: "P0", children: ["a"] } });
   assert.equal(created.isError, undefined, text(created)); assert.ok(store.snapshot().items.new!.plan!.some(row => "item" in row && row.item === "a" && row.own));
-  const refused = await client.callTool({ name: "set_status", arguments: { author, id: "new", status: "cancelled", log: "Drop" } }); assert.equal(refused.isError, true); assert.match(text(refused), /owned items.*a/);
+  const refused = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "cancelled", log: "Drop" } }); assert.equal(refused.isError, true); assert.match(text(refused), /owned items.*a/);
   const moved = await client.callTool({ name: "move_item", arguments: { author, id: "a", owner: "other", after: [] } }); assert.equal(moved.isError, undefined, text(moved));
-  const cancelled = await client.callTool({ name: "set_status", arguments: { author, id: "new", status: "cancelled", log: "Superseded" } }); assert.equal(cancelled.isError, undefined, text(cancelled));
-  const reopened = await client.callTool({ name: "set_status", arguments: { author, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
+  const cancelled = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "cancelled", log: "Superseded" } }); assert.equal(cancelled.isError, undefined, text(cancelled));
+  const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
 });
 
-test("MCP moves an item and what it owns to another project, and only its own project may", async t => {
+test("MCP moves an item and what it owns to another project, and only Architect with session 架构师 may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
   assert.deepEqual([...tool.inputSchema.required!].sort(), ["author", "id", "project"]);
-  const moved = await client.callTool({ name: "move_item_project", arguments: { author, id: "area", project: "Firn" } });
+  assert.match(tool.description!, /^Only author Architect with session 架构师 may use it\./);
+  const before = store.snapshot();
+  // The item's own project, another project, Architect without the session and Architect from another session all get the same refusal.
+  for (const who of [{ author }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }]) {
+    const refused = await client.callTool({ name: "move_item_project", arguments: { ...who, id: "area", project: "Firn" } });
+    assert.equal(refused.isError, true); assert.match(text(refused), /author: only Architect with session 架构师 may move an item to another project/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  const moved = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Firn" } });
   assert.equal(moved.isError, undefined, text(moved));
   assert.match(text(moved), /^move_item_project area Firn · rev \d+ · commit [0-9a-f]{40}\narea · .*Firn › area/);
   assert.deepEqual(["area", "a", "b"].map(id => store.snapshot().items[id]!.group), ["Firn", "Firn", "Firn"]);
-  const again = await client.callTool({ name: "move_item_project", arguments: { author, id: "area", project: "Whitefoot" } });
-  assert.equal(again.isError, true); assert.match(text(again), /item area belongs to project Firn; file a request into Firn/);
+  const back = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Whitefoot" } });
+  assert.equal(back.isError, undefined, text(back));
+  assert.deepEqual(["area", "a", "b"].map(id => store.snapshot().items[id]!.group), ["Whitefoot", "Whitefoot", "Whitefoot"]);
 });
 
 test("MCP request filing stores reason only in the log and triage attaches the receiving owner", async t => {
   const { client, text, store } = await connected(t);
-  const root = await client.callTool({ name: "create_item", arguments: { author: "Firn", group: "Firn", key: "firn-root", title: "Firn root", accept: "Pass", priority: "P1" } }); assert.equal(root.isError, undefined, text(root));
+  const root = await client.callTool({ name: "create_item", arguments: { ...asArchitect, group: "Firn", key: "firn-root", title: "Firn root", accept: "Pass", priority: "P1" } }); assert.equal(root.isError, undefined, text(root));
   const request = await client.callTool({ name: "create_request", arguments: { author, project: "Firn", key: "request", title: "Feature", head: "Witness", accept: "Program passes", why: "Needs peer address", from: "a", after: [] } }); assert.equal(request.isError, undefined, text(request));
   assert.equal(store.snapshot().items.request!.log[0]!.text, `${author} 提出：Needs peer address`);
   const triage = await client.callTool({ name: "triage_request", arguments: { author: "Firn", id: "request", owner: "firn-root", log: "Accept" } }); assert.equal(triage.isError, undefined, text(triage));
@@ -355,21 +367,21 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   assert.equal(store.snapshot().head, head, "crossing the active-time threshold changes no document or commit");
 });
 
-test("MCP set_pause is coordinator-only and paused status works in list and overview", async t => {
+test("MCP set_pause is Architect-only and paused status works in list and overview", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Pause test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
   const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_pause");
-  assert.ok(tool, "the pause operation is available to the coordinator");
-  assert.match(tool.description!, /Only author 总管/);
+  assert.ok(tool, "the pause operation is available to Architect");
+  assert.match(tool.description!, /Only author Architect/);
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_pause", arguments: { author, id: "area", paused: true, reason: "Pause" } });
-  assert.equal(refused.isError, true); assert.match(text(refused), /only 总管/); assert.deepEqual(store.snapshot(), before);
-  const missingReason = await client.callTool({ name: "set_pause", arguments: { author: "总管", id: "area", paused: true } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /only Architect/); assert.deepEqual(store.snapshot(), before);
+  const missingReason = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true } });
   assert.equal(missingReason.isError, true); assert.match(text(missingReason), /reason.*required/);
-  const paused = await client.callTool({ name: "set_pause", arguments: { author: "总管", id: "area", paused: true, reason: "Owner paused project" } });
+  const paused = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true, reason: "Owner paused project" } });
   assert.ok(!paused.isError, text(paused)); assert.match(text(paused), /PAUSE/);
   const listed = await client.callTool({ name: "list", arguments: { filters: { status: ["paused"], group: author } } });
   assert.ok(!listed.isError, text(listed));
@@ -378,8 +390,23 @@ test("MCP set_pause is coordinator-only and paused status works in list and over
   assert.ok(!overview.isError, text(overview)); assert.match(text(overview), /PAUSE 2/);
   const context = await client.callTool({ name: "context", arguments: { id: "a" } });
   assert.match(text(context), /pause: 解释器工作 · Owner paused project/);
-  const resumed = await client.callTool({ name: "set_pause", arguments: { author: "总管", id: "area", paused: false } });
+  const resumed = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: false } });
   assert.ok(!resumed.isError, text(resumed)); assert.equal(store.snapshot().items.area!.paused, undefined);
+});
+
+test("MCP names Architect on the tools it reserves, lets it write another project's item, and refuses 总管 with the tool error", async t => {
+  const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
+  for (const name of ["create_item", "set_status", "set_tag", "rename_tag", "remove_tag", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session 架构师/, name);
+  assert.match(tools.find(tool => tool.name === "update_item")!.description!, /Only author Architect with session 架构师 may change the title, and turn a cancelled item into a record/);
+  assert.doesNotMatch(tools.map(tool => tool.description).join("\n"), /only author 总管|Only author 总管|Only 总管|总管 only|总管 may/, "no tool still names 总管 as the one who may");
+  const written = await client.callTool({ name: "append_log", arguments: { ...asArchitect, id: "other", text: "Architect evidence" } });
+  assert.equal(written.isError, undefined, text(written));
+  assert.deepEqual(store.snapshot().items.other!.log.at(-1), { at: later, by: architect, text: "Architect evidence" });
+  const before = store.snapshot();
+  const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
+  assert.equal(sessionless.isError, true); assert.match(text(sessionless), /item other belongs to project Whitefoot.*Architect writes other projects' items only with session 架构师/); assert.deepEqual(store.snapshot(), before);
+  const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
+  assert.equal(retired.isError, true); assert.match(text(retired), /author 总管: this identity is retired; write as Architect/); assert.deepEqual(store.snapshot(), before);
 });
 
 test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {
@@ -405,7 +432,7 @@ test("context and graph accept a short number, rows show it, and an exact key wi
   assert.match((await call("context", { id: "#99" })).text, /Unknown id #99/);
   assert.equal((await call("context", { id: "#3x" })).error, true, "a malformed number reference is refused by the schema");
   // A key made of digits names that document, not the number.
-  await op.createItem({ author, key: "1", owner: "area", title: "Digits key", accept: "ok" });
+  await op.createItem({ ...asArchitect, key: "1", owner: "area", title: "Digits key", accept: "ok" });
   assert.match((await call("context", { id: "1" })).text, /^1 · .*Digits key.*· #7$/m);
   assert.match((await call("context", { id: "#1" })).text, /^area · /m);
   const brief = JSON.parse((await call("brief", { project: "Whitefoot" })).text) as { cards: Array<{ id: string; num?: number }> };
