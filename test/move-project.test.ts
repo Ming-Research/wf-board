@@ -114,7 +114,7 @@ test("refusals name the fix and leave the board and the log untouched", async t 
     [() => op.moveItemProject({ author, id: "b", project: "Firn" }), /item b: tags 只在白脚: applies only to Whitefoot, not Firn/],
     [() => op.moveItemProject({ author, id: "area", project: "Firn" }), /item b: tags 只在白脚: applies only to Whitefoot, not Firn/],
     // other (Firn) waits on a through a shared row: a would arrive there owned by nothing.
-    [() => op.moveItemProject({ author, id: "a", project: "Firn" }), /project: other in Firn wait on a through shared rows.*同项目有条目在等它，却没有条目拥有它.*drop those rows with set_plan first, move a, then let the item that needs it own it/],
+    [() => op.moveItemProject({ author, id: "a", project: "Firn" }), /project: 同项目有条目在等它，却没有条目拥有它: other in Firn wait on a through shared rows.*This call cannot name a new owner for a: have Firn drop those rows with set_plan first, move a, then let the item that needs it own it/],
   ];
   for (const [call, message] of cases) {
     await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
@@ -153,13 +153,47 @@ test("a stored cross-project owned row blocks the move, named the same for the i
 test("the ways out of a waiter's refusal work", async t => {
   const { store, op } = await board(t);
   await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: false } });
-  await assert.rejects(op.moveItemProject({ author, id: "a", project: "Firn" }), /project: other in Firn wait on a/);
+  await assert.rejects(op.moveItemProject({ author, id: "a", project: "Firn" }), /other in Firn wait on a/);
   // Drop the row, move, then let the item that needs it own it.
   await op.setPlan({ author: "Firn", id: "other", remove: "a" });
   await op.moveItemProject({ author, id: "a", project: "Firn" });
   await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: true } });
   const r = rules(store.snapshot());
   assert.equal(r.parentOf("a"), "other");
+  assert.deepEqual(r.checks("a").filter(c => structural.test(c.text)), []);
+});
+
+test("a moved item that waits on an unowned top item of the new project is refused with both ways out, and each works", async t => {
+  for (const way of ["own", "drop"] as const) {
+    const { store, op } = await board(t);
+    // a waits on Firn's other, a top item nothing owns.
+    await op.setPlan({ author, id: "a", row: { item: "other", own: false } });
+    const before = store.snapshot(), count = (await store.log()).length;
+    await assert.rejects(op.moveItemProject({ author, id: "a", project: "Firn" }), e => {
+      assert.ok(e instanceof OpError);
+      assert.match(e.message, /project: 同项目有条目在等它，却没有条目拥有它: a will wait on other through a shared row while no item of Firn owns other\. Have an item of Firn own other first, or drop the row to other from that item's plan with set_plan first/);
+      return true;
+    });
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal((await store.log()).length, count, "a refusal makes no commit");
+    if (way === "own") {
+      await op.createItem({ author: "Firn", key: "holder", group: "Firn", title: "Holder", priority: "P2", accept: "Holder passes" });
+      await op.moveItem({ author: "Firn", id: "other", owner: "holder" });
+    } else await op.setPlan({ author, id: "a", remove: "other" });
+    await op.moveItemProject({ author, id: "a", project: "Firn" });
+    const r = rules(store.snapshot());
+    assert.equal(r.groupOf("a"), "Firn");
+    for (const id of ["a", "other"]) assert.deepEqual(r.checks(id).filter(c => structural.test(c.text)), [], `${way}: no structural check on ${id}`);
+  }
+});
+
+test("a closed item moves although an open item of the new project waits on it", async t => {
+  const { store, op } = await board(t);
+  await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "独立验收通过", state: "done" }] });
+  await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: false } });
+  await op.moveItemProject({ author, id: "a", project: "Firn" });
+  const r = rules(store.snapshot());
+  assert.equal(r.groupOf("a"), "Firn");
   assert.deepEqual(r.checks("a").filter(c => structural.test(c.text)), []);
 });
 
