@@ -93,7 +93,7 @@ export function migrateCards(input: CardMigrationInput, at: string): CardMigrati
     // The old option text is the detail and the name stays empty; confidence and ruling keep their fields; the background is
     // the one old text left over, in `legacy`.
     const { background, order: _order, options: oldOptions, ...rest } = old;
-    const options = (Array.isArray(oldOptions) ? oldOptions as Raw[] : []).map(({ text: detail, ...option }) => ({ ...option, text: "", ...(detail === undefined || detail === "" ? {} : { detail }) }));
+    const options = (Array.isArray(oldOptions) ? oldOptions as Raw[] : []).map(({ text: detail, ...option }): Raw => ({ ...option, text: "", ...(detail === undefined || detail === "" ? {} : { detail }) }));
     const card: Raw = { ...rest, options, ...(background === undefined ? {} : { legacy: { background } }) };
     if (background !== undefined) report.legacyKept++;
     if (card.status === "open") {
