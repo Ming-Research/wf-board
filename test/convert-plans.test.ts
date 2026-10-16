@@ -15,6 +15,7 @@ import { rules } from "../src/rules.ts";
 import { rules as legacyRules } from "../src/legacy-rules.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
 import { ops } from "../src/ops.ts";
+import { architect, asArchitect } from "./helpers.ts";
 import { Store, readPlanData, NUMBERING_MESSAGE } from "../src/store.ts";
 const at="2026-10-13T01:00:00Z", since="2026-10-12T01:00:00Z";
 function item(fields: Record<string,unknown>={}) { return LegacyItem.parse({title:"Work",group:"P",head:"**问题**：Some problem\n\n**完成条件**：CI passes\n\n**何时**：Today",status:"todo",priority:"P1",log:[{at:since,by:"P",text:"original"}],updated:at,rev:2,...fields}); }
@@ -89,9 +90,9 @@ test("converted cancellation leaves acceptance open when reopened and other rows
  const result=checked(source),acceptance=result.snapshot.items.root!.plan.at(-1);assert.ok(acceptance&&"text"in acceptance);assert.equal(acceptance.state,"todo");assert.equal(acceptance.reason,undefined);assert.equal(acceptance.droppedAt,undefined);
  const incorrectlyDropped=structuredClone(result),badAccept=incorrectlyDropped.snapshot.items.root!.plan.at(-1);assert.ok(badAccept&&"text"in badAccept);badAccept.state="dropped";badAccept.reason="条目已取消";badAccept.droppedAt=at;assert.ok(verifyPlans(source,incorrectlyDropped).some(error=>error.includes("acceptance state")));
  const dir=await mkdtemp(join(tmpdir(),"wf-board-reopen-conversion-"));t.after(()=>rm(dir,{recursive:true,force:true}));
- const store=await Store.open(dir,{init:true,board:{title:"Reopened conversion",projects:[{name:"P"}]}});
+ const store=await Store.open(dir,{init:true,board:{title:"Reopened conversion",projects:[{name:"P"},{name:architect}]}});
  await store.commit({author:"P",message:"Synthetic converted cancelled item",puts:[{kind:"item",id:"root",expectRev:null,doc:result.snapshot.items.root!}]});
- const write=ops(store,()=>"2026-10-13T02:00:00Z");await write.setStatus({author:"P",id:"root",status:"open",log:"Resume the cancelled work"});
+ const write=ops(store,()=>"2026-10-13T02:00:00Z");await write.setStatus({...asArchitect,id:"root",status:"open",log:"Resume the cancelled work"});
  await write.setPlan({author:"P",id:"root",row:{id:"work",text:"Produce the result",state:"done"}});
  assert.equal(rules(store.snapshot()).statusOf("root"),"todo");const reopenedAcceptance=store.snapshot().items.root!.plan.at(-1);assert.ok(reopenedAcceptance&&"text"in reopenedAcceptance);assert.equal(reopenedAcceptance.state,"todo");
  await write.setPlan({author:"P",id:"root",row:{id:acceptance.id,text:acceptance.text,accept:true,state:"done"}});assert.equal(rules(store.snapshot()).statusOf("root"),"done");

@@ -411,10 +411,8 @@ log:
 - **No notices.** The board has no notice documents: the 要你知道 list and
   `post_notice` are gone. A change the owner must act on is a decision card;
   one the owner only should know goes in the architect's journal. Notice files
-  in history still count as content writes. A start that finds a `notices/`
-  directory deletes it in one commit (not a write), but only when every file
-  there is committed, unchanged and a notice the owner has read; otherwise it
-  deletes nothing and logs why.
+  in history still count as content writes. The one commit that deleted them
+  is not a write, and activity skips it.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -448,7 +446,7 @@ log:
   list, and a rename or removal must change the vocabulary and every carrying
   item in one commit, which the store's one-commit-per-operation already gives
   for the board plus items; its own document would add a file that every such
-  commit must also write. Only `总管` changes the vocabulary, after the owner
+  commit must also write. Only `Architect` changes the vocabulary, after the owner
   approves the change on a decision card; the server enforces the author, not
   the card. An item's `tags` are unique, each in the vocabulary and applicable
   to the item's project, and every item needs at least one, records and
@@ -555,7 +553,7 @@ tree, status, priority and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the coordinator (`author: 总管`) sets or clears it through
+the server's time. Only the architect (`author: Architect`) sets or clears it through
 `set_pause`, at the owner's request in a comment (the page has no pause or
 resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
@@ -677,18 +675,22 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. A non-coordinator write that changes an item from effectively paused
+pause. A write by any author but `Architect` that changes an item from effectively paused
 to open, not-paused work is refused, naming its pause source and requiring
-the owner or `总管` to resume it. This covers moves out of a paused chain
+the owner or `Architect` to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
-are closure, not resume: a project's author may complete or cancel paused
-work, keeping its marker. Becoming a record is also not open work, but
-clearing an explicit marker, including an inactive one, still requires the
-owner or `总管`. Moving work into a paused chain is allowed.
-Only a project edits its own items and cards. The coordinator's cross-project
-pause authority applies to `set_pause` alone; it does not bypass ownership
-for plan, record, movement, status or card-ruling writes. Removing an open
-owned row still requires moving or cancelling its target first.
+are closure, not resume: a project's author may complete paused work and
+`Architect` may cancel it (cancelling is reserved for `Architect`), either
+keeping the marker. Becoming a record is also not open work, but clearing an
+explicit marker, including an inactive one, still requires the owner or
+`Architect`. Converting a cancelled item to a record is reserved for
+`Architect` too, since converting it back to work would reopen it without
+`set_status`. Moving work into a paused chain is allowed.
+A project edits only its own items and cards; `Architect` edits any
+project's. That reach lifts only the check that the author is the item's
+project. Ownership still stays inside one project, and removing an open
+owned row still requires moving or cancelling its target first, for
+`Architect` as for every other author.
 
 #### Ownership, the tree, roots and top items
 
@@ -1112,7 +1114,8 @@ card row ends with its short number (`· #812`), and JSON rows carry `num`;
 winning over a number. Writes take
 `author`, the name of the project the session works for, selected from
 `projects` by matching `repo` to its repository's GitHub remote. The
-coordinator writes as `总管`. Several sessions may share a project and
+architect writes as `Architect`, a configured project like the others, from
+the session `架构师` (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
@@ -1121,7 +1124,7 @@ architect's session (`架构师`) is also a receipt for the wake stream (section
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
-same text, so a coordinator sees whether work is being pushed and what a
+same text, so the architect sees whether work is being pushed and what a
 closed session left behind. Omitting `session` is allowed; a call without it is no receipt.
 
 ### Server instructions
@@ -1184,33 +1187,45 @@ and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
-Only `set_pause` has coordinator cross-project pause authority. All other
-item and card writes retain the normal project ownership checks.
+In this document `Architect` as a writer means author `Architect` writing from
+the session `架构师` (section 9). `Architect` may write any project's items,
+cards and note replies; every other writer only its own project's. Some
+operations are reserved for `Architect`, and every other writer is refused
+before any ownership check: `create_item`, `set_status`, `set_pause`,
+`move_item_project`, `journal_entry`, a changed title in `update_item`, the tag
+vocabulary tools, and the page order and other projects' repositories in
+`create_project` and `update_project`.
+Turning a cancelled item into a record in `update_item` is reserved too, but
+its refusal comes after the ownership and revision checks, because it depends
+on the item's state. `create_request`, which
+files an item into another project's inbox, stays open to every project until
+the inbox is removed. A write under the retired author `总管` is refused by
+every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; only `Architect`; owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
 | `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |
 | `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
-| `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `总管`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
-| `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `总管`; `to` unused |
-| `remove_tag(name, replace?)` | Removes a tag | Only `总管`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
+| `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `Architect`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
+| `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
+| `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Architect project only; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
-| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `总管`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
+| `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only `Architect`; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `Architect`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
-| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | The item's own project (the author check every item write shares); the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain follows the pause rule |
+| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only `Architect`, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because `Architect` can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
-| `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
-| `update_project(name, repo?, after?)` | Sets or changes a project’s repository or its place in the page order | Repository: author is that project or the coordinator project `总管`; order: only `总管` |
+| `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by `Architect` |
+| `update_project(name, repo?, after?)` | Sets or changes a project’s repository or its place in the page order | Repository: author is that project or `Architect`; order: only `Architect` |
 | `create_request(project, key, title, head, accept, why, priority?, from?, after?, tags?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it; tags as for `create_item`, applicable to the receiving project |
 | `triage_request(id, owner?, after?, priority?, log)` | Accepts a request: with `owner`, the owner's plan in the request's project gains an owned row for it (usually the item collecting the filing project's needs); without, it stays a top item | Author is the request's project; same-project owner; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
@@ -1654,16 +1669,16 @@ area with an absent or unconfigured group gets a shared rules check; older
 boards without `projects` load with an empty list.
 
 At a repository root, a session calls `projects`, picks the project whose
-`repo` matches its repository’s GitHub remote (the coordinator uses
-`总管`), uses that project’s name as `author` in every write, then reads
+`repo` matches its repository’s GitHub remote (the architect uses
+`Architect`, from the session `架构师`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
 The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
 when appending the project last. Its optional `after` names an existing
-project to place the new project immediately after; only `总管` may supply it.
+project to place the new project immediately after; only `Architect` may supply it.
 `update_project(author, name, repo?, after?)` sets or changes a repository: a project
-may change its own repo, and the coordinator project `总管` may change any
-project’s repo. Only `总管` may set `after` to move a project immediately
+may change its own repo, and `Architect` may change any
+project’s repo. Only `Architect` may set `after` to move a project immediately
 after another configured project; omitting it preserves the current order.
 An unknown `after` or moving a project after itself is refused. An order-only
 update needs no `repo`. Ordering is defined in `src/rules.ts`.
@@ -1674,20 +1689,40 @@ prospective board checks.
 Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
-caller’s repository. Item mutations require `author === projectOf(target)`;
-this applies to items, their cards and owner-note replies or closures.
-Creating a top item requires its group to match author. `set_term` and
-`delete_term` change only the author's own glossary, the coordinator
-`总管`'s included. Moving work requires
-the source and destination to belong to author’s project (`move_item_project` leaves its source project, so only the
-project that owns the item and its owned part may move it), and revising a
-card’s owning item checks both owners. A refusal names the item’s project
+caller’s repository. Item mutations require `author === projectOf(target)` or
+`author === Architect`; this applies to items, their cards and owner-note
+replies or closures. Only `Architect` creates items, in any project
+(`create_request` aside, section 6).
+`set_term` and `delete_term` change only the author's own glossary,
+`Architect`'s included. Moving work requires the source and destination to
+belong to one project, which the author must own unless it is `Architect`
+(`move_item_project` leaves its source project, so only `Architect` may use
+it, section 6), and revising a card’s owning item checks both owners the same
+way. A refusal names the item’s project
 and directs the caller to file into it with `create_request`. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
 owner-note, send and read operations are separate from agent
 operations and remain unrestricted. Project names are supplied by trusted
 local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
+
+The architect's identity is author `Architect` writing from the session
+`架构师` (`isArchitect` in `src/model.ts`). Both are needed because
+`Architect` is also the project of the agents_config repository, and an
+engineer who does an Architect item there writes as author `Architect`, as
+every project's engineer writes as its project. Without the session such a
+write is an ordinary project author's: it may write the Architect project's own
+items and nothing reserved. The session name is not authenticated, as no
+project name is; the rule stops misuse, not impersonation. The architect's
+writes carry `Architect` as commit author and log `by`, so history and logs
+show the architect made the change, not the item's project. The operations
+reserved for it are listed with the tools (section 6); the check is
+`onlyArchitect` in `src/ops.ts`, and project order uses the same judgement in
+`src/rules.ts`. The coordinator project `总管` stays configured, so
+its items, glossary and history remain readable, but `run` in `src/ops.ts`,
+the one path every agent write takes, refuses any write under that author
+with a message naming `Architect`. Store migrations commit under `总管`
+directly and do not pass through it; the historical authors stay as written.
 
 Any configured project can call `create_request(project, key, title, head,
 accept, why, priority?, from?, after?)`. It creates a top item in the
@@ -1705,8 +1740,8 @@ its project (normally the item collecting the filing project's needs) or
 keeps it a top item. Placement also appends
 `分拣：放到「<owner title>」下` before the supplied log. Moving a
 request under an owner in its project also triages it and logs the placement.
-Declining with `set_status cancelled` clears the marker and records the
-reason. An open inbox request is not an area in listings; completed or
+A receiving project cannot decline a request itself; the architect declines it
+with `set_status cancelled`, which clears the marker and records the reason. An open inbox request is not an area in listings; completed or
 cancelled items are not open requests.
 
 `projects` reports name, repo, top-item counts, open item status counts
@@ -1740,17 +1775,6 @@ not carry a session prefix; existing keys stay, because notes and log text
 cite them.
 
 ## 10. Migration
-
-At startup, after schema validation and the clean-worktree check, a temporary
-store migration renames the coordinator project from `跨项目` to `总管` in
-one data commit. It changes the project name, item groups and request authors,
-log authors, note reply authors, glossary term authors and the
-coordinator glossary filename. It compares whole identity fields, preserving
-heads, log prose, notes, titles and any text containing the old name exactly.
-Existing historical commits remain unchanged. A destination project or glossary
-collision is refused before changing any file. Once the old project name is
-absent, reopening is a no-op. Remove this migration after the live board has
-migrated.
 
 1. Convert the export into the file format, keeping every id, in one commit.
    The survey of the export found no broken dependency, cycle, bad timestamp
@@ -1867,10 +1891,10 @@ children.
 to the new snapshot plus a report, in `src/convert-plans.ts`. A dry run on a
 copy of the data (a few seconds of Node, no build) prints the report without
 writing; after the owner approves the report, the daemon applies the same
-function at startup as a store migration, like the 跨项目 → 总管 rename,
-in one commit authored by `总管`, and refuses to start if the data has
-changed since the approved dry run (the dry run records the data commit it
-read). Unread history compares legacy commits directly and converts only
+function at startup as a store migration in one commit authored by `总管`,
+and refuses to start if the data has changed since the approved dry run (the
+dry run records the data commit it read). Unread history compares legacy
+commits directly and converts only
 endpoints spanning the schema change, caching historical documents and
 yielding between commits. A legacy status, parent or dependency edit counts
 as an `other` change on the edited item, rather than normalized plan progress

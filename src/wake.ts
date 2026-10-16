@@ -2,9 +2,6 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname } from "node:path";
 import type { Notify } from "./notify.ts";
 
-/** The session name the board takes for the architect: any call carrying it is a receipt (docs/design.md, The wake stream). */
-export const ARCHITECT_SESSION = "架构师";
-
 /** Every kind of push the architect's channel carries, in one place: `label` names it in the no-receipt alert, `fields` are
  * the frame's fields besides n, at and event, and `external` marks a kind another process may ask for through POST /api/wake
  * (the deploy job, which runs beside the daemon and cannot call push). push() refuses another kind or field set, and the
