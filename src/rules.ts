@@ -155,9 +155,11 @@ const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
-const ITEM_REF = /\[\[it:([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
+/** A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.
+ * Keys follow the board's Key pattern. Block text has no other use for double square brackets. */
+export const REFERENCE = /\[\[(it|q):([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
 /** The item keys a text names with [[it:key]]. */
-function mentionsIn(text: string): string[] { return [...text.matchAll(ITEM_REF)].map(m => m[1]!); }
+function mentionsIn(text: string): string[] { return [...text.matchAll(REFERENCE)].filter(m => m[1] === "it").map(m => m[2]!); }
 
 /** A Rules object belongs to one immutable snapshot. Create another after a write.
  * Array/object results are defensive copies; item() returns the snapshot's item.
@@ -730,13 +732,14 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return { intervals, changedAt: (id: string) => changed.get(id) ?? -Infinity };
     });
   }
-  /** The items whose changes count as the progress of this item's doing steps: the item itself, every item an
-   * in-progress item row points at, and every item a doing step names, each with the items it owns down every layer. */
+  /** The items whose changes count as the progress of this item's doing steps: the item itself, every item it owns that
+   * is in progress, and every item a doing step names, each with the items it owns down every layer. A shared
+   * dependency is another item's work and does not count. */
   function stallRelated(id: string): string[] {
     const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
     for (const { row, state } of planRows(id)) {
       if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
-      else if ("item" in row && state === "progress") down(row.item);
+      else if ("item" in row && row.own && state === "progress") down(row.item);
     }
     return [...out];
   }
