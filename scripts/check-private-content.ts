@@ -4,11 +4,13 @@
 // rule and where: the CI log of a public repository is public too.
 //
 // Usage: node scripts/check-private-content.ts [<base> [<head>]]
-//   Checks <base>...<head> (default head: HEAD). Without <base> it reads the CI event: for a pull request the
-//   base and head commits in PR_BASE and PR_HEAD, with PR_TITLE and PR_BODY; for a push the commit before it in
-//   PUSH_BEFORE. A base that is missing, all zeros or not in this clone means the whole of <head> is checked, so
-//   running it with no arguments and no event checks the whole tree.
+//   Checks <base>...<head> (default head: HEAD). Given a <base>, the event is ignored; without one it reads the CI event file (GITHUB_EVENT_PATH): for a
+//   pull request the base and head commits, title and body; for a push the commit before it. The event file is read
+//   rather than passed in environment variables, because the runner prints a step's variables in its public log, and
+//   a pull request body that holds a private value would be printed a second time. A base that is missing, all zeros
+//   or not in this clone means the whole of <head> is checked, so running it with no arguments checks the whole tree.
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { checkPath, checkText, addedLines, checkLine, ALLOW_MARKER, type Finding } from "./private-content-rules.ts";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -40,15 +42,25 @@ export function checkRange(base: string | null, head: string, pr?: { title?: str
   return findings;
 }
 
+interface EventFacts { base?: string; head?: string; title?: string; body?: string }
+
+// What the CI event says about the change: a pull request's commits, title and body, or a push's previous head.
+function readEvent(path: string | undefined): EventFacts {
+  if (!path) return {};
+  const event = JSON.parse(readFileSync(path, "utf8")) as { before?: string; pull_request?: { base: { sha: string }; head: { sha: string }; title: string; body: string | null } };
+  const pr = event.pull_request;
+  return pr ? { base: pr.base.sha, head: pr.head.sha, title: pr.title, body: pr.body ?? "" } : { base: event.before };
+}
+
 function main(): number {
   const [baseArg, headArg] = process.argv.slice(2);
-  const env = process.env;
-  const head = headArg ?? env.PR_HEAD ?? "HEAD";
-  const candidate = baseArg ?? env.PR_BASE ?? env.PUSH_BEFORE;
+  const event = baseArg ? {} : readEvent(process.env.GITHUB_EVENT_PATH);
+  const head = headArg ?? event.head ?? "HEAD";
+  const candidate = baseArg ?? event.base;
   const base = candidate && !/^0+$/.test(candidate) && exists(process.cwd(), candidate) ? candidate : null;
   if (candidate && base === null) console.log(`base ${candidate.slice(0, 10)} is not in this clone: checking all of ${head}`);
 
-  const findings = checkRange(base, head, { title: env.PR_TITLE, body: env.PR_BODY });
+  const findings = checkRange(base, head, { title: event.title, body: event.body });
   for (const { where, line, rule } of findings) console.log(`${rule}: ${where}${line === null ? "" : `:${line}`}`);
   if (findings.length === 0) { console.log("no private content added"); return 0; }
   console.log(`\n${findings.length} finding(s). Remove the value, or, for a fixture that must hold it, put "${ALLOW_MARKER}" on the line.`);

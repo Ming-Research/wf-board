@@ -110,7 +110,7 @@ test("addedLines gives each added line its number in the new file and skips remo
 // A throwaway repository: a clean base commit that already holds a planted value, then a branch that adds more.
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "private-content-"));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GITHUB_EVENT_PATH: "" };
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, env, encoding: "utf8" }).trim();
   const write = (path: string, text: string) => { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), text); };
   git("init", "-q", "-b", "main");
@@ -168,5 +168,48 @@ test("the command exits 1 and prints rule and place only for a bad range, 0 for 
     const passed = run(head, head);
     assert.equal(passed.status, 0, passed.stderr);
     assert.match(passed.stdout, /no private content added/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the command reads a pull request or a push from the CI event file", () => {
+  const { dir, env, git, write } = repo();
+  try {
+    const ip = dot(10, 5, 5, 5);
+    write("a.txt", "clean\n");
+    git("add", "-A"); git("commit", "-q", "-m", "base");
+    const base = git("rev-parse", "HEAD");
+    write("a.txt", `clean\nhost ${ip}\n`);
+    git("add", "-A"); git("commit", "-q", "-m", "second");
+    const head = git("rev-parse", "HEAD");
+    write("b.txt", "also clean\n");
+    git("add", "-A"); git("commit", "-q", "-m", "third");
+    const tip = git("rev-parse", "HEAD");
+
+    const script = join(dirname(fileURLToPath(import.meta.url)), "../scripts/check-private-content.ts");
+    const withEvent = (event: object) => {
+      const file = join(dir, "..", `event-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(file, JSON.stringify(event));
+      try { return spawnSync(process.execPath, [script], { cwd: dir, env: { ...env, GITHUB_EVENT_PATH: file }, encoding: "utf8" }); } finally { rmSync(file, { force: true }); }
+    };
+    const pull = (base: string, head: string, title: string, body: string | null) => ({ pull_request: { base: { sha: base }, head: { sha: head }, title, body } });
+
+    // The range of a pull request that adds nothing risky is clean, whatever its body says about the past.
+    const clean = withEvent(pull(head, tip, "Add b", "plain text"));
+    assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+    // The bad commit is in the range, and so is a bad body or title; a null body is an empty one.
+    const bad = withEvent(pull(base, tip, `Run on ${dot(192, 168, 9, 9)}`, `host ${ip}`));
+    assert.equal(bad.status, 1);
+    assert.match(bad.stdout, /^private-ipv4: a\.txt:2$/m);
+    assert.match(bad.stdout, /^private-ipv4: pull request title:1$/m);
+    assert.match(bad.stdout, /^private-ipv4: pull request body:1$/m);
+    assert.ok(!bad.stdout.includes(ip));
+    assert.equal(withEvent(pull(head, tip, "Add b", null)).status, 0);
+    // A push is checked from the commit before it.
+    assert.equal(withEvent({ before: base }).status, 1);
+    assert.equal(withEvent({ before: head }).status, 0);
+    // A push with no previous commit in this clone checks the whole of HEAD.
+    const first = withEvent({ before: "0".repeat(40) });
+    assert.equal(first.status, 1);
+    assert.match(first.stdout, /^private-ipv4: a\.txt:2$/m);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

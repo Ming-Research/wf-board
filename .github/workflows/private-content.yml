@@ -5,9 +5,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    # edited: a changed title, body or base branch is checked again.
+    types: [opened, synchronize, reopened, edited]
 concurrency:
-  group: private-content-${{ github.ref }}
-  # A push to main is checked from the commit before it, so a run for a push is never replaced by the next one.
+  # A push to main is checked from the commit before it, so a run for a push is never replaced by the next one:
+  # only a pull request shares its group between runs.
+  group: private-content-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
@@ -20,11 +23,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      # The script reads the pull request or push from the event file, not from variables the runner would print.
       - name: Check what the change adds
-        env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PUSH_BEFORE: ${{ github.event.before }}
         run: node scripts/check-private-content.ts
