@@ -1,6 +1,6 @@
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultDataDir } from "./data-dir.ts";
 import { Store } from "./store.ts";
 import { ops } from "./ops.ts";
 import { ownerOps } from "./owner-ops.ts";
@@ -10,7 +10,8 @@ import { createMcpServer } from "./mcp.ts";
 async function main() {
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("WF_BOARD_PORT must be an integer from 1 to 65535");
-  const store = await Store.open(process.env.WF_BOARD_DATA ?? join(homedir(), "dev/wf-board-data"), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD });
+  const repo = dirname(dirname(fileURLToPath(import.meta.url)));
+  const store = await Store.open(process.env.WF_BOARD_DATA ?? defaultDataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD });
   const op = ops(store);
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
   async function push() { if (await store.unpushed()) await store.push(); }
