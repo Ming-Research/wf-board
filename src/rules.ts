@@ -736,7 +736,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
    * is in progress, and every item a doing step names, each with the items it owns down every layer. A shared
    * dependency is another item's work and does not count. */
   function stallRelated(id: string): string[] {
-    const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
+    const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); };
     for (const { row, state } of planRows(id)) {
       if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
       else if ("item" in row && row.own && state === "progress") down(row.item);
