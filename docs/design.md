@@ -2232,11 +2232,17 @@ push to `main` that adds one of these kinds of thing:
 
 It reads only what the change adds: the added lines of the diff between the
 base and the head, the added or changed paths, the messages of the commits in
-the range and, for a pull request, its title and body. What the history
+the range and, for a pull request, its title and body. It reads the net
+change of the range, which is what a squash merge lands: a value added and
+removed again inside one pull request is not flagged, and reaches history only
+if the pull request is merged without squashing. What the history
 already holds is not read again, and author lines are not read (an author
 address carries the machine's host name, which is not private). It prints the
 rule and the place, never the matched text, because the log of a public
-repository is public. A line that must hold such a value on purpose, a
+repository is public; for the same reason it reads the pull request's title
+and body from the event file, not from environment variables, which the
+runner prints. An edit to a pull request's title, body or base branch runs
+the check again. A line that must hold such a value on purpose, a
 fixture, carries the text `private-content: allow` and is skipped; the marker
 shows in review. `test/check-private-content.test.ts` holds, for every rule,
 a line it must flag and a line it must let through. `.gitignore` keeps the
