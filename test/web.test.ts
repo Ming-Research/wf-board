@@ -3959,8 +3959,8 @@ test("an owner notice from the stream shows one browser notice; its click opens 
   const shown: Array<{ title: string; options: { body: string; tag: string }; onclick: (() => void) | null; closed: boolean; close(): void }> = [];
   class FakeNotification {
     static permission = "granted";
-    onclick: (() => void) | null = null; closed = false;
-    constructor(readonly title: string, readonly options: { body: string; tag: string }) { shown.push(this); }
+    onclick: (() => void) | null = null; closed = false; title: string; options: { body: string; tag: string };
+    constructor(title: string, options: { body: string; tag: string }) { this.title = title; this.options = options; shown.push(this); }
     close() { this.closed = true; }
   }
   const p = await page(s, [], null, undefined, { clock, notification: FakeNotification });
