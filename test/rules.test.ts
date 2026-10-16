@@ -666,3 +666,17 @@ test("status target memoization never caches a cycle fallback as a target result
     for (const id of ["a", "b", "outside"]) assert.equal(r.statusOf(id), "wip", `${first} must not poison ${id}`);
   }
 });
+
+test("open decision cards with fewer than three options get a check on the card and on their item", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    two: { item: "owner", options },
+    three: { item: "owner", options: [...options, { key: "C", text: "Later" }] },
+    ruled: { item: "owner", options, status: "ruled", ruling: "A", choice: "A" },
+  });
+  const r = rules(s), [card] = r.cardChecks("two");
+  assert.deepEqual(r.cardChecks("three"), [], "three options are enough");
+  assert.deepEqual(r.cardChecks("ruled"), [], "a ruled card is not checked");
+  assert.equal(card?.label, "选项不足");
+  assert.deepEqual(r.checks("owner").filter(c => c.label === "选项不足"), [{ ...card, target: { kind: "card", id: "two" } }]);
+});
