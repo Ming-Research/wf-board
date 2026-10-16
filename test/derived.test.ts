@@ -85,7 +85,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   const initial = store.snapshot();
   // The page's copy of the activity, kept only from event deltas.
   let page = store.snapshot(), pageActivity = page.activity, pageHead = page.head;
-  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0;
+  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0, sectionMoves = 0;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const itemsOf = (s: Snapshot, group?: string) => Object.keys(s.items).filter(id => !group || s.items[id]!.group === group);
   let made = 0;
@@ -183,9 +183,13 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       const ids = Object.keys(s.items), open = new Set(ids.filter(id => r.isOpenWork(id)).flatMap(id => r.ancestors(id)));
       return (id: string) => JSON.stringify([!/^(done|cancelled)$/.test(r.statusOf(id) ?? "") || open.has(id)]);
     };
-    const shownBefore = shown(rb, before), shownAfter = shown(ra, after);
+    // Whether a top-level item sits under its project's 被其他项目依赖 line: an open item of another project depends on it.
+    const underRule = (r: Rules, s: Snapshot) => (id: string) => !r.parentOf(id) && r.dependents(id).some(w => !/^(done|cancelled)$/.test(r.statusOf(w.id) ?? "") && s.items[w.id]?.group !== s.items[id]?.group);
+    const shownBefore = shown(rb, before), shownAfter = shown(ra, after), underBefore = underRule(rb, before), underAfter = underRule(ra, after);
     for (const id of new Set([...Object.keys(before.items), ...Object.keys(after.items)])) {
-      const changed = presentationSignature(rb, before.decisions, id) !== presentationSignature(ra, after.decisions, id) || shownBefore(id) !== shownAfter(id);
+      const moved = underBefore(id) !== underAfter(id);
+      if (moved) sectionMoves++;
+      const changed = presentationSignature(rb, before.decisions, id) !== presentationSignature(ra, after.decisions, id) || shownBefore(id) !== shownAfter(id) || moved;
       if (changed) assert.ok(affected.has(id), `${id} changed after ${change.message} but is not among the affected items`);
     }
     compared++;
@@ -230,6 +234,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
   assert.ok(projectMoves > 2, `the random sequence moved items to another project (${projectMoves})`);
   assert.ok(compared > 60, `enough writes compared (${compared})`);
+  assert.ok(sectionMoves > 2, `the random sequence moved top-level items between a project's own roots and the roots other projects depend on (${sectionMoves})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
 

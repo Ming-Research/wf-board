@@ -825,6 +825,27 @@ test("a project lists its own roots first, then a rule and the roots other proje
   assert.equal(descendants(section("Other")).filter(e=>e.className==="shared-sep").length,0,"a project with none shows no rule");
 });
 
+test("a root another project starts to depend on moves under the rule while the page stays open, and back when the dependency goes", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
+  const root=(title:string,group:string,priority:"P0"|"P2"):FixtureItem => ({title,group,priority,updated:at,rev:1,deps:[],links:[],log:[],plan:planWork([planStep("work")])});
+  s.items.own=root("Own root","Project","P2"); s.items.needed=root("Needed root","Project","P2"); s.items.user=root("Other root","Other","P0");
+  const p=await page(s,[]);
+  const section=(g:string) => p.all().find(e=>e.className==="group" && e.dataset.group===g)!;
+  const projectTops=() => descendants(section("Project")).filter(e=>e.id.startsWith("it-") || e.className==="shared-sep").map(e=>e.className==="shared-sep" ? "|" : e.id.slice(3)).filter(k=>["area","own","needed","|"].includes(k));
+  const user=(rows:PlanRow[],rev:number,status?:"cancelled") => ({...nativeFixture({...s,items:{...s.items,user:{...s.items.user!,plan:planWork(rows),...(status ? {status} : {})}}}).items.user!,rev});
+  const write=async (rev:number,rows:PlanRow[],status?:"cancelled") => { await p.change(String(rev).repeat(40),[{kind:"item",id:"user",after:user(rows,rev,status)}]); await p.flush(); };
+  assert.deepEqual(projectTops(),["area","own","needed"],"before: both roots are the project's own");
+  await write(2,[sharedRow("needed")]);
+  assert.deepEqual(projectTops(),["area","own","|","needed"],"the root the other project now waits on sits under the rule, with no reload");
+  // A cancelled waiter no longer needs the root, which is the project's own again; reopened, it needs it again.
+  await write(3,[sharedRow("needed")],"cancelled");
+  assert.deepEqual(projectTops(),["area","own","needed"],"a cancelled waiter does not hold the root under the rule");
+  await write(4,[sharedRow("needed")]);
+  assert.deepEqual(projectTops(),["area","own","|","needed"],"the reopened waiter holds it there again");
+  await write(5,[]);
+  assert.deepEqual(projectTops(),["area","own","needed"],"after the row goes it is the project's own root again, and the rule is gone");
+});
+
 test("project page follows board project list order on load and live reorder, with new projects last", async () => {
   const s = snapshot();
   s.board.projects = [{ name: "Z first" }, ...s.board.projects, { name: "A last" }];
