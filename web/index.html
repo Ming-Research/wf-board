@@ -317,8 +317,6 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .ref.q.open { color: var(--ask); font-weight: 600; }
 a { color: var(--accent); }
 code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-soft); padding: 0 4px; border-radius: 3px; }
-section.decisions[hidden] { display: none; }
-section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
 .card[hidden] { display: none; }
 .card .card-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
@@ -340,12 +338,13 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .cardsend { font: inherit; font-size: 12.5px; padding: 1px 10px; border-radius: 6px; border: 1px solid var(--ask); background: var(--ask); color: var(--surface); cursor: pointer; }
 .cardsend:disabled { opacity: .45; cursor: default; }
 .body .card { margin-top: 4px; }
-.cardbox { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 6px 12px; margin: 4px 0; }
-.card.inlinecard { border: 0; padding: 4px 0 4px 22px; border-radius: 0; background: transparent; }
 .plan-row.cardrow > .plan-main { display: flex; align-items: baseline; gap: 6px; }
 .plan-row.cardrow > .plan-main > span { flex: none; }
-.plan-row.cardrow .cardtoggle { font-weight: 700; min-width: 0; flex: 1 1 auto; }
-.plan-row.cardrow .cardtoggle[aria-expanded="false"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-row.cardrow .cardgo { font-weight: 700; min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-row.cardrow .cardpick { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.card .pick { display: flex; gap: 6px; align-items: baseline; }
+.card .pickat { color: var(--muted); }
+details.refsec.legacy { margin: 0; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
 details.refsec { margin: 8px 0; min-width: 0; }
@@ -455,11 +454,6 @@ details.refsec > .refbody p { margin: 0; }
   </header>
 
   <div id="areas"></div>
-
-  <section class="decisions" id="decisions" hidden>
-    <h2>其他待决事项</h2>
-    <div id="cards"><p class="empty">还没有决策记录。</p></div>
-  </section>
 
   <footer class="sendbox" id="sendbox" hidden>
     <button class="sendbtn" id="send-all" type="button" disabled>发给 Claude</button>

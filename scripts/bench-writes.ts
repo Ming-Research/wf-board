@@ -60,10 +60,10 @@ function board() {
   for (let k = 0; k < DECISIONS; k++) {
     const key = `c${k}`, item = ids[(k * 7) % ids.length]!, open = k % 3 !== 0;
     decisions.push(key);
-    files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, background: "Background", options: [{ key: "A", text: "Do it", recommended: true }, { key: "B", text: "Do not" }],
-      status: open ? "open" : "ruled", ...(open && k % 5 === 0 ? { blocks: "work stops" } : {}), ...(open ? {} : { choice: "A", ruling: "A", ruledAt: at }), at, updated: at, rev: 1 }));
-    // A quarter of the cards are rows in another item's plan.
-    if (k % 4 === 0) { const waiter = ids[(k * 11 + 5) % ids.length]!; rows.get(waiter)!.push({ id: key, card: key }); }
+    files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, options: [{ key: "A", text: "Do it", recommended: true }, { key: "B", text: "Do not" }],
+      status: open ? "open" : "ruled", ...(open && k % 5 === 0 ? { blocks: "work stops" } : {}), ...(open ? {} : { choice: "A", ruledAt: at }), at, updated: at, rev: 1 }));
+    // Every card is a row of its own item's plan.
+    rows.get(item)!.push({ id: key, card: key });
   }
   for (let k = 0; k < NOTES; k++) {
     const onCard = k % 2 === 0 && decisions.length > 0, done = k % 3 === 0;

@@ -174,6 +174,7 @@ export const Item = z.object({
   }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none");
 export type Item = z.infer<typeof Item>;
 
+/** One choice on a card: `key` is A, B, C… in order for a card written now, `text` its name (a short phrase). */
 export const Option = z.object({
   key: z.string().min(1),
   text: z.string().min(1),
@@ -181,24 +182,37 @@ export const Option = z.object({
 }).strict();
 export type Option = z.infer<typeof Option>;
 
-export const DECISION_STATUSES = ["open", "ruled", "withtree", "elsewhere"] as const;
+/** A card is open until the owner's pick is recorded (ruled) or it is withdrawn. */
+export const DECISION_STATUSES = ["open", "ruled", "withdrawn"] as const;
 
-/** A decision card. Its place on the board is `item` alone; an item's cards are derived. */
+/**
+ * What a card carried before it became a bare question with option names: its background, confidence and ruling,
+ * kept word for word on the cards written then. Only the migration writes it; the page shows it folded.
+ */
+export const LegacyCard = z.object({
+  background: z.string().min(1).optional(),
+  confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
+  ruling: z.string().min(1).optional(),
+}).strict();
+export type LegacyCard = z.infer<typeof LegacyCard>;
+
+/**
+ * A decision card: one question and its options, a step of its item's plan. Its item is stored here and its row is
+ * stored in that item's plan; write_card writes both together and the 卡和计划对不上 check reports them apart.
+ */
 export const Decision = z.object({
   num: Num.optional(),
   item: Key,
   question: z.string().min(1),
-  background: z.string().min(1),
   options: z.array(Option).min(1),
-  confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
   status: z.enum(DECISION_STATUSES),
   /** One sentence naming the work that stops until the owner rules; present makes the card blocking (src/rules.ts cardBlocking). */
   blocks: z.string().min(1).optional(),
-  /** The chosen option's key, when the ruling picked one. */
+  /** The chosen option's key. Absent on an open or withdrawn card, and on an old card the owner answered in words. */
   choice: z.string().min(1).optional(),
-  ruling: z.string().min(1).optional(),
+  /** When the card closed: the owner's send time for a pick made on the page, else the time of the call that closed it. */
   ruledAt: Time.optional(),
-  order: z.number().optional(),
+  legacy: LegacyCard.optional(),
   /** When the card was written. */
   at: Time.optional(),
   updated: Time,

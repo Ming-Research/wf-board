@@ -74,6 +74,26 @@ export function targetLine(target: ItemTarget): string {
 
 /** A title longer than this many characters (spaces not counted) gets a check. */
 export const TITLE_MAX_CHARS = 20;
+/** An option name longer than this many characters (spaces not counted) is refused when a card is written. */
+export const OPTION_MAX_CHARS = 20;
+/** An open card its item's head does not place carries this label; a card whose row and item disagree, the next. */
+export const CARD_UNPLACED_LABEL = "卡没标位置";
+export const CARD_MISMATCH_LABEL = "卡和计划对不上";
+/** A line holding only [[q:key]] places that card in the head there; the same token inside a sentence is a link. */
+const CARD_MARKER = /^[ \t]*\[\[q:([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\][ \t]*$/;
+/** The card key a head line places, if it is such a line. */
+export function cardMarker(line: string): string | undefined { return CARD_MARKER.exec(line)?.[1]; }
+/** The keys of the cards a head places, in the order of their lines; a line inside a code fence places nothing. */
+export function placedCards(head: string | undefined): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of (head ?? "").replace(/\r/g, "").split("\n")) {
+    if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
+    const key = fenced ? undefined : cardMarker(line);
+    if (key !== undefined && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
@@ -358,7 +378,7 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
 export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {
   const it = r.item(id);
   const label = (kind: string, key: string): unknown[] => {
-    if (kind === "card") return [decisions[key]?.question, decisions[key]?.status, decisions[key]?.blocks];
+    if (kind === "card") { const d = decisions[key]; return [d?.question, d?.status, d?.blocks, d?.choice, d?.options.find(o => o.key === d.choice)?.text]; }
     const owner = r.parentOf(key);
     return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
   };
@@ -494,11 +514,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const list = notes.get(n.target) || [];
         list.push(n); notes.set(n.target, list);
       }
-      for (const [key, d] of Object.entries(s.decisions)) {
-        const list = cards.get(d.item) || [];
-        list.push(key); cards.set(d.item, list);
+      // An item's cards follow its plan; a card whose row is missing still belongs to its item and comes last.
+      const listed = new Set<string>();
+      for (const [id, it] of items) for (const row of it.plan) {
+        if (!("card" in row) || s.decisions[row.card]?.item !== id || listed.has(row.card)) continue;
+        listed.add(row.card); cards.set(id, [...cards.get(id) || [], row.card]);
       }
-      for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
+      for (const [key, d] of Object.entries(s.decisions)) if (!listed.has(key)) cards.set(d.item, [...cards.get(d.item) || [], key]);
       return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
@@ -636,9 +658,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const ask = item(id)?.ask;
     return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && (n.answerText ?? n.text) === ANSWER[n.kind] + ask.text);
   }
-  function cardWaiting(key: string): boolean {
-    return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
-  }
+  function cardWaiting(key: string): boolean { return index().decisions.get(key)?.status === "open"; }
   function cardBlocking(key: string): boolean { return cardWaiting(key) && !!index().decisions.get(key)?.blocks; }
   function ownerBlocking(id: string): boolean { return askPending(id) || cardsOf(id).some(cardBlocking); }
   function subtreeCount(id: string, own: (id: string) => number): number {
@@ -770,6 +790,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
         else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
       }
+      // A card and its row are one fact stored twice: each card of this item has its row in this plan, and each card row
+      // here names a card of this item. Only a write that bypasses write_card can break that.
+      const own = cardsOf(id), rowCards = it.plan.flatMap(row => "card" in row ? [row.card] : []);
+      const apart = [...own.filter(key => !rowCards.includes(key)).map(key => `${key} 没有计划行`), ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
+      if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
+      const placed = placedCards(it.head);
+      for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });
       if (cycles().has(id)) out.push({ text: "依赖成环" });
       if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
