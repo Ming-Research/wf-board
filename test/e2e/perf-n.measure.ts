@@ -31,8 +31,10 @@ const { values: args } = parseArgs({ options: {
   profile: { type: "string", default: "30" }, reps: { type: "string", default: "2" }, writes: { type: "string", default: "0" },
   open: { type: "string", default: "none" }, variants: { type: "string", default: "head" }, commits: { type: "string", default: "" },
   out: { type: "string", default: "perf-out" }, label: { type: "string", default: "run" }, "no-profile": { type: "boolean", default: false },
+  mark: { type: "boolean", default: false }, history: { type: "string", default: "0" },
 } });
-const SCALE = Number(args.scale), EXTRA = Number(args.extra), PRESSES = Number(args.presses), PROFILE = Number(args.profile), REPS = Number(args.reps), WRITES = Number(args.writes);
+const HISTORY = Number(args.history), SCALE = Number(args.scale), EXTRA = Number(args.extra), PRESSES = Number(args.presses), PROFILE = Number(args.profile), REPS = Number(args.reps), WRITES = Number(args.writes);
+const serverReads: number[] = [];
 const cleanups: Array<() => unknown> = [];
 const t = { after: (fn: () => unknown) => { cleanups.push(fn); } };
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -49,6 +51,16 @@ async function makeBoard(): Promise<BoardServer & { servers: Server[] }> {
   const t0 = Date.now();
   const { store } = await seedBoard(dir, gen);
   const snap0 = store.snapshot(), r0 = rules(snap0);
+  // Earlier history, already read: the daemon's history is thousands of commits long.
+  if (HISTORY > 0) {
+    const ids0 = Object.keys(snap0.items);
+    let last = "";
+    for (let k = 0; k < HISTORY; k++) {
+      const s = store.snapshot(), id = ids0[(k * 7) % ids0.length]!, it = s.items[id]!, { rev, ...doc } = it, at = new Date(Date.now() - (HISTORY - k) * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      last = (await store.commit({ author: it.group, message: "history", puts: [{ kind: "item", id, expectRev: rev, doc: { ...doc, log: [...it.log, { at, by: it.group, text: "更早的进展 " + k + "。" }], updated: at } }] })).commit;
+    }
+    await ownerOps(store).read({ through: last });
+  }
   const open = Object.keys(snap0.items).filter(id => !snap0.items[id]!.record && !/^(done|cancelled)$/.test(r0.statusOf(id) ?? ""));
   const rnd = prng(4242), pool = Array.from({ length: Math.max(1, Math.round(EXTRA * 0.7)) }, () => rnd.pick(open));
   const notesWithReply = Object.entries(snap0.notes).filter(([, n]) => n.kind === "comment" && n.reply).map(([id]) => id);
@@ -74,8 +86,9 @@ async function makeBoard(): Promise<BoardServer & { servers: Server[] }> {
 }
 /** An HTTP server for the board serving the page from `webDir`; one board can be served by several pages. */
 async function serve(board: BoardServer & { servers: Server[] }, webDir: string): Promise<string> {
-  const op = ops(board.store);
-  const server: Server = createHttpServer({ store: board.store, ops: op, ownerOps: ownerOps(board.store), webDir, createMcp: () => createMcpServer({ store: board.store, ops: op }) });
+  const op = ops(board.store), oo = ownerOps(board.store), read = oo.read;
+  oo.read = async (...a: Parameters<typeof read>) => { const t0 = performance.now(); try { return await read(...a); } finally { serverReads.push(performance.now() - t0); } };
+  const server: Server = createHttpServer({ store: board.store, ops: op, ownerOps: oo, webDir, createMcp: () => createMcpServer({ store: board.store, ops: op }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   board.servers.push(server);
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
@@ -95,6 +108,7 @@ async function pageAt(commit: string): Promise<string> {
 }
 
 const INIT = `(() => {
+  window.__cnt = { inv: 0, render: 0, scopes: [] };
   const log = window.__nlog = { t0: 0, last: 0, long: [] };
   addEventListener("keydown", e => { if (e.key === "n") { log.t0 = performance.now(); log.last = 0; log.long = []; } }, true);
   new MutationObserver(() => { if (log.t0) log.last = performance.now(); }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -106,7 +120,7 @@ async function metrics(cdp: CDPSession): Promise<Metrics> {
   const { metrics } = await cdp.send("Performance.getMetrics");
   return Object.fromEntries(metrics.map(m => [m.name, m.value]));
 }
-interface Press { busy: number; script: number; layout: number; style: number; landed: number; longMax: number; longSum: number; selected: string | null }
+interface Press { cnt?: { inv: number; render: number; scopes: string[] }; busy: number; script: number; layout: number; style: number; landed: number; longMax: number; longSum: number; selected: string | null }
 interface Run { variant: string; presses: Press[]; control: number[]; distinct: number; stops: number; writes: number }
 
 async function openPage(browser: Browser, board: BoardServer, url: string) {
@@ -131,13 +145,14 @@ function startWriter(board: BoardServer, perSec: number) {
   })();
   return { stop: async () => { stopped = true; await loop; return count; } };
 }
-async function pressOnce(bp: BoardPage, cdp: CDPSession): Promise<Press> {
+async function pressOnce(bp: BoardPage, cdp: CDPSession, key = "n"): Promise<Press> {
   const m0 = await metrics(cdp);
-  await bp.page.keyboard.press("n");
+  await bp.page.keyboard.press(key);
   await bp.settle(); await sleep(120); await bp.settle();
+  const cnt = await bp.page.evaluate(() => { const c = (window as unknown as { __cnt: { inv: number; render: number; scopes: string[] } }).__cnt; const r = { inv: c.inv, render: c.render, scopes: c.scopes.slice() }; c.inv = 0; c.render = 0; c.scopes = []; return r; });
   const m1 = await metrics(cdp), log = await bp.page.evaluate(() => (window as unknown as { __nlog: { t0: number; last: number; long: Array<[number, number]> } }).__nlog);
   const d = (k: string) => (m1[k]! - m0[k]!) * 1000;
-  return { busy: d("TaskDuration"), script: d("ScriptDuration"), layout: d("LayoutDuration"), style: d("RecalcStyleDuration"), landed: log.last ? log.last - log.t0 : NaN,
+  return { cnt, busy: d("TaskDuration"), script: d("ScriptDuration"), layout: d("LayoutDuration"), style: d("RecalcStyleDuration"), landed: log.last ? log.last - log.t0 : NaN,
     longMax: Math.max(0, ...log.long.map(l => l[1])), longSum: log.long.reduce((a, l) => a + l[1], 0), selected: await bp.selected() };
 }
 async function idleWindow(bp: BoardPage, cdp: CDPSession): Promise<number> {
@@ -166,12 +181,17 @@ function report(label: string, runs: Run[]) {
     out(`  script ms median ${f(median(run.presses.map(p => p.script)))} layout ${f(median(run.presses.map(p => p.layout)))} style ${f(median(run.presses.map(p => p.style)))} | press until DOM stopped changing: median ${f(median(landed))} p90 ${f(pct(landed, 0.9))} | longest task median ${f(median(run.presses.map(p => p.longMax)))} max ${f(Math.max(...run.presses.map(p => p.longMax)))}`);
     if (run.control.length) out(`  control (no press, same writes, 450 ms window): median ${f(median(run.control))} max ${f(Math.max(...run.control))}`);
     out(`  busy per press: ${busy.map(x => x.toFixed(0)).join(" ")}`);
+    const landings = run.presses.filter(p => p.busy > 30 && p.cnt);
+    if (landings.length && run.variant === "count") {
+      out(`  per landing press: invalidate() ${f(median(landings.map(p => p.cnt!.inv)))} times, renderPage() ${f(median(landings.map(p => p.cnt!.render)))} times (medians over ${landings.length} landings)`);
+      for (const p of landings.slice(5, 8)) out(`    landing busy ${p.busy.toFixed(0)} ms, renders: ${p.cnt!.scopes.join(" | ")}`);
+    }
   }
 }
 
 interface Node { id: number; callFrame: { functionName: string; url: string; lineNumber: number }; children?: number[] }
 interface CpuProfile { nodes: Node[]; samples: number[]; timeDeltas: number[] }
-function summarize(label: string, profile: CpuProfile, presses: number) {
+function summarize(label: string, profile: CpuProfile, presses: number, entryPattern = / app\.js:\d+$/) {
   const byId = new Map(profile.nodes.map(n => [n.id, n])), parent = new Map<number, number>();
   for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
   const key = (n: Node) => { const fr = n.callFrame; return (fr.functionName || "(anonymous)") + (fr.url ? " " + fr.url.split("/").pop() + ":" + (fr.lineNumber + 1) : ""); };
@@ -188,7 +208,7 @@ function summarize(label: string, profile: CpuProfile, presses: number) {
     total += dt;
     self.set(leaf, (self.get(leaf) ?? 0) + dt);
     for (const k of new Set(st)) incl.set(k, (incl.get(k) ?? 0) + dt);
-    const e = st.find(k => / app\.js:\d+$/.test(k)) ?? "(no page function: " + leaf.replace(/ .*/, "") + ")";
+    const e = st.find(k => entryPattern.test(k)) ?? "(no page function: " + leaf.replace(/ .*/, "") + ")";
     entry.set(e, (entry.get(e) ?? 0) + dt);
   });
   const top = (m: Map<string, number>, n: number) => [...m].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, v]) => `  ${(v / presses).toFixed(1).padStart(7)} ms/press  ${k}`).join("\n");
@@ -211,6 +231,32 @@ async function profiled(browser: Browser, board: BoardServer, url: string, label
   await bp.context.close();
 }
 
+
+/** The owner's reading loop: n to a stop, then m to mark it read, each waited out; what m sets going in the page and on the server. */
+async function marking(browser: Browser, board: BoardServer, url: string, variant: string) {
+  const { bp, cdp } = await openPage(browser, board, url);
+  const writer = WRITES > 0 ? startWriter(board, WRITES) : null;
+  serverReads.length = 0;
+  const cycles: Array<{ n: Press; m: Press; reqs: Array<[string, string, number, number]> }> = [];
+  for (let k = 0; k < Math.floor(PRESSES / 2); k++) {
+    const n = await pressOnce(bp, cdp, "n");
+    // The mark of the item n just landed on: n again would only move inside it.
+    const t0 = await bp.page.evaluate(() => performance.now());
+    const m = await pressOnce(bp, cdp, "m");
+    const reqs = await bp.page.evaluate(t0 => performance.getEntriesByType("resource").filter(e => e.startTime >= t0 && e.name.includes("/api/")).map(e => [new URL(e.name).pathname, (e as PerformanceResourceTiming).initiatorType, Math.round(e.duration), (e as PerformanceResourceTiming).decodedBodySize] as [string, string, number, number]), t0);
+    cycles.push({ n, m, reqs });
+  }
+  if (writer) await writer.stop();
+  const reads = [...serverReads];
+  await bp.context.close();
+  const snap = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/snapshot")), unread = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/unread")), read = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/read"));
+  out(`MARK ${args.label} variant=${variant} cycles=${cycles.length} history=${HISTORY} writes=${WRITES}`);
+  out(`  n busy ms median ${f(median(cycles.map(c => c.n.busy)))} p90 ${f(pct(cycles.map(c => c.n.busy), 0.9))} | m busy ms (task time from the key until quiet) median ${f(median(cycles.map(c => c.m.busy)))} p90 ${f(pct(cycles.map(c => c.m.busy), 0.9))} max ${f(Math.max(...cycles.map(c => c.m.busy)))}`);
+  out(`  after one m: GET /api/snapshot ${snap.length / cycles.length} times, median ${f(median(snap.map(r => r[2])))} ms, ${f(median(snap.map(r => r[3])) / 1e6)} MB; GET /api/unread ${unread.length / cycles.length} times, median ${f(median(unread.map(r => r[2])))} ms, ${f(median(unread.map(r => r[3])) / 1e3)} KB; POST /api/read median ${f(median(read.map(r => r[2])))} ms (server side of read: median ${f(median(reads))} ms, max ${f(Math.max(...reads))})`);
+  out(`  m busy per cycle: ${cycles.map(c => c.m.busy.toFixed(0)).join(" ")}`);
+  out(`  n busy per cycle: ${cycles.map(c => c.n.busy.toFixed(0)).join(" ")}`);
+}
+
 const dir = join(ROOT, args.out!);
 await mkdir(dir, { recursive: true });
 try {
@@ -221,11 +267,33 @@ try {
   for (const v of args.variants!.split(",").filter(Boolean)) {
     if (v === "head") pages.set(v, join(ROOT, "web"));
     else if (v === "noagents") pages.set(v, await variantWeb(t, [{ file: "web/app.ts", edit: "no agent list", find: "function renderAgents() {\n    const host = get(\"agents\"); if (!host) return;", replace: "function renderAgents() { return;\n    const host = get(\"agents\"); if (!host) return;" }]));
+    else if (v === "count") pages.set(v, await variantWeb(t, [
+      { file: "web/app.ts", edit: "count invalidate", find: "function invalidate() { memo = {};", replace: "function invalidate() { (window as any).__cnt.inv++; memo = {};" },
+      { file: "web/app.ts", edit: "time renderPage", find: "function renderPage(scope:Set<string>) {", replace: "function renderPage(scope:Set<string>) { const __t = performance.now(); try { renderPageInner(scope); } finally { const c = (window as any).__cnt; c.render++; c.scopes.push([...scope].slice(0, 4).join(\",\") + \" \" + (performance.now() - __t).toFixed(0) + \"ms\"); } }\n  function renderPageInner(scope:Set<string>) {" },
+    ]));
+    // The falsifier for the suspected cause: a render that changes only the view keeps the derived rules of the unchanged board.
+    else if (v === "keeprules") pages.set(v, await variantWeb(t, [
+      { file: "web/app.ts", edit: "scheduleRender keeps rules", find: "    invalidate(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;", replace: "    memo = {}; scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;" },
+      { file: "web/app.ts", edit: "renderNow keeps rules", find: "function renderNow(...scope:string[]) { invalidate();", replace: "function renderNow(...scope:string[]) { memo = {};" },
+      { file: "web/app.ts", edit: "the minute tick still refreshes", find: "setInterval(() => { rulePresentationDirty = true;", replace: "setInterval(() => { invalidate(); rulePresentationDirty = true;" },
+    ]));
     else throw new Error("unknown variant " + v);
   }
   for (const c of args.commits!.split(",").filter(Boolean)) pages.set(c, await pageAt(c));
   const urls = new Map<string, string>();
   for (const [name, webDir] of pages) urls.set(name, await serve(board, webDir));
+  if (args.mark) {
+    // The server's share: a V8 profile of this process while the page reads, aggregated by function of src/.
+    const { Session } = await import("node:inspector");
+    const session = new Session(); session.connect();
+    const post = (m: string, params?: object) => new Promise<any>((resolve, reject) => session.post(m, params as never, (e: Error | null, r: unknown) => e ? reject(e) : resolve(r)));
+    await post("Profiler.enable"); await post("Profiler.setSamplingInterval", { interval: 200 }); await post("Profiler.start");
+    for (const [name, url] of urls) await marking(browser, board, url, name);
+    const { profile } = await post("Profiler.stop") as { profile: CpuProfile };
+    await writeFile(join(dir, `${args.label}-server.cpuprofile`), JSON.stringify(profile));
+    summarize(`${args.label} (this process: the board server and the test driver; names under src/ are the server)`, profile, 1, / (owner-ops|history|store|http|ops|rules|query|model|mcp|agents|startup-cache)\.ts:\d+$/);
+    process.exit(0);
+  }
   // Interleaved: each repetition measures every variant once, in turn, so a slow minute on the runner hits all of them.
   const all: Run[][] = [];
   for (let rep = 0; rep < REPS; rep++) {
