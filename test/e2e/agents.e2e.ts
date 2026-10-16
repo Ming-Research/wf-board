@@ -70,6 +70,8 @@ test("two sessions on one item each show it, and the tree's element is still fou
   const id = await farItem(bp, board);
   const base = await bp.changes();
   await write(board, "agent-x", id);
+  // Commit times have a resolution of one second, and rows with the same time sort by name: leave a second between the writes.
+  await new Promise(resolve => setTimeout(resolve, 1100));
   await write(board, "agent-y", id);
   await bp.waitChanges(base + 2);
   await bp.page.locator('#agents [data-agent="agent-y"]').waitFor();
