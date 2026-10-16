@@ -88,17 +88,51 @@ SDK.
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
-it has new commits, at most every ten minutes, and on shutdown. If the server
+it has new commits: first 60 seconds after it starts listening, then at most
+every ten minutes. The first push waits because the agents that reconnect after
+a restart catch up on writes in the first seconds, and a push holds the write
+queue for its network round trips (item `push-blocks-writes`). It does not push
+on shutdown (see Stopping). Each push writes its duration to the service log. If the server
 is down, agents can still read the files with Grep and Read; nothing is
 hidden in a database.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
-exit. `GET /health` reports its state; the page shows a banner when the server
+exit, one second after the last start (`ThrottleInterval`; launchd's default of
+ten seconds would hold up a redeploy that has to be rolled back). `GET /health`
+reports its state; the page shows a banner when the server
 does not answer, and every MCP tool error names the cause. Every line of the
 service log carries its time, and a start logs how long each step took (reading
 the documents, checking them against the repository, reading the startup cache
 and the commits after it, replaying them) and the time from the start of the
 process to listening.
+
+**Stopping.** launchd sends SIGTERM and kills the process five seconds later.
+The daemon uses well under that:
+
+1. From the signal on, the server accepts no new connection and answers every
+   request that still arrives (page, MCP or wake stream) with 503, `Connection:
+   close` and `Retry-After: 2`. A client that retries on its old connection
+   therefore cannot start a new MCP session in a process that is about to exit;
+   such a session would hold the process open until it was killed, and its
+   client would believe it had reconnected and never ask again.
+2. The page's event streams, the wake connections and the idle stream of each
+   MCP session end at once, so their clients start to reconnect and are refused.
+3. A request already running, a tool call included, may finish. The connection
+   it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
+   every connection that is left is closed.
+4. The owner's reading state is committed locally, and the process exits.
+
+A push needs three round trips to GitHub (`ls-remote`, `fetch`, `push`). On
+2026-10-16, from the owner's Mac to the data repository's remote, six rounds of
+the three git commands in a clone at the remote's head took a median of 1.14 s,
+1.13 s and 1.25 s (the last as `push --dry-run`, so the transfer of new commits
+is not in it), and 3.01 to 4.18 s (median 3.75 s) for the three in a row. That
+leaves no safe margin in the five seconds, and a slow network exceeds it, so
+shutdown does not push. The data is already committed locally, so nothing is
+lost: the remote copy is only a backup, and the first push after the next start
+sends what this run left. A push still running when the signal arrives holds
+the write queue, so the local commit of the reading state waits behind it (item
+`push-blocks-writes`).
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
@@ -649,8 +683,8 @@ log:
   and save it locally without a commit. A local save arriving during a data
   commit waits for that commit to finish. Pending owner state normally joins
   the next data commit, so ordinary reads make no commit noise. On orderly
-  shutdown, the daemon commits any remaining owner state on its own before
-  pushing.
+  shutdown, the daemon commits any remaining owner state on its own (locally;
+  shutdown does not push).
 
 ### Item plans
 
