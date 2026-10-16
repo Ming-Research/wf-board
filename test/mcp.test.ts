@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
-import { INSTRUCTIONS, INSTRUCTIONS_CORE } from "../src/instructions.ts";
+import { INSTRUCTIONS } from "../src/instructions.ts";
 import { board, author, later } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
@@ -53,8 +53,8 @@ test("project MCP onboarding, requests, triage, close and coordinator reads use 
   const text=(r:Awaited<ReturnType<typeof client.callTool>>)=>(r.content as Array<{text:string}>).map(c=>c.text).join("\n");
   async function call(name:string,args:Record<string,unknown>={}) {const r=await client.callTool({name,arguments:args});assert.ok(!r.isError,text(r));return text(r);}
   const instructions=client.getInstructions()!;
-  for (const term of ["projects","brief","reply_note","close_note","architect","do not use create_request or triage_request","Other agents do not listen to the wake stream"]) assert.ok(instructions.includes(term),term);
-  assert.doesNotMatch(instructions,/coordinator|need not listen|Ask other projects/i);
+  for (const term of ["projects","brief","author","session","GitHub remote","~/dev/wf/AGENTS.md",'section "Board"']) assert.ok(instructions.includes(term),term);
+  assert.doesNotMatch(instructions,/coordinator|总管|inbox|create_request|need not listen/i);
   const configured=JSON.parse(await call("projects"));assert.equal(Object.hasOwn(configured[0],"agents"),false);assert.equal(configured[0].repo,"Ming-Research/Whitefoot");
   await call("update_project",{author,name:"Whitefoot",repo:"Ming-Research/Whitefoot-next"});
   assert.equal(store.snapshot().board.projects[0]!.repo,"Ming-Research/Whitefoot-next");
@@ -88,16 +88,18 @@ test("MCP onboarding and write schemas use project identities", async t => {
   });
 });
 
-test("the server instructions state the new flow, and their first 2048 characters stand alone", async t => {
+test("the server instructions are a short pointer to the shared Board rules and hold no rules", async t => {
   const { client } = await connected(t), instructions = client.getInstructions()!;
   assert.equal(instructions, INSTRUCTIONS);
-  // Claude Code cuts a server's instructions at 2048 characters: what comes first must tell an agent how to start and what it may not do.
-  assert.ok(INSTRUCTIONS_CORE.length <= 2048, String(INSTRUCTIONS_CORE.length));
-  assert.ok(instructions.startsWith(INSTRUCTIONS_CORE));
-  for (const term of ["projects", "brief", "author", "session", "架构师", "set_plan", "acceptance step", "SendMessage", "create_request"]) assert.ok(INSTRUCTIONS_CORE.includes(term), term);
-  // One rule from each part of the item rules and the communication rules; each fails if its part is dropped.
-  for (const rule of [/Only the architect creates items/, /Study or direct is decided at creation/, /Test: if the other never finished/, /Title: a short phrase.*at most 20 characters/, /A card holds only the question and the option names/, /Acceptance: a checkable result/, /改动 \(the head's section for the item's PRs\)/, /参考: research reports/, /Only the architect receives pushes/, /SendMessage by session name is only a doorbell/, /ws:\/\/127\.0\.0\.1:7417\/wake\?session=\*/, /runs Monitor on a small script/, /Reading the board:/]) assert.match(instructions, rule);
-  assert.doesNotMatch(instructions, /总管|coordinator/i);
+  // Claude Code cuts a server's instructions at 2048 characters; the usage rules live in ~/dev/wf/AGENTS.md (section "Board").
+  assert.ok(instructions.length <= 2048, String(instructions.length));
+  assert.match(instructions, /~\/dev\/wf\/AGENTS\.md, section "Board"/);
+  // The three first steps, each in its own numbered line.
+  assert.match(instructions, /^1\. Call projects and pick the project whose repo matches your repository's GitHub remote\.$/m);
+  assert.match(instructions, /^2\. Call brief with that project's name\.$/m);
+  assert.match(instructions, /^3\. In every write, pass that project's name as author and your own session's name as session\.$/m);
+  // No rule text and no old-flow wording: one place defines the rules.
+  assert.doesNotMatch(instructions, /总管|coordinator|inbox|create_request|triage_request|need not listen|acceptance|Monitor|set_plan|architect/i);
 });
 
 test("set_term, glossary, brief and delete_term work end to end, and an unconfigured author is refused", async t => {
@@ -109,7 +111,7 @@ test("set_term, glossary, brief and delete_term work end to end, and an unconfig
     const result = await client.callTool({ name, arguments: args });
     return { error: result.isError === true, text: (result.content as Array<{ text: string }>).map(c => c.text).join("\n") };
   };
-  assert.match(client.getInstructions()!, /set_term.*glossary/);
+  assert.match((await client.listTools()).tools.find(tool => tool.name === "set_term")!.description!, /glossary/);
   assert.equal((await call("glossary", {})).text, "No terms.");
   assert.match((await call("set_term", { author, term: "否决线", definition: "性能比较里\n判定变慢的界线。" })).text, /^set_term 否决线 · commit [a-f0-9]{40}$/);
   await call("set_term", { author: "Firn", term: "回收压力", definition: "频繁触发回收的运行方式。" });
@@ -147,7 +149,7 @@ test("MCP set_targets exposes date-free goal edits, all modes and compact contex
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "remove", "session", "target", "targets"]);
   const targetSchema = tool.inputSchema.properties!.target as { properties: Record<string, unknown> };
   assert.deepEqual(Object.keys(targetSchema.properties).sort(), ["baseline", "current", "goal", "id", "target"]);
-  assert.match(client.getInstructions()!, /Use set_targets.*goal/);
+  assert.match(tool.description!, /goal numbers current/);
   const readText = (value: Awaited<ReturnType<typeof client.callTool>>) => (value.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const target = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
   const written = await client.callTool({ name: "set_targets", arguments: { author, id: "a", targets: [target] } });
@@ -196,7 +198,8 @@ test("MCP replaces legacy fields and tools with plan semantics and refuses remov
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
     for (const field of removed) assert.ok(!(field in schema.properties!));
   }
-  assert.match(client.getInstructions()!, /set_plan/); assert.match(client.getInstructions()!, /Status is derived from the plan/); assert.doesNotMatch(client.getInstructions()!, /Every dependency carries a why/);
+  assert.match(tools.find(tool => tool.name === "set_plan")!.description!, /derive from the plan/);
+  assert.ok(!tools.some(tool => /Every dependency carries a why/.test(tool.description ?? "")));
   const before = store.snapshot();
   for (const args of [{ status: "done" }, { deps: [] }, { parent: "other" }]) {
     const rejected = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: 1, ...args } }); assert.equal(rejected.isError, true, text(rejected));
@@ -218,8 +221,8 @@ test("MCP plan rows have server dates and compact levels, targets and ownership 
 
 test("MCP exposes acceptance anywhere, several scenarios and first-acceptance row insertion", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.match(client.getInstructions()!, /at least one acceptance step.*several acceptance steps/);
-  assert.doesNotMatch(client.getInstructions()!, /ends with its acceptance/);
+  assert.match(tools.find(tool => tool.name === "set_plan")!.description!, /at least one acceptance step anywhere/);
+  assert.ok(!tools.some(tool => /ends with its acceptance/.test(tool.description ?? "")));
   assert.match(tools.find(tool => tool.name === "set_plan")!.description!, /new rows before the first acceptance step/);
   assert.match(tools.find(tool => tool.name === "create_item")!.description!, /one acceptance step appended from accept/);
   const written = await client.callTool({ name: "set_plan", arguments: { author, id: "a", rows: [
@@ -348,8 +351,6 @@ test("MCP set_pause is coordinator-only and paused status works in list and over
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_pause");
   assert.ok(tool, "the pause operation is available to the coordinator");
   assert.match(tool.description!, /Only author 总管/);
-  // The instructions state the new rule (the architect pauses); the server still checks author 总管 until the architect identity exists.
-  assert.match(client.getInstructions()!, /Only the architect may use set_pause/);
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_pause", arguments: { author, id: "area", paused: true, reason: "Pause" } });
   assert.equal(refused.isError, true); assert.match(text(refused), /only 总管/); assert.deepEqual(store.snapshot(), before);

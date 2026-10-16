@@ -28,8 +28,8 @@ matches what the artifact board offered.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
-  where agents learn how to use and write on the board; `src/http.ts`: page,
-  page API, events and wake stream; `src/main.ts`: the daemon.
+  a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
+  page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
@@ -68,10 +68,11 @@ matches what the artifact board offered.
 - The daemon binds `127.0.0.1` only.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
-- Board usage for agents lives only in the server's instructions
-  (`src/instructions.ts`, design section 6), never in this file. A change to a
-  tool's behavior or to a board rule changes them in the same commit; keep
-  their first 2048 characters self-contained, since Claude Code cuts there.
+- Board usage for agents lives only in `~/dev/wf/AGENTS.md`, section "Board"
+  (from the agents_config repository), never in this file or in the server's
+  instructions, which are a short pointer (`src/instructions.ts`, design
+  section 6). A change to a tool's behavior or to a board rule changes that
+  section in the same change, in agents_config.
 
 ## Coordinator
 

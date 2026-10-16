@@ -1019,31 +1019,29 @@ closed session left behind. Omitting `session` is allowed for older clients.
 
 ### Server instructions
 
-The server's instructions (`src/instructions.ts`) are the single owner of how
-an agent uses the board and writes on it: who writes what, the item lifecycle,
-dependencies, how to write items and cards, plans, acceptance, logs and the
-改动 section, what the board pushes and to whom, the wake stream's protocol, and
-the tool behavior a tool's own description does not carry. They state the
-board rules for agents (the architect's item rules and communication rules);
-a rule the server enforces is defined in `src/model.ts` or `src/rules.ts`.
-`AGENTS.md` and the other agent files point here instead of repeating them.
-A change to a tool's behavior or to a board rule changes the instructions in
-the same commit.
+The server's instructions (`src/instructions.ts`) are a short pointer of at
+most 2048 characters. They say that how to use the board and write on it is in
+the shared `AGENTS.md` (`~/dev/wf/AGENTS.md`, section "Board", kept in the
+agents_config repository), and give the first steps: call `projects`, pick the
+project whose `repo` matches the repository's GitHub remote, call `brief`, and
+pass that project's name as `author` and the session's own name as `session`
+in every write. They state no rule of their own, so each rule has one
+definition.
 
-Claude Code cuts a server's instructions at 2048 characters. The text
-therefore begins with `CORE`, which alone tells an agent how to start
-(`projects`, `brief`, `author`, `session`), who writes what, and what it must
-not do (set a status, use the inbox tools); a test keeps it within the limit.
-The wake frames the instructions list for the architect (event kinds and
-their fields) are checked against the frames the server sends.
+Why a pointer. Claude Code cuts a server's instructions at 2048 characters,
+so the board's usage rules (several times that long) placed in them would
+reach no agent running there. The owner decided that board usage must stay in
+the agent's context for the whole session. The shared `AGENTS.md` does: every
+session started under `~/dev/wf` loads it and keeps it through compaction.
+A guide tool or resource would add a call the agent must make and would not
+keep the rules in context, so it was not built. The cost is that a session
+started outside `~/dev/wf` does not load the rules; the pointer tells it to
+read them.
 
-The text ends with a short, project-independent reading guide
-(`READING_GUIDE`), the single owner of how an agent reads the board: start with
-`projects` then `brief`; paused work is not worked on; read work in progress,
-then ready work, owner cards and notes; pass `session` on every write; put
-things in flight (background runs, unpushed local work) in plan rows with
-`waits`; an engineer reads its own subtree and the architect reads across
-projects.
+A rule the server enforces is defined in `src/model.ts` or `src/rules.ts`;
+the section "Board" states it for agents, and a change to a tool's behavior
+or to a board rule changes that section in the same change. A test keeps the
+instructions within the limit and free of rule text.
 
 ### Finding things
 
@@ -1410,9 +1408,8 @@ does not make it unread.
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
-sent note produces one wake event:
-`{event:"note", note, target, kind, title, project}`. Sending does not
-mark a note handled. It stays `sent` until a project agent replies with
+sent note produces one `note` wake event (The wake stream, below). Sending
+does not mark a note handled. It stays `sent` until a project agent replies with
 `reply_note` or closes it with `close_note`. Closing stamps the handler and
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
@@ -1430,31 +1427,54 @@ the background. Sending still waits for every pending draft save; a failed
 save prevents sending. A failed save or send restores the previous controls
 and draft text and shows the error; the committed snapshot stays authoritative.
 
-A blocking wait produces `{event:"blocking", kind:"card"|"ask", key, item,
-project, text}` (a card event also carries `question`): when a card is created
-open with `blocks` or gains or changes `blocks`, and when an item's `ask` is
-set or changed. A card without `blocks` produces none, so the coordinator can
-push a phone notification for blocking waits only.
+### The wake stream
 
-A check produces `{event:"check", item, project, title, label, text}` when
-an open item gains it: `label` uses the check's own label, such as 无人推进
-or 待重写, and defaults to 需核对 when none is specified; `text` is the
-check's explanation. The server keeps the
-set of (item, check text) pairs flagged and emits only pairs not in the
-previous set, after each committed change and on a one-minute timer, since
-stalled work appears with active time alone. A pair that disappears and
-returns emits again. The set is seeded at start without emitting, so a
-restart announces nothing.
+The wake stream is the server's contract for telling a session that
+something needs it. Only the architect listens, on the wildcard stream; how
+it listens, and what it does with an event, is in the architect's rules and
+in `~/dev/wf/AGENTS.md`, section "Board".
 
-A newly created request also produces one event:
-`{event:"request", item, title, project, by}`. The store's committed
-change is the event source, so updates and retries do not announce a request
-again. A socket at `/wake?session=*` receives everything; a named socket
-at `/wake?session=<project name>` receives events whose `project` matches
-that name. Only the architect listens, on the wildcard stream (the server's
-instructions, Messages, say how); engineers and other agents do not.
-`followups(minutes)` lists notes and inbox requests older than that age. The
-server does not detect session liveness or retry messages itself.
+**Address.** A client opens a WebSocket to
+`ws://127.0.0.1:<port>/wake?session=<filter>` (the running daemon uses port
+7417). The server answers 404 unless the path is `/wake` and `session` is
+nonempty, and 403 unless the `Host` header is `127.0.0.1:<port>` or
+`localhost:<port>` and any `Origin` header equals `http://<host>`; a
+command-line client sends no `Origin`.
+
+**Filter.** `session=*` receives every event. `session=<project name>`
+(URL-encoded) receives only the events whose `project` equals that name; a
+name that is no project receives nothing.
+
+**Frames.** Each event is one text frame holding one JSON object. `event`
+names the kind, and `project` is the project of the item concerned. These are
+all the forms the server sends:
+
+| Frame | Sent when |
+|---|---|
+| `{event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question or the item's title |
+| `{event:"blocking", kind:"card", key, item, project, text, question}` | A card is created open with `blocks`, or an open card gains or changes `blocks`. `key` is the card, `item` its item, `text` its `blocks`. A card without `blocks` sends nothing |
+| `{event:"blocking", kind:"ask", key, item, project, text}` | An item's legacy `ask` is set or changed. `key` and `item` are the item, `text` is the ask |
+| `{event:"check", item, project, title, label, text}` | An open item gains a check it did not have. `label` is the check's own label, such as 无人推进 or 待重写, and 需核对 when it has none; `text` is the check's explanation |
+| `{event:"request", item, title, project, by}` | An inbox request item is created. `by` is the requesting project. Updates and retries of the commit do not send it again |
+
+The store's committed change is the source of the note, blocking and request
+events. Checks are compared as (item, check text) pairs: a pair is sent when
+it is not in the previous set, after each committed change and on a
+one-minute timer (stalled work appears with active time alone). A pair that
+disappears and returns is sent again. The set is seeded at start without
+sending, so a restart announces nothing.
+
+**Delivery and reconnect.** Each event goes once to every connected socket
+whose filter matches. Events carry no number and the server keeps none: an
+event produced while no matching socket is connected is lost, and nothing is
+replayed on reconnect. A client that reconnects reads the state instead: sent
+notes with `notes`, open blocking cards and checks with `brief` or
+`overview`, and what changed with `changes`. The server pings every 25
+seconds and closes a socket that did not answer the previous ping; it also
+closes a socket with more than 4 MiB of unsent frames. A client reconnects
+after any close. The server does not detect session liveness or retry
+messages; `followups(minutes)` lists notes and inbox requests older than that
+age.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
 Code does not start a turn in an idle session for them. Claude Code's

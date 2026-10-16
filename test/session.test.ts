@@ -72,11 +72,10 @@ test("a session name must be 1 to 80 printable characters", async t => {
   }
 });
 
-test("the server instructions carry a short generic reading guide", async t => {
+test("the server instructions are a short, project-independent pointer that tells a session to pass its own name", async t => {
   const { client } = await connect(t), instructions = client.getInstructions()!;
-  const guide = instructions.slice(instructions.indexOf("Reading the board:"));
-  assert.ok(guide.length > 0 && guide.split("\n").length <= 12);
-  assert.match(guide, /session/);
-  assert.doesNotMatch(guide, /Firn|Whitefoot|Halo|Snowghost|\bwf\b/);
-  assert.doesNotMatch(guide, /coordinator|inbox/i, "the reading guide no longer routes through a coordinator or an inbox");
+  assert.ok(instructions.length > 0 && instructions.length <= 2048);
+  assert.match(instructions, /your own session's name as session/);
+  assert.doesNotMatch(instructions, /Firn|Whitefoot|Halo|Snowghost/);
+  assert.doesNotMatch(instructions, /coordinator|inbox/i);
 });
