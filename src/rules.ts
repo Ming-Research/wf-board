@@ -72,6 +72,8 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A title longer than this many characters (spaces not counted) gets a check. */
+export const TITLE_MAX_CHARS = 20;
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
@@ -750,6 +752,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
+      const titleLength = [...it.title.replace(/\s/g, "")].length;
+      if (titleLength > TITLE_MAX_CHARS) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
       if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
       if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
