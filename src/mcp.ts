@@ -127,14 +127,14 @@ export function createMcpServer({ store, ops, now, wake, slow }: { store: Store;
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start(`tool ${name}`, toolClass(name, write));
-      let result = "ok";
+      let outcome = "ok";
       try {
         const args = schema.parse(a);
         if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
       }
-      catch (error) { result = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
-      finally { timed?.(result, () => summarize(a)); }
+      catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      finally { timed?.(outcome, () => summarize(a)); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));

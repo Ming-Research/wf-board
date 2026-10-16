@@ -36,6 +36,8 @@ matches what the artifact board offered.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
+- `src/slow-ops.ts`: the time limits (a class for every page request and tool call, the numbers in design section 4),
+  the timing at the two entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
