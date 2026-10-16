@@ -593,24 +593,33 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   return commits;
 }
 
-/** A changed body block carries a blue bar on its left, as tall as the block, and no background of its own. The page
- * holds no changed block to look at, so a probe block is added in a rich text at the end of the page and taken out
- * again. The bar rule is not scoped to an item, so the probe tests the same rule an item's text gets. */
+/** A changed body block, and a changed card question, carry a blue bar on its left, as tall as the block, and no
+ * background of their own. The page holds none of them to look at, so probes are added at the end of the page and taken
+ * out again. The bar rules are not scoped to an item, so the probes test the same rules the page's text gets. */
 export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
   const v: string[] = [];
   const probe = await bp.page.evaluate(() => {
-    const host = document.createElement("div"); host.className = "rich"; document.body.appendChild(host);
+    const measure = (block: HTMLElement) => {
+      const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
+      return { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: parseFloat(bar.height), blockHeight: block.getBoundingClientRect().height, own: own.backgroundColor };
+    };
+    const rich = document.createElement("div"); rich.className = "rich"; document.body.appendChild(rich);
     const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
-    host.appendChild(block);
-    const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
-    const out = { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: parseFloat(bar.height), blockHeight: block.getBoundingClientRect().height, own: own.backgroundColor };
-    host.remove();
-    return out;
+    rich.appendChild(block);
+    const body = measure(block); rich.remove();
+    const card = document.createElement("div"); card.className = "card";
+    const heading = document.createElement("h3"); card.appendChild(heading);
+    const question = document.createElement("span"); question.className = "chg-add"; question.textContent = "probe";
+    heading.appendChild(question); document.body.appendChild(card);
+    const title = measure(question); card.remove();
+    return { body, title };
   });
-  if (probe.bar === "rgba(0, 0, 0, 0)" || probe.bar === "transparent") v.push("changed-block: a changed block has no blue bar");
-  if (probe.width !== "3px") v.push(`changed-block: a changed block's bar is ${probe.width} wide, expected 3px`);
-  if (probe.position !== "absolute" || probe.left !== "-7px") v.push(`changed-block: a changed block's bar is at ${probe.left} (${probe.position}), not beside its left edge at -7px`);
-  if (Math.abs(probe.height - (probe.blockHeight - 6)) > 0.5) v.push(`changed-block: a changed block's bar is ${probe.height}px tall, expected the block's height less 6px (${probe.blockHeight - 6}px)`);
-  if (probe.own !== "rgba(0, 0, 0, 0)" && probe.own !== "transparent") v.push(`changed-block: a changed block has a background ${probe.own}`);
+  for (const [what, p] of [["a changed block", probe.body], ["a changed card question", probe.title]] as const) {
+    if (p.bar === "rgba(0, 0, 0, 0)" || p.bar === "transparent") v.push(`changed-block: ${what} has no blue bar`);
+    if (p.width !== "3px") v.push(`changed-block: ${what}'s bar is ${p.width} wide, expected 3px`);
+    if (p.position !== "absolute" || p.left !== "-7px") v.push(`changed-block: ${what}'s bar is at ${p.left} (${p.position}), not beside its left edge at -7px`);
+    if (Math.abs(p.height - (p.blockHeight - 6)) > 0.5) v.push(`changed-block: ${what}'s bar is ${p.height}px tall, expected the block's height less 6px (${p.blockHeight - 6}px)`);
+    if (p.own !== "rgba(0, 0, 0, 0)" && p.own !== "transparent") v.push(`changed-block: ${what} has a background ${p.own}`);
+  }
   return v;
 }

@@ -40,8 +40,16 @@ interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b
 const WITNESSES: Witness[] = [
   {
     bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
-    // The blue bar rule that marks a changed body block; removing it leaves the block with no mark at all.
-    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    // The blue bar rule that marks a changed body block and a changed card question; removing it leaves both with no mark.
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed card questions lost their mark while changed body blocks kept theirs (fixed in head-change-bar)",
+    // The bar rule without its card selector: the body block keeps its line, the card question loses it.
+    reverts: [{ file: "web/index.html", edit: "the card question's blue bar", find: ", .card h3 > .chg-add::before {", replace: " {" }],
     family: "changed-block",
     storage: b => openAll(b),
     run: async bp => checkChangedBlocks(bp),
