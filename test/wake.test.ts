@@ -138,7 +138,7 @@ test("the limit can be set shorter, and the alert names it in minutes", () => {
   const told: string[] = [];
   let clock = T0;
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000, notify: title => { told.push(title); } });
-  wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [] });
+  wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [], actions: "" });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["架构师 10 分钟没响应"]);
 });
@@ -519,7 +519,7 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   // The board's own kinds, with exactly their own fields: the daemon is their only source.
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
-  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [] });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [], actions: "" });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
   await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes });
@@ -579,7 +579,7 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
-  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok" });
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok", actions: "" });
   clock += 60_000; third.checkReceipts();
   assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
 });
