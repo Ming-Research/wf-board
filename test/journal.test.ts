@@ -44,7 +44,7 @@ test("the first entry of a day creates that day's record under the notes item, a
   assert.equal(it.record, true);
   assert.deepEqual(it.tags, ["协作流程"]);
   assert.equal(it.head, `**${localClock(first)}** 第一条\n\n**${localClock(second)}** 第二条\n跨行保留`);
-  assert.equal(store.snapshot().items["architect-notes"]!.plan!.some(row => row.item === key && row.own), true);
+  assert.equal(store.snapshot().items["architect-notes"]!.plan!.some(row => "item" in row && row.item === key && row.own === true), true);
   assert.ok(it.log.some(entry => entry.text === `改了 head：加了 ${localClock(second)} 的一条`));
 });
 
