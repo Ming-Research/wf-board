@@ -3,8 +3,8 @@ import type { Notify } from "./notify.ts";
 /** The paths whose change needs no restart, the one place this is defined. The daemon loads src/ and the packages at its start and
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html and
  * web/dist/app.js, the bundle the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
- * or not, restarts the daemon. */
-export const NO_RESTART = ["docs/", "test/", "web/"];
+ * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
+export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
 
 /** A push to the architect, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
@@ -234,7 +234,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     if (!behind) return refuse("ahead", `the checkout's ${head} is not an ancestor of ${target}: it has commits the main line lacks`);
 
     const changed = (await d.git(["diff", "--no-renames", "--name-only", head, target])).split("\n").filter(Boolean);
-    const restart = !up || changed.some(path => !NO_RESTART.some(prefix => path.startsWith(prefix)));
+    const restart = !up || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
     const commits = (await d.git(["log", "--first-parent", "--format=%h %s", `${head}..${target}`])).split("\n").filter(Boolean);
     const changes = commits.length > MAX_CHANGES ? [...commits.slice(0, MAX_CHANGES), { more: commits.length - MAX_CHANGES }] : commits;
 
