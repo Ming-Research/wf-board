@@ -850,7 +850,7 @@ export class Store {
           } else if (given !== undefined) throw new ValidationError([{ path, issues: "num: only the store issues numbers" }]);
           else if (before === null || txn.numberExisting) input.num = nextNum++;
         }
-        const after = frozen(validated(schemas[put.kind], withoutRetiredFields(path, { ...input, rev: (before?.rev ?? 0) + 1 }), path));
+        const after = frozen(validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path));
         if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
           continue;
@@ -1117,7 +1117,7 @@ export class Store {
     return cachedPromise(this.compared, hash, comparedSnapshotLimit, async () => {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
-      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = withoutRetiredFields(path, await this.readAt(path, hash));
+      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
       const loaded = parsePlanData(raw, hash);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
