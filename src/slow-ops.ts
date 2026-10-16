@@ -14,9 +14,9 @@ export const TELL_AGAIN_MS = 60 * 60_000;
 export interface Operation { name: string; cls?: OperationClass; label?: string }
 
 /** The path of a request URL, parsed as the router parses it, so a path is classed as the one it is served as (`/api/./notes`
- * is `/api/notes` to both). */
-export function pathnameOf(url: string | undefined): string {
-  try { return new URL(url ?? "/", "http://localhost").pathname; } catch { return "/"; }
+ * is `/api/notes` to both); none for a URL that does not parse, which the router fails. */
+export function pathnameOf(url: string | undefined): string | undefined {
+  try { return new URL(url ?? "/", "http://localhost").pathname; } catch { return undefined; }
 }
 
 /** A route the page server serves. `cls` is none for the long-lived ones, the event stream and the MCP transport (a tool call is
@@ -41,7 +41,8 @@ export function pageRoute(method: string, path: string): PageRoute | undefined {
 
 /** The operation a page request is. The name carries no query and no id, and a path the board does not serve has one name,
  * so the names stay a small fixed set; the log line keeps the path the request had. */
-export function pageOperation(method: string, path: string): Operation {
+export function pageOperation(method: string, path: string | undefined): Operation {
+  if (path === undefined) return { name: `${method} (unknown route)`, label: `${method} (unreadable path)`, cls: "read" };
   const label = `${method} ${path}`, route = pageRoute(method, path);
   if (route === undefined) return { name: `${method} (unknown route)`, label, cls: "read" };
   const name = route.name ?? label;
