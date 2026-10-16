@@ -5,6 +5,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { request } from "node:http";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -191,10 +192,9 @@ test("a sent note is pushed with a number whatever project its item is in, a dra
   assert.equal(star.events().length, 3);
 });
 
-test("only the kinds in the table are pushed: not a new request, a blocking card, an ask or a format check", async t => {
+test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);
-  await op.createRequest({ author: "Firn", project: "Whitefoot", key: "incoming", title: "Visitor request", head: "Please", accept: "Passes", priority: "P0", why: "Need it" });
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
@@ -481,6 +481,66 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   ]);
   assert.deepEqual([...forms.keys()].sort(), [...expected.keys()].sort());
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
+});
+
+// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake stream).
+const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: ["abc1234 Add a thing (#1)", { more: 2 }], restarted: true };
+const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
+
+test("only the deploy kinds are marked as ones another process may push", () => {
+  const external = Object.entries(WAKE_KINDS).filter(([, spec]) => "external" in spec).map(([kind]) => kind);
+  assert.deepEqual(external, ["deployed", "deployFailed"]);
+  for (const kind of Object.keys(WAKE_KINDS)) assert.equal(Wake.isExternal(kind), external.includes(kind), kind);
+  for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, undefined, {}]) assert.equal(Wake.isExternal(other), false, String(other));
+});
+
+test("POST /api/wake sends the deploy pushes as numbered frames to every listener, and keeps them", async t => {
+  const { url, api } = await server(t);
+  const star = await wakeSocket(t, url);
+  assert.deepEqual(await api("/api/wake", deployed), { status: 200, data: { n: 1 } });
+  assert.deepEqual(await api("/api/wake", deployFailed), { status: 200, data: { n: 2 } });
+  await star.sync();
+  assert.deepEqual(star.events().map(({ at, ...frame }) => frame), [{ n: 1, ...deployed }, { n: 2, ...deployFailed }]);
+  assert.ok(star.events().every(f => typeof f.at === "string" && !Number.isNaN(Date.parse(f.at))));
+  // Kept like any event: a client that connects later and asks from the start gets both.
+  const late = await wakeSocket(t, url, 0);
+  assert.deepEqual(late.events().map(f => f.n), [1, 2]);
+});
+
+test("POST /api/wake refuses every other kind, every other field set and every bad body, and sends nothing", async t => {
+  const { url, api, port } = await server(t);
+  const star = await wakeSocket(t, url);
+  const { event, ...fields } = deployed;
+  const refused = async (what: string, body: unknown) => {
+    const response = await api("/api/wake", body);
+    assert.equal(response.status, 400, `${what}: ${JSON.stringify(response.data)}`);
+    assert.equal(typeof response.data.error, "string", what);
+  };
+  // The board's own kinds, with exactly their own fields: the daemon is their only source.
+  await refused("note", { event: "note", ...noteFields("n1") });
+  await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [] });
+  for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
+  await refused("no event", fields);
+  await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes });
+  await refused("an extra field", { ...deployed, extra: 1 });
+  await refused("another kind's fields", { ...deployFailed, event });
+  await refused("oversize", { ...deployFailed, reason: "x".repeat(20 * 1024) });
+  for (const body of [[], null, "deployed", 5]) await refused(`body ${JSON.stringify(body)}`, body);
+  const raw = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not json" });
+  assert.equal(raw.status, 400);
+  // Only a program on this machine may ask: the same Host and Origin rules as every other write.
+  const foreign = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://evil.example" }, body: JSON.stringify(deployed) });
+  assert.equal(foreign.status, 403);
+  const hostStatus = (host: string) => new Promise<number>((resolve, reject) => {
+    const req = request(url + "/api/wake", { method: "POST", headers: { Host: host, "Content-Type": "application/json" } }, res => { res.resume(); resolve(res.statusCode!); });
+    req.on("error", reject); req.end(JSON.stringify(deployed));
+  });
+  assert.equal(await hostStatus("evil.example"), 403);
+  assert.equal(await hostStatus(`localhost:${port}`), 200, "the control: the same request with the right Host is taken");
+  assert.equal((await fetch(url + "/api/wake")).status, 404, "it only takes a POST");
+  await star.sync();
+  assert.deepEqual(star.events().map(f => f.n), [1], "only the control request was sent");
 });
 
 test("a told notice goes to the server's notify and to each listener with its card or item; a listener added later gets none of the earlier ones", () => {

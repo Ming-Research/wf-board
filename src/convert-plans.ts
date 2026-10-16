@@ -68,7 +68,8 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
   const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, planConversionAt:at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0, droppedArchives: Object.keys(old.owner.archived).length }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{},priority:{}}, statusChanges: [], priorityChanges: [], errors: [] };
   const note = (id: string, kind: string, detail: string) => findings.push({ item: id, project: previous.groupOf(id), kind, detail });
   for (const [id, original] of Object.entries(old.items)) {
-    const { parent: _parent, deps, steps, status: _status, priority: _priority, ...rest } = structuredClone(original);
+    // The inbox's request marker is not part of the item schema any more; a converted item does not carry it.
+    const { parent: _parent, deps, steps, status: _status, priority: _priority, request: _request, ...rest } = structuredClone(original);
     const plan: PlanRow[] = [], oldStatus = previous.statusOf(id), used = new Set<string>();
     const append = (row: PlanRow) => {
       if (used.has(row.id)) { note(id,"row id collision",`Old step and reference share ${row.id}; no id is renamed`); report.errors.push(`${id}: duplicate plan id ${row.id}`); }

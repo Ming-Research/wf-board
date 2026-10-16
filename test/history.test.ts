@@ -10,7 +10,7 @@ import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, architect, asArchitect, later } from "./helpers.ts";
 import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
 import type { Step } from "../src/history.ts";
-import { describeChanges } from "../src/query.ts";
+import { describeChanges, changes } from "../src/query.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { Store, NUMBERING_MESSAGE } from "../src/store.ts";
@@ -559,6 +559,56 @@ test("cold unread history compares legacy commits without whole-snapshot convers
   assert.ok(diff.after && typeof diff.after === "object" && "plan" in diff.after);
   assert.match(diff.diff, /Progress 0/);
   assert.ok("steps" in (await store.show("item", "work", commits[0]!) as object), "audit history stays raw");
+});
+
+test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {
+  const { dir, store } = await board(t), cursor = store.snapshot().head;
+  const git = promisify(execFile);
+  const run = async (...args: string[]) => (await git("git", args, { cwd: dir })).stdout.trim();
+  const commit = async (message: string) => {
+    await run("add", ".");
+    await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  // Written by hand, as create_request wrote it: the schema no longer has the marker, so no operation can.
+  const filed = (id: string, marker: boolean) => stringify({
+    title: id, group: "Firn", priority: "P1", difficulty: 2, ...(marker ? { request: { by: "Whitefoot", at: later } } : {}),
+    plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], log: [{ at: later, by: "Whitefoot", text: "Whitefoot 提出：Need" }],
+    updated: later, rev: 1,
+  });
+  await writeFile(join(dir, "items/incoming.yaml"), filed("incoming", true));
+  const filedCommit = await commit("create_request incoming");
+  await writeFile(join(dir, "items/incoming.yaml"), filed("incoming", false));
+  await commit("triage_request incoming");
+  await writeFile(join(dir, "items/declined.yaml"), filed("declined", true));
+  const declinedCommit = await commit("create_request declined");
+  await run("rm", "-q", "items/declined.yaml");
+  await commit("remove declined");
+  const reopened = await Store.open(dir);
+  assert.equal(Object.hasOwn(reopened.snapshot().items.incoming!, "request"), false, "the live data holds no marker");
+  // The past commit's items, normalized, are read with the current schema and without the marker.
+  const past = await reopened.comparisonSnapshot(declinedCommit);
+  assert.ok(past.items.incoming && past.items.declined);
+  assert.ok(!Object.hasOwn(past.items.declined!, "request") && !Object.hasOwn(past.items.incoming!, "request"));
+  // The raw commit stays evidence: the marker is still there to read.
+  assert.deepEqual(((await reopened.show("item", "incoming", filedCommit)) as { request: unknown }).request, { by: "Whitefoot", at: later });
+  assert.match(await reopened.diff("item", "incoming", `${filedCommit}^`, filedCommit), /\+request:/, "git's own diff of the filing commit");
+  const step = (await unreadSteps(reopened, cursor)).find(step => step.commits.includes(filedCommit))!;
+  assert.ok(step, "the filing commit is an unread step");
+  const stepped = await stepDiff(reopened, step, "item", "incoming");
+  assert.equal(stepped.before, null);
+  assert.match(stepped.diff, /\+title: incoming/, "the step diff of the whole addition renders");
+  // changes must rebuild past boards to find the owner of the removed item, which holds the marker at its last commit.
+  const result = await changes(reopened, reopened.snapshot(), cursor);
+  assert.ok(JSON.stringify(result).includes("declined"), "the removed item is reported");
+});
+
+test("live data that holds a request marker is refused, never read and dropped", async t => {
+  const { dir, store } = await board(t);
+  const doc = stringify({ ...(store.snapshot().items.other as object), request: { by: "Whitefoot", at: later } });
+  await writeFile(join(dir, "items/other.yaml"), doc);
+  await promisify(execFile)("git", ["-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-aqm", "Marker in live data"], { cwd: dir });
+  await assert.rejects(Store.open(dir), /request/);
 });
 
 test("unread yields between commits even when every historical document is cached", async t => {

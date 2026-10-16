@@ -270,21 +270,21 @@ test("context names the responsible project without agents", async t => {
 test("brief queues own work and frontier steps, folds resolved rows and projects count all open items", async t => {
   const {store,op} = await board(t);
   await op.clearAsk({author,id:"a",log:"Handled"});
-  await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",accept:"Incoming accepted",priority:"P0",why:"Need help"});
-  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",why:"Need feature",from:"a"});
+  await op.createItem({...asArchitect,key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",group:"Firn",priority:"P1"});
+  await op.setPlan({author,id:"a",row:{item:"outgoing",own:false}});
   await op.setPlan({author,id:"a",row:{id:"doing",text:"Own current work",state:"doing",after:[]}});
   await op.setPlan({author,id:"area",row:{id:"own",text:"Parent current work",state:"doing",after:[]}});
   await op.createItem({...asArchitect,key:"backlog",title:"Backlog",group:author,record:true});
   await op.createItem({...asArchitect,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
   await op.setPlan({author,id:"parked",row:{id:"future",text:"Future work",state:"todo"}});
   const s=store.snapshot(),r=rules(s),brief=q.brief(s,r,author);
-  assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Firn",why:"Need help"}]);
+  assert.equal(Object.hasOwn(brief,"inbox"),false);
   assert.deepEqual(brief.wip.map(x=>x.id).sort(),["a","area"],"a parent with its own doing step is queued");
   assert.ok(!brief.todo.some(x=>x.id==="parked"),"backlog is no commitment");
-  assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"]);
+  assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"],"open work of another project that an open item waits on");
   assert.ok(brief.progress.some(x=>x.id==="backlog"),"even an empty record may be inspected");
   const project=q.projects(s,r)[0]!;
-  assert.equal(project.inbox,1); assert.equal(project.openItems.wip,2); assert.equal(project.openItems.blocked,1);
+  assert.equal(Object.hasOwn(project,"inbox"),false); assert.equal(project.openItems.wip,2); assert.equal(project.openItems.blocked,1);
   assert.equal(Object.hasOwn(project,"migrated"),false); assert.equal(Object.hasOwn(project,"agents"),false);
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
 });
@@ -302,46 +302,35 @@ test("brief excludes an ask-blocked frontier but retains ready parallel work bes
   assert.ok(q.brief(running,r,author).wip.some(row=>row.id === "a"));
 });
 
-test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
-  const {store,op} = await board(t);
-  await op.createRequest({author,project:"Firn",key:"old-request",title:"Old",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
-  await op.createRequest({author,project:"Firn",key:"handled-request",title:"Handled",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
-  await op.triageRequest({author:"Firn",id:"handled-request",priority:"P2",log:"Taken as an area"});
+test("project followups use strict age boundary and omit drafts, replies and closures", async t => {
+  const {store} = await board(t);
   const s = structuredClone(store.snapshot());
-  s.items["handled-request"]!.log[0]!.at=at;
   s.notes.closed={...s.notes["note-1"]!,state:"done",repliedAt:later,repliedBy:"Firn"};
-  assert.ok(!q.list(s,rules(s),{}).some(x=>x.id==="old-request"),"an untriaged request is not listed as work");
-  assert.ok(q.list(s,rules(s),{}).some(x=>x.id==="handled-request"),"a triaged request is ordinary work");
-  s.items["old-request"]!.request!.at=at;
   s.notes.fresh={...s.notes["note-1"]!,sentAt:later};
   s.notes.draft={...s.notes["note-1"]!,state:"draft"};
   const r=rules(s), cutoff = new Date(Date.parse(at)+60*60000).toISOString();
-  assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[],requests:[]});
+  assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[]});
   const f=q.followups(s,r,{minutes:59},cutoff);
   assert.deepEqual(f.notes.map(n=>n.id),["note-1"]);
-  assert.deepEqual(f.requests.map(n=>[n.id,n.project,n.by]),[["old-request","Firn",author]]);
-  for (const entry of [...f.notes,...f.requests]) assert.equal(Object.hasOwn(entry,"agents"),false);
+  for (const entry of f.notes) assert.equal(Object.hasOwn(entry,"agents"),false);
   assert.throws(()=>q.followups(s,r,{minutes:-1},cutoff),/minutes/);
 });
 
 
-test("project identity read shapes omit agents and outgoing requests use requesting project without a dependency", async t => {
+test("project identity read shapes omit agents", async t => {
   const { store } = await board(t);
   const s = structuredClone(store.snapshot());
-  s.items["outgoing-alone"] = { ...s.items.other!, title: "Unlinked request", log: [{ at, by: "Whitefoot", text: "Whitefoot 提出：Needed" }], request: { by: "Whitefoot", at } };
-  s.items["foreign-request"] = { ...s.items.other!, title: "Other project's request", log: [], request: { by: "Firn", at } };
   const r = rules(s), summary = q.brief(s, r, "Whitefoot");
-  await t.test("outgoing selection", () => assert.deepEqual(summary.outgoing.map(it => it.id), ["outgoing-alone"]));
   await t.test("brief shape", () => assert.equal(Object.hasOwn(summary, "agents"), false));
   const followups = q.followups(s, r, { minutes: 0 }, later);
-  const groups = { row: [q.row(s, r, "item", "a")], list: q.list(s, r), projects: q.projects(s, r), overview: q.overview(s, r), notes: followups.notes, requests: followups.requests };
+  const groups = { row: [q.row(s, r, "item", "a")], list: q.list(s, r), projects: q.projects(s, r), overview: q.overview(s, r), notes: followups.notes };
   for (const [name, rows] of Object.entries(groups)) {
     await t.test(`${name} shape`, () => {
       assert.ok(rows.length > 0, "the shape guard observes at least one result");
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 }, inbox: 0 }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 } }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {

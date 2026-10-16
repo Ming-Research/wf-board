@@ -12,7 +12,6 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
   for (const id of ids) {
     const it = s.items[id]!, st = r.statusOf(id) ?? "record";
     inc("items"); inc("status " + st);
-    if (r.isRequest(id)) inc("open inbox request");
     if (it.paused) inc("explicit pause");
     if (r.isPaused(id) && !it.paused) inc("inherited pause");
     if (r.askPending(id)) inc("pending ask");
@@ -78,7 +77,7 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
 /** Every category the generated board must contain at least once. */
 export const REQUIRED_SHAPES = [
   "status done", "status cancelled", "status wip", "status blocked", "status todo", "status paused", "status record",
-  "open inbox request", "explicit pause", "inherited pause", "pending ask", "answered ask", "provisional plan", "targets",
+  "explicit pause", "inherited pause", "pending ask", "answered ask", "provisional plan", "targets",
   "two or more tags", "difficulty 1–5", "difficulty 架构师做", "missing difficulty", "depth 5 or more", "more than 10 owned children", "owned under a record", "named by a shared row",
   "shared across projects", "parallel plan rows", "dropped step", "doing step", "plan over 10 rows",
   "plan with a card row", "code block in head", "table in head", "reference in head", "log over 20 entries", "links",
