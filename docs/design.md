@@ -70,7 +70,7 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process.
 3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
-   session what needs it: owner notes, stalled work and a timed wake.
+   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -95,6 +95,50 @@ hidden in a database.
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit. `GET /health` reports its state; the page shows a banner when the server
 does not answer, and every MCP tool error names the cause.
+
+**Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
+runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
+deploy` writes its plist; launchd never overlaps two runs of one job). The logic
+is `src/deploy.ts`. A run fetches the main line, `origin/claude/first-board`.
+When the checkout the daemon runs from is behind it, the run moves the checkout
+to its head with a fast-forward, installs the packages if `package-lock.json`
+changed, rebuilds the page bundle and, when a changed path needs it, restarts
+the daemon. Pull requests merged within the five minutes are one deploy and one
+restart.
+
+- A restart is skipped only when every changed path is under `docs/`, `test/` or
+  `web/` (`NO_RESTART` in `src/deploy.ts`, the one place the list is defined):
+  the daemon loads `src/` and the packages at its start and reads nothing else
+  of the checkout but the page files, which it reads from disk on each request.
+  Any other path restarts, harmless ones included. A daemon that is down at the
+  deploy is restarted whatever changed, since a deploy leaves the board up.
+- The restart is `launchctl kickstart -k` on the daemon's own label, never a
+  kill by process name. The daemon is healthy when launchd reports a process
+  other than the one before, `/health` answers, and 5 seconds later the same
+  process still answers, all within 90 seconds. The second look catches a
+  daemon that starts, crashes and is started again by launchd.
+- A deploy that fails (the daemon is not healthy, or the install or build
+  fails) goes back to the last healthy commit: the checkout's commit when the
+  daemon was serving before the deploy, else the last commit the job saw
+  healthy. The checkout is reset to it (`git reset --keep`), the packages
+  and the page are built again from that code, the daemon restarts and is
+  waited for. The failed commit is remembered and not tried again until the
+  main line has a newer commit; a `deployFailed` push says what happened. If
+  going back fails too, no daemon can push, so the job tells the owner on the
+  Mac with the same notification code as the daemon.
+- The checkout is not moved, and one `deployFailed` push per reason and commit
+  says why, when it is on another branch, has local changes to tracked
+  files (untracked files do not count) or has a commit the main line lacks: the
+  edit or commit is someone's, not the job's to move or undo.
+- The pushes reach the architect through `POST /api/wake` (section 8). One the
+  daemon did not take is kept in the job's state file, and sent first at the
+  next run. The state file, `~/Library/Application Support/wf-board/deploy.json`,
+  is outside the board's data directory, which only the daemon writes.
+
+**Why a job beside the daemon.** The daemon cannot restart itself onto new code
+and also answer for whether that code runs; a deploy that fails must not depend
+on the new code to go back. If the job's own script is what breaks, a deploy
+is by hand (`AGENTS.md`, Deploy).
 
 **Write cost.** The live board (about 1,500 items, 600 cards, 750 notes and
 14,000 content writes in its history) cost 0.28–0.4 s of daemon CPU per
@@ -1476,14 +1520,17 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Three kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Five kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
-- the timed wake, every 30 minutes.
+- the timed wake, every 30 minutes;
+- a deploy result, from the deploy job (section 4, Deploying): `deployed` when
+  the checkout moved and the board is healthy on it, `deployFailed` when a
+  deploy did not happen. The job asks through `POST /api/wake` (below).
 
 Not pushed: a new request, a blocking card (the owner is told on the Mac, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -1499,6 +1546,15 @@ whole number, and 403 unless the `Host` header is `127.0.0.1:<port>` or
 command-line client sends no `Origin`. A `session` parameter, which the earlier
 per-project filter took, is ignored.
 
+**Pushing from outside.** The deploy job runs in its own process, so it cannot
+call `push`; it posts `{event, ...fields}` to `POST /api/wake` and gets `{n}`
+back. Only a kind the table marks `external` is taken (`deployed` and
+`deployFailed`); the board's own kinds are not, whatever fields come with them.
+Another kind, a field set that is not exactly the kind's, a body that is not a
+JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
+Host and Origin rules are those of every other write, so only a program on this
+machine can ask.
+
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all
 the forms the server sends:
@@ -1508,6 +1564,8 @@ the forms the server sends:
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
+| `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted: not when only `docs/`, `test/` or `web/` changed |
+| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, `running` the commit the board serves now, or null when it serves nothing, and `reason` says why: the daemon did not come up and the checkout went back, going back failed too, or the checkout was not moved (another branch, local changes, a commit the main line lacks) |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 

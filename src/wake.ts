@@ -6,13 +6,16 @@ import type { Notify } from "./notify.ts";
 export const ARCHITECT_SESSION = "架构师";
 
 /** Every kind of push the architect's channel carries, in one place: `label` names it in the no-receipt alert, `fields` are
- * the frame's fields besides n, at and event. push() refuses another kind or field set, and the design doc's frame table is
- * checked against this table. A new kind is one entry here and one row there. */
+ * the frame's fields besides n, at and event, and `external` marks a kind another process may ask for through POST /api/wake
+ * (the deploy job, which runs beside the daemon and cannot call push). push() refuses another kind or field set, and the
+ * design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"] },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"] },
   timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect"] },
-} as const satisfies Record<string, { label: string; fields: readonly string[] }>;
+  deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], external: true },
+  deployFailed: { label: "部署失败", fields: ["version", "running", "reason"], external: true },
+} as const satisfies Record<string, { label: string; fields: readonly string[]; external?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
 export const CONTROL_FRAMES = { connected: ["latest"], gap: ["oldest", "latest"] } as const;
@@ -126,6 +129,11 @@ export class Wake {
     this.trim();
     for (const listener of this.listeners) { try { listener(frame); } catch (error) { console.error(error); } }
     return frame;
+  }
+
+  /** Whether `event` is a kind another process may push: one the table marks external, and no other. */
+  static isExternal(event: unknown): event is WakeKind {
+    return typeof event === "string" && Object.hasOwn(WAKE_KINDS, event) && "external" in WAKE_KINDS[event as WakeKind];
   }
 
   /** The kept events numbered above `after`, and whether some between `after` and them were dropped (or `after` is ahead of
