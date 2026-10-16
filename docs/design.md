@@ -1741,9 +1741,10 @@ children.
 to the new snapshot plus a report, in `src/convert-plans.ts`. A dry run on a
 copy of the data (a few seconds of Node, no build) prints the report without
 writing; after the owner approves the report, the daemon applies the same
-function at startup as a store migration in one commit authored by `总管`, and refuses to start if the data has
-changed since the approved dry run (the dry run records the data commit it
-read). Unread history compares legacy commits directly and converts only
+function at startup as a store migration in one commit authored by `总管`,
+and refuses to start if the data has changed since the approved dry run (the
+dry run records the data commit it read). Unread history compares legacy
+commits directly and converts only
 endpoints spanning the schema change, caching historical documents and
 yielding between commits. A legacy status, parent or dependency edit counts
 as an `other` change on the edited item, rather than normalized plan progress

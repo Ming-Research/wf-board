@@ -1055,15 +1055,10 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");
-  for (const collection of ["items","decisions","notes","notices","glossaries"]) {
+  for (const collection of ["items","decisions","notes","glossaries"]) {
     const files = await readdir(join(dir,collection)).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
     for (const file of files.sort()) {
       const path=`${collection}/${file}`;
-      // The retired notices are no document of the board: a file there that is no notice, or cannot be read, is left out, never a failed start.
-      if(collection==="notices"){
-        if(file.endsWith(".yaml"))try{raw[path]=parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"});}catch{/* left out of the snapshot */}
-        continue;
-      }
       if(!file.endsWith(".yaml")){invalid.push({path,issues:"Expected a .yaml document"});continue;}
       await load(path);
     }
