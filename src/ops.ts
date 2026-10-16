@@ -632,13 +632,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           plan: doc.plan.map(row => "item" in row && row.own && targets.includes(row.item) ? { ...row, own: false } : row),
           log: [...doc.log, entry(a.author, at, `${targets.map(id => `「${s.items[id]!.title}」`).join("")}换到了项目 ${a.project}；计划不再拥有，改成依赖`)] }));
       }
-      // The moved item arrives as a top item of the new project; the board's own check says whether that leaves it owned by no item while an open item there waits on it.
+      // The board's own check says which items the move leaves with an open waiter in their project and no owner there: the
+      // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
-      const after = rules(next);
-      if (after.checks(a.id).some(check => check.text.startsWith("同项目有条目在等它"))) {
-        const waiting = after.dependents(a.id).filter(d => !d.own && after.groupOf(d.id) === a.project && after.isOpenWork(d.id)).map(d => d.id);
-        throw new OpError(`project: ${waiting.join(", ")} in ${a.project} wait on ${a.id} through shared rows, and an item others wait on needs an owner in its project (同项目有条目在等它，却没有条目拥有它), which this call cannot name; have ${a.project} drop those rows with set_plan first, move ${a.id}, then let the item that needs it own it with an owned row (or leave the dependency out)`);
-      }
+      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.checks(id).some(check => check.text.startsWith("同项目有条目在等它"));
+      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
+      const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
+      const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
+      const fix = (id: string): string => {
+        const waiting = waiters(id);
+        return id === a.id
+          ? `${waiting.join(", ")} in ${a.project} wait on ${id} through shared rows, so ${id} would arrive owned by no item. This call cannot name a new owner for ${id}: have ${a.project} drop those rows with set_plan first, move ${id}, then let the item that needs it own it with an owned row (or leave the dependency out)`
+          : `${waiting.join(", ")} will wait on ${id} through a shared row while no item of ${a.project} owns ${id}. Have an item of ${a.project} own ${id} first, or drop the row to ${id} from ${waiting.length === 1 ? "that item's" : "their"} plan with set_plan first`;
+      };
+      if (stranded.length) throw new OpError(`project: 同项目有条目在等它，却没有条目拥有它: ${stranded.map(fix).join("; ")}`);
       if (a.priority !== undefined) {
         priorityAllowed(next, a.id);
         const doc = docOf(s, puts, a.id);
