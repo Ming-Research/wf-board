@@ -1117,6 +1117,8 @@ test("every write under the retired author 总管 is refused and changes nothing
     setStatus: () => op.setStatus({ author: retired, id: "b", status: "cancelled", log: "Drop" }),
     setTags: () => op.setTags({ author: retired, id: "a", tags: ["健全性"] }),
     setTagsMany: () => op.setTagsMany({ author: retired, items: [{ id: "a", tags: ["健全性"] }] }),
+    setDifficulty: () => op.setDifficulty({ author: retired, id: "a", difficulty: 2, reason: "Rated" }),
+    setDifficultyMany: () => op.setDifficultyMany({ author: retired, items: [{ id: "a", difficulty: 2, reason: "Rated" }] }),
     setTag: () => op.setTag({ author: retired, name: "新标签", meaning: "测试用" }),
     renameTag: () => op.renameTag({ author: retired, name: "健全性", to: "改名" }),
     removeTag: () => op.removeTag({ author: retired, name: "健全性" }),

@@ -23,7 +23,8 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
-  const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
+  // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
+  const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
     { kind: "item", id: "area", expectRev: null, doc: item("解释器工作", { group: "Whitefoot", plan: [{ id: "a", item: "a", own: true, after: [] }, { id: "b", item: "b", own: true, after: [] }, { id: "accept", accept: true, text: "解释器目标通过", state: "todo" }] }) },
