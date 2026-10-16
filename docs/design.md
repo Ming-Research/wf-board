@@ -133,12 +133,11 @@ lost: the remote copy is only a backup, and the first push after the next start
 sends what this run left. A push still running when the signal arrives holds
 the write queue, so the local commit of the reading state waits behind it (item
 `push-blocks-writes`). A commit's automatic repack also runs in the foreground
-(see Storage). On 2026-10-16, on a GitHub-hosted Ubuntu runner, a commit that
-wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
-runs; the same commit with the repack in the background took 25 to 103 ms). The
-repack is therefore far inside the five seconds, and the commit of the reading
-state at shutdown stays too. The first repack of the live repository, with its
-4,986 loose objects, was not measured.
+(see Storage). On 2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0,
+a commit that wrote 5,000 new loose objects and triggered the repack took 345 to
+793 ms (three runs; the same commit with the repack in the background took 25 to
+103 ms). Not measured: the first repack of the live repository (4,986 loose
+objects), a repack that merges existing packs, and a repack that overlaps a push.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
