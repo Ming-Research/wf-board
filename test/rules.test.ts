@@ -359,7 +359,10 @@ test("plan checks flag structural violations and conversion placeholders, withou
 
 test("a title longer than 20 characters, spaces not counted, gets one check", () => {
   const twenty = "一二三四五六七八九十一二三四五六七八九十", twentyOne = twenty + "十";
-  const s = snapshot({ exact: { title: twenty }, spaced: { title: "一二 三四五六七八九十一二三四五六七八九十" }, over: { title: twentyOne }, asciiOver: { title: "a".repeat(21) }, record: { title: twentyOne, record: true } });
+  const s = snapshot({ exact: { title: twenty }, spaced: { title: "一二 三四五六七八九十一二三四五六七八九十" }, over: { title: twentyOne }, asciiOver: { title: "a".repeat(21) }, record: { title: twentyOne, record: true }, cancelled: { title: twentyOne, status: "cancelled" }, finished: { title: twentyOne, plan: workPlan([step("work", "done")], "done") } });
+  assert.equal(rules(s).statusOf("finished"), "done");
+  assert.deepEqual(texts(s, "cancelled"), [], "closed items are not checked");
+  assert.deepEqual(texts(s, "finished"), [], "closed items are not checked");
   assert.deepEqual(texts(s, "exact"), []);
   assert.deepEqual(texts(s, "spaced"), []);
   assert.deepEqual(texts(s, "over"), ["标题超过 20 个字（现在 21 个）"]);
