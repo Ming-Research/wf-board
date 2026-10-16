@@ -403,5 +403,12 @@ export interface Snapshot {
     /** The session that last wrote to each item and when, from the commits' `Session:` trailers. An observation of
      * who wrote, never an assignment of work to a session. */
     sessions?: Record<string, { name: string; at: string }>;
+    /** Per session name, the last two distinct items it wrote to, newest first, from the same trailers. The page's
+     * agent list reads it (src/agents.ts). Like `sessions`, an observation of writes, not an assignment of work. */
+    agents?: Record<string, AgentTouch[]>;
   };
 }
+/** One item a session wrote to and when. */
+export interface AgentTouch { item: string; at: string }
+/** How many items an agent keeps in the index and the list. */
+export const AGENT_TOUCHES = 2;

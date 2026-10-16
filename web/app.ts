@@ -1,4 +1,6 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
+import { agentRows } from "../src/agents.ts";
+import type { AgentRow } from "../src/agents.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
@@ -8,7 +10,7 @@ import { showNotice } from "./notice.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -798,7 +800,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
     if (box && box.id.startsWith("q-")) return "q:" + box.id.slice(2);
     if (box && box.id.startsWith("it-")) return "it:" + box.id.slice(3);
-    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { const r = e.getBoundingClientRect(); return r.top >= list.origin() && r.top < list.origin() + list.height(); });
+    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { if (e.closest("#agents")) return false; const r = e.getBoundingClientRect(); return r.top >= list.origin() && r.top < list.origin() + list.height(); });
     if (!first) return null;
     return first.id.startsWith("q-") ? "q:" + first.id.slice(2) : "it:" + first.id.slice(3);
   }
@@ -939,6 +941,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Sub-items start folded; owner toggles and navigation open their path.
   // Under a dependency filter, the items above a match open unless the owner folded them.
   function isOpen(it: ViewItem) { return filtering(groupOf(it)) && !(it.id in manual) ? filterMatches().anc.has(it.id) : !!manual[it.id]; }
+  // The agent list draws item rows with itemNode too, under a mount: the row ids start with the mount's prefix instead of the
+  // tree's 「it-」, and each mount keeps its own fold state, so one item folds on its own in the list and in the tree, and
+  // every lookup of a tree row by id still finds only the tree's. A mount is set only while the list is being drawn.
+  interface Mount { prefix: string }
+  let mount: Mount | null = null;
+  let agentOpen: Record<string, boolean> = {};
+  try { agentOpen = JSON.parse(localStorage.getItem("board-agent-open") || "{}") || {}; } catch (e) { agentOpen = {}; }
+  function saveAgentOpen() { try { localStorage.setItem("board-agent-open", JSON.stringify(agentOpen)); } catch (e) {} }
+  function rowOpen(m: Mount | null, it: ViewItem) { return m ? !!agentOpen[m.prefix + it.id] : isOpen(it); }
+  function setRowOpen(m: Mount | null, it: ViewItem, open: boolean) {
+    if (m) { agentOpen[m.prefix + it.id] = open; saveAgentOpen(); renderNow("agents"); }
+    else { manual[it.id] = open; saveManual(); renderNow("tree:" + it.id); }
+  }
 
   // Scrolling glides for at most about a third of a second however far it goes: a long trip jumps most of the way
   // and eases over the last screenful, so the motion still shows the direction without dragging.
@@ -1036,12 +1051,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function reveal(id: string) { jump("it-" + id); }
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
   const backStack: Array<{key:string|null;y:number}> = [];
-  function remember() {
-    backStack.push({ key: targetOnScreen(), y: listScroller().position() });
+  // `fromList`: the reader leaves the agent list at the top of the page, so Back returns to the scroll position, not to an item below.
+  function remember(fromList = false) {
+    backStack.push({ key: fromList ? null : targetOnScreen(), y: listScroller().position() });
     if (backStack.length > 50) backStack.shift();
   }
-  function follow(id: string) {
-    remember();
+  function follow(id: string, fromList = false) {
+    remember(fromList);
     reveal(id);
     renderBack();
   }
@@ -1598,7 +1614,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       state.notes.forEach(n => { if (n.target) notesOpen[n.target] = false; });
       try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
       ruledOpen = {}; state.decisions.forEach(d => { if (d.status !== "open") ruledOpen[d.id] = false; }); saveRuled();
-      renderNow("areas","cards","detail");
+      agentOpen = {}; saveAgentOpen();
+      renderNow("areas","cards","detail","agents");
     });
     view.appendChild(fold);
     // Opens every top-level item so the items under it show, each one folded: the first level and nothing deeper.
@@ -1620,6 +1637,113 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (waitingRow.children.length) sum.appendChild(waitingRow);
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
+  }
+  // The agent list: one row per session that wrote to the board lately, with the two items it touched last (src/agents.ts,
+  // docs/design.md "Agent list"). Everything shown is what sessions declared by writing; nothing is observed, and the
+  // state word is inferred, so every row carries how long ago the session wrote.
+  let agentsOpen = true;
+  try { agentsOpen = localStorage.getItem("board-agents") !== "closed"; } catch (e) {}
+  // What the list was last painted from: a repaint with the same inputs is skipped, so a write elsewhere leaves it alone.
+  let agentsSignature = "";
+  function agoText(iso: string) {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000)), hours = Math.floor(minutes / 60), rest = minutes % 60;
+    return hours ? hours + " 小时" + (rest ? " " + rest + " 分钟" : "") + "前" : minutes ? minutes + " 分钟前" : "不到 1 分钟前";
+  }
+  function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now())); }
+  // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
+  function agentLevel(r: AgentRow) { return r.level === undefined ? "" : (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
+  const AGENT_STATE_TITLES: Record<string, string> = {
+    working: "它有进行中的行，30 分钟内写过看板。这是从写看板推出来的，不是看到它在干活",
+    "maybe-stopped": "它有进行中的行，超过 30 分钟没写看板，也没写在等什么。可能停了，也可能在读代码或等 CI",
+  };
+  function agentState(r: AgentRow) {
+    if (r.state === "none") return null;
+    const text = r.state === "waiting" ? "在等：" + inline(r.waits) : r.state === "working" ? "干活" : "可能停了";
+    const chip = el("span", "agent-state " + r.state + (r.amber ? " amber" : ""), text);
+    chip.title = r.state === "waiting"
+      ? "它在进行中的行上写了在等什么，这句话是代理自己写的，不按时间判断" + (r.amber ? "。已经超过 1 小时没写：空闲约一小时的会话会被 Claude Code 停掉，这可能是已经停了的等待" : "")
+      : AGENT_STATE_TITLES[r.state]!;
+    return chip;
+  }
+  // The tree draws an ended item only while something open hangs on it, so only then is there a row to jump to.
+  function inTree(it: ViewItem) { return visible(it) && ancestors(it).every(visible); }
+  // An item can sit in several rows, so each row's elements carry the row's own id prefix; none starts with 「it-」, which is the
+  // tree's. The name is written so that two names never share a prefix: every character but a letter, digit or hyphen becomes
+  // its code point in hex between underscores.
+  function agentMount(name: string) { return "ag-" + [...name].map(c => /[A-Za-z0-9-]/.test(c) ? c : "_" + c.codePointAt(0)!.toString(16) + "_").join("") + "--"; }
+  function agentItem(r: AgentRow, t: AgentTouch, it: ViewItem) {
+    const st = statusOf(it) ?? "record", li = el("li", "agitem"), m: Mount = { prefix: agentMount(r.name) };
+    // A cell and the item row an unfolded parent draws for the same item must not share an id.
+    li.id = m.prefix + "cell-" + it.id;
+    const row = el("div", "agitem-row"), sub = kids(it.id, true).filter(passes), open = rowOpen(m, it) && sub.length > 0;
+    // The arrow unfolds the sub-items under the cell, as the tree's arrow does; the list's folds are its own.
+    const caret = el("button", "agitem-caret", sub.length ? open ? "▾" : "▸" : "");
+    caret.type = "button"; caret.disabled = !sub.length;
+    caret.setAttribute("aria-expanded", String(open)); caret.setAttribute("aria-label", open ? "收起子条目" : "展开子条目");
+    caret.addEventListener("click", ev => { ev.stopPropagation(); setRowOpen(m, it, !open); });
+    row.appendChild(caret);
+    row.appendChild(el("span", "agitem-st", statusChip(it, st)));
+    const title = el("button", "agitem-title", inline(it.title));
+    title.type = "button"; title.title = plain(it.title);
+    title.addEventListener("click", ev => { ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id)); });
+    row.appendChild(title);
+    if (inTree(it)) {
+      const link = el("button", "agitem-tree", "在树中");
+      link.type = "button"; link.title = "在下面的项目树里找到它，接着展开它周围的条目；顶上的「返回」回到这里";
+      link.addEventListener("click", ev => { ev.stopPropagation(); follow(it.id, true); });
+      row.appendChild(link);
+    }
+    row.appendChild(el("span", "agitem-time", agoText(t.at)));
+    li.appendChild(row);
+    if (open) {
+      const ul = el("ul", "tree");
+      mount = m;
+      try { sub.forEach(k => ul.appendChild(itemNode(k))); } finally { mount = null; }
+      li.appendChild(ul);
+    }
+    return li;
+  }
+  function agentRow(r: AgentRow) {
+    const box = el("li", "agent");
+    box.dataset.agent = r.name;
+    const head = el("div", "agent-head");
+    head.appendChild(el("span", "agent-name", esc(r.name)));
+    const level = agentLevel(r);
+    if (level) head.appendChild(el("span", "tagchip diffchip", esc(level))).title = r.role ? "起这个会话时定的等级（派活记录）" : "它最近碰过的、有进行中的行的条目的难度";
+    const state = agentState(r); if (state) head.appendChild(state);
+    head.appendChild(el("span", "agent-ago", agoText(r.lastAt) + (r.lastKind === "started" ? "起" : "写过"))).title = r.lastKind === "started" ? "派活记录里的开始时间；它还没写过看板" : "它最近一次写看板的时间";
+    box.appendChild(head);
+    const cells = el("ul", "agent-items");
+    for (const t of r.touched) { const it = index().byId.get(t.item); if (it) cells.appendChild(agentItem(r, t, it)); }
+    if (cells.children.length) box.appendChild(cells);
+    return box;
+  }
+  function renderAgents() {
+    const host = get("agents"); if (!host) return;
+    const rows = agentRowsNow();
+    // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
+    // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
+    const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
+      agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0];
+    const unfolded = (prefix: string, id: string): unknown => agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0;
+    const signature = JSON.stringify([agentsOpen, rows.map(r => [r.name, r.level, r.role, r.state, r.waits, r.amber, r.lastKind, agoText(r.lastAt), r.touched.map(t => {
+      const it = index().byId.get(t.item);
+      return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;
+    })])]);
+    if (signature === agentsSignature) return;
+    agentsSignature = signature;
+    host.hidden = !rows.length;
+    host.innerHTML = "";
+    if (!rows.length) return;
+    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length);
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(agentsOpen)); toggle.title = agentsOpen ? "收起代理列表" : "展开代理列表";
+    toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
+    host.appendChild(el("h2", "agents-head")).appendChild(toggle);
+    if (!agentsOpen) return;
+    host.appendChild(el("p", "agents-note", "最近 6 小时写过看板的会话，各带它最近碰过的 2 个条目。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    const list = el("ul", "agent-list");
+    rows.forEach(r => list.appendChild(agentRow(r)));
+    host.appendChild(list);
   }
   // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
   function waitPanel() {
@@ -1868,21 +1992,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return null;
   }
   function itemNode(it: ViewItem, headerOnly = false, boxOnly = false, detail = false) {
-    const retained=groupReuse?.items.get(it.id);
+    const m = mount;
+    const retained=m ? undefined : groupReuse?.items.get(it.id);
     if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly && !detail) return retained;
     const li = el("li");
     // Filters open sub-item paths; the body renders only as the selected item's detail.
-    const open = isOpen(it), bodyOpen = detail;
+    const open = rowOpen(m, it), bodyOpen = detail;
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
     const st = statusOf(it) ?? "record";
     const context = filtering(groupOf(it)) ? !filterMatches().hit.has(it.id) : !detail && ended(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (context ? " ctx" : ""));
-    box.id = (detail ? "detail-it-" : "it-") + it.id;
+    box.id = detail ? "detail-it-" + it.id : (m ? m.prefix : "") + "it-" + it.id;
     if (!detail && shownForFresh(it)) box.classList.add("fresh-ended");
     if (detail) box.dataset.sel = "it:"+it.id;
-    if (!detail && selectedItem === it.id) box.classList.add("selected");
-    if (current === "it:" + it.id) box.classList.add("cur");
+    // The selection and the current mark show in the tree only.
+    if (!detail && !m && selectedItem === it.id) box.classList.add("selected");
+    if (!m && current === "it:" + it.id) box.classList.add("cur");
     const sub = kids(it.id,true).filter(passes);
     const ck = checksOf(it);
 
@@ -1935,20 +2061,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A head click selects the item whose detail is displayed.
     head.addEventListener("click", ev => {
       ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id));
-      get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
+      (m ? box : get("it-"+it.id))?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
     });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
     const row = el("div", "item-row" + (!detail ? " tree-row" : ""));
     const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
     caret.type="button"; caret.disabled=!sub.length;
     caret.setAttribute("aria-expanded",String(open)); caret.setAttribute("aria-label",open ? "收起子条目" : "展开子条目");
-    caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
+    caret.addEventListener("click", ev => { ev.stopPropagation(); setRowOpen(m, it, !open); });
     row.appendChild(caret);
     row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
     // A double-click on a tree row folds or unfolds its sub-items, as the caret does; a single click only selects.
     if (!detail && sub.length) row.addEventListener("dblclick", ev => {
       if ((ev.target as HTMLElement).closest?.("button.caret, a, [role=button]")) return;
-      getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
+      getSelection()?.removeAllRanges?.(); setRowOpen(m, it, !open);
     });
     row.appendChild(head);
     // A parent counts its leaves by status at the right of its row; cancelled ones are left out.
@@ -2364,7 +2490,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       waitingOrder=order;
       for (const root of [get("areas"),get("cards"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
-    renderHeader(); renderSend(); renderMenu();
+    renderHeader(); renderAgents(); renderSend(); renderMenu();
     get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
@@ -2800,6 +2926,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.
       if (retitled.some(k => citedRefs().has(k))) scope.add("all");
+      // A write by a session moves its row in the agent list even when nothing else on the page changes.
+      if (Object.keys(change.activity?.agents ?? {}).length) scope.add("agents");
 
       scheduleRender(...scope); queueUnread(active,controller.signal,next);
     });
