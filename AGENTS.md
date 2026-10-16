@@ -39,6 +39,11 @@ matches what the artifact board offered.
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
+- `src/credentials.ts`: who is writing, told by the request's bearer credential
+  (dispatch credentials kept as hashes on the dispatch record, long-lived ones in
+  a file outside the data directory); `scripts/credential.ts` issues, lists and
+  revokes the long-lived ones. What each role may write is the table `ACCESS` in
+  `src/model.ts`; design section 9.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
   index of the last two items written is advanced, and the rows (who is listed,
   the state word, the level) derived from it, the steps in progress and the

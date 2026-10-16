@@ -9,6 +9,7 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
+import type { Resolved } from "./credentials.ts";
 import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
@@ -95,6 +96,8 @@ function formatGraph(graph: ReturnType<typeof q.graph>): string {
 }
 
 const author = z.string().describe("the name of the project you work for (from `projects`)");
+/** What a write tool advertises: with a credential on the connection the author is the credential's and is left out (docs/design.md, section 9). */
+const optionalAuthor = z.string().optional().describe("the name of the project you work for (from `projects`); leave it out when this connection carries a credential, which names it");
 const session = z.string().trim().min(1).max(80).describe("Your own session's name as the app's session list shows it. Pass it on every call. A write records it, so the board can say who last wrote to an item; it assigns nothing.").optional();
 const id = Key.describe("Exact item id or card key found with search or list.");
 /** Lookups also take a short number, "#812" or "812"; an exact key wins over a number. */
@@ -113,8 +116,13 @@ const count = (description: string) => z.number().int().nonnegative().describe(d
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-/** `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one. */
-export function createMcpServer({ store, ops, now, wake, slow, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; budget?: BudgetLimits }): McpServer {
+/**
+ * The tools of one request (the endpoint keeps no session, so a server object serves one request). `credential` is what the
+ * request's credential said about the writer (src/credentials.ts): none when it carried none, which leaves reads and the old
+ * self-reported writes; a refusal when it carried one that is not valid, which refuses every call.
+ * `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one.
+ */
+export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -122,20 +130,35 @@ export function createMcpServer({ store, ops, now, wake, slow, budget = REQUEST_
     // One shared Rules object per snapshot and minute (store.derived), not one per read.
     return { snapshot, rules: store.derived.rules(snapshot, now ? Date.parse(now()) : Date.now()) };
   }
+  /** The arguments of a write with the writer filled in from the credential; without one, the call must name its author (the old way, until the old tools are removed). */
+  function identified(args: Record<string, unknown>): { args: Record<string, unknown>; note?: string } {
+    if (credential?.ok) {
+      const { author, session, access } = credential.who;
+      const differs = (["author", "session"] as const).filter(key => args[key] !== undefined && args[key] !== (key === "author" ? author : session));
+      return { args: { ...args, author, session, access }, ...(differs.length ? { note: `${differs.join(" and ")} ignored: this connection's credential writes as author ${author}, session ${session}` } : {}) };
+    }
+    if (typeof args.author !== "string" || !args.author.trim()) throw new Error("author: this connection has no credential, so it can only read the board; a write names its author (your project) and session until the old tools are removed. Ask the architect for a credential for your session");
+    return { args };
+  }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
     // Every tool takes the session, reads too: a call from the architect's session is the receipt for what the board pushed it
-    // (docs/design.md, The wake stream), counted from the calls it makes anyway.
-    const full = "session" in shape ? shape : { ...shape, session };
+    // (docs/design.md, The wake stream), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
+    const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
+    const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
       let outcome = "ok";
       try {
-        const args = schema.parse(a);
-        if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
+        if (credential && !credential.ok) throw new Error(credential.problem);
+        const parsed = schema.parse(a);
+        // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
+        const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
+        // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
+        if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) }] };
+        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "") }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
       finally { timed?.(outcome, () => summarize(a)); }
@@ -199,6 +222,8 @@ export function createMcpServer({ store, ops, now, wake, slow, budget = REQUEST_
     const res = await operation;
     const after = read(), lines = [`${res.summary}${res.rev === undefined ? "" : ` · rev ${res.rev}`} · commit ${res.commit}`];
     if (res.dropped?.length) lines.push(`dropped stored priority, no longer a root: ${res.dropped.map(d => `${d.id} ${d.priority}`).join(", ")}`);
+    if (res.repeated) lines.push("repeated: the same session wrote this same text a moment ago, so nothing was written again; this is the first write's commit");
+    if (res.credential) lines.push(`credential: ${res.credential}`, "shown once, and only its hash is kept: put it in the session's MCP configuration as the Authorization header (Bearer <credential>); it stops working when the dispatch ends");
     if (res.rev === undefined) return lines.join("\n");
     const kind = Object.hasOwn(after.snapshot.items, res.id) ? "item" : Object.hasOwn(after.snapshot.decisions, res.id) ? "card" : "note";
     if (kind !== "note") lines.push(formatRow(q.row(after.snapshot, after.rules, kind, res.id)));

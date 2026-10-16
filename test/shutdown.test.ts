@@ -90,20 +90,18 @@ const post = (port: number, path: string, body: string, ...more: string[]) => ({
 
 test("a request that reaches the server after the shutdown began gets 503 and its connection closes", async t => {
   const { http, port, url, store } = await listening(t, { shutdownGraceMs: 5000 });
-  // A live MCP session, so that a request carrying its id finds a session to answer.
+  // A client that has connected, as an agent has: the endpoint keeps no session, so a late request is answered like any other.
   const mcp = new Client({ name: "Live", version: "1" }); mcp.onerror = () => {};
-  const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
   t.after(() => mcp.close().catch(() => {}));
-  await mcp.connect(transport);
-  const session = `mcp-session-id: ${transport.sessionId}`;
+  await mcp.connect(new StreamableHTTPClientTransport(new URL(url + "/mcp")));
   const initialize = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "Late", version: "1" } } });
   const requests: Array<{ name: string; head: string; body?: string }> = [
     { name: "page data", head: head(port, "GET /api/snapshot HTTP/1.1") },
     { name: "health", head: head(port, "GET /health HTTP/1.1") },
     { name: "owner write", ...post(port, "/api/notes", JSON.stringify({ target: "it:a", kind: "comment", text: "too late" })) },
     { name: "MCP initialize", ...post(port, "/mcp", initialize, "Accept: application/json, text/event-stream") },
-    { name: "MCP stream of a live session", head: head(port, "GET /mcp HTTP/1.1", "Accept: text/event-stream", session) },
-    { name: "MCP close of a live session", head: head(port, "DELETE /mcp HTTP/1.1", session) },
+    { name: "MCP stream", head: head(port, "GET /mcp HTTP/1.1", "Accept: text/event-stream") },
+    { name: "MCP close", head: head(port, "DELETE /mcp HTTP/1.1") },
     { name: "wake stream", head: head(port, "GET /wake HTTP/1.1", "Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13") },
   ];
   const clients = requests.map(request => { const client = rawClient(t, port); client.write(request.head); return client; });
@@ -170,7 +168,7 @@ test("the grace for a running request is 2 seconds when none is given", async t 
   assert.ok(took >= 1900 && took < 4000, `closed at ${took} ms`);
 });
 
-test("an MCP tool call running when the shutdown began finishes, and the session's idle stream does not hold the server", async t => {
+test("an MCP tool call running when the shutdown began finishes, and nothing else of the client holds the server", async t => {
   const started = gate(), release = gate();
   const slow = () => {
     const mcp = new McpServer({ name: "Slow", version: "1" });
@@ -180,7 +178,7 @@ test("an MCP tool call running when the shutdown began finishes, and the session
   const { http, url } = await listening(t, { shutdownGraceMs: 5000, createMcp: slow });
   const client = new Client({ name: "Caller", version: "1" }); client.onerror = () => {};
   t.after(() => client.close().catch(() => {}));
-  await client.connect(new StreamableHTTPClientTransport(new URL(url + "/mcp")));   // opens the session's stream, too
+  await client.connect(new StreamableHTTPClientTransport(new URL(url + "/mcp")));
   const call = client.callTool({ name: "slow", arguments: {} }, undefined, { timeout: 5000 });
   await started.opened;
   const closed = shutdown(http);
@@ -193,7 +191,7 @@ test("an MCP tool call running when the shutdown began finishes, and the session
   const result = await call;
   assert.deepEqual(result.content, [{ type: "text", text: "done" }], "the call returned its result");
   await closed;
-  assert.ok(Date.now() - released < 2000, "the server closed when the call finished: the session's idle stream was already closed");
+  assert.ok(Date.now() - released < 2000, "the server closed when the call finished: the endpoint keeps no stream open");
 });
 
 // The daemon itself, in a process of its own: the part main.ts adds to the server (the owner's reading state, no push).
@@ -235,7 +233,7 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
     assert.ok(waited < 5000, `the push and its duration are in the log within 5 s of the remote showing the commits; log so far:\n${log}`);
     await sleep(100);
   }
-  // A session with its stream open, as an agent has, and two local changes that only a push would send: a note, and the
+  // A connected client, as an agent is, and two local changes that only a push would send: a note, and the
   // owner reading it (owner state is saved to a file at once and joins a commit later).
   const mcp = new Client({ name: "Agent", version: "1" }); mcp.onerror = () => {};
   t.after(() => mcp.close().catch(() => {}));

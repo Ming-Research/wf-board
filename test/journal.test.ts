@@ -161,3 +161,32 @@ test("journal_entry over MCP: a call from the architect writes the entry, and an
   assert.equal(refused.isError, true);
   assert.match(JSON.stringify(refused.content), /author: only Architect with session 架构师 may write the journal under architect-notes/);
 });
+
+test("a journal entry sent again by the same session within a minute is not written twice, for the day's first entry and for a later one, though the time of day in the head has moved on", async t => {
+  // Each repeat falls in the next minute of the day, so the head line it would add differs from the first in its time.
+  let clock = "2026-10-16T12:00:50Z";
+  const { store, op } = await journalBoard(t, () => clock);
+  const key = `architect-journal-${localDay(clock)}`;
+  const head = () => store.snapshot().items[key]!.head!;
+
+  const first = await op.journalEntry({ ...asArchitect, text: "第一条" });
+  clock = "2026-10-16T12:01:20Z";
+  const again = await op.journalEntry({ ...asArchitect, text: "第一条" });
+  assert.equal(again.repeated, true);
+  assert.equal(again.commit, first.commit);
+  assert.equal(head(), `**${localClock("2026-10-16T12:00:50Z")}** 第一条`, "the day's first entry is in the head once");
+
+  clock = "2026-10-16T12:03:50Z";
+  const second = await op.journalEntry({ ...asArchitect, text: "第二条" });
+  assert.equal(second.repeated, undefined);
+  clock = "2026-10-16T12:04:20Z";
+  const secondAgain = await op.journalEntry({ ...asArchitect, text: "第二条" });
+  assert.equal(secondAgain.repeated, true);
+  assert.equal(secondAgain.commit, second.commit);
+  assert.equal(head().split("第二条").length - 1, 1, "and so is the later one");
+  // Other words, or more than a minute later, are an entry of their own.
+  assert.equal((await op.journalEntry({ ...asArchitect, text: "第三条" })).repeated, undefined);
+  clock = "2026-10-16T12:06:00Z";
+  assert.equal((await op.journalEntry({ ...asArchitect, text: "第三条" })).repeated, undefined);
+  assert.equal(head().split("第三条").length - 1, 2);
+});

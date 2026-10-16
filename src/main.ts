@@ -14,6 +14,7 @@ import { UsageWatch } from "./usage-watch.ts";
 import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
 import { SlowOps } from "./slow-ops.ts";
+import { CredentialFile, Credentials, defaultCredentialsPath } from "./credentials.ts";
 
 async function main() {
   // Every line of the service log carries its time, and the start reports how long each step took.
@@ -39,7 +40,9 @@ async function main() {
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
   // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, createMcp: () => createMcpServer({ store, ops: op, wake, slow }) });
+  // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
+  const credentials = new Credentials(new CredentialFile(defaultCredentialsPath()));
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside

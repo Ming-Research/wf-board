@@ -68,7 +68,8 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 1. **The page** for the owner, at `http://127.0.0.1:7417/`, with live updates
    pushed over server-sent events.
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
-   Codex session on the Mac connects to the same process.
+   Codex session on the Mac connects to the same process. It keeps no session:
+   each request stands alone (see *MCP without a session*).
 3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
    session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
 
@@ -152,17 +153,46 @@ the documents, checking them against the repository, reading the startup cache
 and the commits after it, replaying them) and the time from the start of the
 process to listening.
 
+**MCP without a session.** `/mcp` answers `POST` only, with JSON. Every request
+gets its own transport and tool server, closed when it has answered, and no
+session id is issued; `GET` and `DELETE` get 405, as there is no stream to open
+and no session to close (the board pushes through the wake stream, not through
+MCP). A restart of the board therefore invalidates nothing a client holds. This
+replaced a session table: a session lived in the process that made it, so a
+restart invalidated it, and a client caught in that gave up its tools for good
+when the board stayed down longer than the client keeps trying (about 16
+seconds; item `fast-restart-study`). A client that is not in a call knows
+nothing of a stop; one that is retries when the board is back. Who is writing
+comes from the request's `Authorization` header (section 9), not from a session.
+
+A write that was committed when the board stopped but not answered is sent
+again by the client. Four writes would silently add a line twice, and nothing
+else stops the second: `append_log`, `close_note`, `set_status` and
+`journal_entry`. Such a write is not made when the item's history holds a commit
+of the same operation on the same target from the same session, made in the
+last minute, that left the item holding the line this write adds (the last log
+line of the same author with the same text; for `journal_entry`, the same text
+at the end of the head; for `set_status`, also only while the item is in the state the
+call asks for, so a cancel after a reopen is a new decision). The answer is that first
+commit, marked `repeated`. The check reads history under the request's budget; when
+the budget is spent the write is made, at worst once too often. The
+rule reads the commit's message and `Session:` trailer and the item as the
+commit left it, so it holds across a restart with nothing kept in memory, and
+one function serves the four writes. A caller that names no session is not
+recognised and writes. The cost is that a second identical write within a
+minute from one session is not made, which the answer says. The other writes
+are refused or change nothing when repeated (a used key, a stale revision, an
+unchanged plan, a note already replied, an ended dispatch).
+
 **Stopping.** launchd sends SIGTERM and kills the process five seconds later.
 The daemon uses well under that:
 
 1. From the signal on, the server accepts no new connection and answers every
    request that still arrives (page, MCP or wake stream) with 503, `Connection:
    close` and `Retry-After: 2`. A client that retries on its old connection
-   therefore cannot start a new MCP session in a process that is about to exit;
-   such a session would hold the process open until it was killed, and its
-   client would believe it had reconnected and never ask again.
-2. The page's event streams, the wake connections and the idle stream of each
-   MCP session end at once, so their clients start to reconnect and are refused.
+   therefore starts no work in a process that is about to exit.
+2. The page's event streams and the wake connections end at once, so their
+   clients start to reconnect and are refused. MCP has no stream.
 3. A request already running, a tool call included, may finish. The connection
    it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
    every connection that is left is closed.
@@ -597,7 +627,9 @@ log:
   `agentId` (the session's full id, unique on the whole board), `agent` (its
   name), `role` (`工程师` or `审查`), `level` (1–5), `model`, optional
   `effort`, `worktree`, `started` and `did` (which rows of the item the
-  session does, one line), and once the session has ended a `finish` block:
+  session does, one line), `credential` (the SHA-256 of the token the session
+  writes with, from the start until the dispatch ends; section 9), and once
+  the session has ended a `finish` block:
   `ended`; `result` (`一次通过`, `返工后通过`, `换人` or `放弃`); the counts,
   `reports` and `kickbacks` for an engineer and `rounds` (review rounds: the first review and each re-review count one) for a review, never
   the other role's; optional `waited` minutes (spent waiting for the owner,
@@ -625,6 +657,10 @@ log:
   - A dispatch is recorded on the subtree root item the session was given. The
     board does not check that the item is one, and the tag tally counts the
     dispatch under that item's tags.
+  - `credential` holds a hash and never the token, which is answered once by
+    `dispatch_start`. `dispatch_finish` removes the hash, and removing it is what
+    revokes the credential: no state beside the record tells whether a
+    credential is valid.
   - `dispatch_start` and `dispatch_finish` each append a generated line to the
     item's log (`起：…`, `收：…`), the architect's hand-written line in
     machine form: the owner reads only the page, which shows logs and not
@@ -1482,9 +1518,13 @@ Every tool returns compact text built for an agent's context: ids, titles,
 status and the relevant lines, never whole files unless asked. An item or
 card row ends with its short number (`· #812`), and JSON rows carry `num`;
 `context` and `graph` accept `#812` or `812` as well as a key, an exact key
-winning over a number. Writes take
-`author`, the name of the project the session works for, selected from
-`projects` by matching `repo` to its repository's GitHub remote. The
+winning over a number. A write over a connection that carries a credential
+(section 9) is made by the credential's writer: `author` and `session` are left
+out, and one that is given and differs is ignored, with a note in the answer.
+Without a credential a write takes `author`, the name of the project the
+session works for, selected from `projects` by matching `repo` to its
+repository's GitHub remote (until the old tools are removed), and a write with
+neither is refused. The
 architect writes as `Architect`, a configured project like the others, from
 the session `架构师` (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
@@ -1594,7 +1634,7 @@ that delivers it, joined by a shared row. A write under the retired author
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
+| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
@@ -2337,8 +2377,8 @@ branch `main`, so it sets none); the GitHub watch reads the checks of that
 branch, or of the default branch when `mainline` is absent.
 Identity is the project itself. Each project has a responsible
 agent session started in its repository; several sessions may share that
-responsibility and coordinate among themselves. Sessions may be renamed
-freely, so no session names are recorded. This model supersedes per-project
+responsibility and coordinate among themselves. A session's name is recorded
+with its writes as an observation, never as ownership (section 6). This model supersedes per-project
 agent lists as well as per-item `agent` ownership and child handovers. An
 area with an absent or unconfigured group gets a shared rules check; older
 boards without `projects` load with an empty list.
@@ -2377,9 +2417,11 @@ way. A refusal names the item’s project
 and directs the caller to report what it needs from the item to `Architect`. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
 owner-note, send and read operations are separate from agent
-operations and remain unrestricted. Project names are supplied by trusted
-local callers; identity checks enforce the workflow, rather than
-authenticate against a caller impersonating another project.
+operations and remain unrestricted. This is how a call that carries no
+credential is checked, until the old tools are removed: project names are then
+supplied by the callers, and the checks enforce the workflow rather than
+authenticate against a caller impersonating another project. A call that
+carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
 `架构师` (`isArchitect` in `src/model.ts`). Both are needed because
@@ -2440,6 +2482,78 @@ items under other sessions' areas and 21 more items whose prefix differs from
 their area's session. The owner chose (2026-10-11, option A): new keys need
 not carry a session prefix; existing keys stay, because notes and log text
 cite them.
+
+### Credentials
+
+Who is writing is told by the connection, not by the caller's own words. A caller
+that names its project and session itself can name them wrongly or borrow another's,
+and nothing in the call tells. So a request carries a credential, and the board reads
+the writer from it.
+
+- **What it protects against.** A wrong name and a borrowed one by mistake. It does not
+  protect against an agent on this Mac that reads another agent's configuration on
+  purpose: every agent has a shell. The credentials keep the checks honest; they are not a
+  boundary between mutually distrusting programs.
+- **The credential** is a random token, `wfb_` and 256 bits, sent as `Authorization: Bearer
+  <token>`; the board keeps only its SHA-256. Two kinds exist:
+  - A *dispatch credential* is issued by `dispatch_start`, answered once, and bound to the
+    dispatch record: the session's name (`agent`), its role (`工程师` or `审查`), the item the
+    dispatch is recorded on (the root of the subtree the session works on) and that item's
+    project. `dispatch_finish` removes it. A session that is stopped and resumed
+    keeps its credential, while the dispatch has not ended: a resumed background session
+    reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
+    start script puts the credential in that file.
+  - A *long-lived credential* belongs to the architect (`架构师`), the observer (`观察者`) or the
+    resource agent (`资源管理`): session name, role, project and, for the resource agent, the
+    records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
+    `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
+    only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
+    prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
+    the service log says why.
+- **The session name `架构师`** is the architect's alone: without a credential the board takes
+  author `Architect` writing from that session for the architect (section 6) and skips
+  checks for it. A file entry of another role under that name is refused, and so is
+  `dispatch_start` for an agent of that name (spaces around it are ignored, as everywhere the
+  board compares it). With a credential, a write is the architect's when the credential's
+  role is, whatever names it carries.
+- **A request** with no `Authorization` header can read the board; it can write only in the
+  old way, naming its author and session, until the old tools are removed. One with an
+  invalid header (an unknown token, or a revoked one) is refused on every call, reads
+  included, and never falls back to the old way: a revoked session that still names an
+  author would otherwise write on. One with a valid credential writes as the credential's
+  project and session, whatever it names itself; the call is told when it named another.
+- **What each role may write** is one table, `ACCESS` in `src/model.ts`, from role to the
+  *parts* of the board a write changes and how far: `board` (any item of any project) or
+  `subtree` (the items the credential names, with everything they own, and the writer's own
+  project's glossary). `ops.run` takes the parts of every write as an argument, so a write
+  cannot omit them, and refuses a part the role lacks before it reads anything; for a
+  `subtree` part it then checks, once the write is complete, that every document it changes
+  is inside the subtree. The check counts the board's own effects on other items as well
+  as what the call names: a row that makes a root with a stored priority wait on another
+  item changes that root (the board drops its priority and logs it), so a subtree
+  credential cannot add such a row. It also counts what a plan row takes in: a row that owns
+  an item puts it under the writer, so a subtree credential may own only items it already
+  writes.
+  - The architect has every part but `item.merge-row`, on the whole board. No role has
+    `item.merge-row`: only the GitHub watch marks a merge row done, and it writes without a
+    credential.
+  - The observer has every part but the ones only the architect has: `project.create`,
+    `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`, `item.cancel`,
+    `item.pause`, `item.move-project` and starting or ending a dispatch. It writes items of
+    any project, recorded under its credential's project and session.
+  - The resource agent writes the log of any item and ends dispatches; it writes the head
+    and plan of the records its credential names. This is a first answer, to be revised
+    when the resource agent's own design (item `resource-ops-study`) says what it needs.
+  - An engineer writes the log, plan, targets, links, cards and glossary terms of its
+    subtree, and the head of its items, which is the whole body until bodies are stored by
+    section (item `mcp-sections`); it narrows to the 改动 section then.
+  - A review writes the log of its subtree.
+- **Rejected.** Passing the credential in an environment variable: a background session
+  does not receive the environment of the command that started it (tested 2026-10-16). A
+  per-directory MCP configuration (`claude mcp add --scope local`): it applies to the
+  whole repository and its worktrees, so it cannot give each session its own credential
+  (tested 2026-10-16, and it redirected other sessions' board connections while it was
+  there). Recording the credential per MCP session: the endpoint has no session.
 
 ## 10. Migration
 
