@@ -232,7 +232,7 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   }
   // The daemon writes the push line after the push returns, so the remote can show the commits a moment before the line is there.
   for (let waited = 0; !/Z push of \d+ commits took \d+\.\d s$/m.test(log); waited += 100) {
-    assert.ok(waited < 5000, "the push and its duration are in the log within 5 s of the remote showing the commits");
+    assert.ok(waited < 5000, `the push and its duration are in the log within 5 s of the remote showing the commits; log so far:\n${log}`);
     await sleep(100);
   }
   // A session with its stream open, as an agent has, and two local changes that only a push would send: a note, and the
