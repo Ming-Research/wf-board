@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,8 @@ test("WF_BOARD_DATA overrides the default, and a relative value is made absolute
 });
 
 test("the installer writes the data directory into the service plist", async () => {
-  const home = await mkdtemp(join(tmpdir(), "wfb-home-"));
+  // realpath: on macOS tmpdir() goes through /var, which is /private/var, so the paths would not match.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "wfb-home-")));
   try {
     const run = promisify(execFile);
     const plistPath = join(home, "Library/LaunchAgents/org.ming-research.wf-board.plist");
