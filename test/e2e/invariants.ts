@@ -593,18 +593,23 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   return commits;
 }
 
-/** Every changed block of an item's body (not a card's) carries a blue bar on its left and no background of its own. */
+/** A changed body block (a card's excluded) carries a blue bar on its left and no background of its own. The page holds
+ * no changed block of its own to look at, so one is added beside an item's first rich text and taken out again. */
 export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
   const v: string[] = [];
-  const blocks = await bp.page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".rich > .chg-add")].filter(e => e.closest(".item") && !e.closest(".card, .notes")).map(e => {
-    const bar = getComputedStyle(e, "::before"), own = getComputedStyle(e);
-    return { id: e.closest("[id]")?.id ?? "?", bar: bar.backgroundColor, width: bar.width, own: own.backgroundColor, text: (e.textContent ?? "").slice(0, 40) };
-  }));
-  if (!blocks.length) v.push("changed-block: no changed body block on the page to check");
-  for (const b of blocks) {
-    if (b.bar === "rgba(0, 0, 0, 0)" || b.bar === "transparent") v.push(`changed-block: ${b.id} 「${b.text}」 has no blue bar`);
-    if (b.width !== "3px") v.push(`changed-block: ${b.id} 「${b.text}」 bar is ${b.width} wide, expected 3px`);
-    if (b.own !== "rgba(0, 0, 0, 0)" && b.own !== "transparent") v.push(`changed-block: ${b.id} 「${b.text}」 has a background ${b.own}`);
-  }
+  const probe = await bp.page.evaluate(() => {
+    const host = [...document.querySelectorAll<HTMLElement>(".item .rich")].find(e => !e.closest(".card, .notes"));
+    if (!host) return null;
+    const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
+    host.appendChild(block);
+    const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
+    const out = { bar: bar.backgroundColor, width: bar.width, own: own.backgroundColor };
+    block.remove();
+    return out;
+  });
+  if (!probe) { v.push("changed-block: the page has no item text to add a changed block to"); return v; }
+  if (probe.bar === "rgba(0, 0, 0, 0)" || probe.bar === "transparent") v.push("changed-block: a changed block has no blue bar");
+  if (probe.width !== "3px") v.push(`changed-block: a changed block's bar is ${probe.width} wide, expected 3px`);
+  if (probe.own !== "rgba(0, 0, 0, 0)" && probe.own !== "transparent") v.push(`changed-block: a changed block has a background ${probe.own}`);
   return v;
 }

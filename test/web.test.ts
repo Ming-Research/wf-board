@@ -1164,7 +1164,8 @@ test("added rich blocks retain vertical spacing without extra visual styling", a
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === ".rich > .chg-add");
   assert.ok(rule,"changed rich blocks have their own layout rule");
-  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
+  // position: relative is only the containing block of the blue bar; no colour, border or background is added.
+  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["position: relative","display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
 });
 test("page and read-cursor documentation agree on short detail lines and number-only chips", async t => {
   const doc=await readFile("docs/design.md","utf8");
