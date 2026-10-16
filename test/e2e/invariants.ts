@@ -416,6 +416,27 @@ export async function checkCodeFont(bp: BoardPage, o: Oracle): Promise<string[]>
   return v;
 }
 
+/** A head's 参考 sections are folded shut: each shows only its title, and a click opens its whole text. */
+export async function checkRefFold(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], x = bp.board.gen.witness.code, want = (o.s.items[x]!.head.match(/^\*\*参考：/gm) ?? []).length;
+  await bp.select(x);
+  const before = await bp.page.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("#item-detail .rich details.ref")].map(d => ({
+    open: d.open, title: d.querySelector("summary")?.textContent ?? "",
+    // A closed details lays out none of its body, so the body's boxes are empty.
+    bodyShown: [...d.children].some(c => c.tagName !== "SUMMARY" && c.getBoundingClientRect().height > 0),
+  })));
+  if (before.length !== want) return [`ref-fold: ${x} shows ${before.length} 参考 sections, its head has ${want}`];
+  before.forEach((d, i) => {
+    if (d.open || !d.title.startsWith("参考：")) v.push(`ref-fold: 参考 section ${i + 1} is ${d.open ? "open" : "shown without folding"} with title "${d.title}"`);
+    if (!d.open && d.bodyShown) v.push(`ref-fold: a folded 参考 section still shows its text`);
+  });
+  if (!before.length) return v;
+  await bp.page.evaluate(() => document.querySelector<HTMLElement>("#item-detail .rich details.ref summary")?.click());
+  const after = await bp.page.evaluate(() => document.querySelector<HTMLDetailsElement>("#item-detail .rich details.ref")?.open ?? false);
+  if (!after) v.push(`ref-fold: clicking a 参考 title does not open its section`);
+  return v;
+}
+
 /** No empty row under an item's title: every part of the detail after its head row carries text. */
 export async function checkEmptyRows(bp: BoardPage, items: string[]): Promise<string[]> {
   const v: string[] = [];
