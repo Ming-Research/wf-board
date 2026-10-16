@@ -85,7 +85,7 @@ today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
 
-**Storage.** The data is a git working tree, `~/dev/wf-board-data`, with the
+**Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
@@ -739,6 +739,7 @@ checks:
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
+| 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
