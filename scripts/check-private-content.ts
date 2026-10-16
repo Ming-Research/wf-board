@@ -58,7 +58,10 @@ function main(): number {
   const head = headArg ?? event.head ?? "HEAD";
   const candidate = baseArg ?? event.base;
   const base = candidate && !/^0+$/.test(candidate) && exists(process.cwd(), candidate) ? candidate : null;
-  if (candidate && base === null) console.log(`base ${candidate.slice(0, 10)} is not in this clone: checking all of ${head}`);
+  const short = (rev: string) => /^[0-9a-f]{40}$/.test(rev) ? rev.slice(0, 10) : rev;
+  if (candidate && base === null) console.log(`base ${short(candidate)} is not in this clone`);
+  // Say what was read, so a log shows whether the event was understood.
+  console.log(base === null ? `checking all of ${short(head)}` : `checking ${short(base)}...${short(head)}`);
 
   const findings = checkRange(base, head, { title: event.title, body: event.body });
   for (const { where, line, rule } of findings) console.log(`${rule}: ${where}${line === null ? "" : `:${line}`}`);

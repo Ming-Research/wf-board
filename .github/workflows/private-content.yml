@@ -1,9 +1,10 @@
 name: private-content
-# Fails when a push to main or a pull request adds private content (scripts/check-private-content.ts). It is its own
-# workflow so that it runs without installing anything and apart from the test jobs.
+# Fails when a push or a pull request adds private content (scripts/check-private-content.ts). It is its own workflow
+# so that it runs without installing anything and apart from the test jobs. A push to any branch is checked, because
+# what is pushed to a public repository is public at once; the check can only report after the push.
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     # edited: a changed title, body or base branch is checked again.
     types: [opened, synchronize, reopened, edited]

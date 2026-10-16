@@ -51,8 +51,8 @@ matches what the artifact board offered.
   of the live board's size; CI runs it on this tree and on the commit the
   branch started from, as a step that never fails the run.
 - `scripts/check-private-content.ts`, with its rules in
-  `scripts/private-content-rules.ts`: the CI check that a push to `main` or a
-  pull request adds nothing private to this public repository (design section
+  `scripts/private-content-rules.ts`: the CI check that a push or a pull
+  request adds nothing private to this public repository (design section
   11). It reads only added lines, paths, commit messages and the pull request's
   title and body, and prints the rule and place, never the matched text.
 

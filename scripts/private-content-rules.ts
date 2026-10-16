@@ -14,14 +14,18 @@ export interface Finding { where: string; line: number | null; rule: string }
 // Home-directory names that are placeholders or belong to CI, not to a person. A directory only counts when the path
 // starts there, so a URL or a source folder named home does not.
 const PLACEHOLDER_HOMES = "runner|owner|user|username|example|me|Shared";
+const NAME = "[A-Za-z0-9._-]";
 
 export const CONTENT_RULES: readonly Rule[] = [
-  { name: "private-ipv4", pattern: /\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/ },
-  { name: "home-directory", pattern: new RegExp(`(?<![\\w.~-])(?:/Users|/home)/(?!(?:${PLACEHOLDER_HOMES})/)[A-Za-z0-9._-]+/|[A-Za-z]:\\\\Users\\\\[A-Za-z0-9._-]+`) },
+  // RFC 1918 (10/8, 172.16/12, 192.168/16) and 100.64/10, which carrier-grade NAT and Tailscale use.
+  { name: "private-ipv4", pattern: /\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}\.\d{1,3}\b/ },
+  { name: "home-directory", pattern: new RegExp(`(?<![\\w.~-])(?:/Users|/home)/(?!(?:${PLACEHOLDER_HOMES})(?!${NAME}))${NAME}+|[A-Za-z]:\\\\Users\\\\${NAME}+`) },
   { name: "ssh-key-file", pattern: /[.]ssh\/|\bid_(?:rsa|dsa|ecdsa|ed25519)\b|Identities[O]nly/ },
-  { name: "key-file-path", pattern: /~\/[\w./-]*(?:key|token|secret|credential|password)[\w.-]*\.(?:txt|json|pem|key|env)\b/i },
+  // A path under the home directory with a word for a secret in it (not inside a longer word: keyboard, monkey).
+  { name: "key-file-path", pattern: /(?:~|\$HOME|\$\{HOME\})\/[\w./-]*(?<![a-z])(?:key|token|secret|credential|password)s?(?![a-z])/i },
   { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { name: "token", pattern: /\bghp_[A-Za-z0-9]{20,}|\bgho_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bBearer [A-Za-z0-9._-]{20,}/ },
+  // An sk- key has hyphens and underscores inside and digits among its letters (sk-ant-api03-..., sk-proj-...).
+  { name: "token", pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bBearer [A-Za-z0-9._-]{20,}/ },
   { name: "secret-literal", pattern: /(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'][A-Za-z0-9/+_.-]{8,}["']/i },
   { name: "old-board-page", pattern: /claude\.ai\/artifact\/[A-Za-z0-9]/ },
 ];
