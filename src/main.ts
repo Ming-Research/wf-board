@@ -7,12 +7,13 @@ import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
-import { macNotify } from "./notify.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghBilling } from "./billing.ts";
 import { UsageWatch } from "./usage-watch.ts";
+import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
+import { SlowOps } from "./slow-ops.ts";
 
 async function main() {
   // Every line of the service log carries its time, and the start reports how long each step took.
@@ -20,41 +21,39 @@ async function main() {
   const startup = startupLogger(), lap = stopwatch(startup);
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("WF_BOARD_PORT must be an integer from 1 to 65535");
-  // The first push waits after the start: the agents that reconnect after a restart catch up on writes in the first seconds.
+  // The first push waits 60 seconds after the server starts listening. That delay dates from when a push held the write queue
+  // and the agents that reconnect after a restart catch up on writes in the first seconds. A push no longer holds the queue, so
+  // the reason is gone; the value stays as a provisional choice, since nothing measured favors another (design section 4, Storage).
   const firstPushMs = Number(process.env.WF_BOARD_FIRST_PUSH_MS ?? 60_000);
   if (!Number.isInteger(firstPushMs) || firstPushMs < 0) throw new Error("WF_BOARD_FIRST_PUSH_MS must be a non-negative integer");
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup });
   lap("open store");
   const op = ops(store);
-  // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart; the owner's notifications go through osascript.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
+  // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
   // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the architect at its levels.
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, createMcp: () => createMcpServer({ store, ops: op, wake }) });
+  // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
+  const slow = new SlowOps({ wake });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, createMcp: () => createMcpServer({ store, ops: op, wake, slow }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
-  // A push with its duration in the log. One takes about 3 to 4 seconds (design section 4, Stopping), during which the store's
-  // write queue is held (item push-blocks-writes).
-  async function push() {
-    const commits = await store.unpushed();
-    if (!commits) return;
-    const started = performance.now(), took = () => `${((performance.now() - started) / 1000).toFixed(1)} s`;
-    try {
-      const sent = await store.push();
-      console.info(`push of ${commits} commits ${sent ? "took" : "found the remote up to date, took"} ${took()}`);
-    } catch (error) { console.error(`push of ${commits} commits failed after ${took()}`); throw error; }
-  }
+  // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
+  // the writes, not in their queue; when the remote copy stays behind for an hour the architect is told (design section 4, Storage).
+  const backup = new BackupPush({ store, wake });
+  const push = () => backup.round();
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();
   let firstPush: ReturnType<typeof setTimeout> | undefined;
   let stopping = false;
-  // Stopping must fit in the 5 seconds launchd allows, and a push takes 3 to 4 seconds alone. So the owner's reading state is
-  // committed locally and nothing is pushed; the first push after the next start sends what this run left.
+  // Stopping must fit in the 5 seconds launchd allows, and a push takes 4 to 7 seconds. So the owner's reading state is committed
+  // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
+  // what this run left.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush);
+    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop();
     server.close(error => {
       void (async () => {
         if (error) throw error;
