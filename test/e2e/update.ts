@@ -31,24 +31,29 @@ async function drawn(bp: BoardPage) {
 const versionOf = (bp: BoardPage) => bp.page.evaluate(() => document.getElementById("page-version")?.getAttribute("content") ?? "");
 const scrolls = (bp: BoardPage) => bp.page.evaluate(() => ({ list: document.getElementById("page-left")!.scrollTop, detail: document.getElementById("item-detail")!.scrollTop }));
 
-/** An item whose detail is taller than the pane by at least 300 px, so that it scrolls: the code witness, whose head is long, then
- * the items with the most text. Selects it. */
-async function tallItem(bp: BoardPage, b: BoardServer): Promise<string | undefined> {
+/** An item whose detail is taller than the pane by at least 250 px, so that it scrolls: the code witness, whose head is long, then the
+ * items with the most text. Selects it. `room` is the most any item had, for the message when none does. */
+async function tallItem(bp: BoardPage, b: BoardServer): Promise<{ id?: string; room: number }> {
   const items = b.store.snapshot().items;
   const byText = Object.keys(items).filter(id => !items[id]!.record).sort((x, y) => JSON.stringify(items[y]).length - JSON.stringify(items[x]).length);
-  for (const id of [b.gen.witness.code, ...byText].slice(0, 12)) {
+  let room = 0;
+  for (const id of [b.gen.witness.code, ...byText].slice(0, 20)) {
     await bp.select(id);
-    if (await bp.page.evaluate(() => { const pane = document.getElementById("item-detail")!; return pane.scrollHeight - pane.clientHeight; }) >= 300) return id;
+    const got = await bp.page.evaluate(() => { const pane = document.getElementById("item-detail")!; return pane.scrollHeight - pane.clientHeight; });
+    if (got >= 250) return { id, room: got };
+    room = Math.max(room, got);
   }
-  return undefined;
+  return { room };
 }
 
 /** A page open before a deploy that rebuilt the bundle reloads itself, on the new version, with the same item selected, the same
  * rows unfolded and both panes scrolled as far as before. */
 export async function checkReload(bp: BoardPage, b: BoardServer): Promise<string[]> {
   const v: string[] = [];
-  const id = await tallItem(bp, b);
-  if (!id) return ["witness setup: no item on the generated board has a detail taller than the pane"];
+  // A low window, so that the detail of an ordinary item is taller than its pane and scrolls.
+  await bp.page.setViewportSize({ width: 1500, height: 450 });
+  const { id, room } = await tallItem(bp, b);
+  if (!id) return [`witness setup: no item on the generated board has a detail taller than its pane by 250 px (the most is ${room} px)`];
   await bp.page.evaluate(() => { document.getElementById("page-left")!.scrollTop = 600; document.getElementById("item-detail")!.scrollTop = 150; });
   const was = await scrolls(bp), rows = await bp.treeRows(), version = await versionOf(bp);
   if (was.list < 300 || was.detail < 50 || !/^[0-9a-f]{16}$/.test(version)) return [`witness setup: the page is scrolled to ${JSON.stringify(was)} and was served as version "${version}"`];
