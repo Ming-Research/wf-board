@@ -850,10 +850,10 @@ checks:
 | 同项目有条目在等它，却没有条目拥有它 | yes |
 | 没有计划：至少要有一个验收步骤 | yes |
 | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
-| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
+| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only; not raised for a cancelled item |
 | 依赖的条目已取消 (shared row to a cancelled item) | no |
 | 拥有它的条目已关闭 | no |
-| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
+| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no; not raised for a cancelled item |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
