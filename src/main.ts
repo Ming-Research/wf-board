@@ -20,6 +20,9 @@ async function main() {
   const startup = startupLogger(), lap = stopwatch(startup);
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("WF_BOARD_PORT must be an integer from 1 to 65535");
+  // The first push waits after the start: the agents that reconnect after a restart catch up on writes in the first seconds.
+  const firstPushMs = Number(process.env.WF_BOARD_FIRST_PUSH_MS ?? 60_000);
+  if (!Number.isInteger(firstPushMs) || firstPushMs < 0) throw new Error("WF_BOARD_FIRST_PUSH_MS must be a non-negative integer");
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup });
   lap("open store");
@@ -33,21 +36,38 @@ async function main() {
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, createMcp: () => createMcpServer({ store, ops: op, wake }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
-  async function push() { if (await store.unpushed()) await store.push(); }
+  // A push with its duration in the log. One takes about 3 to 4 seconds (design section 4, Stopping), during which the store's
+  // write queue is held (item push-blocks-writes).
+  async function push() {
+    const commits = await store.unpushed();
+    if (!commits) return;
+    const started = performance.now(), took = () => `${((performance.now() - started) / 1000).toFixed(1)} s`;
+    try {
+      const sent = await store.push();
+      console.info(`push of ${commits} commits ${sent ? "took" : "found the remote up to date, took"} ${took()}`);
+    } catch (error) { console.error(`push of ${commits} commits failed after ${took()}`); throw error; }
+  }
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();
+  let firstPush: ReturnType<typeof setTimeout> | undefined;
   let stopping = false;
+  // Stopping must fit in the 5 seconds launchd allows, and a push takes 3 to 4 seconds alone. So the owner's reading state is
+  // committed locally and nothing is pushed; the first push after the next start sends what this run left.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer);
+    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush);
     server.close(error => {
       void (async () => {
         if (error) throw error;
-        await store.flushOwner("owner"); await push();
+        await store.flushOwner("owner");
       })().catch(error => { console.error(error); process.exitCode = 1; });
     });
   }
   process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
   server.on("error", error => { console.error(error); process.exitCode = 1; clearInterval(timer); });
-  server.listen(port, "127.0.0.1", () => console.info(`wf-board http://127.0.0.1:${port}`));
+  server.listen(port, "127.0.0.1", () => {
+    console.info(`wf-board http://127.0.0.1:${port}`);
+    firstPush = setTimeout(() => { void push().catch(console.error); }, firstPushMs);
+    firstPush.unref();
+  });
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });

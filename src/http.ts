@@ -25,8 +25,13 @@ import type { UsageWatch } from "./usage-watch.ts";
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch }): http.Server {
+/** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
+export const SHUTDOWN_GRACE_MS = 2000;
+
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
+  // Set by `close`: from then on every new request is refused, so no client starts a session in a process that is about to exit.
+  let closing = false;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; mcp: McpServer }>();
@@ -50,8 +55,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if ((req.method === "POST" || req.method === "DELETE" || req.headers.upgrade) && req.headers.origin !== undefined && req.headers.origin !== `http://${req.headers.host}`) return false;
     return true;
   }
-  function json(res: ServerResponse, status: number, data: unknown) {
-    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  function json(res: ServerResponse, status: number, data: unknown, headers: http.OutgoingHttpHeaders = {}) {
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
     res.end(JSON.stringify(data));
   }
   async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
@@ -142,7 +147,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     json(res, 404, { error: "Unknown route" });
   }
   const server = http.createServer((req, res) => {
-    res.on("finish", () => console.info(`${req.method} ${(req.url ?? "/").split("?")[0]} ${res.statusCode}`));
+    res.on("finish", () => {
+      console.info(`${req.method} ${(req.url ?? "/").split("?")[0]} ${res.statusCode}`);
+      // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
+      if (closing) server.closeIdleConnections();
+    });
+    if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }
     void route(req, res).catch(error => {
       console.error(error);
       if (res.headersSent) { res.destroy(); return; }
@@ -150,6 +160,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     });
   });
   server.on("upgrade", (req, socket, head) => {
+    if (closing) { socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 2\r\n\r\n"); return; }
     if (!security(req)) { socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return; }
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     if (url.pathname !== "/wake") { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
@@ -256,15 +267,24 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   deps.watch?.start();
   // The look at the Actions billing (src/usage-watch.ts) runs on its own timer, every half hour.
   deps.usage?.start();
-  // Close long-lived transports before http.close waits for their sockets.
+  // Stopping (design section 4): no new request is served; what is running gets the grace to finish; then every connection is closed.
   const close = server.close.bind(server);
   server.close = callback => {
+    if (closing) return close(callback);
+    closing = true;
     clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeTold();
+    // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
+    // session is not one of them: it answers on its own request, and the session closes when the server has closed.
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
-    for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);
+    for (const { transport } of sessions.values()) transport.closeStandaloneSSEStream();
     ws.close();
-    return close(callback);
+    const cut = setTimeout(() => server.closeAllConnections(), deps.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
+    return close(error => {
+      clearTimeout(cut);
+      for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);
+      callback?.(error);
+    });
   };
   return server;
 }
