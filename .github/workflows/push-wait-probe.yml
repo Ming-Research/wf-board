@@ -1,0 +1,30 @@
+# Temporary: measurements for the study push-blocks-writes-study. Removed before the branch is finished.
+name: push-wait-probe
+on:
+  push:
+    branches: [push-blocks-writes-study]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git --version && ssh -V
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: p4 push states
+        run: node probe/probe.ts p4
+      - name: p3a maintenance triggers
+        run: node probe/probe.ts p3a
+      - name: p1 today's push holds the queue
+        run: node probe/probe.ts p1
+      - name: p5 push outside the queue
+        run: node probe/probe.ts p5
+      - name: p6 real ssh against a silent server
+        run: node probe/probe.ts p6
+      - name: p3b concurrent commits and pushes
+        run: node probe/probe.ts p3b
