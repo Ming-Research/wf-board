@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -1135,4 +1135,44 @@ test("the notices of the retired 要你知道 list are deleted once, in one comm
   // A second start finds nothing to do.
   assert.equal((await Store.open(dir)).snapshot().head, head);
   assert.equal(await git(dir, "rev-parse", "HEAD"), head);
+});
+
+test("notices are left alone, and the start goes on after a line in the log, when one is unread, a file is not committed or the deletion fails", async t => {
+  const logged: string[] = [], original = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+  t.after(() => { console.error = original; });
+  const notice = (dir: string, id: string, read: boolean) => writeFile(join(dir, `notices/${id}.yaml`), `text: 通知 ${id}\nauthor: Whitefoot\nat: ${at}\n${read ? `read: ${at}\n` : ""}rev: 1\n`);
+  async function withNotices(files: Record<string, boolean>) {
+    const { dir, store } = await setup(t);
+    await mkdir(join(dir, "notices"));
+    for (const [id, read] of Object.entries(files)) await notice(dir, id, read);
+    await git(dir, "add", "notices"); await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "post_notice");
+    return { dir, head: await git(dir, "rev-parse", "HEAD"), store };
+  }
+  // One notice the owner has not read: all stay.
+  const unread = await withNotices({ one: true, two: false });
+  const reopened = await Store.open(unread.dir);
+  assert.equal(await git(unread.dir, "rev-parse", "HEAD"), unread.head, "no commit");
+  assert.equal(reopened.snapshot().head, unread.head);
+  assert.deepEqual(await git(unread.dir, "ls-files", "notices"), "notices/one.yaml\nnotices/two.yaml");
+  assert.ok(logged.some(l => l.includes("notices/ not deleted") && l.includes("two.yaml")), logged.join("\n"));
+  // A file git does not hold: nothing is deleted, the file survives, the start succeeds.
+  logged.length = 0;
+  const untracked = await withNotices({ one: true });
+  await writeFile(join(untracked.dir, "notices/scratch.txt"), "mine");
+  assert.equal((await Store.open(untracked.dir)).snapshot().head, untracked.head);
+  assert.equal(await readFile(join(untracked.dir, "notices/scratch.txt"), "utf8"), "mine");
+  assert.equal(await git(untracked.dir, "ls-files", "notices"), "notices/one.yaml");
+  assert.ok(logged.some(l => l.includes("not committed as they are")), logged.join("\n"));
+  // A deletion that fails (here a hook refusing the commit) puts the index and the files back.
+  logged.length = 0;
+  const failing = await withNotices({ one: true, two: true });
+  const hook = join(failing.dir, ".git/hooks/pre-commit");
+  await mkdir(join(failing.dir, ".git/hooks"), { recursive: true });
+  await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
+  assert.equal((await Store.open(failing.dir)).snapshot().head, failing.head);
+  assert.equal(await git(failing.dir, "rev-parse", "HEAD"), failing.head);
+  assert.equal(await git(failing.dir, "status", "--porcelain"), "", "nothing staged, nothing missing");
+  assert.equal(await readFile(join(failing.dir, "notices/two.yaml"), "utf8"), `text: 通知 two\nauthor: Whitefoot\nat: ${at}\nread: ${at}\nrev: 1\n`);
+  assert.ok(logged.some(l => l.startsWith("notices/ not deleted")), logged.join("\n"));
 });

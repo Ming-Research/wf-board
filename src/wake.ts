@@ -67,8 +67,8 @@ export class Wake {
       let record: Record<string, unknown>;
       try { record = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
       if (typeof record.event === "string" && typeof record.n === "number") {
-        this.frames.push({ frame: record as WakeFrame, bytes: line.length });
-        this.total += line.length;
+        this.frames.push({ frame: record as WakeFrame, bytes: Buffer.byteLength(line) });
+        this.total += Buffer.byteLength(line);
         this.counter = Math.max(this.counter, record.n);
       } else if (typeof record.latest === "number") this.counter = Math.max(this.counter, record.latest);
       else if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
@@ -121,7 +121,7 @@ export class Wake {
     if (given !== wanted) throw new Error(`Wake ${event} takes the fields ${wanted}, not ${given}`);
     const frame = { n: ++this.counter, at: this.iso(), event, ...fields } as WakeFrame;
     const line = JSON.stringify(frame);
-    this.frames.push({ frame, bytes: line.length }); this.total += line.length;
+    this.frames.push({ frame, bytes: Buffer.byteLength(line) }); this.total += Buffer.byteLength(line);
     this.append(frame);
     this.trim();
     for (const listener of this.listeners) { try { listener(frame); } catch (error) { console.error(error); } }
