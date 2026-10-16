@@ -27,10 +27,10 @@ export interface PageRoute { method: string; path: string; cls: OperationClass |
 export const PAGE_ROUTES: readonly PageRoute[] = [
   { method: "GET", path: "/", cls: "read" }, { method: "GET", path: "/app.js", cls: "read" }, { method: "GET", path: "/health", cls: "read" }, { method: "GET", path: "/api/snapshot", cls: "read" },
   { method: "GET", path: "/api/unread", cls: "history" }, { method: "GET", path: "/api/step", cls: "history" },
-  { method: "POST", path: "/api/notes", cls: "write" }, { method: "POST", path: "/api/draft", cls: "write" }, { method: "POST", path: "/api/send", cls: "write" },
+  { method: "POST", path: "/api/notes", cls: "write" }, { method: "POST", path: "/api/send", cls: "write" },
   { method: "POST", path: "/api/read", cls: "write" }, { method: "POST", path: "/api/wake", cls: "write" },
   { method: "DELETE", path: "/api/notes/", prefix: true, name: "DELETE /api/notes/:id", cls: "write" },
-  { method: "GET", path: "/api/events", cls: null }, { method: "GET", path: "/mcp", cls: null }, { method: "POST", path: "/mcp", cls: null }, { method: "DELETE", path: "/mcp", cls: null },
+  { method: "GET", path: "/api/ghost", cls: "read" }, { method: "GET", path: "/api/events", cls: null }, { method: "GET", path: "/mcp", cls: null }, { method: "POST", path: "/mcp", cls: null }, { method: "DELETE", path: "/mcp", cls: null },
 ];
 const EXACT_ROUTES = new Map(PAGE_ROUTES.filter(r => !r.prefix).map(r => [`${r.method} ${r.path}`, r] as const));
 const PREFIX_ROUTES = PAGE_ROUTES.filter(r => r.prefix);
@@ -124,7 +124,7 @@ export class SlowOps {
     const ms = Math.round(exact);
     console.info(`${label} ${result} ${ms} ms`);
     const limit = OPERATION_LIMITS_MS[name] ?? (cls === undefined ? undefined : this.limits[cls]);
-    if (limit === undefined || ms <= limit) return;
+    if (limit === undefined || ms <= limit || result === "error") return;
     let detail = "";
     try { detail = params?.() ?? ""; } catch { /* the summary is a convenience; the line is still worth writing */ }
     const now = this.now(), last = this.told.get(name);
