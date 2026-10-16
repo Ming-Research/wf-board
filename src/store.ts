@@ -15,6 +15,7 @@ import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummar
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
+import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
@@ -466,7 +467,7 @@ export class Store {
     const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
-      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}) }
+      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}) }
       : { writes: [], items: {} };
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
@@ -503,7 +504,7 @@ export class Store {
         }
       }
       this.noteActivity(activity, commit.at, touched);
-      if (commit.session) this.noteSessions(activity, commit.at, commit.session, touched);
+      if (commit.session) { this.noteSessions(activity, commit.at, commit.session, touched); this.noteAgent(activity, commit.at, commit.session, touched); }
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
     }
     this.lap("replay activity", `${commits.length} commits`);
@@ -554,7 +555,7 @@ export class Store {
     });
     return {
       version: STARTUP_CACHE_VERSION, head: this.state.head,
-      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null },
+      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null },
       cardItems: Object.fromEntries(this.cardItems),
       pause: this.pauseStarted ? { items: Object.fromEntries(items) } : null,
     };
@@ -722,6 +723,12 @@ export class Store {
     }
   }
 
+  /** The session's last two items (src/agents.ts). Unlike an item's last writer, an earlier time never loses to a later one: writes arrive in history order. */
+  private noteAgent(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
+    const items = [...touched];
+    if (items.length) (activity.agents ??= {})[name] = touchAgent(activity.agents?.[name], items, at);
+  }
+
   private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
     const touched = new Set<string>();
     for (const change of changed) {
@@ -887,7 +894,7 @@ export class Store {
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
       // Documents in `changed` are already frozen snapshot documents.
-      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {} } };
+      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -916,10 +923,10 @@ export class Store {
     if (changed.some(c => c.kind !== "owner")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
-      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}) };
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
       const touched = this.changedItems(changed, next);
       this.noteActivity(activity, event.at, touched);
-      if (session) this.noteSessions(activity, event.at, session, touched);
+      if (session) { this.noteSessions(activity, event.at, session, touched); this.noteAgent(activity, event.at, session, touched); }
       this.notePauses(activity, this.state.items, next.items, changed, event.at);
       next.activity = activity;
       const delta = event.activity;
@@ -927,6 +934,7 @@ export class Store {
       for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
       for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
       for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
+      for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) (delta.agents ??= {})[name] = list;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
@@ -1091,7 +1099,7 @@ export class Store {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
       for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
-      const loaded = parsePlanData(raw, hash);
+      const loaded = parsePlanData(raw, hash, true);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
         const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
@@ -1185,7 +1193,15 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
+/** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
+function withoutRequestMarker(doc: unknown): unknown {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc) || !Object.hasOwn(doc, "request")) return doc;
+  const { request: _request, ...rest } = doc as Record<string, unknown>;
+  return rest;
+}
+/** `historical`: the data is a past commit's, whose items may hold fields the schema has since dropped; only
+ * comparisonSnapshot reads data this way, and the live data stays strictly validated. */
+function parsePlanData(raw: Record<string, unknown>, head: string, historical = false): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
 
   const legacy=retiredBoardShape(raw["board.yaml"]) || items.some(([,doc])=>retiredItemShape(doc));
@@ -1210,7 +1226,7 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,historical&&!legacy&&collection==="items"?withoutRequestMarker(doc):doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);

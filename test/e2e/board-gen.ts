@@ -1,6 +1,6 @@
 // A seeded generator of a synthetic board with the structural variety of the real one: deep and wide ownership trees,
 // records owning backlog work, shared rows inside and across projects, decision cards named by several plans or by a
-// done item's plan, open cards no plan names (one on a record item), asks, inbox requests, explicit and inherited
+// done item's plan, open cards no plan names (one on a record item), asks, explicit and inherited
 // pauses, comments folded or open with replies and anchors, code blocks, tables, references, glossary terms,
 // targets, tags, and a history split into read and unread commits. All text comes from the word lists below; no real
 // board text is copied. test/e2e/shapes.ts names the shape categories and test/board-gen.test.ts checks every one is
@@ -82,7 +82,7 @@ interface ItemDraft {
   id: string; index: number; title: string; group: string; record?: boolean; parent?: string; children: string[];
   steps: PlanRowDraft[]; extra: PlanRowDraft[]; cards: string[]; head: string; log: Array<{ at: string; by?: string; text: string }>;
   tags: string[]; status?: "cancelled"; paused?: { reason: string; at: string }; ask?: { text: string; url?: string; chat?: boolean };
-  request?: { by: string; at: string }; targets?: Array<{ id: string; goal: string; target: string; current: string; baseline: string; date: string }>;
+  targets?: Array<{ id: string; goal: string; target: string; current: string; baseline: string; date: string }>;
   links: Array<{ label: string; url: string }>; provisional?: true; priority?: string; data?: string; leafKind: "done" | "wip" | "todo" | "blocked" | "parent";
 }
 interface CardDraft { id: string; item: string; question: string; background: string; options: Array<{ key: string; text: string; recommended?: boolean }>; status: "open" | "ruled" | "withtree" | "elsewhere"; blocks?: string; choice?: string; ruling?: string; ruledAt?: string; confidence?: { score: number; reason: string }; at: string }
@@ -244,7 +244,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   for (const c of cards.values()) if (r.chance(0.15)) comment("q:" + c.id);
   notes.push({ id: "n" + ++noteSeq, doc: { target: "it:" + unpaused.id, kind: "explain", text: "请详细解释这一项。", at: tick(), sentAt: tick(), state: "done", reply: "这一项把检查前移。", repliedAt: tick(), repliedBy: unpaused.group } });
   notes.push({ id: "n" + ++noteSeq, doc: { target: "it:" + code.id, kind: "comment", text: "还在等回复的评论", at: tick(), sentAt: tick(), state: "sent" } });
-  // Roots carry priority; inbox requests come later, in the unread batches.
+  // Roots carry priority; new top items of other projects come later, in the unread batches.
   for (const it of roots) it.priority = r.pick(["P0", "P1", "P1", "P2"]);
   for (const it of order) if (it.record) it.priority = undefined;
 
@@ -266,7 +266,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
       title: it.title, group: it.group, ...(it.record ? { record: true } : {}), ...(it.priority ? { priority: it.priority } : {}), ...(it.status ? { status: it.status } : {}),
       ...(it.paused ? { paused: it.paused } : {}), tags: it.tags, ...difficultyOf(it), head: it.head, log: it.log, plan, ...(it.provisional ? { provisional: true } : {}),
       ...(it.targets ? { targets: it.targets } : {}), ...(it.data ? { data: it.data } : {}), links: it.links, ...(it.ask ? { ask: it.ask } : {}),
-      ...(it.request ? { request: it.request } : {}), created: at, updated: at, order: it.index,
+      created: at, updated: at, order: it.index,
     };
   };
   const cardDoc = ({ id: _id, ...c }: CardDraft): Record<string, unknown> => ({ ...c, updated: c.ruledAt ?? c.at });
@@ -282,7 +282,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const touched = order.filter((_, k) => k % 6 === 1);
   batches.push({ message: "Progress the owner read", puts: touched.map(it => ({ kind: "item" as const, id: it.id, doc: { ...itemDoc(it), log: [...it.log, { at: tick(), by: it.group, text: "已读的进展。" }], updated: tick() } })) });
   const readBefore = batches.length;
-  // Unread history, several commits: progress on plans, new replies, new cards, new items, inbox requests.
+  // Unread history, several commits: progress on plans, new replies, new cards, new items.
   const progressed = order.filter((x, k) => k % 9 === 4 && !x.record && x.steps.some(s => s.state === "todo" && !s.accept));
   batches.push({ message: "Unread plan progress", puts: progressed.map(it => {
     const doc = itemDoc(it), plan = (doc.plan as Array<Record<string, unknown>>).map(row => row.state === "todo" && !row.accept ? { ...row, state: "doing", since: tick() } : row);
@@ -310,11 +310,11 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const parentOfNew = pickItem(x => x.children.length > 0 && !x.record && x.group === PROJECTS[1].name && !x.status);
   const child = newItem(parentOfNew.group, "lum", parentOfNew.id);
   child.steps = [{ id: "s1", text: r.pick(STEPS), state: "todo" }, { id: "accept", accept: true, text: "验收：新条目通过", state: "todo" }];
-  const inbox = ([[PROJECTS[2], PROJECTS[0]], [PROJECTS[3], PROJECTS[1]]] as const).map(([to, by]) => { const it = newItem(to.name, to.slug); it.request = { by: by.name, at: tick() }; it.steps = [{ id: "accept", accept: true, text: "验收：请求的需要满足", state: "todo" }]; it.priority = "P1"; return it; });
-  batches.push({ message: "Unread new items and requests", puts: [
+  const newTops = ([PROJECTS[2], PROJECTS[3]] as const).map(to => { const it = newItem(to.name, to.slug); it.steps = [{ id: "accept", accept: true, text: "验收：新需要满足", state: "todo" }]; it.priority = "P1"; return it; });
+  batches.push({ message: "Unread new items", puts: [
     { kind: "item", id: child.id, doc: itemDoc(child) },
     { kind: "item", id: parentOfNew.id, doc: { ...itemDoc(parentOfNew), updated: tick() } },
-    ...inbox.map(it => ({ kind: "item" as const, id: it.id, doc: itemDoc(it) })),
+    ...newTops.map(it => ({ kind: "item" as const, id: it.id, doc: itemDoc(it) })),
   ] });
   return {
     board: { title: "合成看板", eyebrow: "状态看板", goal: "合成数据：结构像真实看板，文字全是生成的。", projects: PROJECTS.map(p => ({ name: p.name, ...("repo" in p ? { repo: p.repo } : {}) })), tags: TAGS.map(t => ({ ...t })) },

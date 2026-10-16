@@ -111,26 +111,26 @@ test("item tags outside the vocabulary or not applicable to the project are refu
   assert.equal((await store.log()).length, count, "an identical list is a no-op");
 });
 
-test("creating an item or request needs a valid tag once the vocabulary has one for the project, and accepts none before", async t => {
+test("creating an item (in any project) needs a valid tag once the vocabulary has one for the project, and accepts none before", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   const create = { ...asArchitect, key: "n1", owner: "area", title: "New", accept: "Passes" };
-  const request = { author, project: "Firn", key: "r1", title: "Req", head: "h", accept: "Passes", priority: "P1" as const, why: "w" };
+  const firnItem = { ...asArchitect, group: "Firn", key: "r1", title: "Req", head: "h", accept: "Passes", priority: "P1" as const };
   // Before any tag exists: none is required, and naming one is refused.
   await op.createItem(create);
   assert.equal(store.snapshot().items.n1!.tags, undefined);
   await refuses(op.createItem({ ...create, key: "n2", tags: ["健全性"] }), /not in the tag vocabulary.*no tag is approved for Whitefoot yet/);
-  await op.createRequest(request);
+  await op.createItem(firnItem);
   // Once one exists, a missing or invalid tag is refused and a valid one stored.
   await op.setTag({ ...asArchitect, name: "健全性", meaning: "m" });
   await op.setTag({ ...asArchitect, name: "仅Firn", meaning: "m", projects: ["Firn"] });
   const before = store.snapshot();
   await refuses(op.createItem({ ...create, key: "n3" }), /tags: give at least one.*健全性/);
   await refuses(op.createItem({ ...create, key: "n3", tags: ["仅Firn"] }), /applies only to Firn/);
-  await refuses(op.createRequest({ ...request, key: "r2" }), /tags: give at least one.*allowed for Firn: 健全性, 仅Firn/);
-  await refuses(op.createRequest({ ...request, key: "r2", tags: ["没有"] }), /not in the tag vocabulary/);
+  await refuses(op.createItem({ ...firnItem, key: "r2" }), /tags: give at least one.*allowed for Firn: 健全性, 仅Firn/);
+  await refuses(op.createItem({ ...firnItem, key: "r2", tags: ["没有"] }), /not in the tag vocabulary/);
   assert.deepEqual(store.snapshot(), before);
   await op.createItem({ ...create, key: "n3", tags: ["健全性"] });
-  await op.createRequest({ ...request, key: "r2", tags: ["仅Firn"] });
+  await op.createItem({ ...firnItem, key: "r2", tags: ["仅Firn"] });
   assert.deepEqual(store.snapshot().items.n3!.tags, ["健全性"]);
   assert.deepEqual(store.snapshot().items.r2!.tags, ["仅Firn"]);
   // A record is an item too.

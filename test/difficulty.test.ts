@@ -124,24 +124,21 @@ test("缺难度 is raised for open unrated work and clears when it is rated 1–
   assert.equal(missing(b, "w").length, 1);
 });
 
-test("缺难度 is raised only for work an unpaused root needs, and not for a record, a closed item or an untriaged request", async t => {
+test("缺难度 is raised only for work an unpaused root needs, and not for a record or a closed item", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
   await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
   await unrated("under", { owner: "backlog", group: undefined, priority: undefined });
   await unrated("done"); await op.setPlan({ author, id: "done", row: { id: "accept", accept: true, text: "通过", state: "done" } });
   await unrated("gone"); await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "不要了" });
-  await op.createRequest({ author, project: "Firn", key: "req", title: "请求", head: "h", accept: "通过", priority: "P1", why: "w" });
   await unrated("own"); await unrated("child", { owner: "own", group: undefined, priority: undefined });
   await op.setPause({ ...asArchitect, id: "own", paused: true, reason: "先放一放" });
   assert.equal(rules(store.snapshot()).statusOf("child"), "paused", "the child is paused by inheritance");
-  for (const id of ["rec", "backlog", "under", "done", "gone", "req", "own", "child"]) assert.equal(missing(b, id).length, 0, id);
+  for (const id of ["rec", "backlog", "under", "done", "gone", "own", "child"]) assert.equal(missing(b, id).length, 0, id);
   assert.equal(rules(store.snapshot()).isNeeded("own"), false);
   // The exemptions end with their cause.
   await op.setPause({ ...asArchitect, id: "own", paused: false });
   assert.equal(missing(b, "own").length, 1, "a root that is not started counts, whatever its priority"); assert.equal(missing(b, "child").length, 1);
-  await op.triageRequest({ author: "Firn", id: "req", log: "收下" });
-  assert.equal(missing(b, "req").length, 1, "a triaged request is work and gets the check");
 });
 
 test("work that only a paused root needs raises no 缺难度, and work a second, unpaused root needs does", async t => {
@@ -242,21 +239,18 @@ test("every section of brief carries the difficulty, and only an item a root nee
   await unrated("held"); await op.setPause({ ...asArchitect, id: "held", paused: true, reason: "先放一放" });
   await unrated("waits"); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", background: "背景", options: [{ key: "A", text: "甲" }, { key: "B", text: "乙" }, { key: "C", text: "丙" }], blocks: "停着" });
   await op.setPlan({ author, id: "waits", row: { card: "wait-card", after: [] } });
-  await op.createRequest({ author: "Firn", project: author, key: "inbox-one", title: "收件箱里的", head: "h", accept: "通过", priority: "P1", why: "w" });
-  await op.createRequest({ author, project: "Firn", key: "outgoing-one", title: "送出去的", head: "h", accept: "通过", priority: "P1", why: "w" });
   await unrated("todo-one"); await unrated("paused-need"); await unrated("live-need");
   for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ ...asArchitect, key, group: "Firn", priority: "P2", title: key, accept: "通过" });
   await op.setPlan({ author, id: "paused-need", row: { item: "only-paused-needs", own: false, after: [] } });
   await op.setPlan({ author, id: "live-need", row: { item: "needed-by-live", own: false, after: [] } });
   await op.setPause({ ...asArchitect, id: "paused-need", paused: true, reason: "先放一放" });
-  await op.setDifficultyMany({ ...asArchitect, reason: "r", items: ["working", "held", "waits", "inbox-one", "outgoing-one", "todo-one", "only-paused-needs", "needed-by-live"].map(id => ({ id, difficulty: 3 as const })) });
+  await op.setDifficultyMany({ ...asArchitect, reason: "r", items: ["working", "held", "waits", "todo-one", "only-paused-needs", "needed-by-live"].map(id => ({ id, difficulty: 3 as const })) });
   const s = store.snapshot(), r = rules(s), result = brief(s, r, author);
   const has = (rows: Array<{ id: string; difficulty?: unknown }>, id: string) => rows.find(row => row.id === id)?.difficulty;
-  assert.equal(has(result.inbox, "inbox-one"), 3, "inbox");
   assert.equal(has(result.wip, "working"), 3, "wip");
   assert.equal(has(result.paused, "held"), 3, "paused");
   assert.equal(has(result.todo, "todo-one"), 3, "todo");
-  assert.equal(has(result.outgoing, "outgoing-one"), 3, "outgoing");
+  assert.equal(has(result.outgoing, "needed-by-live"), 3, "outgoing: another project's work an open item waits on");
   assert.equal(has(result.progress, "waits"), 3, "progress: a blocked item");
   assert.equal(has(result.checks, "todo-one"), 3, "checks: a rated item whose only check is another one");
   const firn = brief(s, r, "Firn").todo.map(row => row.id);

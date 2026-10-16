@@ -28,7 +28,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   for(const [id,source] of Object.entries(old.items)) {
     const target=next.items[id];if(!target)continue;
     check(Item.safeParse(target).success,`${id}: new item schema invalid`);
-    const sourceFields=Object.fromEntries(Object.entries(source).filter(([key])=>!["parent","deps","steps","status","priority","head","group","log"].includes(key)));
+    const sourceFields=Object.fromEntries(Object.entries(source).filter(([key])=>!["parent","deps","steps","status","priority","request","head","group","log"].includes(key)));
     const targetFields=Object.fromEntries(Object.entries(target).filter(([key])=>!["plan","status","priority","head","group","log","provisional"].includes(key)));
     check(equal(sourceFields,targetFields),`${id}: preserved item fields changed`);
     check(target.group===before.groupOf(id),`${id}: project changed`);
