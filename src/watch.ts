@@ -74,7 +74,9 @@ export function pushKey(event: string, f: Record<string, unknown>): string | und
 /** What to tell the architect now, from what GitHub says: a red main line; a red non-draft PR an open item names; a non-draft PR
  * an open item names whose checks all passed and which can merge, with the open blocking cards of those items and the cards the
  * item's merge row waits on; an open PR no open item names (drafts too). A draft PR's checks are never told. */
-export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Push[] {
+/** How old an open PR must be before it is told as an orphan: the engineer writes its 改动 section right after opening it. */
+export const ORPHAN_AFTER_MS = 10 * 60_000;
+export function decide(s: Snapshot, r: Rules, states: readonly RepoState[], now = Date.now()): Push[] {
   const watched = watchedPulls(s, r), merges = mergeRows(s, r), pushes: Push[] = [];
   for (const state of states) {
     const project = s.board.projects.find(p => p.repo?.toLowerCase() === state.repo.toLowerCase())?.name ?? "";
@@ -85,6 +87,7 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Pus
     for (const pull of state.pulls) {
       const key = prKey({ repo: state.repo, number: pull.number }), entry = watched.get(key);
       if (!entry) {
+        if (now - Date.parse(pull.createdAt) < ORPHAN_AFTER_MS) continue;
         pushes.push({ event: "pr-orphan", key: pushKey("pr-orphan", { repo: state.repo, number: pull.number })!, fields: { repo: state.repo, number: pull.number, project, title: pull.title, url: pull.url, draft: pull.draft } });
         continue;
       }
@@ -218,7 +221,7 @@ export class GithubWatch {
       if (this.stopped) return;
       // The board may have changed while GitHub answered: decide on what it is now.
       const s = store.snapshot(), r = store.derived.rules(s, this.now());
-      for (const push of decide(s, r, states)) {
+      for (const push of decide(s, r, states, this.now())) {
         if (this.announced.has(push.key)) continue;
         this.o.wake.push(push.event, push.fields);
         this.announced.add(push.key);

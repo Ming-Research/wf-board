@@ -1670,7 +1670,7 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 - the timed wake, every 30 minutes;
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
-  failed (`pr-red`), and one whose checks all passed and which can merge
+  failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
@@ -1845,19 +1845,23 @@ runs no pull request check for a pull request with a merge conflict, and a
 commit nobody has run yet looks the same.
 
 **The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
-requests; a draft's checks are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say
-success and GitHub reports the pull request mergeable (not conflicting; still
-being computed counts as not yet). A pull request whose checks are pending or
-none, or that cannot merge, is told nothing. `main-red`: the checks of the main
-line's newest commit say failure. A push is made once per key: `main-red` per
-branch and commit, `pr-red` and `pr-ready` per pull request and newest commit, `pr-orphan` per pull request.
+requests; a draft's checks are the engineer's. `pr-red`: the checks say
+failure. `pr-ready`: the checks say success and GitHub reports the pull request
+mergeable (not conflicting; still being computed counts as not yet). A pull
+request whose checks are pending or none, or that cannot merge, is told nothing.
+`main-red`: the checks of the main line's newest commit say failure. A push is
+made once per key: `main-red` per branch and commit, `pr-red` and `pr-ready` per
+pull request and newest commit, `pr-orphan` per pull request.
 The keys of the events still kept are read again at start, so a restart neither
 repeats a push nor loses one (an event the log dropped may be told once more).
 
 **The orphan push.** `pr-orphan`: an open pull request, draft or not, that no open
 item's 改动 section names. It is told once per pull request, whatever its checks
 and commits, so a draft nobody names is told too: nothing else reports it. A pull
-request an item names later is no orphan any more; the push is not taken back.
+request is told only once it is ten minutes old (GitHub's creation time), so the
+engineer has time to write its 改动 section after opening it; one an item names
+within those ten minutes is never told. A pull request an item names after it has
+been told is no orphan any more; the push is not taken back.
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
