@@ -1,4 +1,6 @@
-// Explicit installer; prints the launchctl command without running it.
+// Explicit installer; prints the launchctl command without running it. `install-service.ts` writes the daemon's plist;
+// `install-service.ts deploy` writes the deploy job's (ops/wf-board-deploy.plist, run by scripts/deploy.ts every five minutes).
+// Each leaves the other's file alone.
 // WF_BOARD_NODE names the node to run (default: this node). Give a stable path such as
 // /opt/homebrew/opt/node@24/bin/node: process.execPath resolves to a versioned Cellar path
 // that a Homebrew upgrade removes. WF_BOARD_PATH gives the service's PATH (default: this shell's), so it runs
@@ -13,10 +15,13 @@ import { dataDir } from "../src/data-dir.ts";
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const home = homedir();
 const escape = (text: string) => text.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]!);
-const template = await readFile(join(repo, "ops/wf-board.plist"), "utf8");
+const job = process.argv[2] ?? "daemon";
+if (job !== "daemon" && job !== "deploy") throw new Error(`Unknown job ${job}; give daemon or deploy`);
+const name = job === "deploy" ? "wf-board-deploy" : "wf-board";
+const template = await readFile(join(repo, `ops/${name}.plist`), "utf8");
 const values = { NODE: process.env.WF_BOARD_NODE ?? process.execPath, REPO: repo, HOME: home, PATH: process.env.WF_BOARD_PATH ?? process.env.PATH ?? "/usr/bin:/bin", DATA: dataDir(repo) };
 const plist = template.replace(/{{(NODE|REPO|HOME|PATH|DATA)}}/g, (_, key: keyof typeof values) => escape(values[key]));
-const target = join(home, "Library/LaunchAgents/org.ming-research.wf-board.plist");
+const target = join(home, `Library/LaunchAgents/org.ming-research.${name}.plist`);
 await mkdir(dirname(target), { recursive: true });
 await mkdir(join(home, "Library/Logs"), { recursive: true });
 await writeFile(target, plist);
