@@ -58,5 +58,7 @@ test("seeding: automatic maintenance ends before the next git add starts", async
   assert.ok(maintenance.length > 0, "automatic maintenance ran: " + maintenance.length);
   assert.ok(adds.length > 0, "git add ran: " + adds.length);
   const overlaps = adds.filter(a => maintenance.some(m => a >= m.from && a < m.to));
-  assert.equal(overlaps.length, 0, "no git add starts during a maintenance run");
+  // Temporary diagnostics (CI showed overlaps with the fix in place): the process events in trace order.
+  const trail = events.filter(e => /^(start|exit|child_start|child_exit)$/.test(e.event)).slice(0, 150).map(e => JSON.stringify(e)).join("\n");
+  assert.equal(overlaps.length, 0, `no git add starts during a maintenance run; ${overlaps.length} overlaps; maintenance ${JSON.stringify(maintenance)}\n${trail}`);
 });
