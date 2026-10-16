@@ -821,7 +821,7 @@ export class Store {
       for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
       for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
       for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
-      for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) delta.agents[name] = list;
+      for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) (delta.agents ??= {})[name] = list;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
