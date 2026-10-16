@@ -16,3 +16,7 @@ Project repositories commit no `.mcp.json`: the server exists only on this
 Mac, and a committed file would point every other checkout at nothing.
 
 Status: under construction. The design is `docs/design.md`.
+
+## License
+
+wf-board is available under the [MIT License](LICENSE).
