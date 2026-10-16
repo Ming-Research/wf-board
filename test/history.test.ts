@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, architect, asArchitect, later } from "./helpers.ts";
@@ -559,6 +559,87 @@ test("cold unread history compares legacy commits without whole-snapshot convers
   assert.ok(diff.after && typeof diff.after === "object" && "plan" in diff.after);
   assert.match(diff.diff, /Progress 0/);
   assert.ok("steps" in (await store.show("item", "work", commits[0]!) as object), "audit history stays raw");
+});
+
+test("historical comparison omits only fields a migration retired; raw history keeps them and writes stay strict", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-retired-fields-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const git = promisify(execFile);
+  const run = (args: string[]) => git("git", args, { cwd: dir });
+  const commit = async (name: string, message: string) => {
+    await run(["add", "."]);
+    await run(["-c", `user.name=${name}`, "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message]);
+    return (await run(["rev-parse", "HEAD"])).stdout.trim();
+  };
+  await run(["init", "-b", "main"]);
+  await mkdir(join(dir, "items"));
+  // The imported board as it was before the migrations that dropped area short names, item agents and project agents.
+  const project = { name: "P", migrated: true };
+  const work = { title: "Work", group: "P", status: "todo", priority: "P1", head: "Before", updated: later, rev: 1 };
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [{ ...project, agents: ["p-session"] }] }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session" }));
+  const imported = await commit("migration", "Import the board");
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", rev: 2 }));
+  const edited = await commit("P", "Edit while retired fields remain");
+  // A field no migration retired is unknown content: comparison must refuse it rather than drop it.
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [{ ...project, agents: ["p-session"], unlisted: "kept" }] }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session", head: "After", unlisted: "kept", rev: 3 }));
+  const unknown = await commit("Q", "Write an unknown field");
+  await writeFile(join(dir, "board.yaml"), stringify({ title: "Retired fields", projects: [project] }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, head: "After", rev: 4 }));
+  const migrated = await commit("migration", "Drop retired fields");
+  const store = await Store.open(dir, { planConversionHead: migrated });
+  const steps = await unreadSteps(store, imported);
+  const step = steps.find(s => s.id === edited);
+  assert.ok(step, "the edit is an unread step");
+
+  const diff = await stepDiff(store, step, "item", "work");
+  // The normalized view keeps every current field's content and invents nothing for the retired ones.
+  const before = diff.before as Record<string, unknown>, after = diff.after as Record<string, unknown>;
+  assert.equal(before.head, "Before");
+  assert.equal(after.head, "After");
+  assert.ok(Array.isArray(after.plan));
+  for (const doc of [before, after]) for (const key of ["short", "agent"]) assert.ok(!Object.hasOwn(doc, key));
+  assert.deepEqual((await store.comparisonSnapshot(edited)).board.projects, [{ name: "P" }], "the plan conversion drops migrated; agents is omitted");
+  // Raw history still holds the retired fields exactly as written.
+  assert.match(diff.diff, /^ short: W$/m);
+  assert.match(diff.diff, /^ agent: p-session$/m);
+  assert.deepEqual(await store.show("item", "work", edited), { ...work, short: "W", agent: "p-session", head: "After", rev: 2 });
+  assert.match(await store.diff("item", "work", edited, migrated), /^-short: W$/m);
+
+  const refused = await store.comparisonSnapshot(unknown).then(() => "", (error: Error) => error.message);
+  assert.match(refused, /^board\.yaml: projects\.0: Unrecognized key: "unlisted"$/m);
+  assert.match(refused, /^items\/work\.yaml: document: Unrecognized key: "unlisted"$/m);
+  const current = store.snapshot().items.work!;
+  await assert.rejects(store.commit({ author: "P", message: "Write a retired field", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, short: "W" } }] }),
+    /Unrecognized key: "short"/);
+});
+
+test("historical comparison omits retired fields from an old version already in the plan shape", async t => {
+  const { dir } = await board(t);
+  const git = promisify(execFile);
+  const run = async (...args: string[]) => (await git("git", args, { cwd: dir })).stdout.trim();
+  const commit = async (message: string) => {
+    await run("add", ".");
+    await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  // A version in the current shape (items with plans, no `migrated` on a project) that still holds the retired fields.
+  const current = parse(await readFile(join(dir, "board.yaml"), "utf8")) as { projects: Array<Record<string, unknown>> };
+  const work = { title: "Work", group: "Firn", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
+  await writeFile(join(dir, "board.yaml"), stringify({ ...current, projects: current.projects.map(p => p.name === "Firn" ? { ...p, agents: ["p-session"] } : p) }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session" }));
+  const held = await commit("Hold retired fields");
+  await writeFile(join(dir, "board.yaml"), stringify(current));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, rev: 2 }));
+  await commit("Drop retired fields");
+  const reopened = await Store.open(dir);
+  const past = await reopened.comparisonSnapshot(held);
+  assert.deepEqual(past.board, reopened.snapshot().board, "the version's board is the current one without the project's agents");
+  assert.equal(past.items.work!.title, "Work");
+  for (const key of ["short", "agent"]) assert.ok(!Object.hasOwn(past.items.work!, key));
+  // Raw history still holds them as written.
+  assert.deepEqual(await reopened.show("item", "work", held), { ...work, short: "W", agent: "p-session" });
 });
 
 test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {
