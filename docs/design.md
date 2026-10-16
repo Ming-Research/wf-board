@@ -70,7 +70,7 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process.
 3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
-   session what needs it: owner notes, stalled work and a timed wake.
+   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -94,7 +94,92 @@ hidden in a database.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit. `GET /health` reports its state; the page shows a banner when the server
-does not answer, and every MCP tool error names the cause.
+does not answer, and every MCP tool error names the cause. Every line of the
+service log carries its time, and a start logs how long each step took (reading
+the documents, checking them against the repository, reading the startup cache
+and the commits after it, replaying them) and the time from the start of the
+process to listening.
+
+**Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
+runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
+deploy` writes its plist; launchd never overlaps two runs of one job). The logic
+is `src/deploy.ts`. A run fetches the main line, `origin/main`.
+When the checkout the daemon runs from is behind it, the run moves the checkout
+to its head with a fast-forward, installs the packages if `package-lock.json`
+changed, rebuilds the page bundle and, when a changed path needs it, restarts
+the daemon. Pull requests merged within the five minutes are one deploy and one
+restart.
+
+- A restart is skipped only when every changed path is in `NO_RESTART`
+  (`src/deploy.ts`, the one place the list is defined): the daemon loads `src/`
+  and the packages at its start and reads nothing else of the checkout but the
+  page files, which it reads from disk on each request. Any other path restarts.
+  A daemon that is down at the deploy is restarted whatever changed, since a
+  deploy leaves the board up.
+- The restart is `launchctl kickstart -k` on the daemon's own label, never a
+  kill by process name. The daemon is healthy when launchd reports a process
+  other than the one before, `/health` answers, and 5 seconds later the same
+  process still answers, all within 90 seconds. The second look catches a
+  daemon that starts, crashes and is started again by launchd. A deploy that
+  needed no restart waits up to 90 seconds for `/health` to answer, and no
+  single probe is trusted: a probe tries for up to 15 seconds, since a daemon
+  that is busy or just started can miss one.
+- A deploy that fails (the daemon is not healthy, or the install or build
+  fails) goes back to the last healthy commit: the checkout's commit when the
+  daemon was answering at the start of the run, else the last commit the job saw
+  healthy. The checkout is reset to it (`git reset --keep`), the packages (when
+  the lock file differs) and the page are built again from that code, and the
+  daemon restarts and is waited for if a restart was begun for the deploy or it
+  does not answer; a daemon that still answers on the process that served before
+  is left alone. A commit that failed after it was in the checkout is not tried
+  again until the main line has a newer commit; one that git refused to merge is
+  not marked, since that says nothing about it. A `deployFailed` push says what
+  happened.
+- A deploy is recorded as pending in the job's state file before the checkout
+  moves, and the record is cleared when the deploy succeeded or the rollback
+  finished. A run that finds one finishes it before anything else, reinstalling
+  the packages whatever the lock file says. So a job that died part way, or a
+  rollback that failed on the package registry or a stale `index.lock`, is
+  retried every five minutes and never leaves the checkout in an unknown state.
+  When going back does not finish, the architect is told once; the owner is told
+  on the Mac, with the same notification code as the daemon, only when the
+  daemon does not answer, since then no daemon can push. The job only undoes
+  what it did to a checkout that is still the one it moved: on the main line's
+  branch, without local changes to tracked files, and on the commit where the
+  job last left it (the record keeps that, also while a move is under way), even
+  when someone else's hand lands on the deploy's target or the commit to go back
+  to. A checkout in any other state was changed by hand since (a deploy by hand, a branch made to look into something): nothing is
+  reset or moved, the record is dropped with one push, and the run goes on from
+  what the checkout holds, with its usual refusals. If the daemon does not
+  answer there, the owner is told on the Mac.
+- The checkout is not moved, and one `deployFailed` push per reason and commit
+  says why, when it is on another branch, has local changes to tracked
+  files (untracked files do not count) or has a commit the main line lacks: the
+  edit or commit is someone's, not the job's to move or undo.
+- The pushes reach the architect through `POST /api/wake` (section 8). One the
+  daemon did not take is kept in the job's state file, and sent first at the
+  next run. A fetch that still fails after three tries ten seconds apart, and a
+  failure of the job itself, are pushed once with `version` null. Each kind of
+  standing problem (the fetch, a refusal, a rollback that did not finish, the
+  job itself) is remembered separately and forgotten by a run that ends with
+  nothing wrong, so a problem that returns is news again and two that come and
+  go in turn are not pushed every time.
+  The state file, `~/Library/Application Support/wf-board/deploy.json`, is
+  outside the board's data directory, which only the daemon writes; one that
+  does not parse is set aside as `deploy.json.corrupt` and the job starts empty.
+
+Known limit: if a reset itself fails (a stale `index.lock`) and someone then
+repairs the board in place by hand, or launchd restarts the daemon, before the
+next run, finishing the rollback can leave a half deploy: the daemon runs the
+target's code while the checkout and the page are back on the last healthy
+commit. The failure push is the signal; the architect checks the checkout and
+the daemon by hand. Recording the daemon's process id in the pending record
+would close it; that was judged not worth the added recovery logic.
+
+**Why a job beside the daemon.** The daemon cannot restart itself onto new code
+and also answer for whether that code runs; a deploy that fails must not depend
+on the new code to go back. If the job's own script is what breaks, a deploy
+is by hand (`AGENTS.md`, Deploy).
 
 **Write cost.** The live board (about 1,500 items, 600 cards, 750 notes and
 14,000 content writes in its history) cost 0.28–0.4 s of daemon CPU per
@@ -345,11 +430,28 @@ log:
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
   touch both items; later notes on deleted cards retain their last known
-  item. No extra board data file is stored. A disposable marker in git metadata
-  records the checked HEAD and first pause commit (or that none existed).
-  Unchanged history needs no pickaxe; fast-forwards scan only new commits.
-  Missing, corrupt or rewound cache state triggers one historical scan, so
-  clones and resumed items retain restart correctness. Historical pause reads
+  item. No extra board data file is stored. A start does not derive the index
+  from the whole history: a disposable startup cache in git's metadata
+  directory (`wf-board-startup-cache.json`) holds the whole index as of one
+  commit, with where each card last was and the item projections the pause
+  replay continues from (none while no commit had set a pause). A start reads
+  it and replays only the commits after it, with the same code that scans the
+  history, so its time grows with the commits since the cache, not with the
+  history. The cache is trusted only when it has exactly the current format
+  (every field of the index present and none unknown: a field added to the
+  index must be added to the cache, and does not compile until it is), is of a
+  commit the head descends from, and, when it is of the head itself, agrees
+  with the documents on whether a pause was ever set. Otherwise (missing,
+  damaged, another version, a history rewound or gone another way) the start
+  scans the whole history, as the first start after this cache was introduced
+  does, and writes the cache at once, so clones and resumed items retain
+  restart correctness. A start that only replayed commits leaves the write to
+  the timer; afterwards a commit schedules a write at most every two minutes.
+  The daemon writes none at shutdown, which must fit the time launchd gives.
+  Deleting the file forces a scan on the next start. The cache carries what
+  the live updates derived; a scan re-derives it from the commits alone.
+  Changing what the cache holds, or how the replay derives it, changes
+  `STARTUP_CACHE_VERSION`; the next start is then a scan. Historical pause reads
   extract only project, record, pause and owned-target metadata rather than
   validating against today's write schema. Unreadable blobs are logged and
   skipped; unknown fields and malformed plan entries do not prevent startup.
@@ -846,7 +948,8 @@ item in the default tree.
 #### Checks
 
 The checks touching plans, replacing the dependency and completion-condition
-checks:
+checks. A cancelled item, and each card of one, shows none of them; the
+write-time refusals in the last column still apply to it:
 
 | Check | Refused when newly introduced |
 |---|---|
@@ -1662,7 +1765,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Six kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eight kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1673,7 +1776,10 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), and one whose checks all passed and which can merge
-  (`pr-ready`).
+  (`pr-ready`);
+- a deploy result, from the deploy job (section 4, Deploying): `deployed` when
+  the checkout moved and the board is healthy on it, `deployFailed` when a
+  deploy did not happen. The job asks through `POST /api/wake` (below).
 
 Not pushed: a new request, a blocking card (the owner is told on the Mac and in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -1688,6 +1794,15 @@ whole number, and 403 unless the `Host` header is `127.0.0.1:<port>` or
 command-line client sends no `Origin`. A `session` parameter, which the earlier
 per-project filter took, is ignored.
 
+**Pushing from outside.** The deploy job runs in its own process, so it cannot
+call `push`; it posts `{event, ...fields}` to `POST /api/wake` and gets `{n}`
+back. Only a kind the table marks `external` is taken (`deployed` and
+`deployFailed`); the board's own kinds are not, whatever fields come with them.
+Another kind, a field set that is not exactly the kind's, a body that is not a
+JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
+Host and Origin rules are those of every other write, so only a program on this
+machine can ask.
+
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all
 the forms the server sends:
@@ -1700,6 +1815,8 @@ the forms the server sends:
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
+| `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
+| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -2349,24 +2466,6 @@ the board.
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
 
-### Difficulty migration
-
-`npm run migrate:difficulty -- --data DIR [--apply]` moves the temporary
-difficulties that plan rows carried in their text into the field. It runs
-offline, with the daemon stopped or on a copy, and without `--apply` only
-prints the report. For each open work item it reads the rows still to do (todo
-or doing): when they all name one level, as 「（难度 N）」 with N in 1–5 or
-「（架构师做）」, it sets the field, removes the marker from every row of the
-item, and logs the rating and the removed markers, all items in one commit.
-Items it will not guess about are listed for a person: unfinished rows naming
-different levels, a wording other than those two (「（难度按设计再评）」, or a noted
-「（架构师做，含走查）」), only finished rows naming a level, a field that
-disagrees with the rows. Closed items keep their row texts. The report also
-lists every row of open work that mentions 难度 or 架构师做 yet matches no rule,
-so a miss shows before `--apply`, and counts the open work that stays unrated
-and will raise 缺难度. A second run migrates nothing. The CLI, its
-module and its tests are deleted after the run on the live board.
-
 ## 11. Testing
 
 - Unit tests for the rules module, the file format round trip, `rev`
@@ -2392,6 +2491,8 @@ module and its tests are deleted after the run on the live board.
 - CI on GitHub-hosted runners for each pull request push and each main-line
   merge; the write-path benchmark runs by hand, as a workflow that reports and
   never fails the run.
+- A private-content check on every pull request and every push to a branch
+  (below), in its own workflow.
 
 ### Three test layers
 
@@ -2478,3 +2579,56 @@ the bug. A fix is reversed by undoing its commit's hunks, or, where later
 work rewrote the lines around it, by a targeted edit that removes just the
 fix. A witness whose edits no longer match the current file fails and is
 updated or retired on purpose.
+
+### Private content check
+
+The repository is public, so what a commit adds stays visible in its history.
+`scripts/check-private-content.ts` (rules in `scripts/private-content-rules.ts`,
+workflow `.github/workflows/private-content.yml`) fails a push to any branch or
+a pull request that adds one of these kinds of thing:
+
+- an address in a private IPv4 range (RFC 1918, or 100.64/10, which
+  carrier-grade NAT and Tailscale use), a user's home directory other than a
+  placeholder or the CI runner's, an SSH key file or option, a private key
+  block, a token in a known format (GitHub, Anthropic and OpenAI `sk-`, AWS,
+  Slack), a secret assigned as a quoted literal, a path under the home
+  directory with a key, token, secret, credential or password word in it, a
+  link to the old board page;
+- a path under a directory named `scratch` or `.scratch`, a `.bak` file, an
+  environment file (`.env`, but not a template such as `.env.example`).
+
+It reads only what the change adds: the added lines of the diff between the
+base and the head, the added or changed paths, the messages of the commits in
+the range and, for a pull request, its title and body. It reads the net
+change of the range, which is what a squash merge lands; pull requests are
+merged by squash, so a value added and removed again inside one pull request
+does not reach `main`. What the history already holds is not read again, and
+author lines are not read (an author address carries the machine's host name,
+which is not private). It prints the rule and the place, never the matched
+text, because the log of a public repository is public; for the same reason it
+reads the pull request's title and body from the event file, not from
+environment variables, which the runner prints. An edit to a pull request's
+title, body or base branch runs the check again. A push to a branch is public
+at once, so the check also runs on every push; it can only report after the
+push, not prevent it. A line that must hold such a value on purpose, a fixture,
+carries the text `private-content: allow` and is skipped; the marker shows in
+review. `test/check-private-content.test.ts` holds, for every rule, a line it
+must flag and a line it must let through, with the shapes real values take.
+
+The rules are general and carry none of the owner's real values. The check
+runs in a public repository, so a list of real values (an address, a user
+name, a key file name) kept in the workflow would sit in the repository, and
+one kept in a secret could not be shown in the log; kinds of thing (any
+private address, any home directory) are public by nature. The cost is a miss
+for a private value that fits no kind, such as a host name, a person's name,
+an address outside the ranges above (link-local, IPv6 local), or an `sk-`
+string with no digit in it, which review still has to catch. The `sk-` rule
+asks for a digit because real keys (`sk-ant-api03-...`, `sk-proj-...`) carry
+digits and hyphenated words such as `sk-assessment-for-the-board-process-document`
+carry none; without the digit the rule would flag ordinary prose. Alternative:
+a secret list of real values for exact matches (`PRIVATE_EXTRA`); left out
+because it needs a secret kept current and nothing has needed it.
+Alternative: `.gitignore` entries for the working directories; left out
+because the list never ends (a new temporary directory tomorrow) and the
+check catches the path wherever it sits. The check is not a
+required status check; requiring it is a repository setting the owner decides.
