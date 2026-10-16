@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, architect, asArchitect, later } from "./helpers.ts";
@@ -613,6 +613,33 @@ test("historical comparison omits only fields a migration retired; raw history k
   const current = store.snapshot().items.work!;
   await assert.rejects(store.commit({ author: "P", message: "Write a retired field", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, short: "W" } }] }),
     /Unrecognized key: "short"/);
+});
+
+test("historical comparison omits retired fields from an old version already in the plan shape", async t => {
+  const { dir } = await board(t);
+  const git = promisify(execFile);
+  const run = async (...args: string[]) => (await git("git", args, { cwd: dir })).stdout.trim();
+  const commit = async (message: string) => {
+    await run("add", ".");
+    await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  // A version in the current shape (items with plans, no `migrated` on a project) that still holds the retired fields.
+  const current = parse(await readFile(join(dir, "board.yaml"), "utf8")) as { projects: Array<Record<string, unknown>> };
+  const work = { title: "Work", group: "Firn", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
+  await writeFile(join(dir, "board.yaml"), stringify({ ...current, projects: current.projects.map(p => p.name === "Firn" ? { ...p, agents: ["p-session"] } : p) }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session" }));
+  const held = await commit("Hold retired fields");
+  await writeFile(join(dir, "board.yaml"), stringify(current));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, rev: 2 }));
+  await commit("Drop retired fields");
+  const reopened = await Store.open(dir);
+  const past = await reopened.comparisonSnapshot(held);
+  assert.deepEqual(past.board, reopened.snapshot().board, "the version's board is the current one without the project's agents");
+  assert.equal(past.items.work!.title, "Work");
+  for (const key of ["short", "agent"]) assert.ok(!Object.hasOwn(past.items.work!, key));
+  // Raw history still holds them as written.
+  assert.deepEqual(await reopened.show("item", "work", held), { ...work, short: "W", agent: "p-session" });
 });
 
 test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {

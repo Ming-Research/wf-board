@@ -2164,10 +2164,9 @@ both tools, the marker in the item schema, the inbox rules and the page's inbox
 are removed. Items in older commits can still hold the marker. Past commits
 are read as written (`show`, `diff`), and `comparisonSnapshot`, which
 validates a past commit's whole board with the current schema, drops the
-marker first, and also the fields that data migrations removed (see the plan
-conversion section), and no other unknown field. Live data holding a marker
-is refused at start with the schema's own error, so nothing is read and
-silently discarded.
+marker, together with the other retired fields listed in the plan conversion
+section, and no other unknown field. Live data holding a marker is refused at
+start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
@@ -2341,17 +2340,14 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
-Older versions can also hold fields that a later data-repository migration
-commit removed from every item or project: an item's area short name (`short`) and session
-(`agent`), and a project's session names (`agents`). Normalizing a historical
-whole board omits exactly these named fields before the strict old-shape
-schema reads it, so the history and diffs of those versions stay readable;
-the diff text still shows them as written. A change confined to one of
-these fields therefore shows in raw history, diffs and unread steps between
-old versions (which compare documents as written), but not in a summary
-built from normalized versions. Any other unknown field still
-refuses the old version instead of being dropped, and current reads and
-writes stay strict.
+Older versions can also hold fields that no schema accepts any more: an
+item's area short name (`short`) and session (`agent`) and a project's session
+names (`agents`), which data-repository migration commits removed, and the
+removed inbox's `request` marker on an item. Normalizing a historical whole
+board omits exactly these named fields, in every shape, before the schema for
+that shape reads it, so those versions stay comparable. `show` and `diff` still
+return them as written. Any other unknown field still refuses the old version
+instead of being dropped, and current reads and writes stay strict.
 
 **Phase 1 mapping, item by item.**
 
