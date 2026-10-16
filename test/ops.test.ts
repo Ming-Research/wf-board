@@ -238,6 +238,24 @@ test("project creation accepts any author and repo updates require the project o
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
+test("a project's mainline is set, kept when only the repo changes, cleared by null, and changed only by that project or Architect", async t => {
+  const { store, op, dir } = await board(t), project = () => store.snapshot().board.projects[0]!;
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: "claude/first-board" });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Ming-Research/Whitefoot", mainline: "claude/first-board" });
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Next" });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Org/Next", mainline: "claude/first-board" }, "a repo change keeps the mainline");
+  await op.updateProject({ ...asArchitect, name: "Whitefoot", mainline: "trunk" });
+  assert.equal(project().mainline, "trunk");
+  const before = store.snapshot();
+  await assert.rejects(op.updateProject({ author: "Firn", name: "Whitefoot", mainline: "other" }), /only that project or Architect with session 架构师 may update its mainline/);
+  await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: "has space" }), /whitespace/);
+  await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot" }), /provide repo, mainline or after/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: null });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Org/Next" }, "null clears it");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
 test("Architect reorders and creates projects after an existing project in one commit, while omitted after preserves defaults", async t => {
   const { store, op, dir } = await board(t);
   const names = () => store.snapshot().board.projects.map(p => p.name);
@@ -1108,6 +1126,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     closeNote: () => op.closeNote({ author: retired, id: "note-1", log: "Handled" }),
     createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass", priority: "P1" }),
     appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),
+    markMerged: () => op.markMerged({ author: retired, id: "a", row: "work", merged: [], log: "Merged" }),
     journalEntry: () => op.journalEntry({ author: retired, text: "Entry" }),
     dispatchStart: () => op.dispatchStart({ author: retired, id: "a", role: "工程师", level: 1, model: "Haiku", agent: "worker", agentId: "agent-0001" }),
     dispatchFinish: () => op.dispatchFinish({ author: retired, id: "a", agentId: "agent-0001", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 0, reports: 0, kickbacks: 0 }),
@@ -1117,6 +1136,8 @@ test("every write under the retired author 总管 is refused and changes nothing
     setStatus: () => op.setStatus({ author: retired, id: "b", status: "cancelled", log: "Drop" }),
     setTags: () => op.setTags({ author: retired, id: "a", tags: ["健全性"] }),
     setTagsMany: () => op.setTagsMany({ author: retired, items: [{ id: "a", tags: ["健全性"] }] }),
+    setDifficulty: () => op.setDifficulty({ author: retired, id: "a", difficulty: 2, reason: "Rated" }),
+    setDifficultyMany: () => op.setDifficultyMany({ author: retired, items: [{ id: "a", difficulty: 2, reason: "Rated" }] }),
     setTag: () => op.setTag({ author: retired, name: "新标签", meaning: "测试用" }),
     renameTag: () => op.renameTag({ author: retired, name: "健全性", to: "改名" }),
     removeTag: () => op.removeTag({ author: retired, name: "健全性" }),

@@ -8,7 +8,7 @@ import { NUMBERING_MESSAGE } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
-import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail } from "./rules.ts";
+import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail, withoutFirstRating } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
@@ -33,7 +33,8 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
     const { plan: _plan, steps: _steps, targets: _targets, ...rest } = withoutHistoricalDetail(item as Item & { steps?: unknown });
     return rest;
   };
-  const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";
+  const [ownerBefore, ownerAfter] = withoutFirstRating(before as Item | null, after as Item | null);
+  const other = describeChanges(withoutProgress(ownerBefore), withoutProgress(ownerAfter), "item") !== "metadata changed";
   return { progress, reply: 0, other: other ? 1 : 0 };
 }
 
@@ -43,7 +44,8 @@ function ownerSummary(before: unknown, after: unknown, kind: DocKind): string {
     if (kind !== "item" || doc === null) return doc;
     return withoutHistoricalDetail(doc as Item);
   };
-  return describeChanges(omitLog(before), omitLog(after), kind);
+  const [ownerBefore, ownerAfter] = kind === "item" ? withoutFirstRating(before as Item | null, after as Item | null) : [before, after];
+  return describeChanges(omitLog(ownerBefore), omitLog(ownerAfter), kind);
 }
 const hasPieces = (pieces: Pieces) => pieces.progress + pieces.reply + pieces.other > 0;
 
