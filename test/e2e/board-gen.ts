@@ -224,8 +224,9 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const multiPlanCard = newCard(home, "open", true);
   const doneHome = pickItem(x => !x.record && !x.status && x.leafKind === "done");
   const donePlanCard = newCard(doneHome, "ruled", false, true);
-  // Its row names a long pick: the option has no name, so the row shows the first line of its detail.
+  // Its row names a long pick: the option has no name, so the row shows the first line of its detail, as on the real board.
   if (!donePlanCard.old) convert(donePlanCard, "背景：渲染器在旧格式数据上出错。");
+  donePlanCard.options[0]!.detail += "此外还要核对每个旧格式数据在参照实现里的输出是否逐字节相同，并把差异逐条列出来写进评审记录，再交给另一位同事复核。";
   const otherHome = pickItem(x => open(x) && x.group === p1);
   const otherPlanCard = newCard(otherHome, "open");
   const record = order.find(x => x.record)!;
