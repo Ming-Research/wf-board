@@ -1148,7 +1148,7 @@ item and card writes retain the normal project ownership checks.
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
-| `update_project(name, repo?, after?)` | Sets or changes a project’s repository or its place in the page order | Repository: author is that project or the coordinator project `总管`; order: only `总管` |
+| `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or the coordinator project `总管`; the main line has no whitespace; order: only `总管` |
 | `create_request(project, key, title, head, accept, why, priority?, from?, after?, tags?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it; tags as for `create_item`, applicable to the receiving project |
 | `triage_request(id, owner?, after?, priority?, log)` | Accepts a request: with `owner`, the owner's plan in the request's project gains an owned row for it (usually the item collecting the filing project's needs); without, it stays a top item | Author is the request's project; same-project owner; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
@@ -1476,20 +1476,23 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Three kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Six kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
-- the timed wake, every 30 minutes.
+- the timed wake, every 30 minutes;
+- what the look at GitHub finds (Watching GitHub, below): a main line whose
+  checks failed (`main-red`), a pull request an open item names whose checks
+  failed (`pr-red`), and one whose checks all passed and which can merge
+  (`pr-ready`).
 
 Not pushed: a new request, a blocking card (the owner is told on the Mac, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: CI or the main line red, a ready pull request with
-green checks and a pull request on no open item (wf-board item watch-github),
-and a slow board operation (item slow-op-alerts).
+table and one row below: a pull request on no open item (wf-board item
+watch-github, its second row) and a slow board operation (item slow-op-alerts).
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1508,6 +1511,9 @@ the forms the server sends:
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
+| `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
+| `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
+| `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -1564,12 +1570,62 @@ Monitor once channels allow it, without changing the server. Until then the
 architect runs a small client under Monitor, which lasts 30 minutes at most and
 is started again: the numbers and `after` carry it across the gap.
 
+### Watching GitHub
+
+The board looks at GitHub itself and does with the answer what the architect
+would otherwise do by hand on each round: it tells the architect when a pull
+request can merge or the checks went red, and it marks the merge row of a
+merged pull request done (`src/watch.ts`, `src/github.ts`).
+
+**The look.** At the daemon's start and then every five minutes (every session
+on the owner's account shares GitHub's quota, so not oftener), the daemon asks
+`gh api graphql`, signed in as the owner, one question per configured
+repository: the newest commit of the main line with its check roll-up, the open
+pull requests (newest 100) with draft state, base branch, newest commit,
+mergeability and check roll-up, and, by number, the pull requests the open items'
+merge rows name, in any state. A repository that fails, has more open pull
+requests than one look reads, or lacks its configured main line branch is
+reported by `/health` (`github.problems`) and logged once; the other
+repositories go on. `GithubSource` (`src/github.ts`) is the interface the
+tests replace.
+
+**Which pull requests.** Those the 改动 section of an open item names: the text
+from its `## 改动` heading to the next `##` heading of an item's head
+(`### Repo#N` subsections inside it belong to it). A pull request is written as
+`Owner/Repo#N`, `Repo#N` (a repository a project configures, unique by name) or its
+URL; a text that names a repository no project configures names no pull request
+the board watches. Pull requests named elsewhere (logs, links, other sections)
+are not watched.
+
+**The three pushes.** All are about non-draft pull requests; a draft's checks
+are the engineer's. `pr-red`: the roll-up state is failure (some check failed,
+whatever else is still running). `pr-ready`: the roll-up state is success, so
+every check passed, and GitHub reports the pull request mergeable (not
+conflicting; still being computed counts as not yet). A pull request without any
+check is never ready. `main-red`: the roll-up of the main line's newest commit is
+failure. A push is made once per key: `main-red` per branch and commit, `pr-red`
+and `pr-ready` per pull request and newest commit. The keys of the events still
+kept are read again at start, so a restart neither repeats a push nor loses one
+(an event the log dropped may be told once more).
+
+**Merge rows.** A merge row is a step of an open item that is not done, not
+dropped, not an acceptance step, says 合入 and names the pull request in the
+forms above. When GitHub reports the pull request merged, the board marks the
+row done, as the item's project and session 看板, and appends a log entry naming
+the pull request and the merge time. A row that also says more (a deployment)
+is marked as a whole, so a merge row says only the merge. A write that fails is
+tried at the next look.
+
 ## 9. Project responsibility
 
 Responsibility belongs to the project, the existing `group` page heading;
 there is no extra item layer. `board.projects` contains unique project names
 and an optional repository identifier such as `Ming-Research/Halo-wf`:
-`{name, repo?}`. Identity is the project itself. Each project has a responsible
+`{name, repo?, mainline?}`. `mainline` names the branch merges land on when it
+is not the repository's default branch (wf-board's is `claude/first-board`,
+its default branch `main` holds only the first commit); the GitHub watch reads
+the checks of that branch, or of the default branch when `mainline` is absent.
+Identity is the project itself. Each project has a responsible
 agent session started in its repository; several sessions may share that
 responsibility and coordinate among themselves. Sessions may be renamed
 freely, so no session names are recorded. This model supersedes per-project
@@ -1585,12 +1641,13 @@ The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
 when appending the project last. Its optional `after` names an existing
 project to place the new project immediately after; only `总管` may supply it.
-`update_project(author, name, repo?, after?)` sets or changes a repository: a project
-may change its own repo, and the coordinator project `总管` may change any
-project’s repo. Only `总管` may set `after` to move a project immediately
+`update_project(author, name, repo?, mainline?, after?)` sets or changes a repository
+or main line branch (`mainline: null` clears the branch): a project may change
+its own repo and mainline, and the coordinator project `总管` may change any
+project’s. Only `总管` may set `after` to move a project immediately
 after another configured project; omitting it preserves the current order.
 An unknown `after` or moving a project after itself is refused. An order-only
-update needs no `repo`. Ordering is defined in `src/rules.ts`.
+update needs no `repo` or `mainline`. Ordering is defined in `src/rules.ts`.
 Each call combines repository and ordering changes in one data
 commit. Both run in the same operations queue as item writes, including
 prospective board checks.

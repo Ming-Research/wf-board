@@ -236,6 +236,8 @@ export type Note = z.infer<typeof Note>;
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
+  /** The branch merges land on when it is not the repository's default branch; the GitHub watch reads its checks. */
+  mainline: z.string().regex(/^\S+$/, "a branch name has no whitespace").optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
 

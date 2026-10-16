@@ -12,6 +12,9 @@ export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"] },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"] },
   timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect"] },
+  "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url"] },
+  "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"] },
+  "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"] },
 } as const satisfies Record<string, { label: string; fields: readonly string[] }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */

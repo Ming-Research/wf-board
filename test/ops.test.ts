@@ -238,6 +238,24 @@ test("project creation accepts any author and repo updates require the project o
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
+test("a project's mainline is set, kept when only the repo changes, cleared by null, and changed only by that project or 总管", async t => {
+  const { store, op, dir } = await board(t), project = () => store.snapshot().board.projects[0]!;
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: "claude/first-board" });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Ming-Research/Whitefoot", mainline: "claude/first-board" });
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Next" });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Org/Next", mainline: "claude/first-board" }, "a repo change keeps the mainline");
+  await op.updateProject({ author: "总管", name: "Whitefoot", mainline: "trunk" });
+  assert.equal(project().mainline, "trunk");
+  const before = store.snapshot();
+  await assert.rejects(op.updateProject({ author: "Firn", name: "Whitefoot", mainline: "other" }), /only that project or 总管 may update its repo or mainline/);
+  await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: "has space" }), /whitespace/);
+  await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot" }), /provide repo, mainline or after/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: null });
+  assert.deepEqual(project(), { name: "Whitefoot", repo: "Org/Next" }, "null clears it");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
+
 test("总管 reorders and creates projects after an existing project in one commit, while omitted after preserves defaults", async t => {
   const { store, op, dir } = await board(t);
   const names = () => store.snapshot().board.projects.map(p => p.name);

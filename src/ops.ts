@@ -12,7 +12,7 @@ export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }> }
 export interface Ops {
   createProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  updateProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
+  updateProject(a: { author: string; session?: string; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
   createRequest(a: { author: string; session?: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
   triageRequest(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
@@ -393,9 +393,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.repo !== undefined && a.author !== a.name && a.author !== "总管") throw new OpError(`project ${a.name}: only that project or 总管 may update its repo`);
-      if (a.repo === undefined && a.after === undefined) throw new OpError("repo: provide repo or after");
-      const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }) } : p);
+      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && a.author !== "总管") throw new OpError(`project ${a.name}: only that project or 总管 may update its repo or mainline`);
+      if (a.repo === undefined && a.mainline === undefined && a.after === undefined) throw new OpError("repo: provide repo, mainline or after");
+      // `mainline: null` clears the branch, so the repository's default branch counts again.
+      const { mainline: current, ...rest } = project, mainline = a.mainline === undefined ? current : a.mainline ?? undefined;
+      const changed = { ...rest, ...(a.repo === undefined ? {} : { repo: a.repo }), ...(mainline === undefined ? {} : { mainline }) };
+      const projects = s.board.projects.map(p => p.name === a.name ? changed : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
     }),
     createRequest: a => run(a, (s, at) => {

@@ -283,22 +283,31 @@ function documentText(s: Snapshot, kind: Kind, id: string): string {
   }
   return text.join("\n");
 }
-/** Repositories the board links to (github.com/Ming-Research/<repo>), lowercased: the names a `Repo#N` or `Repo #N` reference may use. */
+/** Repositories the board knows, lowercased: the configured projects' and those its items link to (github.com/Ming-Research/<repo>).
+ * These are the names a `Repo#N` or `Repo #N` reference may use. */
 export function knownRepos(s: Snapshot): Set<string> {
   const out = new Set<string>(), urls: string[] = [];
+  for (const project of s.board.projects) if (project.repo) out.add(project.repo.split("/").pop()!.toLowerCase());
   for (const it of Object.values(s.items)) urls.push(...it.links.map(l => l.url), it.ask?.url ?? "");
   for (const url of urls) { const m = /github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)/i.exec(url); if (m) out.add(m[1]!.toLowerCase()); }
   return out;
 }
-/** PR references in prose. A name before `#N` counts as a repository only when the board links to that repository, so "see #341" stays unknown. */
+/** A PR a text names. `owner` is set only when the text wrote it: `Owner/Repo#N` or a pull request URL. */
+export interface PrRef { repo: string; number: number; owner?: string }
+/** PR references in prose. A bare name before `#N` counts as a repository only when the board knows that repository, so "see #341" stays unknown.
+ * `Owner/Repo#N` and a pull request URL name the repository themselves. */
 export function references(text: string, repos: Set<string>) {
-  const qualified: Array<{ repo: string; number: number }> = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
-  const patterns = [/https?:\/\/github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi, /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi];
+  const qualified: PrRef[] = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
+  const patterns = [
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])()([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+  ];
   for (const [i, pattern] of patterns.entries()) for (const match of text.matchAll(pattern)) {
-    const repo = match[1]!, number = Number(match[2]);
-    if (i === 1 && !repos.has(repo.toLowerCase())) continue;
+    const owner = match[1]!, repo = match[2]!, number = Number(match[3]);
+    if (i === 2 && !repos.has(repo.toLowerCase())) continue;
     ranges.push([match.index, match.index + match[0].length]);
-    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push({ repo, number });
+    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(owner ? { repo, number, owner } : { repo, number });
   }
   for (const match of text.matchAll(/#(\d+)\b/g)) if (!ranges.some(([a, b]) => match.index >= a && match.index < b) && !unknown.includes(Number(match[1]))) unknown.push(Number(match[1]));
   return { qualified, unknown };
@@ -307,7 +316,8 @@ export function prs(s: Snapshot, r: Rules, repo: string, number: number) {
   const qualified: Row[] = [], unknown: Row[] = [], repos = knownRepos(s);
   for (const kind of ["item", "card", "note"] as const) for (const id of Object.keys(kind === "item" ? s.items : kind === "card" ? s.decisions : s.notes)) {
     const refs = references(documentText(s, kind, id), repos);
-    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(row(s, r, kind, id));
+    // The tool's repository is a name under Ming-Research: a reference written with another owner is another repository's PR.
+    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number && (p.owner === undefined || p.owner.toLowerCase() === "ming-research"))) qualified.push(row(s, r, kind, id));
     if (refs.unknown.includes(number)) unknown.push(row(s, r, kind, id));
   }
   return { qualified, unknown };
