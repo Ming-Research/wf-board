@@ -15,7 +15,9 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   const survey: Record<string,number>={parents:0,topItems:0,closed:0,closedTop:0,archived:0,stepsItems:0,sharedItemDeps:0,crossProjectDeps:0,sameProjectDeps:0,cardDeps:0,unlistedChildren:0,ownWorkSubitems:0,openMissingAcceptance:0,closedMissingAcceptance:0,wipWithoutDoing:0,ruleChanges:0};
   const inc=(key:string,n=1)=>survey[key]=(survey[key]??0)+n;
   check(equal(keys(old.items),keys(next.items)),"item ids changed");
-  for(const collection of ["decisions","notes","notices","glossaries"] as const)check(equal(old[collection],next[collection]),`${collection} changed`);
+  for(const collection of ["decisions","notes","glossaries"] as const)check(equal(old[collection],next[collection]),`${collection} changed`);
+  // Notices are no longer a document kind; a legacy board's pass through the conversion untouched, and the next start retires them.
+  check(equal(old.notices,(next as unknown as {notices?:unknown}).notices),"notices changed");
   check(equal({...old.board,projects:old.board.projects.map(({migrated:_m,...project})=>project)},next.board),"board changed beyond retired migration switch");
   check(Board.safeParse(next.board).success,"new board schema invalid");
   const {archived:_oldArchives,...oldOwner}=old.owner;
@@ -26,7 +28,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   for(const [id,source] of Object.entries(old.items)) {
     const target=next.items[id];if(!target)continue;
     check(Item.safeParse(target).success,`${id}: new item schema invalid`);
-    const sourceFields=Object.fromEntries(Object.entries(source).filter(([key])=>!["parent","deps","steps","status","priority","head","group","log"].includes(key)));
+    const sourceFields=Object.fromEntries(Object.entries(source).filter(([key])=>!["parent","deps","steps","status","priority","request","head","group","log"].includes(key)));
     const targetFields=Object.fromEntries(Object.entries(target).filter(([key])=>!["plan","status","priority","head","group","log","provisional"].includes(key)));
     check(equal(sourceFields,targetFields),`${id}: preserved item fields changed`);
     check(target.group===before.groupOf(id),`${id}: project changed`);

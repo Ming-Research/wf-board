@@ -1,9 +1,16 @@
-import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL } from "../src/rules.ts";
+import { tagApplies, difficultyText } from "../src/model.ts";
+import { agentRows } from "../src/agents.ts";
+import type { AgentRow } from "../src/agents.ts";
+import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
+import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
+import { showNotice } from "./notice.ts";
+import type { OwnerNotice, NoticeEnv } from "./notice.ts";
+import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Notice, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -15,7 +22,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
+  // Keeps the parsed activity times across snapshots, so each new Rules object reads them without rescanning every log.
+  const activityCache = new DerivedCache();
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
@@ -63,17 +72,39 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const draftKey = (target:string,kind:DraftKind) => target + "|" + kind;
   const drafts: Record<string, string> = {};
   let notesOpen: Record<string, boolean> = {};
+  // Open 参考 sections, keyed by item and section title, so a re-render keeps what the reader opened.
+  let refOpen: Record<string, boolean> = {};
+  try { refOpen = JSON.parse(localStorage.getItem("board-refs") || "{}") || {}; } catch (e) { refOpen = {}; }
+  document.addEventListener("toggle", ev => {
+    const d = ev.target;
+    if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("refsec")) return;
+    refOpen[d.dataset.ref!] = d.open;
+    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}
+  }, true);
   try { notesOpen = JSON.parse(localStorage.getItem("board-notes") || "{}") || {}; } catch (e) { notesOpen = {}; }
   // Closed decisions show under their item only when opened from its chip, or while they carry new replies.
   let ruledOpen: Record<string, boolean> = {};
   try { ruledOpen = JSON.parse(localStorage.getItem("board-ruled") || "{}") || {}; } catch (e) { ruledOpen = {}; }
   function saveRuled() { try { localStorage.setItem("board-ruled", JSON.stringify(ruledOpen)); } catch (e) {} }
-  // A card its own item's plan names unfolds inline under that plan row; collapsed until opened, remembered per card.
+  // A card any item's plan names unfolds inline under that plan row of the shown item; collapsed until opened, remembered
+  // per card, so it is the same card wherever it unfolds.
   let inlineOpen: Record<string, boolean> = {};
   try { inlineOpen = JSON.parse(localStorage.getItem("board-inline-cards") || "{}") || {}; } catch (e) { inlineOpen = {}; }
   function saveInline() { try { localStorage.setItem("board-inline-cards", JSON.stringify(inlineOpen)); } catch (e) {} }
-  function inPlan(d: Decision & { id: string }) { return !!index().byId.get(d.item)?.plan.some(row => "card" in row && row.card === d.id); }
-  function inlineShown(d: Decision & { id: string }) { return inPlan(d) && !!inlineOpen[d.id]; }
+  function cardRowOf(item: string, card: string) { return index().byId.get(item)?.plan.find(row => "card" in row && row.card === card); }
+  // Whether the card's own item's plan names it, so its item shows it under that row instead of at the bottom.
+  function inPlan(d: Decision & { id: string }) { return !!cardRowOf(d.item, d.id); }
+  // The item whose plan the card unfolds under: the shown item when its plan names the card, else the card's own item
+  // when its plan does. A card no item holds stays in the list at the bottom.
+  function inlineHost(id: string) {
+    const d = snapshot.decisions[id];
+    if (!d || !snapshot.items[d.item]) return null;
+    if (selectedItem && cardRowOf(selectedItem, id)) return selectedItem;
+    return cardRowOf(d.item, id) ? d.item : null;
+  }
+  function inlineShown(d: Decision & { id: string }) { return inlineHost(d.id) !== null && !!inlineOpen[d.id]; }
+  // The item a card is reached in: the shown item when the card unfolds in its plan, else the card's own item.
+  function cardPlace(id: string) { const host = inlineHost(id); return host === selectedItem && host ? host : snapshot.decisions[id]?.item || null; }
   function planRowId(item: string, row: string) { return "plan-" + encodeURIComponent(JSON.stringify([item, row])); }
   function ruledShown(d: ViewDecision) { return Object.prototype.hasOwnProperty.call(ruledOpen, d.id) ? !!ruledOpen[d.id] : cardFresh(d); }
   let manual: Record<string, boolean> = {};
@@ -126,8 +157,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A **label**: written mid-paragraph after a sentence end starts its own paragraph, so a section label still reads as a subheading.
     return String(src == null ? "" : src).replace(/\r/g, "").replace(/([。；！？.!?])[ \t]*(\*\*[^*\n]{1,16}\*\*[ \t]*[：:])/g, "$1\n\n$2").split("\n");
   }
-  function blocks(src: unknown) {
+  // With a scope (an item's head) its 参考 sections fold shut, each under its title; the scope keeps each one's open state.
+  function blocks(src: unknown, scope?: string) {
     const lines = textLines(src);
+    if (scope === undefined) return plainBlocks(lines);
+    const [head = [], ...refs] = refSplit(lines), at = scope;
+    return plainBlocks(head) + refs.map(r => refSection(r, at)).join("");
+  }
+  function refSection(lines: string[], scope: string) {
+    const [title = "", ...body] = lines, key = scope + "\n" + title;
+    return '<details class="refsec"' + (refOpen[key] ? " open" : "") + ' data-ref="' + esc(key) + '"><summary>' + inline(title) + '</summary><div class="refbody">' + plainBlocks(body) + "</div></details>";
+  }
+  function plainBlocks(lines: string[]) {
     const out: string[] = [];
     let para: string[] = [], list: {tag:string;items:Array<{text:string}>} | null = null, code: string[] | null = null, codeInfo = "";
     const flushPara = () => {
@@ -183,7 +224,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
 
   // Rendering indexes adapt the shared rules' ids into page view objects.
   let memo: Record<string, unknown> = {};
-  function invalidate() { memo = {}; derived = rules(snapshot); }
+  function invalidate() { memo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
   function index() {
     return cached("index", () => {
@@ -208,8 +249,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function openWorkAncestors() {
     return cached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
   }
-  // Closed owners remain a path to open work, including through other closed owners.
-  function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id); }
+  // Closed owners remain a path to open work, including through other closed owners. A done or cancelled item also
+  // shows, dimmed, while it or anything under it holds content the owner has not read (owner, 2026-10-14), so n and the
+  // new-content counts only reach rows on screen and the news of a completion is not lost; once read, it hides again.
+  function freshPath() {
+    return cached("freshPath", () => new Set(allFreshStops().filter(st => st.kinds.some(fon) && st.item && index().byId.has(st.item)).flatMap(st => [st.item!, ...derived.ancestors(st.item!)])));
+  }
+  function shownForFresh(it: ViewItem) { return ended(it) && !openWorkAncestors().has(it.id) && freshPath().has(it.id); }
+  function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id) || freshPath().has(it.id); }
   function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
@@ -289,9 +336,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Each project group has its own filters, under its heading. They narrow its tree to the matching items, with the
   // path to each kept, dimmed: any number of status filters (a match on any of them), and one dependency filter on top.
   // Closed nodes show under their status filters or as a path to open work; their plan rows always show.
-  let filters: Record<string, {status:string[];dep:string}> = {};
+  let filters: Record<string, {status:string[];dep:string;tags?:string[]}> = {};
   try { filters = JSON.parse(localStorage.getItem("board-filters2") || "{}") || {}; } catch (e) {}
-  function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k))} : { status: [], dep: "" }; }
+  function groupFilter(g: string) { const f=filters[g || ""]; return f ? {...f,status:f.status.filter(k => STATUS_FILTERS.some(([key]) => key === k)),tags:(f.tags ?? []).filter(t => (snapshot.board.tags ?? []).some(v => v.name === t))} : { status: [], dep: "", tags: [] as string[] }; }
   const WEEK = 7 * 24 * 3600 * 1000;
   type Filter = [string,string,string,(it:ViewItem)=>boolean];
   const STATUS_FILTERS: Filter[] = [
@@ -308,13 +355,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ["cross", "跨项目依赖", "只看依赖或被依赖跨了项目的条目", it => !ended(it) && (openDeps(it).some(d => groupOf(d) !== groupOf(it)) || openWaiters(it).some(w => groupOf(w) !== groupOf(it)))],
     ["check", "需核对", "只看状态和依赖对不上、或依赖写错的条目", it => checksOf(it).length > 0]
   ];
-  function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep; }
+  function filtering(g: string) { const f = groupFilter(g); return f.status.length > 0 || !!f.dep || f.tags.length > 0; }
   function anyFiltering() { return Object.keys(filters).some(filtering); }
   function matches(it: ViewItem) {
     const f = groupFilter(groupOf(it));
     const st = f.status.length ? STATUS_FILTERS.some(([k, , , fn]) => f.status.includes(k) && fn(it)) : !ended(it);
     const d = DEP_FILTERS.find(x => x[0] === f.dep);
-    return st && (!d || d[3](it));
+    return st && (!d || d[3](it)) && (!f.tags.length || f.tags.some(t => it.tags?.includes(t)));
   }
   function filterMatches() {
     return cached("filterMatch", () => {
@@ -329,8 +376,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && f![3](it)).length; }
   function passes(it: ViewItem) { return filtering(groupOf(it)) ? filterMatches().keep.has(it.id) : visible(it); }
   function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
-  function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep }; saveFilters(); }
-  function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key }; saveFilters(); }
+  function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep, tags: f.tags }; saveFilters(); }
+  // Tag filters keep items carrying any selected tag.
+  function toggleTagFilter(g: string, name: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep, tags: f.tags.includes(name) ? f.tags.filter(t => t !== name) : f.tags.concat(name) }; saveFilters(); }
+  function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key, tags: f.tags }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); }
   // The filter row under a project heading: the status filters with their counts in that project, then the dependency ones it has.
   function filterRow(g: string) {
@@ -344,6 +393,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     DEP_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(DEP_FILTERS, key, g), on = f.dep === key;
       if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
+    });
+    (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
+      const n = state.items.filter(it => groupOf(it) === g && it.tags?.includes(t.name)).length, on = f.tags.includes(t.name);
+      if (n || on) { const b = btn(on, esc(t.name) + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
     });
     if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
     return row;
@@ -367,7 +420,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const roots=derived.areas().map(id => index().byId.get(id)!);
     const groups=[...new Set([...snapshot.board.projects.map(g => g.name),...roots.map(groupOf)])];
     for (const group of groups) {
-      walk(derived.inbox(group).map(id => index().byId.get(id)!));
       const items=roots.filter(it => groupOf(it) === group);
       walk([...items.filter(it => !neededElsewhere(it)),...items.filter(neededElsewhere)]);
     }
@@ -406,7 +458,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // that card's comments; what the page does not place comes last, in commit order. Closed items remain stops even
   // while their tree nodes are hidden. A document read leaves it unread in history.
   function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
-  function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon))); }
+  // n and every new-content count follow the left tree as shown: a stop counts only when its item, and every item above
+  // it, passes the project's filters; unfiltered, every item holding new content is shown (see visible).
+  function treeShown(id: string) { const it = index().byId.get(id); return !!it && passes(it) && ancestors(it).every(passes); }
+  function freshStops() { return cached("freshStops", () => allFreshStops().filter(st => st.kinds.some(fon) && (!st.item || !index().byId.has(st.item) || treeShown(st.item)))); }
   // The stops indexed once per data change, so n, the chips and the blue lines look a stop up instead of passing over
   // every stop for each key press, item and card: each stop's place and the next one by page position (freshIndex), the
   // first stop that is part of each item or card (touching), and the first stop in each item's subtree (under).
@@ -471,6 +526,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const active=() => navigation === freshNavigation && valid();
     const retry=new Set(failedDiffs);
     clearCurrent();
+    // A card the shown item's plan names is reached there, unfolded under its row, rather than in the card's own item.
+    if (target.card && selectedItem && inlineHost(target.card) === selectedItem) target={...target,item:selectedItem};
     const it=target.item && index().byId.get(target.item);
     if (it) {
       if (!ended(it) && !passes(it)) clearFilters(groupOf(it));
@@ -481,7 +538,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const d=index().decById.get(target.card);
       if (d && d.status !== "open") { ruledOpen[d.id]=true; saveRuled(); }
       // A card its item's plan names is reached unfolded under its plan row.
-      if (d && inPlan(d) && !inlineOpen[d.id]) { inlineOpen[d.id]=true; saveInline(); }
+      if (d && it && inlineHost(d.id) === it.id && !inlineOpen[d.id]) { inlineOpen[d.id]=true; saveInline(); }
     }
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
@@ -539,19 +596,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // chip of its own. A click opens the first new place there, in page order.
   function freshChip(key: string, n: number, own: boolean) {
     const id = key.startsWith("it:") ? key.slice(3) : null;
-    const first = id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
+    // Read when clicked: an incremental repaint elsewhere can move the stops this chip was drawn against.
+    const firstNow = () => id ? freshIndex().under.get(id) : freshIndex().touching.get(key);
+    const first = firstNow();
     const c = el("span", "newtag freshchip", String(Math.max(1, n)));
     c.title = own ? "这一条有新内容" + (n > 1 ? "，下面的子条目还有 " + (n - 1) + " 条" : "") + "；点一下到第一处，n 走到下一处，m 把这一条标为已阅（子条目不动）"
       : "这一条本身没有新内容，下面的子条目有 " + n + " 条；点一下到第一处，在子条目上按 m";
     c.title=Math.max(1,n)+" 处新内容；"+c.title; c.setAttribute("aria-label",c.title);
     if (first !== undefined) {
       c.setAttribute("role", "button"); c.tabIndex = 0;
-      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goFresh(first); };
+      const go = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); const now = firstNow(); if (now !== undefined) goFresh(now); };
       c.addEventListener("click", go);
       c.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
     }
     return c;
   }
+  // Clicks per purple or red number, kept across repaints, so repeated clicks walk the stops it counts.
+  const chipClicks = new Map<string, number>();
   function shownFresh() { const k = shownStop === null ? undefined : allFreshIndex().position.get(shownStop); return k === undefined ? null : allFreshStops()[k]!; }
   function selectedDocument() {
     // Deleted documents have no selectable body, but n still exposes their logical stop before the displayed item.
@@ -623,8 +684,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
+  // When the owner selected another item since n last landed (a click in the tree), n starts from that item: the
+  // first stop at or below its row, and its reverse the last stop above it (owner, 2026-10-14).
+  function selectionRow() {
+    if (!selectedItem) return null;
+    const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
+    if (landed === selectedItem) return null;
+    const row = boardOrder().findIndex(it => it.id === selectedItem);
+    return row < 0 ? null : row;
+  }
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
+    const row = selectionRow();
+    if (row !== null) { const k = all.findIndex(st => st.at[0]! >= row && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh(k < 0 ? 0 : k); return; }
     const at = shownPlace();
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
@@ -638,6 +710,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
+    const row = selectionRow();
+    if (row !== null) { let k = -1; all.forEach((st, i) => { if (st.at[0]! < row) k = i; }); goFresh(k < 0 ? all.length - 1 : k); return; }
     const at = shownPlace();
     if (at >= 0) { goFresh(at - 1); return; }
     const before = shownAt ? freshIndex().before(shownAt) : -1;
@@ -726,7 +800,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = hit && (hit.closest<HTMLElement>(".card") || hit.closest<HTMLElement>(".item"));
     if (box && box.id.startsWith("q-")) return "q:" + box.id.slice(2);
     if (box && box.id.startsWith("it-")) return "it:" + box.id.slice(3);
-    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { const r = e.getBoundingClientRect(); return r.top >= list.origin() && r.top < list.origin() + list.height(); });
+    const first = [...document.querySelectorAll<HTMLElement>(".item, .card")].find(e => { if (e.closest("#agents")) return false; const r = e.getBoundingClientRect(); return r.top >= list.origin() && r.top < list.origin() + list.height(); });
     if (!first) return null;
     return first.id.startsWith("q-") ? "q:" + first.id.slice(2) : "it:" + first.id.slice(3);
   }
@@ -792,14 +866,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Left and right arrows step through what waits for the owner (requests and open cards), from the selection.
   function stepStop(dir: number) {
-    const all = stops();
+    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
+    const all = stops().filter(st => !st.item || treeShown(st.item));
     if (!all.length) return;
     const key = containerOf(effectiveSelection());
-    let k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
-    if (k >= 0) { goStop(k + dir); return; }
-    const pos = (st: {id:string;item:string|null}) => { const e = get(st.id) || (st.item ? get("it-" + st.item) : null); return e ? e.getBoundingClientRect().top : Infinity; };
-    if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
-    else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
+    const k = key ? all.findIndex(st => key === "q:" + st.id.slice(2) && st.id.startsWith("q-") || (st.item && key === "it:" + st.item && st.id.startsWith("ask-"))) : -1;
+    if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
+    // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
+    // last stop above it, wrapping around at the list's ends.
+    const order = new Map<string, number>(); boardOrder().forEach((it, i) => { if (!order.has(it.id)) order.set(it.id, i); });
+    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const row = home && order.has(home) ? order.get(home)! : -1;
+    const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
+    let n = -1;
+    if (dir > 0) n = all.findIndex(st => at(st) >= row);
+    else all.forEach((st, i) => { if (at(st) < row) n = i; });
+    const pick = all[n >= 0 ? n : dir > 0 ? 0 : all.length - 1]!;
+    goStop(stops().findIndex(st => st.id === pick.id));
   }
   const ACTIONS = [
     { key: "j", show: "j / k", label: "选中下一个 / 上一个条目（不展开）", run: () => { moveFocus(1); return true; } },
@@ -858,6 +941,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Sub-items start folded; owner toggles and navigation open their path.
   // Under a dependency filter, the items above a match open unless the owner folded them.
   function isOpen(it: ViewItem) { return filtering(groupOf(it)) && !(it.id in manual) ? filterMatches().anc.has(it.id) : !!manual[it.id]; }
+  // The agent list draws item rows with itemNode too, under a mount: the row ids start with the mount's prefix instead of the
+  // tree's 「it-」, and each mount keeps its own fold state, so one item folds on its own in the list and in the tree, and
+  // every lookup of a tree row by id still finds only the tree's. A mount is set only while the list is being drawn.
+  interface Mount { prefix: string }
+  let mount: Mount | null = null;
+  let agentOpen: Record<string, boolean> = {};
+  try { agentOpen = JSON.parse(localStorage.getItem("board-agent-open") || "{}") || {}; } catch (e) { agentOpen = {}; }
+  function saveAgentOpen() { try { localStorage.setItem("board-agent-open", JSON.stringify(agentOpen)); } catch (e) {} }
+  function rowOpen(m: Mount | null, it: ViewItem) { return m ? !!agentOpen[m.prefix + it.id] : isOpen(it); }
+  function setRowOpen(m: Mount | null, it: ViewItem, open: boolean) {
+    if (m) { agentOpen[m.prefix + it.id] = open; saveAgentOpen(); renderNow("agents"); }
+    else { manual[it.id] = open; saveManual(); renderNow("tree:" + it.id); }
+  }
 
   // Scrolling glides for at most about a third of a second however far it goes: a long trip jumps most of the way
   // and eases over the last screenful, so the motion still shows the direction without dragging.
@@ -940,7 +1036,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const name=typeof id === "string" ? id : id.id, e=typeof id === "string" ? get(id) : id;
     const box=e?.closest<HTMLElement>(".card, .item");
     const card=name.startsWith("q-") ? name.slice(2) : box?.id.startsWith("q-") ? box.id.slice(2) : undefined;
-    const item=name.startsWith("detail-it-") ? name.slice(10) : name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? snapshot.decisions[card]?.item || null : box?.id.startsWith("detail-it-") ? box.id.slice(10) : box?.id.startsWith("it-") ? box.id.slice(3) : null;
+    const item=name.startsWith("detail-it-") ? name.slice(10) : name.startsWith("it-") ? name.slice(3) : name.startsWith("ask-") ? name.slice(4) : card ? cardPlace(card) : box?.id.startsWith("detail-it-") ? box.id.slice(10) : box?.id.startsWith("it-") ? box.id.slice(3) : null;
     const note=e?.dataset.sel?.startsWith("note:") ? e.dataset.sel.slice(5) : undefined;
     if (item || card || note) { void navigate({id:name,item,card,note,selection:e?.dataset.sel,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
     if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
@@ -955,12 +1051,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function reveal(id: string) { jump("it-" + id); }
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
   const backStack: Array<{key:string|null;y:number}> = [];
-  function remember() {
-    backStack.push({ key: targetOnScreen(), y: listScroller().position() });
+  // `fromList`: the reader leaves the agent list at the top of the page, so Back returns to the scroll position, not to an item below.
+  function remember(fromList = false) {
+    backStack.push({ key: fromList ? null : targetOnScreen(), y: listScroller().position() });
     if (backStack.length > 50) backStack.shift();
   }
-  function follow(id: string) {
-    remember();
+  function follow(id: string, fromList = false) {
+    remember(fromList);
     reveal(id);
     renderBack();
   }
@@ -999,7 +1096,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = b.key && boxOfKey(b.key);
     if (b.key) {
       const container=containerOf(b.key), card=container?.startsWith("q:") ? container.slice(2) : undefined;
-      const item=container?.startsWith("it:") ? container.slice(3) : card ? snapshot.decisions[card]?.item || null : null;
+      const item=container?.startsWith("it:") ? container.slice(3) : card ? cardPlace(card) : null;
       const note=b.key.startsWith("note:") ? b.key.slice(5) : undefined;
       if (item || card || note) {
         const id=note ? noteElementId(note) : card ? "q-"+card : "it-"+item;
@@ -1157,8 +1254,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let editingAnchor: Note["anchor"] | null = null;
   function openComment(key: string, anchor?: Note["anchor"] | null) {
     if (key.startsWith("it:")) { openPath(key.slice(3)); selectItem(key.slice(3)); }
-    else if (key.startsWith("q:")) { const id=snapshot.decisions[key.slice(2)]?.item; if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
+    else if (key.startsWith("q:")) { const id=cardPlace(key.slice(2)); if (id && snapshot.items[id]) { openPath(id); selectItem(id); } }
     editing = key; editingAnchor = anchor || null;
+    // Writing a comment shows the list it joins, so the saved draft and its send button are in view.
+    notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
     renderNow("notes:"+key);
     const ta = get<HTMLTextAreaElement>("ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_"));
     if (ta) { ta.focus(); ta.scrollIntoView({ block: "center" }); }
@@ -1388,7 +1487,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         save.disabled = true;
         try {
           await createNote(Object.assign({ target: key, text: text, kind: "comment" as const }, editingAnchor ? { anchor: editingAnchor } : {}));
-          drafts[key] = ""; editing = null; editingAnchor = null; renderNow("notes:"+key);
+          drafts[key] = ""; editing = null; editingAnchor = null;
+          notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
+          renderNow("notes:"+key);
         } catch (e) { save.disabled = false; save.textContent = "保存"; }
       });
       cancel.addEventListener("click", () => { editing = null; editingAnchor = null; renderNow("notes:"+key); });
@@ -1465,7 +1566,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const nav = get("nav");
     nav.remove(); // Keep the project links and their element while rebuilding the summary around them.
     sum.innerHTML = "";
-    // One concern per row: owner waits, unread notices, new-content navigation and filters, then tools and links.
+    // One concern per row: owner waits, new-content navigation and filters, then tools and links.
     const waitingRow = el("div", "header-row header-wait"); waitingRow.id = "wait-row";
     const acts = el("div", "sum-row"), unreadRow = el("div", "sum-row"), view = el("div", "sum-row"), stats = el("div", "sum-stats");
     unreadRow.id = "unread-row"; view.id = "tools-row";
@@ -1513,7 +1614,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       state.notes.forEach(n => { if (n.target) notesOpen[n.target] = false; });
       try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}
       ruledOpen = {}; state.decisions.forEach(d => { if (d.status !== "open") ruledOpen[d.id] = false; }); saveRuled();
-      renderNow("areas","cards","detail");
+      agentOpen = {}; saveAgentOpen();
+      renderNow("areas","cards","detail","agents");
     });
     view.appendChild(fold);
     // Opens every top-level item so the items under it show, each one folded: the first level and nothing deeper.
@@ -1533,9 +1635,115 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (acts.children.length) waitingRow.appendChild(acts);
     const panel = waitPanel(); if (panel) waitingRow.appendChild(panel);
     if (waitingRow.children.length) sum.appendChild(waitingRow);
-    const known = noticePanel(); if (known) sum.appendChild(known);
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
+  }
+  // The agent list: one row per session that wrote to the board lately, with the two items it touched last (src/agents.ts,
+  // docs/design.md "Agent list"). Everything shown is what sessions declared by writing; nothing is observed, and the
+  // state word is inferred, so every row carries how long ago the session wrote.
+  let agentsOpen = true;
+  try { agentsOpen = localStorage.getItem("board-agents") !== "closed"; } catch (e) {}
+  // What the list was last painted from: a repaint with the same inputs is skipped, so a write elsewhere leaves it alone.
+  let agentsSignature = "";
+  function agoText(iso: string) {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000)), hours = Math.floor(minutes / 60), rest = minutes % 60;
+    return hours ? hours + " 小时" + (rest ? " " + rest + " 分钟" : "") + "前" : minutes ? minutes + " 分钟前" : "不到 1 分钟前";
+  }
+  function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now())); }
+  // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
+  function agentLevel(r: AgentRow) { return r.level === undefined ? "" : (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
+  const AGENT_STATE_TITLES: Record<string, string> = {
+    working: "它有进行中的行，30 分钟内写过看板。这是从写看板推出来的，不是看到它在干活",
+    "maybe-stopped": "它有进行中的行，超过 30 分钟没写看板，也没写在等什么。可能停了，也可能在读代码或等 CI",
+  };
+  function agentState(r: AgentRow) {
+    if (r.state === "none") return null;
+    const text = r.state === "waiting" ? "在等：" + inline(r.waits) : r.state === "working" ? "干活" : "可能停了";
+    const chip = el("span", "agent-state " + r.state + (r.amber ? " amber" : ""), text);
+    chip.title = r.state === "waiting"
+      ? "它在进行中的行上写了在等什么，这句话是代理自己写的，不按时间判断" + (r.amber ? "。已经超过 1 小时没写：空闲约一小时的会话会被 Claude Code 停掉，这可能是已经停了的等待" : "")
+      : AGENT_STATE_TITLES[r.state]!;
+    return chip;
+  }
+  // The tree draws an ended item only while something open hangs on it, so only then is there a row to jump to.
+  function inTree(it: ViewItem) { return visible(it) && ancestors(it).every(visible); }
+  // An item can sit in several rows, so each row's elements carry the row's own id prefix; none starts with 「it-」, which is the
+  // tree's. The name is written so that two names never share a prefix: every character but a letter, digit or hyphen becomes
+  // its code point in hex between underscores.
+  function agentMount(name: string) { return "ag-" + [...name].map(c => /[A-Za-z0-9-]/.test(c) ? c : "_" + c.codePointAt(0)!.toString(16) + "_").join("") + "--"; }
+  function agentItem(r: AgentRow, t: AgentTouch, it: ViewItem) {
+    const st = statusOf(it) ?? "record", li = el("li", "agitem"), m: Mount = { prefix: agentMount(r.name) };
+    // A cell and the item row an unfolded parent draws for the same item must not share an id.
+    li.id = m.prefix + "cell-" + it.id;
+    const row = el("div", "agitem-row"), sub = kids(it.id, true).filter(passes), open = rowOpen(m, it) && sub.length > 0;
+    // The arrow unfolds the sub-items under the cell, as the tree's arrow does; the list's folds are its own.
+    const caret = el("button", "agitem-caret", sub.length ? open ? "▾" : "▸" : "");
+    caret.type = "button"; caret.disabled = !sub.length;
+    caret.setAttribute("aria-expanded", String(open)); caret.setAttribute("aria-label", open ? "收起子条目" : "展开子条目");
+    caret.addEventListener("click", ev => { ev.stopPropagation(); setRowOpen(m, it, !open); });
+    row.appendChild(caret);
+    row.appendChild(el("span", "agitem-st", statusChip(it, st)));
+    const title = el("button", "agitem-title", inline(it.title));
+    title.type = "button"; title.title = plain(it.title);
+    title.addEventListener("click", ev => { ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id)); });
+    row.appendChild(title);
+    if (inTree(it)) {
+      const link = el("button", "agitem-tree", "在树中");
+      link.type = "button"; link.title = "在下面的项目树里找到它，接着展开它周围的条目；顶上的「返回」回到这里";
+      link.addEventListener("click", ev => { ev.stopPropagation(); follow(it.id, true); });
+      row.appendChild(link);
+    }
+    row.appendChild(el("span", "agitem-time", agoText(t.at)));
+    li.appendChild(row);
+    if (open) {
+      const ul = el("ul", "tree");
+      mount = m;
+      try { sub.forEach(k => ul.appendChild(itemNode(k))); } finally { mount = null; }
+      li.appendChild(ul);
+    }
+    return li;
+  }
+  function agentRow(r: AgentRow) {
+    const box = el("li", "agent");
+    box.dataset.agent = r.name;
+    const head = el("div", "agent-head");
+    head.appendChild(el("span", "agent-name", esc(r.name)));
+    const level = agentLevel(r);
+    if (level) head.appendChild(el("span", "tagchip diffchip", esc(level))).title = r.role ? "起这个会话时定的等级（派活记录）" : "它最近碰过的、有进行中的行的条目的难度";
+    const state = agentState(r); if (state) head.appendChild(state);
+    head.appendChild(el("span", "agent-ago", agoText(r.lastAt) + (r.lastKind === "started" ? "起" : "写过"))).title = r.lastKind === "started" ? "派活记录里的开始时间；它还没写过看板" : "它最近一次写看板的时间";
+    box.appendChild(head);
+    const cells = el("ul", "agent-items");
+    for (const t of r.touched) { const it = index().byId.get(t.item); if (it) cells.appendChild(agentItem(r, t, it)); }
+    if (cells.children.length) box.appendChild(cells);
+    return box;
+  }
+  function renderAgents() {
+    const host = get("agents"); if (!host) return;
+    const rows = agentRowsNow();
+    // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
+    // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
+    const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
+      agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0];
+    const unfolded = (prefix: string, id: string): unknown => agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0;
+    const signature = JSON.stringify([agentsOpen, rows.map(r => [r.name, r.level, r.role, r.state, r.waits, r.amber, r.lastKind, agoText(r.lastAt), r.touched.map(t => {
+      const it = index().byId.get(t.item);
+      return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;
+    })])]);
+    if (signature === agentsSignature) return;
+    agentsSignature = signature;
+    host.hidden = !rows.length;
+    host.innerHTML = "";
+    if (!rows.length) return;
+    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length);
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(agentsOpen)); toggle.title = agentsOpen ? "收起代理列表" : "展开代理列表";
+    toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
+    host.appendChild(el("h2", "agents-head")).appendChild(toggle);
+    if (!agentsOpen) return;
+    host.appendChild(el("p", "agents-note", "最近 6 小时写过看板的会话，各带它最近碰过的 2 个条目。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    const list = el("ul", "agent-list");
+    rows.forEach(r => list.appendChild(agentRow(r)));
+    host.appendChild(list);
   }
   // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
   function waitPanel() {
@@ -1558,29 +1766,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (plainCards) box.appendChild(el("div", "waitmore", "另有 " + plainCards + " 张决策卡不挡工作"));
     return box;
   }
-  // Unread notices, newest first; marking one read hides it, and the section is gone when none is left.
-  function noticePanel() {
-    const list = Object.entries(snapshot.notices ?? {}).filter(([, n]) => !n.read).sort((a, b) => b[1].at.localeCompare(a[1].at) || a[0].localeCompare(b[0]));
-    if (!list.length) return null;
-    const box = el("div", "noticepanel"); box.id = "notices";
-    box.appendChild(el("div", "notice-head", "要你知道 " + list.length));
-    list.forEach(([id, n]) => {
-      const row = el("div", "notice"), text = el("span", "notice-text", inline(n.text));
-      row.appendChild(el("span", "where", esc(day(n.at)) + " · " + esc(n.author)));
-      row.appendChild(text);
-      if (n.item && snapshot.items[n.item]) { const go = el("button", "sbtn s-plain notice-item", "条目"); go.type = "button"; go.title = plain(snapshot.items[n.item]!.title); go.addEventListener("click", () => jumpTo("item", n.item!)); row.appendChild(go); }
-      const read = el("button", "sbtn s-plain notice-read", "已读"); read.type = "button";
-      read.addEventListener("click", async () => {
-        if (!connected) { showDisconnected(); return; }
-        read.disabled = true;
-        try { await api("/api/notice-read", { id }); } catch (e) { read.disabled = false; showError(e); }
-      });
-      row.appendChild(read);
-      box.appendChild(row);
-    });
-    return box;
-  }
-
   function planSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
     if (!it.plan.length) return null;
     const changed = new Set(before === undefined ? [] : changedItemPlan(before?.plan, it.plan).map(row => row.id));
@@ -1626,33 +1811,43 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         }
       } else {
         const card = snapshot.decisions[stored.card];
-        main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.blocks
-          ? '<span class="waittag" title="' + esc(card.blocks) + '">阻塞</span>'
-          : '<span class="asktag">决策卡</span>'));
-        const home = card && card.item === it.id ? index().decById.get(stored.card) : undefined;
+        main.appendChild(el("span", null, !card ? cardTag(stored.card, card) : card.status !== "open"
+          ? '<span class="closedtag">' + (card.ruling ? "已裁定" : "已结束") + '</span>'
+          : derived.cardBlocking(stored.card)
+            ? '<span class="waittag" title="' + esc(card.blocks || "") + '">阻塞</span>'
+            : '<span class="asktag">待裁定</span>'));
+        const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;
         if (home) {
-          // The card's own item: the question unfolds the whole card under this row instead of jumping to it.
+          // The question unfolds the whole card under this row instead of jumping to it, whichever item holds the card.
           const toggle = el("a", "plan-link cardtoggle", esc(plain(firstLine(card!.question)) || stored.card)); toggle.href = "#";
           toggle.setAttribute("aria-expanded", String(inlineShown(home)));
           toggle.title = inlineShown(home) ? "收起这张决策卡" : "展开这张决策卡";
-          toggle.addEventListener("click", ev => {
+          const flip = (ev: Event) => {
             ev.preventDefault(); ev.stopPropagation();
             inlineOpen[home.id] = !inlineShown(home); saveInline();
             toggle.setAttribute("aria-expanded", String(inlineOpen[home.id])); toggle.title = inlineOpen[home.id] ? "收起这张决策卡" : "展开这张决策卡";
             // Opening selects the card, so c and m act on it; closing leaves the reader where it was.
             if (inlineOpen[home.id]) jump("q-" + home.id); else renderNow("card:" + home.id);
-          });
+          };
+          toggle.addEventListener("click", flip);
+          // The whole row folds and unfolds the card, so a click beside a wrapped question still acts; links and buttons
+          // inside the row keep their own action.
+          row.classList.add("cardrow");
+          row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) flip(ev); });
           main.appendChild(toggle);
         } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);
       return row;
     };
-    // An unfolded card of this item follows its row.
-    const appendRow = (parent: HTMLElement, value: typeof rows[number]) => {
-      parent.appendChild(renderRow(value));
+    // An unfolded card follows the first row naming it in the shown item's plan.
+    const appendRow = (outer: HTMLElement, value: typeof rows[number]) => {
       const stored = value.row, d = "card" in stored ? index().decById.get(stored.card) : undefined;
-      if (d && d.item === it.id && inlineShown(d)) parent.appendChild(decisionCard(d));
+      // A card row is one tinted box: the row with its card unfolded inside it, so the title shows once.
+      const parent = d && inlineHost(d.id) !== null ? el("div", "cardbox") : outer;
+      parent.appendChild(renderRow(value));
+      if (d && inlineHost(d.id) === it.id && cardRowOf(it.id, d.id)?.id === stored.id && inlineShown(d)) parent.appendChild(decisionCard(d));
+      if (parent !== outer) outer.appendChild(parent);
     };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
@@ -1670,21 +1865,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return box;
   }
   function pauseControl(it: ViewItem) {
-    // A completed source may still pause open work below an owned record.
-    // Its existing marker can be cleared; closed work can never gain one.
+    // Read-only: the reason a paused item shows, with its source when inherited. Nothing renders otherwise, so an
+    // unpaused item has no empty row under its title.
     if (it.record || ended(it) && !it.paused) return null;
-    const box = el("div", "pause-control");
     const source = derived.pausedBy(it.id), pause = source ? snapshot.items[source]?.paused : undefined;
-    if (pause) {
-      const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
-      if (source !== it.id) {
-        reason.appendChild(document.createTextNode(" · 由「"));
-        const ancestor = index().byId.get(source!);
-        if (ancestor) reason.appendChild(depLink(ancestor));
-        reason.appendChild(document.createTextNode("」暂停"));
-      }
-      box.appendChild(reason);
+    if (!pause) return null;
+    const box = el("div", "pause-control");
+    const reason = el("span", "pause-reason", "暂停：" + esc(pause.reason));
+    if (source !== it.id) {
+      reason.appendChild(document.createTextNode(" · 由「"));
+      const ancestor = index().byId.get(source!);
+      if (ancestor) reason.appendChild(depLink(ancestor));
+      reason.appendChild(document.createTextNode("」暂停"));
     }
+    box.appendChild(reason);
     return box;
   }
   function itemComments(it: ViewItem) {
@@ -1798,20 +1992,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return null;
   }
   function itemNode(it: ViewItem, headerOnly = false, boxOnly = false, detail = false) {
-    const retained=groupReuse?.items.get(it.id);
+    const m = mount;
+    const retained=m ? undefined : groupReuse?.items.get(it.id);
     if (retained && !groupReuse!.dirtyItems.has(it.id) && !headerOnly && !boxOnly && !detail) return retained;
     const li = el("li");
     // Filters open sub-item paths; the body renders only as the selected item's detail.
-    const open = isOpen(it), bodyOpen = detail;
+    const open = rowOpen(m, it), bodyOpen = detail;
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
     const st = statusOf(it) ?? "record";
     const context = filtering(groupOf(it)) ? !filterMatches().hit.has(it.id) : !detail && ended(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (context ? " ctx" : ""));
-    box.id = (detail ? "detail-it-" : "it-") + it.id;
+    box.id = detail ? "detail-it-" + it.id : (m ? m.prefix : "") + "it-" + it.id;
+    if (!detail && shownForFresh(it)) box.classList.add("fresh-ended");
     if (detail) box.dataset.sel = "it:"+it.id;
-    if (!detail && selectedItem === it.id) box.classList.add("selected");
-    if (current === "it:" + it.id) box.classList.add("cur");
+    // The selection and the current mark show in the tree only.
+    if (!detail && !m && selectedItem === it.id) box.classList.add("selected");
+    if (!m && current === "it:" + it.id) box.classList.add("cur");
     const sub = kids(it.id,true).filter(passes);
     const ck = checksOf(it);
 
@@ -1826,6 +2023,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const pr = priorityOf(it);
     head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     if (it.plan.length) {
       const ratio = derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
@@ -1844,10 +2042,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (!count) continue;
       const chip = el("span", cls, String(count));
       chip.title = count + " " + label; chip.setAttribute("aria-label", chip.title); head.appendChild(chip);
-      const first = stops().findIndex(st => !!st.item && (st.item === it.id || derived.ancestors(st.item).includes(it.id)) && blockingStop(st) === wanted);
-      if (first >= 0) {
+      // The stops this number counts: the item's own and those of the items it owns, read when clicked so a re-render
+      // elsewhere cannot leave the chip pointing at a stale position. Each click goes to the next of them, then around.
+      const reachable = () => {
+        const sub = new Set<string>(), walk = (v: string) => { if (sub.has(v)) return; sub.add(v); derived.children(v).forEach(walk); };
+        walk(it.id);
+        return stops().map((st, k) => ({ st, k })).filter(({ st }) => !!st.item && sub.has(st.item) && blockingStop(st) === wanted).map(({ k }) => k);
+      };
+      if (reachable().length) {
         chip.setAttribute("role","button"); chip.tabIndex=0;
-        const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); goStop(first); };
+        const go=(ev: Event) => { ev.stopPropagation(); ev.preventDefault(); const ks = reachable(), at = chipClicks.get(cls+it.id) ?? 0; if (ks.length) { chipClicks.set(cls+it.id, at + 1); goStop(ks[at % ks.length]!); } };
         chip.addEventListener("click",go); chip.addEventListener("keydown",ev => { if (ev.key === "Enter" || ev.key === " ") go(ev); });
       }
     }
@@ -1857,20 +2061,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A head click selects the item whose detail is displayed.
     head.addEventListener("click", ev => {
       ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id));
-      get("it-"+it.id)?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
+      (m ? box : get("it-"+it.id))?.querySelector<HTMLElement>(".item-head")?.focus({preventScroll:true});
     });
     // The row is the head alone: the actions live in the shortcut menu (☰) and its keys.
     const row = el("div", "item-row" + (!detail ? " tree-row" : ""));
     const caret=el("button","caret",sub.length ? open ? "▾" : "▸" : "");
     caret.type="button"; caret.disabled=!sub.length;
     caret.setAttribute("aria-expanded",String(open)); caret.setAttribute("aria-label",open ? "收起子条目" : "展开子条目");
-    caret.addEventListener("click", ev => { ev.stopPropagation(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id); });
+    caret.addEventListener("click", ev => { ev.stopPropagation(); setRowOpen(m, it, !open); });
     row.appendChild(caret);
     row.addEventListener("click", () => { selectItem(it.id); setCurrent(itemBox(it.id)); });
     // A double-click on a tree row folds or unfolds its sub-items, as the caret does; a single click only selects.
     if (!detail && sub.length) row.addEventListener("dblclick", ev => {
       if ((ev.target as HTMLElement).closest?.("button.caret, a, [role=button]")) return;
-      getSelection()?.removeAllRanges?.(); manual[it.id]=!open; saveManual(); renderNow("tree:"+it.id);
+      getSelection()?.removeAllRanges?.(); setRowOpen(m, it, !open);
     });
     row.appendChild(head);
     // A parent counts its leaves by status at the right of its row; cancelled ones are left out.
@@ -1887,6 +2091,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
+    // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
+    if (detail && (it.tags?.length || it.difficulty !== undefined)) {
+      const chips = el("div", "tagchips item-tags");
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有架构师能改";
+      for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
+      box.appendChild(chips);
+    }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
@@ -1895,7 +2106,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const targets = targetsSection(it, before); if (targets) body.appendChild(targets);
       const plan = planSection(it, before, terms); if (plan) body.appendChild(plan);
       // Progress first, then the stable head, then the owner's comments on it, then the log.
-      if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it)),terms)));
+      if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it),"it:" + it.id),terms)));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
       if (ws.length) {
@@ -1922,10 +2133,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const ul = el("ul", "tree");
       sub.forEach(k => ul.appendChild(itemNode(k)));
       li.appendChild(ul);
-    }
-    if (derived.isRequest(it.id) && detail) {
-      const prefix = `${it.request!.by} 提出：`, first = it.log[0]?.text || "";
-      li.appendChild(el("div", "request-meta", esc(it.request!.by) + " · " + esc(day(it.request!.at)) + " · " + inline(first.startsWith(prefix) ? first.slice(prefix.length) : first)));
     }
     return li;
   }
@@ -1967,13 +2174,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const gh = el("h2", "group-head", inline(g.name || "其他"));
       box.appendChild(gh);
       if (!partial) { const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl); }
-      const requests = derived.inbox(g.name);
-      if (requests.length) {
-        const inbox = el("section", "inbox"); inbox.appendChild(el("h3", null, "收件箱 " + requests.length));
-        const rows = el("ul", "tree lines");
-        for (const id of requests) rows.appendChild(itemNode(index().byId.get(id)!));
-        inbox.appendChild(rows); box.appendChild(inbox);
-      }
       box.appendChild(filterRow(g.name));
       const shown = g.items.filter(passes);
       if (shown.length) {
@@ -2002,6 +2202,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const terms = itemTerms(d.item);
     const top = el("div", "card-top");
     const h = el("h3");
+    const inlined = inlineHost(d.id) !== null; // the plan row above carries the title and the status
+    if (inlined) c.classList.add("inlinecard");
     const closed = d.status !== "open";
     if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
     else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
@@ -2013,16 +2215,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A card counts toward its item's chip; only a card no item holds shows a chip of its own.
     if (cardFresh(d)) { if (!homeOf(d)) h.appendChild(freshChip("q:" + d.id, 1, true)); c.classList.add("fresh"); }
     const pc = pendingChip("q:" + d.id);
-    if (pc) h.appendChild(pc);
-    top.appendChild(h);
+    if (pc && !inlined) h.appendChild(pc);
+    if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);
     if (closed) {
       const x = el("button", "cbtn", "收起"); x.type = "button";
-      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); if (inPlan(d)) { inlineOpen[d.id] = false; saveInline(); } renderNow(homeOf(d) ? "item:"+d.item : "cards"); });
+      x.addEventListener("click", ev => { ev.stopPropagation(); ruledOpen[d.id] = false; saveRuled(); const host = inlineHost(d.id); if (host) { inlineOpen[d.id] = false; saveInline(); } renderNow(host ? "card:"+d.id : homeOf(d) ? "item:"+d.item : "cards"); });
       top.appendChild(x);
     }
-    c.appendChild(top);
+    if (top.children.length) c.appendChild(top);
     if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + linkTerms(markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || ""),terms) + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
     if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + linkTerms(markedBlocks(before?.background,d.background || ""),terms)));
+    derived.cardChecks(d.id).forEach(k => c.appendChild(el("div", "checks", "需核对：" + esc(k.text))));
     const chosen = choiceOf(d);
     if (d.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));
@@ -2092,7 +2295,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let waitingOrder:string[]=[];
   const renderWaiters:Array<() => void>=[];
   let rulePresentationDirty=true;
-  let presentations=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
+  // Items a live update may have changed (rules affectedItems); only these are signed again while nothing asks for all.
+  let presentationAffected:Set<string> | null=null;
+  let presentations=new Map<string,{signature:string;shown:boolean;group:string}>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
     let finished=false, raf:number | undefined;
@@ -2112,26 +2317,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function scopedHeads(id:string,scope:Set<string>) { scope.add("head:"+id); derived.ancestors(id).forEach(p => scope.add("head:"+p)); }
   // Compare with the last painted state once per frame, including transitive derived consumers.
   function presentationScopes(scope:Set<string>) {
-    if (!rulePresentationDirty) return;
-    rulePresentationDirty=false;
-    const next=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
-    for (const it of state.items) {
-      const id=it.id;
-      const label=(kind:string,key:string) => {
-        if (kind === "card") return [snapshot.decisions[key]?.question,snapshot.decisions[key]?.status,snapshot.decisions[key]?.blocks];
-        const owner=derived.parentOf(key);
-        return [snapshot.items[key]?.title,derived.groupOf(key),derived.statusOf(key),derived.priorityOf(key),owner,owner ? snapshot.items[owner]?.title : null,derived.planRatio(key)];
-      };
-      const deps=derived.depsOf(id).map(d => [d,...label(d.kind,d.id)]);
-      const waiters=derived.dependents(id).map(d => [d,...label("item",d.id)]);
-      const signature=JSON.stringify([derived.groupOf(id),derived.statusOf(id),derived.priorityOf(id),derived.checks(id),derived.stalledBelow(id),derived.pausedBy(id),snapshot.items[derived.pausedBy(id) || ""]?.paused,it.paused,deps,waiters,derived.planRows(id).map(row => [row, "text" in row.row ? derived.stepLine(row.row) : null, "item" in row.row && row.row.own ? derived.planRows(row.row.item).map(child => [child,"text" in child.row ? derived.stepLine(child.row) : "item" in child.row ? label("item",child.row.item) : label("card",child.row.card)]) : null])]);
-      const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
-      next.set(id,current);
-      if (!previous) continue;
-      if (previous.signature !== signature) scope.add("item:"+id);
-      if (previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
-    }
+    if (!rulePresentationDirty && !presentationAffected) return;
+    const all=rulePresentationDirty, only=presentationAffected;
+    rulePresentationDirty=false; presentationAffected=null;
+    const next=all ? new Map<string,{signature:string;shown:boolean;group:string}>() : new Map(presentations);
+    if (!all) for (const id of only!) if (!index().byId.has(id)) next.delete(id);
+    for (const it of all ? state.items : [...only!].flatMap(id => index().byId.get(id) ?? [])) signPresentation(it,next,scope);
     presentations=next;
+  }
+  function signPresentation(it:ViewItem,next:Map<string,{signature:string;shown:boolean;group:string}>,scope:Set<string>) {
+    const id=it.id;
+    const signature=presentationSignature(derived,snapshot.decisions,id);
+    const current={signature,shown:passes(it),group:groupOf(it)}, previous=presentations.get(id);
+    next.set(id,current);
+    if (!previous) return;
+    if (previous.signature !== signature) scope.add("item:"+id);
+    if (previous.shown !== current.shown) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
   }
   function scopeForDoc(kind:string,id:string,target?:string):string[] {
     return kind === "item" ? ["item:"+id] : kind === "decision" ? ["card:"+id] : target ? ["notes:"+target] : [];
@@ -2148,10 +2349,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (ask && nextAsk) ask.replaceWith(nextAsk); else if (ask) ask.remove(); else if (body && nextAsk) body.insertBefore(nextAsk,[...body.children].find(e => e.classList.contains("card")) || null);
   }
   function reconcileCard(id:string) {
-    const d=index().decById.get(id), old=get("q-"+id);
-    if (d && inPlan(d)) {
-      // An inline card lives right after its plan row, only while unfolded and its item's body is shown.
-      const row=bodyShown(d.item) ? get(planRowId(d.item,id)) : null, parent=row?.parentElement;
+    const d=index().decById.get(id), old=get("q-"+id), host=d ? inlineHost(id) : null;
+    if (d && host) {
+      // An inline card lives right after its plan row, only while unfolded and its host item's body is shown.
+      const planned=cardRowOf(host,id);
+      const row=bodyShown(host) && planned ? get(planRowId(host,planned.id)) : null, parent=row?.parentElement;
       const toggle=row?.querySelector<HTMLElement>(".cardtoggle");
       if (toggle) { toggle.setAttribute("aria-expanded",String(inlineShown(d))); toggle.title=inlineShown(d) ? "收起这张决策卡" : "展开这张决策卡"; }
       if (!row || !parent || !inlineShown(d)) old?.remove();
@@ -2221,6 +2423,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const heads=new Set<string>(), drawnCards=new Set<string>(), drawnItems=new Set<string>(), refs=new Set<string>();
       // Areas/groups paint hosted content; the cards scope paints only loose cards.
       const paintedHome=(home:string | null) => home ? home === selectedItem && detailPainted : scope.has("cards");
+      // A card unfolded in the shown item's plan is painted with that item, wherever its own item is.
+      const shownIn=(d:ViewDecision) => selectedItem && inlineHost(d.id) === selectedItem ? selectedItem : homeOf(d);
       for (const key of scope) {
         const kind=key.slice(0,key.indexOf(":")), id=key.slice(key.indexOf(":")+1);
         if (kind === "item" || kind === "tree") {
@@ -2238,12 +2442,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           if (it) { if (kind === "tree") heads.add(id); derived.ancestors(id).forEach(p => heads.add(p)); }
         } else if (kind === "card") {
-          const d=index().decById.get(id); if (d && !paintedHome(homeOf(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
+          const d=index().decById.get(id); if (d && !paintedHome(shownIn(d)) && !drawnCards.has(id)) { reconcileCard(id); drawnCards.add(id); }
           if (d) { heads.add(d.item); derived.ancestors(d.item).forEach(p => heads.add(p)); }
           if (d) refs.add(d.item);
         } else if (kind === "notes") {
           const card=id.startsWith("q:") ? id.slice(2) : null;
-          const d=card ? index().decById.get(card) : undefined, home=card ? d ? homeOf(d) : null : id.slice(3);
+          const d=card ? index().decById.get(card) : undefined, home=card ? d ? shownIn(d) : null : id.slice(3);
           if (!paintedHome(home) && !(card && drawnCards.has(card)) && !(id.startsWith("it:") && drawnItems.has(id.slice(3)))) { replaceNotes(id); if (card) drawnCards.add(card); }
           const item=id.startsWith("it:") ? id.slice(3) : snapshot.decisions[id.slice(2)]?.item;
           if (item) { heads.add(item); derived.ancestors(item).forEach(p => heads.add(p)); }
@@ -2286,7 +2490,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       waitingOrder=order;
       for (const root of [get("areas"),get("cards"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
-    renderHeader(); renderSend(); renderMenu();
+    renderHeader(); renderAgents(); renderSend(); renderMenu();
     get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
@@ -2400,8 +2604,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function showDisconnected() { get("server-banner").hidden = false; get("server-banner").textContent = DISCONNECTED; }
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
-  function applySnapshot(s: Snapshot) {
-    rulePresentationDirty=true;
+  /** `partial`: the caller names the items to sign again (presentationAffected) instead of all. */
+  function applySnapshot(s: Snapshot, partial = false) {
+    if (!partial) rulePresentationDirty=true;
     snapshot = s;
     for (const id of sentNotes) if (s.notes[id]?.state !== "draft") sentNotes.delete(id);
     for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
@@ -2514,11 +2719,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Blank lines delimit blocks, except inside a fenced code block. A contiguous list or table is one block.
   function proseBlocks(text: string): string[] {
     const out: string[] = [], block: string[] = [];
-    let fenced = false;
+    let fenced = false, inRef = false;
     const flush = () => { if (block.length) out.push(block.join("\n")); block.length = 0; };
     for (const line of text.replace(/\r/g, "").split("\n")) {
       if (/^\s*```/.test(line)) fenced = !fenced;
-      if (!line.trim() && !fenced) flush(); else block.push(line);
+      // A 参考 section is one block whatever blank lines it holds, so a change marks it as a whole.
+      if (!fenced && isRefTitle(line)) { flush(); inRef = true; }
+      if (!line.trim() && !fenced && !inRef) flush(); else block.push(line);
     }
     flush(); return out;
   }
@@ -2537,9 +2744,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     return out;
   }
-  function markedBlocks(before: string | undefined, after: string) {
-    if (before === undefined || before === after) return blocks(after);
-    return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value) + '</div>' : blocks(value)).join("");
+  function markedBlocks(before: string | undefined, after: string, scope?: string) {
+    if (before === undefined || before === after) return blocks(after, scope);
+    return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value, scope) + '</div>' : blocks(value, scope)).join("");
   }
   function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "", terms?: TermLinks) {
     parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),linkTerms(inline(title),terms)));
@@ -2619,6 +2826,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (retry !== undefined) clearTimeout(retry);
     retry = setTimeout(() => { retry = undefined; connect(); },5000);
   }
+  // The owner's notices: a browser notice per card or item, shown only if the owner allowed them. Asked on the first click,
+  // since browsers ignore a permission request with no user gesture.
+  const noticeEnv: NoticeEnv = {
+    Notification: typeof Notification === "undefined" ? undefined : Notification as unknown as NoticeEnv["Notification"],
+    focus: () => window.focus(),
+    open: target => target ? jumpTo(target.kind, target.key) : clearSelectedItem(),
+  };
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    document.addEventListener("click", () => { void Notification.requestPermission().catch(() => {}); }, { once: true });
+  }
   function connect() {
     if (retry !== undefined) clearTimeout(retry);
     source?.close(); connectionAbort?.abort();
@@ -2641,15 +2858,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       } catch(e) { if (active()) serverDown(next); }
     };
     next.onerror = () => serverDown(next);
+    next.addEventListener("owner", event => {
+      if (!active()) return;
+      showNotice(JSON.parse((event as MessageEvent).data) as OwnerNotice, noticeEnv);
+    });
     next.addEventListener("change", event => {
       if (!active()) return;
       eventGeneration++;
       snapshotGeneration++;
-      const change = JSON.parse((event as MessageEvent).data) as {commit: string; activity?: Snapshot["activity"]; changed: Array<{kind: string; id: string; after: unknown}>};
+      const change = JSON.parse((event as MessageEvent).data) as {commit: string; activity?: ActivityDelta; changed: Array<{kind: string; id: string; after: unknown}>};
       const scope=new Set<string>();
       const relocated:string[]=[], retitled:string[]=[];
-      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},notices:{...snapshot.notices},glossaries:{...snapshot.glossaries}};
-      rulePresentationDirty=true;
+      // The rules of the snapshot before this change: the affected items are found by comparing with them.
+      const base=snapshot, baseRules:Rules=derived;
+      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
         if (doc.kind === "note") {
@@ -2662,7 +2884,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const before=previous as Item | undefined, after=doc.after as Item | null;
           scope.add("item:"+doc.id);
           if (before?.title !== after?.title) retitled.push("it:"+doc.id);
-          if (!before || !after || !sameValue(before.plan.filter(row => "item" in row && row.own), after.plan.filter(row => "item" in row && row.own)) || before.group !== after.group || before.order !== after.order || !sameValue(before.request,after.request)) {
+          if (!before || !after || !sameValue(before.plan.filter(row => "item" in row && row.own), after.plan.filter(row => "item" in row && row.own)) || before.group !== after.group || before.order !== after.order) {
             if (before) { scope.add("group:"+derived.groupOf(doc.id)); derived.ancestors(doc.id).forEach(p => scope.add("item:"+p)); } relocated.push(doc.id);
           }
           else {
@@ -2678,23 +2900,34 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
           scope.add("card:"+doc.id);
 
-        } else if (doc.kind === "notice") scope.add("header");
+        }
         else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
         else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
-        else if (doc.kind === "notice") { if (doc.after === null) delete snapshot.notices[doc.id]; else snapshot.notices[doc.id] = doc.after as Notice; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });
         }
       }
       snapshot.head = change.commit;
-      if (change.activity) snapshot.activity = change.activity;
-      applySnapshot(snapshot);
+      // The activity arrives as its change against the commit before. A snapshot already at this commit holds it; one
+      // at another commit missed or overtook events, so the page reloads the whole snapshot.
+      let resync=false;
+      if (change.activity) {
+        if (base.head === change.activity.from) snapshot.activity = applyActivityDelta(base.activity, change.activity);
+        else if (base.head !== change.commit) resync=true;
+      }
+      applySnapshot(snapshot,true);
+      const seeds=changeSeeds(base,snapshot,baseRules,derived,change.changed,change.activity);
+      if (!seeds) rulePresentationDirty=true;
+      else if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of affectedItems(baseRules,derived,seeds)) presentationAffected.add(id); }
+      if (resync) void loadSnapshot(active,controller.signal).catch(() => { if (active()) serverDown(next); });
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.
       if (retitled.some(k => citedRefs().has(k))) scope.add("all");
+      // A write by a session moves its row in the agent list even when nothing else on the page changes.
+      if (Object.keys(change.activity?.agents ?? {}).length) scope.add("agents");
 
       scheduleRender(...scope); queueUnread(active,controller.signal,next);
     });

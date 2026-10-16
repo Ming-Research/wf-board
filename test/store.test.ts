@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { setTimeout } from "node:timers/promises";
 import { parse } from "yaml";
 import { Item } from "../src/model.ts";
-import { Store, ConflictError, ValidationError, type ChangedDoc, type CommitInfo } from "../src/store.ts";
+import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc } from "../src/store.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -37,6 +37,27 @@ test("published snapshots are reused until a write and remain deeply immutable",
   assert.equal(after.activity!.writes.length, before.activity!.writes.length + 1);
 });
 
+test("a write shares unchanged documents with the previous snapshot and inserts its own frozen", async t => {
+  const { store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("b", item("Other"))] });
+  const before = store.snapshot();
+  await store.commit({ author: "a", message: "Update", puts: [put("a", { ...item("Changed"), log: [{ at, text: "entry" }] }, 1)] });
+  const after = store.snapshot();
+  assert.strictEqual(after.items.b, before.items.b, "an untouched document is the same object, not a copy");
+  assert.strictEqual(after.decisions, before.decisions, "an untouched collection is the same object");
+  assert.notStrictEqual(after.items, before.items, "a touched collection is a new object");
+  assert.equal(before.items.a!.title, "An item", "the previous snapshot keeps its own document");
+  // The inserted document, its nested parts, the collections and the snapshot itself refuse mutation.
+  assert.throws(() => { after.items.a!.title = "mutate"; }, TypeError);
+  assert.throws(() => { after.items.a!.log[0]!.text = "mutate"; }, TypeError);
+  assert.throws(() => { after.items.a!.log.push({ at, text: "more" }); }, TypeError);
+  assert.throws(() => { after.items.c = after.items.a!; }, TypeError);
+  assert.throws(() => { delete (after.items as Record<string, unknown>).b; }, TypeError);
+  assert.throws(() => { after.head = "x"; }, TypeError);
+  assert.throws(() => { after.activity!.items.a = at; }, TypeError);
+  assert.throws(() => { (after.activity!.writes as string[])[0] = at; }, TypeError);
+});
+
 test("published snapshots refresh on owner-only changes and preserve a failed owner's previous state", async t => {
   const { store } = await setup(t);
   const before = store.snapshot();
@@ -55,7 +76,9 @@ test("published snapshots refresh on owner-only changes and preserve a failed ow
 });
 
 test("reloading activity invalidates a previously published snapshot without a new commit", async t => {
-  const { store } = await setup(t);
+  const { store, dir } = await setup(t);
+  // With the startup cache gone the reload scans the (mocked) history instead of continuing from it.
+  await rm(join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-startup-cache.json")));
   const before = store.snapshot();
   assert.strictEqual(store.snapshot(), before);
   t.mock.method(store, "log", async () => [{ commit: before.head, parents: [], at, author: "a", message: "Historical work", files: ["items/old.yaml"] }]);
@@ -570,66 +593,6 @@ test("history queries honor an explicit upper revision and reject an unknown bou
   assert.equal((await store.log())[0]!.commit, second.commit, "the default still follows HEAD");
 });
 
-test("startup renames coordinator identity once without changing free text", async t => {
-  const { store, dir } = await setup(t);
-  const prose = "跨项目、跨项目依赖和前缀跨项目后缀都保留。\n第二行。";
-  const seed = await store.commit({ author: "跨项目", message: "Seed legacy coordinator", board: {
-    title: prose, eyebrow: prose, goal: prose, projects: [{ name: "跨项目", repo: "Org/Board" }, { name: "Other" }],
-  }, puts: [
-    put("area", { ...item(prose, prose), group: "跨项目", data: prose, ask: { text: prose }, log: [{ at, by: "跨项目", text: prose }, { at, by: "前缀跨项目后缀", text: prose }] }),
-    put("request", { ...item(prose, prose), group: "Other", request: { by: "跨项目", at }, log: [{ at, by: "跨项目", text: prose }] }),
-    { kind: "decision", id: "card", expectRev: null, doc: { item: "area", question: prose, background: prose, options: [{ key: "A", text: prose }], status: "ruled", ruling: prose, updated: at } },
-    { kind: "note", id: "reply", expectRev: null, doc: { target: "q:card", kind: "comment", text: prose, reply: prose, repliedBy: "跨项目", repliedAt: at, at, state: "done" } },
-    { kind: "notice", id: "news", expectRev: null, doc: { text: prose, author: "跨项目", at } },
-    { kind: "glossary", id: "跨项目", expectRev: null, doc: { terms: [{ term: "跨项目依赖", definition: prose, by: "跨项目", updated: at }] } },
-    { kind: "glossary", id: "Other", expectRev: null, doc: { terms: [{ term: "跨项目", definition: prose, by: "跨项目", updated: at }] } },
-  ] });
-  const before = store.snapshot();
-  const migrated = await Store.open(dir), after = migrated.snapshot();
-  const expected = structuredClone(before);
-  expected.board.projects[0]!.name = "总管";
-  expected.items.area!.group = "总管";
-  expected.items.area!.log[0]!.by = "总管";
-  expected.items.area!.rev++;
-  expected.items.request!.request!.by = "总管";
-  expected.items.request!.log[0]!.by = "总管";
-  expected.items.request!.rev++;
-  expected.notes.reply!.repliedBy = "总管";
-  expected.notes.reply!.rev++;
-  expected.notices.news!.author = "总管";
-  expected.notices.news!.rev++;
-  expected.glossaries["总管"] = expected.glossaries["跨项目"]!;
-  delete expected.glossaries["跨项目"];
-  expected.glossaries["总管"]!.terms[0]!.by = "总管";
-  expected.glossaries.Other!.terms[0]!.by = "总管";
-  expected.glossaries.Other!.rev++;
-  expected.head = after.head;
-  expected.activity = after.activity;
-  assert.deepEqual(after, expected, "all prose and unrelated identity strings remain byte-for-byte identical");
-  const commits = await migrated.log({ since: seed.commit });
-  assert.equal(commits.length, 1);
-  assert.equal(commits[0]!.author, "总管");
-  assert.equal(commits[0]!.message, "Rename coordinator project 跨项目 to 总管");
-  assert.ok(commits[0]!.files.includes("glossaries/跨项目.yaml"));
-  assert.ok(commits[0]!.files.includes("glossaries/总管.yaml"));
-  await assert.rejects(readFile(join(dir, "glossaries/跨项目.yaml")), { code: "ENOENT" });
-  assert.equal((await migrated.show("item", "area", seed.commit) as { group: string }).group, "跨项目", "history is not rewritten");
-  assert.deepEqual((await Store.open(dir)).snapshot(), after, "reopening performs no second migration");
-  assert.equal(await git(dir, "rev-parse", "HEAD"), after.head);
-});
-
-test("startup coordinator rename refuses destination project and glossary collisions without changing data", async t => {
-  for (const collision of ["project", "glossary"] as const) {
-    const { store, dir } = await setup(t);
-    await store.commit({ author: "Fixture", message: "Conflicting coordinator", board: { title: "Board", projects: [{ name: "跨项目" }, ...(collision === "project" ? [{ name: "总管" }] : [])] }, puts: collision === "glossary" ? [{ kind: "glossary", id: "总管", expectRev: null, doc: { terms: [] } }] : [] });
-    const before = store.snapshot(), bytes = await readFile(join(dir, "board.yaml"));
-    await assert.rejects(Store.open(dir), /Cannot rename coordinator project 跨项目 to 总管: destination project or glossary already exists/);
-    assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
-    assert.deepEqual(await readFile(join(dir, "board.yaml")), bytes);
-    assert.equal(await git(dir, "status", "--porcelain"), "");
-  }
-});
-
 test("activity retains every content revision and deletion across restart, but excludes owner reading writes", async t => {
   const { store, dir } = await setup(t);
   const initialCount = store.snapshot().activity!.writes.length;
@@ -805,122 +768,6 @@ test("pause replay tolerates historical schema changes and logs unreadable item 
   assert.match(warnings[0]!, /Skipping unreadable pause history item .*:items\/unreadable\.yaml/);
 });
 
-test("empty pause history returns before git path, cache or revision queries", async t => {
-  type Activity = NonNullable<ReturnType<Store["snapshot"]>["activity"]>;
-  const commit: CommitInfo = { commit: "a".repeat(40), parents: [], at, author: "Fixture", message: "Synthetic history", files: [] };
-  for (const [head, commits] of [["", [commit]], [commit.commit, []], ["", []]] as Array<[string, CommitInfo[]]>) {
-    const store = Object.create(Store.prototype) as Store;
-    const internals = store as unknown as {
-      state: { head: string; activity?: Activity };
-      git(args: string[]): Promise<string>;
-      firstPauseCommit(commits: CommitInfo[]): Promise<string | null>;
-      loadPauses(activity: Activity, commits: CommitInfo[]): Promise<void>;
-      loadActivity(): Promise<void>;
-    };
-    internals.state = { head };
-    const gitCalls = t.mock.method(internals, "git", async () => { throw new Error("Empty pause history must not query git"); });
-    assert.equal(await internals.firstPauseCommit(commits), null);
-    const activity: Activity = { writes: [], items: {} };
-    await internals.loadPauses(activity, commits);
-    assert.deepEqual(activity, { writes: [], items: {} });
-    t.mock.method(store, "log", async () => []);
-    await internals.loadActivity();
-    assert.deepEqual(internals.state.activity, { writes: [], items: {} });
-    assert.equal(gitCalls.mock.callCount(), 0, "neither the marker path nor an empty git revision is queried");
-  }
-});
-
-test("pause history marker skips repeat pickaxe scans on never-paused boards and survives restart", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Ordinary work", puts: [put("root", item())] });
-  const internals = store as unknown as { git(args: string[], author?: string): Promise<string>; loadActivity(): Promise<void> };
-  const original = internals.git.bind(store), scans: string[][] = [];
-  t.mock.method(internals, "git", async (args: string[], author?: string) => {
-    if (args.includes("-G")) scans.push(args);
-    return original(args, author);
-  });
-  await internals.loadActivity();
-  assert.equal(scans.length, 0, "a known never-paused history needs no pickaxe");
-  const restarted = await Store.open(dir);
-  const reopened = restarted as unknown as typeof internals;
-  const originalReopened = reopened.git.bind(restarted);
-  t.mock.method(reopened, "git", async (args: string[], author?: string) => {
-    assert.ok(!args.includes("-G"), "the on-disk marker must survive restart");
-    return originalReopened(args, author);
-  });
-  await reopened.loadActivity();
-  assert.equal(restarted.snapshot().activity?.pauses, undefined);
-  assert.equal(await git(dir, "status", "--porcelain"), "", "the disposable index is not board content");
-});
-
-test("missing pause history markers recover completed intervals and rewinds invalidate cached heads", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const unpausedHead = store.snapshot().head;
-  const pausedAt = "2026-10-11T07:00:00.125Z", resumedAt = "2026-10-11T07:10:00.250Z";
-  let root = store.snapshot().items.root!;
-  await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  root = store.snapshot().items.root!;
-  const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
-  await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  await rm(markerPath, { force: true });
-  const reopened = await Store.open(dir);
-  assert.deepEqual(reopened.snapshot().activity!.pauses, { root: [{ start: pausedAt, end: resumedAt }] }, "no current paused field does not mean there was never a pause");
-  const marker = parse(await readFile(markerPath, "utf8")) as { first: string | null; head: string };
-  assert.ok(marker.first);
-  assert.equal(marker.head, reopened.snapshot().head);
-  await git(dir, "reset", "--hard", unpausedHead);
-  const rewound = await Store.open(dir);
-  assert.equal(rewound.snapshot().activity?.pauses, undefined);
-  assert.equal((parse(await readFile(markerPath, "utf8")) as { first: string | null }).first, null);
-});
-
-test("pause history rescans only an unindexed suffix and distrusts a negative marker with current pauses", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const knownHead = store.snapshot().head;
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  const previousMarker = `version: 1\nhead: ${knownHead}\nfirst: null\n`;
-  const root = store.snapshot().items.root!, pausedAt = "2026-10-11T08:00:00.125Z";
-  await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  const pausedRoot = store.snapshot().items.root!, resumed = structuredClone(pausedRoot); delete resumed.paused;
-  resumed.updated = "2026-10-11T08:10:00.250Z";
-  await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, pausedRoot.rev)] });
-  await writeFile(markerPath, previousMarker);
-  const internals = store as unknown as { git(args: string[], author?: string): Promise<string>; loadActivity(): Promise<void> };
-  const original = internals.git.bind(store), scans: string[][] = [];
-  t.mock.method(internals, "git", async (args: string[], author?: string) => { if (args.includes("-G")) scans.push(args); return original(args, author); });
-  await internals.loadActivity();
-  assert.equal(scans.length, 1);
-  assert.ok(scans[0]!.includes(`${knownHead}..${store.snapshot().head}`));
-  assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt, end: resumed.updated }]);
-  const latest = store.snapshot().items.root!;
-  await store.commit({ author: "总管", message: "Pause again", puts: [put("root", { ...latest, paused: { reason: "Deferred", at: "2026-10-11T08:20:00.125Z" } }, latest.rev)] });
-  await writeFile(markerPath, `version: 1\nhead: ${store.snapshot().head}\nfirst: null\n`);
-  await internals.loadActivity();
-  assert.equal(scans.length, 2, "current pauses contradict a negative cache and force recovery");
-  assert.equal(store.snapshot().activity!.pauses!.root!.length, 2);
-});
-
-test("an unwritable disposable pause marker cannot turn a committed pause into a failure", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  await rm(markerPath, { force: true });
-  await mkdir(markerPath);
-  const warnings: string[] = [];
-  t.mock.method(console, "warn", (...parts: unknown[]) => { warnings.push(parts.join(" ")); });
-  const root = store.snapshot().items.root!, pausedAt = "2026-10-11T09:00:00.125Z";
-  const result = await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  assert.equal(store.snapshot().head, result.commit);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), result.commit);
-  assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt }]);
-  assert.ok(warnings.some(message => message.includes("Cannot save pause history cache")));
-  await rm(markerPath, { recursive: true });
-  assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses!.root, [{ start: pausedAt }]);
-});
-
 test("pause replay tracks historical ownership targets even when a row ID is reused", async t => {
   const { store } = await setup(t);
   const pausedAt = "2026-10-11T10:00:00.125Z", movedAt = "2026-10-11T10:10:00.250Z";
@@ -975,14 +822,6 @@ test("live pause indexing accepts conversion inputs with no plan and no pause wi
   internals.notePauses(activity, { work: legacy, record: { group: "P", record: true } },
     { work: converted, record: { group: "P", record: true } }, [{ kind: "item", id: "work", before: legacy, after: converted }], at);
   assert.deepEqual(activity, { writes: [at], items: { work: at } });
-});
-
-test("startup leaves identity references alone when no legacy coordinator project is configured", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Historical authors without legacy project", puts: [put("a", { ...item(), group: "Unconfigured", log: [{ at, by: "跨项目", text: "Historical author" }] })] });
-  const before = store.snapshot();
-  assert.deepEqual((await Store.open(dir)).snapshot(), before);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
 });
 
 const card = (item: string, fields: object = {}) => ({ item, question: "Choose?", background: "Evidence", options: [{ key: "A", text: "A" }], status: "open", updated: at, ...fields });
@@ -1077,4 +916,33 @@ test("startup numbers documents written before numbers existed once, oldest firs
   const head = await git(dir, "rev-parse", "HEAD");
   await Store.open(dir);
   assert.equal(await git(dir, "rev-parse", "HEAD"), head);
+});
+
+test("localFile gives a path in the data directory that git leaves out, once, and never commits it", async t => {
+  const { dir, store } = await setup(t);
+  const path = await store.localFile("state/wake.jsonl");
+  assert.equal(path, join(dir, "state/wake.jsonl"));
+  assert.equal(await store.localFile("state/wake.jsonl"), path);
+  await writeFile(path, '{"latest":1}\n');
+  assert.equal(await git(dir, "status", "--porcelain"), "", "the file does not make the working tree look dirty");
+  assert.equal(await git(dir, "check-ignore", "state/wake.jsonl"), "state/wake.jsonl");
+  assert.equal((await readFile(join(dir, ".git/info/exclude"), "utf8")).split("\n").filter(l => l === "/state/wake.jsonl").length, 1, "listed once, however often it is asked for");
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  assert.ok(!(await git(dir, "ls-files")).includes("wake.jsonl"));
+  assert.equal((await Store.open(dir)).snapshot().head, store.snapshot().head, "a reopened store accepts the file beside a clean board");
+});
+
+test("the commit that deleted the retired notices does not count as active time", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  await mkdir(join(dir, "notices"));
+  for (const id of ["one", "two"]) await writeFile(join(dir, `notices/${id}.yaml`), `text: 通知 ${id}\nauthor: Whitefoot\nat: ${at}\nread: ${at}\nrev: 1\n`);
+  await git(dir, "add", "notices"); await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "post_notice one");
+  await git(dir, "rm", "-q", "-r", "--", "notices");
+  await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", RETIRE_NOTICES_MESSAGE);
+  assert.equal(await git(dir, "log", "-1", "--format=%s"), RETIRE_NOTICES_MESSAGE);
+  const snapshot = (await Store.open(dir)).snapshot();
+  // The notice commit still counts as a write; the deletion does not.
+  const contentCommits = Number(await git(dir, "rev-list", "--count", "HEAD~1", "--", "board.yaml", "items", "decisions", "notes", "notices", "glossaries"));
+  assert.equal(snapshot.activity!.writes.length, contentCommits);
 });

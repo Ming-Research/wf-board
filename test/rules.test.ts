@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -13,8 +13,8 @@ const card = (key: string, after: string[] = []): PlanRow => ({ id: key, card: k
 const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [...rows, accept(state)];
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), notices: {}, glossaries: {}, owner: {},
-    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
+    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), glossaries: {}, owner: {},
+    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", ...(fields.record ? {} : { difficulty: 2 }), plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
   };
@@ -342,6 +342,15 @@ test("cycles terminate, identify only members, and receive priority only from ou
   const reached = rules(s); assert.equal(reached.onCycle("waiter"), false); assert.equal(reached.priorityOf("a"), "P1"); assert.equal(reached.priorityOf("b"), "P1");
 });
 
+test("cancelled items get no checks, including their cards; open items keep theirs", () => {
+  const s = snapshot({ gone: { status: "cancelled", plan: workPlan() }, stale: { status: "cancelled", provisional: true, plan: workPlan([step()]) }, placeholder: { status: "cancelled", plan: [step("work", "done"), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, untagged: { status: "cancelled", plan: workPlan() }, open: { plan: workPlan() } }, { card: { item: "gone" } });
+  s.board.tags = [{ name: "看板", meaning: "board work" }];
+  for (const id of ["gone", "stale", "placeholder", "untagged"]) assert.deepEqual(texts(s, id), [], id);
+  assert.deepEqual(rules(s).cardChecks("card"), [], "a card of a cancelled item");
+  assert.ok(texts(s, "open").includes("只差验收：其它行都已完成"));
+  assert.ok(texts(s, "open").some(text => text.startsWith("缺标签")));
+});
+
 test("plan checks flag structural violations and conversion placeholders, without old manual-status checks", () => {
   const s = snapshot({ p: { plan: workPlan([own("x")]) }, second: { group: "Second", plan: workPlan([own("x")]) }, x: {}, loose: { priority: undefined }, waiter: { plan: workPlan([shared("loose")]) }, missing: { plan: workPlan([shared("gone"), card("gone-card")]) }, provisional: { provisional: true, plan: workPlan([step()]) }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, oldParent: { status: "cancelled", plan: workPlan([own("open")]) }, open: {}, onlyAcceptance: { plan: workPlan() }, acceptedEarly: { plan: workPlan([step()], "done") }, unconfigured: { group: "Unknown" }, rootMissing: { priority: undefined } });
   assert.ok(texts(s, "x").includes("被多个条目拥有")); assert.ok(texts(s, "x").includes("跨项目拥有"));
@@ -357,10 +366,17 @@ test("plan checks flag structural violations and conversion placeholders, withou
   for (const check of rules(s).checks("missing")) assert.ok(!/可解除阻塞|卡住了，但|标为进行中|正文没写/.test(check.text));
 });
 
-test("inboxes omit records and closed requests and follow request dates", () => {
-  const s = snapshot({ newer: { request: { by: "First", at: T2 } }, older: { request: { by: "First", at: T1 } }, closed: { request: { by: "First", at: T0 }, status: "cancelled" }, record: { request: { by: "First", at: T0 }, record: true }, other: { group: "First" } });
-  const r = rules(s); assert.deepEqual(r.inbox("Default"), ["older", "newer"]); assert.equal(r.isRequest("record"), false); assert.equal(r.isRequest("closed"), false);
-  assert.deepEqual(r.areas(), ["closed", "record", "other"]);
+test("a title longer than 20 characters, spaces not counted, gets one check", () => {
+  const twenty = "一二三四五六七八九十一二三四五六七八九十", twentyOne = twenty + "十";
+  const s = snapshot({ exact: { title: twenty }, spaced: { title: "一二 三四五六七八九十一二三四五六七八九十" }, over: { title: twentyOne }, asciiOver: { title: "a".repeat(21) }, record: { title: twentyOne, record: true }, cancelled: { title: twentyOne, status: "cancelled" }, finished: { title: twentyOne, plan: workPlan([step("work", "done")], "done") } });
+  assert.equal(rules(s).statusOf("finished"), "done");
+  assert.deepEqual(texts(s, "cancelled"), [], "closed items are not checked");
+  assert.deepEqual(texts(s, "finished"), [], "closed items are not checked");
+  assert.deepEqual(texts(s, "exact"), []);
+  assert.deepEqual(texts(s, "spaced"), []);
+  assert.deepEqual(texts(s, "over"), ["标题超过 20 个字（现在 21 个）"]);
+  assert.deepEqual(texts(s, "asciiOver"), ["标题超过 20 个字（现在 21 个）"]);
+  assert.deepEqual(texts(s, "record"), ["标题超过 20 个字（现在 21 个）"], "records have titles too");
 });
 
 test("derived arrays are defensive copies and snapshot changes require a new rules object", () => {
@@ -444,7 +460,7 @@ test("stalled checks count the union of board-active windows, with an inclusive 
   assert.equal(hasStalled(s, "quiet", 1.5), true, "two separated half-hour windows total exactly one hour");
 });
 
-test("only own changes reset a doing item's clock, including historical card and note revisions", () => {
+test("a doing item's clock counts its own changes and its owned items in progress, including historical card and note revisions", () => {
   const changes: Array<(s: Snapshot) => void> = [
     s => { s.items.quiet!.updated = timeAt(2.5); },
     s => { s.items.quiet!.log.push({ at: timeAt(2.5), text: "Progress" }); },
@@ -455,9 +471,94 @@ test("only own changes reset a doing item's clock, including historical card and
   ];
   for (const change of changes) { const s = activeBoard(); assert.equal(hasStalled(s), true); change(s); assert.equal(hasStalled(s), false); }
   const s = activeBoard(); s.items.child = Item.parse({ title: "Child", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
-  s.items.quiet!.plan = workPlan([step("work", "doing"), own("child")]); assert.equal(hasStalled(s), true, "child progress does not reset the owner's doing clock");
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("child")]); assert.equal(hasStalled(s), true, "a child not in progress does not reset the owner's doing clock");
+  s.items.child!.plan = workPlan([step("child-work", "doing")]); assert.equal(hasStalled(s), false, "an owned child in progress resets the owner's doing clock");
   s.items.record = Item.parse({ title: "Queue", group: "Default", record: true, plan: [], updated: timeAt(2.5), rev: 1 });
   s.items.quiet!.plan = workPlan([step("work", "doing"), own("record")]); assert.equal(hasStalled(s), true, "record child progress does not reset the owner's doing clock");
+});
+
+test("a doing step's clock reads the items it names and the items they own, but not other rows", () => {
+  // A doing step of its own keeps the clock; the second step is the one under test.
+  const mentions = (s: Snapshot, text: string, state: PlanStep["state"] = "doing") => { s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", state, { text })]); return hasStalled(s); };
+  // The named item changed within the hour: the step is not quiet.
+  let s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), false, "a doing step naming an item that changed recently is not quiet");
+  assert.equal(mentions(s, "see [[it:named]]", "todo"), true, "a todo step naming the item does not count");
+  assert.equal(mentions(s, "no mention here"), true, "a step without a reference counts only the item itself");
+  // Both the item and the named one are quiet for an hour: flagged.
+  s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: T0, plan: workPlan(), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), true, "a named item quiet as well as the item keeps the step quiet");
+  // The named item's owned item, two layers down, counts too.
+  s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", plan: workPlan([own("deep")]), updated: T0, rev: 1 });
+  s.items.deep = Item.parse({ title: "Deep", group: "Default", updated: timeAt(2.5), plan: workPlan([step("deep-work", "doing")]), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), false, "a change two layers under a named item resets the step's clock");
+});
+
+test("a shared item in progress does not reset the owner's clock: that item is someone else's work", () => {
+  const s = activeBoard(); s.items.shared = Item.parse({ title: "Shared", group: "Default", updated: timeAt(2.5), plan: workPlan([step("shared-work", "doing")]), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), { id: "shared", item: "shared", own: false }]);
+  assert.equal(hasStalled(s), true, "a shared row in progress leaves the owner's clock alone");
+});
+
+test("a card reference never continues the clock of an item with the same key", () => {
+  const s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "see [[q:named]]" })]);
+  assert.equal(hasStalled(s), true, "[[q:named]] names a decision card, not the item named");
+});
+
+test("a reference to a missing, finished or dropped step, or to the item itself, follows the same rule", () => {
+  const s = activeBoard();
+  s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "see [[it:nowhere]]" })]);
+  assert.equal(hasStalled(s), true, "a reference to a missing item is ignored");
+  for (const state of ["done", "dropped"] as const) {
+    const next = activeBoard(); next.items.named = Item.parse({ title: "Named", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+    next.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", state, { text: "see [[it:named]]" })]);
+    assert.equal(hasStalled(next), true, `a ${state} step naming a changed item does not count`);
+  }
+  const self = activeBoard(); self.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "[[it:quiet]]" })]);
+  assert.equal(hasStalled(self), true, "a reference to the item itself keeps its own clock");
+});
+
+test("a doing step naming an ancestor counts the changes of the ancestor's owned items, not the whole board", () => {
+  const s = activeBoard();
+  s.items.parent = Item.parse({ title: "Parent", group: "Default", plan: workPlan([own("quiet"), own("sibling")]), updated: T0, rev: 1 });
+  s.items.sibling = Item.parse({ title: "Sibling", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "under [[it:parent]]" })]);
+  assert.equal(hasStalled(s), false, "a sibling owned by the named ancestor resets the clock");
+  s.items.other = Item.parse({ title: "Other", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "under [[it:quiet]]" })]);
+  assert.equal(hasStalled(s), true, "an unrelated item changed later does not reset the clock");
+});
+
+test("references and ownership cycles do not loop and keep a quiet clock quiet", () => {
+  const s = activeBoard();
+  s.items.cycle1 = Item.parse({ title: "Cycle 1", group: "Default", plan: workPlan([own("cycle2")]), updated: T0, rev: 1 });
+  s.items.cycle2 = Item.parse({ title: "Cycle 2", group: "Default", plan: workPlan([own("cycle1")]), updated: T0, rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("cycle1"), step("ref", "doing", { text: "[[it:cycle2]]" })]);
+  assert.equal(hasStalled(s), true, "a cycle of owned items with nothing new is still stalled");
+});
+
+test("a doing step's reference to a changed item changes the presentation of its item in the affected walk", () => {
+  const board = (): Snapshot => {
+    const s = activeBoard();
+    s.items.P = Item.parse({ title: "P", group: "Default", plan: workPlan([step("ref", "doing", { text: "see [[it:T]]" })]), updated: T0, rev: 1 });
+    s.items.T = Item.parse({ title: "T", group: "Default", plan: workPlan([own("M")]), updated: T0, rev: 1 });
+    s.items.M = Item.parse({ title: "M", group: "Default", plan: workPlan([own("X")]), updated: T0, rev: 1 });
+    s.items.X = Item.parse({ title: "X", group: "Default", plan: workPlan(), updated: T0, rev: 1 });
+    return s;
+  };
+  const before = board(), after = board(); after.items.X!.updated = timeAt(2.5);
+  const now = start + 3 * hour, rb = rules(before, now), ra = rules(after, now);
+  assert.notEqual(presentationSignature(rb, before.decisions, "P"), presentationSignature(ra, after.decisions, "P"), "P's stalled check clears when X, two layers under T, changes");
+  assert.ok(affectedItems(rb, ra, ["X"]).has("P"), "a change two layers under a named item reaches the item whose step names it");
+});
+
+test("an owned item in progress keeps the owner's clock, across every layer below it", () => {
+  const s = activeBoard();
+  s.items.middle = Item.parse({ title: "Middle", group: "Default", plan: workPlan([own("leaf")]), updated: T0, rev: 1 });
+  s.items.leaf = Item.parse({ title: "Leaf", group: "Default", updated: timeAt(2.5), plan: workPlan([step("leaf-work", "doing")]), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("middle")]);
+  assert.equal(hasStalled(s), false, "a leaf two layers below a progressing owned item resets the owner's clock");
 });
 
 test("a parent with only owned progress has no clock, but its own doing step has one", () => {
@@ -468,12 +569,41 @@ test("a parent with only owned progress has no clock, but its own doing step has
   for (const fields of [{ record: true, plan: [] }, { plan: workPlan() }, { plan: workPlan([], "done") }, { status: "cancelled" as const }]) { const next = activeBoard(); Object.assign(next.items.quiet!, fields); assert.equal(hasStalled(next), false); }
 });
 
-test("current notice and note write times count as active windows across projects", () => {
+test("current note write times count as active windows across projects", () => {
   const s = activeBoard(); delete s.activity;
-  for (let i = 0; i < 6; i++) s.notices["n" + i] = { text: "Changed", author: "Second", at: timeAt(i / 2), rev: 1 };
-  assert.equal(hasStalled(s), true); s.notices = {};
   for (let i = 0; i < 6; i++) s.notes["n" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
   assert.equal(hasStalled(s), true);
+});
+
+test("a todo step that writes its waits as text gets one check per open item, listing its rows by id", () => {
+  const s = snapshot({
+    two: { plan: workPlan([step("ci", "todo", { waits: "CI" }), step("pr", "todo", { waits: "Owner card" })]) },
+    mixed: { plan: workPlan([step("run", "doing", { waits: "CI", since: T0 }), step("review", "todo", { waits: "Review" })]) },
+    doneOnly: { plan: workPlan([step("old", "done", { waits: "CI" })]) },
+    droppedOnly: { plan: workPlan([step("gone", "dropped", { waits: "CI" })]) },
+    doingOnly: { plan: workPlan([step("ci", "doing", { waits: "CI", since: T0 })]) },
+    plain: { plan: workPlan([step("write", "todo")]) },
+    acceptWaits: { plan: [{ ...accept("todo"), waits: "Owner card" }] },
+    cancelled: { status: "cancelled", plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    record: { record: true, plan: [step("ci", "todo", { waits: "CI" })] },
+    paused: { paused: { reason: "Owner deferred", at: T1 }, plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    owned: { plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    backlogHolder: { record: true, plan: [own("owned")] },
+  });
+  const r = rules(s);
+  const waitsChecks = (id: string) => r.checks(id).filter(check => check.label === WAITS_TEXT_LABEL);
+  const hint = "在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：";
+  assert.deepEqual(waitsChecks("two"), [{ label: WAITS_TEXT_LABEL, text: hint + "ci、pr" }]);
+  assert.deepEqual(waitsChecks("mixed"), [{ label: WAITS_TEXT_LABEL, text: hint + "review" }], "only the todo row is listed, not the doing row beside it");
+  assert.deepEqual(waitsChecks("doingOnly"), [], "a doing step's waits is a live wait, not a check");
+  assert.deepEqual(waitsChecks("doneOnly"), [], "a done step's waits is history");
+  assert.deepEqual(waitsChecks("droppedOnly"), [], "a dropped step's waits is history");
+  assert.deepEqual(waitsChecks("plain"), [], "a todo step without waits text passes");
+  assert.deepEqual(waitsChecks("acceptWaits"), [{ label: WAITS_TEXT_LABEL, text: hint + "accept" }], "an acceptance row waiting in text is listed like any other");
+  assert.deepEqual(waitsChecks("cancelled"), [], "cancelled items stay silent");
+  assert.deepEqual(waitsChecks("record"), [], "records are not work");
+  assert.deepEqual(waitsChecks("paused"), [], "a paused item stays silent until resumed");
+  assert.deepEqual(waitsChecks("owned"), [], "work in the backlog stays silent");
 });
 
 test("step text and days retain state markers, dates, waits and whole-day boundaries", () => {
@@ -501,8 +631,9 @@ test("target text is compact and does not affect status, and freshness uses full
   for (const changed of [{ ...a, goal: "New" }, { ...a, target: "New" }, { ...a, current: "New" }, { ...a, baseline: "New" }, { ...a, date: T1 }, { ...a, id: "new" }]) { assert.deepEqual(changedItemTargets([a, b], [changed, b]), [changed]); assert.equal(targetsChanged([a, b], [changed, b]), true); }
 });
 
-test("log entries never count as owner-unread: one rule drops the log and names log-only change summaries", () => {
-  assert.deepEqual(withoutLog({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
+test("log entries and dispatch records never count as owner-unread: one rule drops them and names log-only change summaries", () => {
+  assert.deepEqual(withoutHistoricalDetail({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
+  assert.deepEqual(withoutHistoricalDetail({ title: "T", dispatches: [{ agentId: "a" }], log: [] }), { title: "T" });
   assert.deepEqual(["+2 log", "log changed"].map(isLogChange), [true, true]);
   assert.deepEqual(["steps changed", "head changed", "+2 logs here"].map(isLogChange), [false, false, false]);
 });
@@ -538,4 +669,37 @@ test("status target memoization never caches a cycle fallback as a target result
     assert.equal(r.statusOf(first), "wip");
     for (const id of ["a", "b", "outside"]) assert.equal(r.statusOf(id), "wip", `${first} must not poison ${id}`);
   }
+});
+
+test("the page's presentation signature changes with an item's difficulty, so a reloaded board repaints it", () => {
+  const sign = (fields: Partial<Item>) => { const s = snapshot({ a: fields }); return presentationSignature(rules(s), s.decisions, "a"); };
+  const signs = ([2, 3, "architect", undefined] as const).map(difficulty => sign({ difficulty }));
+  assert.equal(new Set(signs).size, 4, "each difficulty, and none, paints differently");
+  assert.equal(sign({ difficulty: 2 }), sign({ difficulty: 2 }), "an unchanged one does not");
+});
+
+test("open decision cards with fewer than three options get a check on the card and on their item", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    two: { item: "owner", options },
+    three: { item: "owner", options: [...options, { key: "C", text: "Later" }] },
+    ruled: { item: "owner", options, status: "ruled", ruling: "A", choice: "A" },
+  });
+  const r = rules(s), [card] = r.cardChecks("two");
+  assert.deepEqual(r.cardChecks("three"), [], "three options are enough");
+  assert.deepEqual(r.cardChecks("ruled"), [], "a ruled card is not checked");
+  assert.equal(card?.label, "选项不足");
+  assert.deepEqual(r.checks("owner").filter(c => c.label === "选项不足"), [{ ...card, target: { kind: "card", id: "two" } }]);
+});
+
+test("the option check covers one-option cards and stops once the owner has chosen", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    one: { item: "owner", options: [{ key: "A", text: "Do" }] },
+    chosen: { item: "owner", options, status: "open" },
+  }, {
+    answer: { target: "q:chosen", kind: "choice", text: "A", at: T0, state: "sent", rev: 1 },
+  });
+  assert.equal(rules(s).cardChecks("one")[0]?.label, "选项不足", "a one-option card is checked");
+  assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has already answered is not checked before the ruling");
 });

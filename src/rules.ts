@@ -1,11 +1,11 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
-import type { Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { planRowId } from "./model.ts";
+import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the coordinator may place a project after another. */
-export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
-  if (author !== "总管") throw new Error("after: only the coordinator project 总管 may reorder projects");
+/** Project list order is page order; only the architect may place a project after another. */
+export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
+  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -21,8 +21,56 @@ export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | und
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
 }
 
-/** The one rule that log entries never count as owner-unread: owner-facing item comparisons drop the log first. */
-export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { log: _log, ...rest } = doc as T & { log?: unknown }; return rest; }
+/**
+ * The text of an item's 改动 section, where the board reads which PRs the item is about (docs/design.md, Watching GitHub).
+ * It starts at a `## 改动` heading, or at a line that is `**改动**` with or without a colon after it (text after the colon
+ * belongs to the section). It ends at the next heading (after a `##` heading, one of its level or above, so `###`
+ * subsections stay inside), at the next line that is a bold section name alone, or at a line that starts a 参考 section.
+ */
+export function changesSection(head: string | undefined): string {
+  const out: string[] = [];
+  // 0: outside the section; 2: inside a `##` section; 7: inside a bold one, which any heading ends.
+  let level = 0;
+  for (const line of (head ?? "").split("\n")) {
+    if (level === 0) {
+      const bold = /^\*\*改动\*\*(?:[：:]\s*(.*)|\s*)$/.exec(line);
+      if (/^##\s+改动\s*$/.test(line)) level = 2;
+      else if (bold) { level = 7; if (bold[1]) out.push(bold[1]); }
+      continue;
+    }
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1]!.length <= level) break;
+    if (/^\*\*[^*\n]+\*\*[：:]?\s*$/.test(line) || /^(?:#{1,6}\s+|\*\*)?参考[：:]/.test(line)) break;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+/** The word that makes a plan step a merge row, together with a PR it names (src/query.ts mergeRowPulls). */
+export const MERGE_WORD = "合入";
+/** A plan step that may be a merge row: not done, not dropped, not an acceptance step, and it says 合入. */
+export function isOpenMergeStep(row: PlanRow): row is PlanStep {
+  return "text" in row && !row.accept && (row.state === "todo" || row.state === "doing") && row.text.includes(MERGE_WORD);
+}
+/** Of the PRs a merge row names, those that count: the ones the item's 改动 section names as well. A line that waits for another PR to merge names it too, and that PR is not its own. */
+export function countedPulls(inRow: readonly string[], inChanges: readonly string[]): string[] {
+  const changes = new Set(inChanges);
+  return inRow.filter(key => changes.has(key));
+}
+/** A merge row is done when PRs count for it and GitHub reports every one of them merged. */
+export function mergeRowDone(counted: readonly string[], merged: ReadonlySet<string>): boolean {
+  return counted.length > 0 && counted.every(key => merged.has(key));
+}
+
+/** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
+export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
+/** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
+ * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
+ * first rating left out of `after`; any other pair comes back as it is. */
+export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
+  const { difficulty: _rated, ...rest } = after;
+  return [before, rest as T];
+}
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
 
@@ -72,10 +120,17 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A title longer than this many characters (spaces not counted) gets a check. */
+export const TITLE_MAX_CHARS = 20;
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
 export const STALLED_LABEL = "无人推进";
+/** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
+export const WAITS_TEXT_LABEL = "在等文字";
+/** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
+export const CARD_MIN_OPTIONS = 3;
+export const OPTIONS_LABEL = "选项不足";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
@@ -94,10 +149,8 @@ export interface Rules {
   lineOf(id: string): string;
   groupOf(id: string): string;
   projectOf(id: string): string;
-  isRequest(id: string): boolean;
   /** An existing work item whose status is neither done nor cancelled. Records are not open work. */
   isOpenWork(id: string): boolean;
-  inbox(project: string): string[];
   isLeaf(id: string): boolean;
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
@@ -110,12 +163,19 @@ export interface Rules {
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
+  /** Open work an unpaused root needs: an unpaused root, or work such a root waits on
+   * through open, unpaused rows, owned or shared. Backlog work is needed only when a needed item other than its record
+   * also holds a row for it, and what hangs under it only when that work is; paused work and what only a paused root
+   * needs are not needed. */
+  isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
+  /** The checks of one open decision card (too few options), none for a card of a cancelled item. */
+  cardChecks(key: string): Check[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
   /** A waiting card that names the work stopped until the owner rules (its `blocks`). */
@@ -128,9 +188,14 @@ export interface Rules {
   /** Waiting cards without `blocks` in the item's subtree, the item included. */
   nonBlockingBelow(id: string): number;
   onCycle(id: string): boolean;
+  /** The checks shown for an item: none for a cancelled item. Writes use refusals, which are not filtered. */
   checks(id: string): Check[];
+  /** The same checks unfiltered: the write-time refusals of ops read these, cancelled items included. */
+  refusals(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
+  /** Items whose plan step text names this item with [[it:key]], any state. */
+  mentionedBy(id: string): string[];
   stepDays(step: PlanStep): number;
   stepLine(step: PlanStep): string;
   planRows(id: string): DerivedPlanRow[];
@@ -153,6 +218,11 @@ const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
+/** A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.
+ * Keys follow the board's Key pattern. Block text has no other use for double square brackets. */
+export const REFERENCE = /\[\[(it|q):([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
+/** The item keys a text names with [[it:key]]. */
+function mentionsIn(text: string): string[] { return [...text.matchAll(REFERENCE)].filter(m => m[1] === "it").map(m => m[2]!); }
 
 /** A Rules object belongs to one immutable snapshot. Create another after a write.
  * Array/object results are defensive copies; item() returns the snapshot's item.
@@ -161,7 +231,293 @@ const ANSWER = { approve: "同意：", done: "已完成：" };
 export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
-export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>, now = Date.now()): Rules {
+type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
+/** One source of activity times: the times it gives, and the item they reset (none for board-wide writes). */
+interface Contribution { id: string | undefined; times: number[]; target?: string }
+const parsedTimes = (values: ReadonlyArray<string | undefined>): number[] => values.flatMap(at => { const time = at ? Date.parse(at) : NaN; return Number.isFinite(time) ? [time] : []; });
+function insertSorted(list: number[], value: number): void {
+  let low = 0, high = list.length;
+  while (low < high) { const middle = (low + high) >> 1; if (list[middle]! <= value) low = middle + 1; else high = middle; }
+  list.splice(low, 0, value);
+}
+function removeSorted(list: number[], value: number): void {
+  let low = 0, high = list.length;
+  while (low < high) { const middle = (low + high) >> 1; if (list[middle]! < value) low = middle + 1; else high = middle; }
+  if (list[low] !== value) throw new Error("activity index: removing a time it does not hold");
+  list.splice(low, 1);
+}
+const isSorted = (list: readonly string[]): boolean => list.every((value, i) => i === 0 || list[i - 1]! <= value);
+/** What `b` holds that `a` does not, and the reverse, counting repeats. */
+function stringDelta(a: readonly string[], b: readonly string[]): { added: string[]; removed: string[] } {
+  const added: string[] = [], removed: string[] = [];
+  if (isSorted(a) && isSorted(b)) {
+    let i = 0, j = 0;
+    while (i < a.length || j < b.length) {
+      if (j >= b.length || i < a.length && a[i]! < b[j]!) removed.push(a[i++]!);
+      else if (i >= a.length || b[j]! < a[i]!) added.push(b[j++]!);
+      else { i++; j++; }
+    }
+    return { added, removed };
+  }
+  const counts = new Map<string, number>();
+  for (const value of a) counts.set(value, (counts.get(value) ?? 0) + 1);
+  for (const value of b) { const n = counts.get(value) ?? 0; if (n > 0) counts.set(value, n - 1); else added.push(value); }
+  for (const [value, n] of counts) for (let k = 0; k < n; k++) removed.push(value);
+  return { added, removed };
+}
+
+/**
+ * The parsed times the stalled check reads, kept across writes instead of
+ * rescanning every log, write and note for each Rules object. It holds every
+ * finite time from the same sources as the from-scratch scan in `rules`
+ * (content writes, the per-item last changes, document times), and filters by
+ * `now` only when asked, so one index serves any time. `advance` diffs a later
+ * (or any other) snapshot by document identity and returns a new index; an
+ * index never changes after it is made, so rules built on it stay valid.
+ * Equivalence with the from-scratch scan is tested in test/derived.test.ts.
+ */
+export class ActivityIndex {
+  /** Every time, ascending, repeats kept. */
+  private readonly all: number[];
+  /** Each item's times, ascending. */
+  private readonly perItem: Map<string, number[]>;
+  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "g:" glossaries. */
+  private readonly sources: Map<string, Contribution>;
+  /** Notes by the card they target, re-resolved when that card changes or goes. */
+  private readonly cardNotes: Map<string, Set<string>>;
+  /** The parts of the snapshot this index reflects, compared by identity. */
+  private readonly seen: ActivityInput;
+  private constructor(all: number[], perItem: Map<string, number[]>, sources: Map<string, Contribution>, cardNotes: Map<string, Set<string>>, seen: ActivityInput) {
+    this.all = all; this.perItem = perItem; this.sources = sources; this.cardNotes = cardNotes; this.seen = seen;
+  }
+  static build(s: ActivityInput): ActivityIndex {
+    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, glossaries: {}, activity: { writes: [], items: {} } });
+    return index.advance(s);
+  }
+  /** Whether this index was made for exactly these documents. */
+  reflects(s: ActivityInput): boolean {
+    const seen = this.seen;
+    return seen.items === s.items && seen.decisions === s.decisions && seen.notes === s.notes && seen.activity === s.activity
+      && seen.glossaries === s.glossaries;
+  }
+  /** The index of `s`, sharing what did not change. */
+  advance(s: ActivityInput): ActivityIndex {
+    if (this.reflects(s)) return this;
+    const all = this.all.slice(), perItem = new Map(this.perItem), sources = new Map(this.sources), cardNotes = new Map(this.cardNotes);
+    const ownItems = new Set<string>(), ownCards = new Set<string>();
+    const itemTimes = (id: string): number[] => {
+      if (!ownItems.has(id)) { ownItems.add(id); perItem.set(id, (perItem.get(id) ?? []).slice()); }
+      return perItem.get(id)!;
+    };
+    const cardSet = (key: string): Set<string> => {
+      if (!ownCards.has(key)) { ownCards.add(key); cardNotes.set(key, new Set(cardNotes.get(key))); }
+      return cardNotes.get(key)!;
+    };
+    const replace = (key: string, next: Contribution | undefined): void => {
+      const old = sources.get(key);
+      if (old) {
+        for (const time of old.times) { removeSorted(all, time); if (old.id) removeSorted(itemTimes(old.id), time); }
+        if (old.target) cardSet(old.target).delete(key.slice(2));
+        sources.delete(key);
+      }
+      if (next && (next.times.length || next.target)) {
+        for (const time of next.times) { insertSorted(all, time); if (next.id) insertSorted(itemTimes(next.id), time); }
+        if (next.target) cardSet(next.target).add(key.slice(2));
+        sources.set(key, next);
+      }
+    };
+    const note = (key: string, n: Note | undefined): Contribution | undefined => {
+      if (!n) return undefined;
+      const card = n.target.startsWith("q:") ? n.target.slice(2) : undefined;
+      const id = card === undefined ? n.target.slice(3) : Object.hasOwn(s.decisions, card) ? s.decisions[card]!.item : undefined;
+      return { id: id || undefined, times: parsedTimes([n.at, n.sentAt, n.repliedAt]), ...(card === undefined ? {} : { target: card }) };
+    };
+    // Every key whose document is a different object in `s` than in what this index saw.
+    function changedKeys<T>(before: Readonly<Record<string, T>> | undefined, after: Readonly<Record<string, T>> | undefined): string[] {
+      const a = before ?? {}, b = after ?? {};
+      if (a === b) return [];
+      const keys: string[] = [];
+      for (const key of Object.keys(b)) if (!Object.hasOwn(a, key) || a[key] !== b[key]) keys.push(key);
+      for (const key of Object.keys(a)) if (!Object.hasOwn(b, key)) keys.push(key);
+      return keys;
+    }
+    const get = <T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined => record && Object.hasOwn(record, key) ? record[key] : undefined;
+    const seen = this.seen, before = seen.activity, after = s.activity;
+    if (before !== after) {
+      const { added, removed } = stringDelta(before?.writes ?? [], after?.writes ?? []);
+      for (const time of parsedTimes(removed)) removeSorted(all, time);
+      for (const time of parsedTimes(added)) insertSorted(all, time);
+      for (const id of changedKeys(before?.items, after?.items)) {
+        const at = get(after?.items, id);
+        replace("a:" + id, at === undefined ? undefined : { id, times: parsedTimes([at]) });
+      }
+    }
+    for (const id of changedKeys(seen.items, s.items)) {
+      const it = get(s.items, id);
+      replace("i:" + id, it && { id, times: parsedTimes([it.created, it.updated, ...it.log.map(entry => entry.at)]) });
+    }
+    const cards = changedKeys(seen.decisions, s.decisions);
+    for (const key of cards) {
+      const card = get(s.decisions, key);
+      replace("d:" + key, card && { id: card.item || undefined, times: parsedTimes([card.at, card.updated, card.ruledAt]) });
+    }
+    const notes = new Set(changedKeys(seen.notes, s.notes));
+    // A note on a card resets the card's item: a card that moved or went re-resolves its notes.
+    for (const key of cards) for (const n of cardNotes.get(key) ?? []) notes.add(n);
+    for (const key of notes) replace("n:" + key, note(key, get(s.notes, key)));
+    for (const key of changedKeys(seen.glossaries, s.glossaries)) {
+      const glossary = get(s.glossaries, key);
+      replace("g:" + key, glossary && { id: undefined, times: parsedTimes(glossary.terms.map(term => term.updated)) });
+    }
+    for (const id of ownItems) if (!perItem.get(id)!.length) perItem.delete(id);
+    for (const key of ownCards) if (!cardNotes.get(key)!.size) cardNotes.delete(key);
+    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, glossaries: s.glossaries, activity: s.activity });
+  }
+  /** The union of active windows up to `now`: what the from-scratch scan in `rules` gives. */
+  intervals(now: number): Array<[number, number]> {
+    const intervals: Array<[number, number]> = [];
+    for (const at of this.all) {
+      if (at > now) break;
+      const end = Math.min(now, at + ACTIVE_WINDOW_MS), previous = intervals.at(-1);
+      if (previous && previous[1] >= at) previous[1] = Math.max(previous[1], end);
+      else intervals.push([at, end]);
+    }
+    return intervals;
+  }
+  /** The item's last change at or before `now`, or -Infinity. */
+  changedAt(id: string, now: number): number {
+    const times = this.perItem.get(id);
+    if (!times) return -Infinity;
+    for (let i = times.length - 1; i >= 0; i--) if (times[i]! <= now) return times[i]!;
+    return -Infinity;
+  }
+}
+
+/** `list` with `value` inserted at its sorted place: the same array as pushing it and sorting. */
+export function withSorted(list: readonly string[], value: string): string[] {
+  let low = 0, high = list.length;
+  while (low < high) { const middle = (low + high) >> 1; if (list[middle]! <= value) low = middle + 1; else high = middle; }
+  return [...list.slice(0, low), value, ...list.slice(low)];
+}
+/** How one commit changed Snapshot["activity"]: the content write's time (absent for an owner-only commit), the items
+ * whose last change moved, and each item whose pause spans changed with its whole new list. `from` is the head before
+ * the commit: the delta applies only to the snapshot at that head. */
+export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }>; agents?: Record<string, AgentTouch[]> }
+/** The activity after `delta`, equal to the store's (docs/design.md, live updates); unchanged activity stays the same object. */
+export function applyActivityDelta(activity: Snapshot["activity"], delta: ActivityDelta): Snapshot["activity"] {
+  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length && !Object.keys(delta.agents ?? {}).length) return activity;
+  const base = activity ?? { writes: [], items: {} };
+  const pauses = base.pauses || Object.keys(delta.pauses).length ? { ...base.pauses, ...delta.pauses } : undefined;
+  const sessions = base.sessions || Object.keys(delta.sessions ?? {}).length ? { ...base.sessions, ...delta.sessions } : undefined;
+  const agents = base.agents || Object.keys(delta.agents ?? {}).length ? { ...base.agents, ...delta.agents } : undefined;
+  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
+}
+
+/** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
+ * and the labels of what it waits on and what waits on it. The page repaints an item when this changes. */
+export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {
+  const it = r.item(id);
+  const label = (kind: string, key: string): unknown[] => {
+    if (kind === "card") return [decisions[key]?.question, decisions[key]?.status, decisions[key]?.blocks];
+    const owner = r.parentOf(key);
+    return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
+  };
+  const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
+  const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+    r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
+}
+
+/**
+ * The items whose page presentation a live update can change, from the items
+ * it touched directly (`seeds`): what a full pass over every item would find
+ * changed, without deriving every item. A derived value moves only along plan
+ * edges (rows and their reverse), so the walk examines the neighbours of every
+ * item whose derived summary changed, and stops at items whose summary did
+ * not. The result adds every examined item's ancestors, whose subtree counts,
+ * filters and owned-row lines read it. Elapsed time alone (active time, doing
+ * days) is not a change here: the page re-signs everything on its minute timer.
+ */
+export function affectedItems(before: Rules, after: Rules, seeds: Iterable<string>): Set<string> {
+  const summary = (r: Rules, id: string): string => {
+    const it = r.item(id);
+    if (!it) return "";
+    const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
+    return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
+      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.checks(id)]);
+  };
+  const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
+  const examined = new Set<string>(), queue: string[] = [];
+  for (const id of seeds) if (!examined.has(id)) { examined.add(id); queue.push(id); }
+  while (queue.length) {
+    for (const next of neighbours(queue.pop()!)) {
+      if (examined.has(next)) continue;
+      examined.add(next);
+      if (summary(before, next) !== summary(after, next)) queue.push(next);
+    }
+  }
+  const out = new Set(examined);
+  for (const id of examined) for (const r of [before, after]) for (const a of r.ancestors(id)) out.add(a);
+  // A doing step's clock also reads the items it names, so a change under a named item (itself or any owner of it) reaches the step's item.
+  for (const id of examined) for (const r of [before, after]) for (const target of [id, ...r.ancestors(id)]) for (const waiter of r.mentionedBy(target)) {
+    out.add(waiter);
+    for (const a of r.ancestors(waiter)) out.add(a);
+  }
+  return out;
+}
+/** The items a live change touches directly, or null when it changes what every item reads (the board, the owner's
+ * state, a glossary). Card and note changes reach the card's item and every plan waiting on the card; `activity`, the
+ * change's activity delta, adds the items whose clock or pause spans it moved. */
+export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after: Pick<Snapshot, "decisions" | "notes">, beforeRules: Rules, afterRules: Rules, changed: ReadonlyArray<{ kind: string; id: string }>, activity?: ActivityDelta): Set<string> | null {
+  // Items whose last change or pause spans moved, including a note on a card deleted earlier, which only the store places.
+  const seeds = new Set<string>([...Object.keys(activity?.items ?? {}), ...Object.keys(activity?.pauses ?? {})]);
+  const card = (key: string) => {
+    for (const s of [before, after]) { const owner = Object.hasOwn(s.decisions, key) ? s.decisions[key]!.item : undefined; if (owner) seeds.add(owner); }
+    for (const r of [beforeRules, afterRules]) for (const waiter of r.cardDependents(key)) seeds.add(waiter.id);
+  };
+  for (const doc of changed) {
+    if (doc.kind === "item") seeds.add(doc.id);
+    else if (doc.kind === "decision") card(doc.id);
+    else if (doc.kind === "note") {
+      for (const s of [before, after]) {
+        const target = Object.hasOwn(s.notes, doc.id) ? s.notes[doc.id]!.target : undefined;
+        if (target?.startsWith("it:")) seeds.add(target.slice(3));
+        else if (target?.startsWith("q:")) card(target.slice(2));
+      }
+    } else return null;
+  }
+  return seeds;
+}
+
+/** Rules objects shared by every reader of one snapshot. A Rules object reads
+ * `now` only for elapsed time (active time, doing days); readers within the
+ * same minute share the one built at the first read of that minute, so its
+ * results are exactly `rules(s, t)` for that first read's time `t`. The
+ * activity index is advanced from the newest one instead of rebuilt. */
+export class DerivedCache {
+  private latest?: ActivityIndex;
+  private readonly byState = new WeakMap<object, { bucket: number; rules: Rules }>();
+  /** The activity index of `s`, advanced from the newest index this cache made. */
+  activity(s: ActivityInput): ActivityIndex {
+    this.latest = this.latest ? this.latest.advance(s) : ActivityIndex.build(s);
+    return this.latest;
+  }
+  rules(s: RulesInput, now = Date.now()): Rules {
+    const bucket = Math.floor(now / 60_000), hit = this.byState.get(s);
+    if (hit?.bucket === bucket) return hit.rules;
+    const made = rules(s, now, { activity: () => this.activity(s) });
+    this.byState.set(s, { bucket, rules: made });
+    return made;
+  }
+  /** Rules for a prospective state derived from `base`, not kept: its activity index is advanced from base's without replacing it. */
+  candidate(base: ActivityInput, s: RulesInput, now = Date.now()): Rules {
+    return rules(s, now, { activity: () => (this.latest?.reflects(base) ? this.latest : this.activity(base)).advance(s) });
+  }
+}
+
+type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
+/** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
+export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
   function stepLine(step: PlanStep): string {
     if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
@@ -182,11 +538,16 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       const children = new Map<string, string[]>();
       const owners = new Map<string, string[]>();
       const notes = new Map<string, Note[]>();
-      const cards = new Map<string, string[]>();
+      const cards = new Map<string, string[]>(), mentioned = new Map<string, string[]>();
       for (const [id, it] of items) {
         const owned = it.plan.filter(row => "item" in row && row.own).map(row => (row as Extract<PlanRow, { item: string }>).item);
         children.set(id, owned);
         for (const target of owned) { const list = owners.get(target) || []; list.push(id); owners.set(target, list); }
+        for (const row of it.plan) if ("text" in row) for (const target of new Set(mentionsIn(row.text))) {
+          const list = mentioned.get(target) || [];
+          if (!list.includes(id)) list.push(id);
+          mentioned.set(target, list);
+        }
       }
       children.set("", [...items.keys()].filter(id => !owners.has(id)).sort(byOrder));
       for (const n of Object.values(s.notes)) {
@@ -198,7 +559,7 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         list.push(key); cards.set(d.item, list);
       }
       for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
-      return { items, children, owners, notes, cards, decisions: new Map(Object.entries(s.decisions)) };
+      return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
   // Called while building the index too, so it must not call index().
@@ -231,10 +592,9 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   }
   function isPaused(id: string): boolean { return statusOf(id) === "paused"; }
   function groupOf(id: string): string { return item(id)?.group || ""; }
-  function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
-      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
+      const list = kids("").filter(id => !include || include(id)), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
       return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
     }
@@ -372,6 +732,19 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     });
   }
   function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
+  // The reach of the unpaused roots, by the same walk as the priorities: up from every root along the open, unpaused rows.
+  function neededSet(): Set<string> {
+    return cached("needed", "", () => {
+      const ids = [...index().items.keys()], out = new Set<string>();
+      const eligible = (id: string): boolean => isOpenWork(id) && !isPaused(id);
+      for (const id of ids) if (eligible(id) && isRoot(id)) out.add(id);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const id of ids) if (!out.has(id) && eligible(id) && waiters(id).some(waiter => out.has(waiter))) { out.add(id); changed = true; }
+      }
+      return out;
+    });
+  }
   function cycles(): Set<string> {
     return cached("cycles", "", () => {
       const idx = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>(), out = new Set<string>();
@@ -396,8 +769,12 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
   }
   // Current document times cover imported/synthetic snapshots; history retains
   // overwritten revisions and deleted cards/notes, which current fields cannot.
-  function activity() {
+  function activity(): { intervals: Array<[number, number]>; changedAt(id: string): number } {
     return cached("activity", "", () => {
+      if (options.activity) {
+        const index = typeof options.activity === "function" ? options.activity() : options.activity;
+        return { intervals: index.intervals(now), changedAt: (id: string) => index.changedAt(id, now) };
+      }
       const writes: number[] = [], changed = new Map<string, number>();
       const add = (at: string | undefined, id?: string) => {
         const time = at ? Date.parse(at) : NaN;
@@ -416,7 +793,6 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         const id = note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item;
         add(note.at, id); add(note.sentAt, id); add(note.repliedAt, id);
       }
-      for (const notice of Object.values(s.notices ?? {})) { add(notice.at); add(notice.read); }
       for (const glossary of Object.values(s.glossaries ?? {})) for (const term of glossary.terms) add(term.updated);
       const intervals: Array<[number, number]> = [];
       for (const at of writes.sort((a, b) => a - b)) {
@@ -424,12 +800,23 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         if (previous && previous[1] >= at) previous[1] = Math.max(previous[1], end);
         else intervals.push([at, end]);
       }
-      return { intervals, changed };
+      return { intervals, changedAt: (id: string) => changed.get(id) ?? -Infinity };
     });
+  }
+  /** The items whose changes count as the progress of this item's doing steps: the item itself, every item it owns that
+   * is in progress, and every item a doing step names, each with the items it owns down every layer. A shared
+   * dependency is another item's work and does not count. */
+  function stallRelated(id: string): string[] {
+    const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
+    for (const { row, state } of planRows(id)) {
+      if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
+      else if ("item" in row && row.own && state === "progress") down(row.item);
+    }
+    return [...out];
   }
   function stalled(id: string): boolean {
     if (isPaused(id)) return false;
-    const { intervals, changed } = activity(), since = changed.get(id) ?? -Infinity;
+    const { intervals, changedAt } = activity(), since = Math.max(...stallRelated(id).map(changedAt));
     if (!Number.isFinite(since)) return false;
     const pauses: Array<[number, number]> = [];
     const recorded = (s.activity?.pauses?.[id] ?? []).map(pause => [Date.parse(pause.start), pause.end ? Date.parse(pause.end) : now] as [number, number])
@@ -445,6 +832,19 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       return total + Math.max(0, end - from) - paused;
     }, 0) >= STALLED_AFTER_MS;
   }
+  function cardChecks(key: string): Check[] {
+    return cached("cardChecks", key, () => {
+      const d = index().decisions.get(key);
+      if (!d || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
+      return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
+    });
+  }
+  // The card checks shown: none for a card of a cancelled item. Refusals keep them.
+  function shownCardChecks(key: string): Check[] {
+    const d = index().decisions.get(key);
+    return d && statusOf(d.item) === "cancelled" ? [] : cardChecks(key).map(c => ({ ...c }));
+  }
+  function copyChecks(list: Check[]): Check[] { return list.map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }); }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
@@ -460,7 +860,13 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
+      for (const card of cardsOf(id)) for (const check of cardChecks(card)) out.push({ ...check, target: { kind: "card", id: card } });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
+      // Titles of closed items are not revised, so only open items and records are checked.
+      const titleLength = [...it.title.replace(/\s/g, "")].length;
+      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
+      // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
+      if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
       if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
         if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push({ text: `暂停了，但 ${item(waiter.id)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter.id } });
@@ -471,7 +877,13 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
+        const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
+        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
+        // Work an unpaused root needs gets a difficulty before it is dispatched. What no such root needs (backlog work,
+        // what hangs under it, paused work) is not about to be, so it is not asked for one yet.
+        if (it.difficulty === undefined && neededSet().has(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
@@ -481,16 +893,18 @@ export function rules(s: Pick<Snapshot, "board" | "items" | "decisions" | "notes
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
+    mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, priorityOf,
+    isOpenWork,
+    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    cardsOf: id => cardsOf(id).slice(), cardChecks: key => shownCardChecks(key), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
-    checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
+    checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
+    refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };
 }

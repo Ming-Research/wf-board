@@ -1,46 +1,61 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
-import { rules } from "./rules.ts";
+import { rules, DerivedCache, withSorted } from "./rules.ts";
+import { touchAgent } from "./agents.ts";
+import type { ActivityDelta } from "./rules.ts";
+import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
+import type { CachedPauseItem } from "./startup-cache.ts";
+import { stopwatch } from "./log.ts";
+import type { StartupStep } from "./log.ts";
 
-export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
+export type DocKind = "item" | "decision" | "note" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
-export interface Txn { author: string; message: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
+export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
-export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[] }
-export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[] }
+/** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
+export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
+/** `session`: the writing session's name from the commit's `Session:` trailer; `message` excludes the trailer. */
+export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string }
+/** The commit trailer that records which session made a write (docs/design.md, history). */
+const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
-type Doc = Item | Decision | Note | Notice | Glossary;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, notice: Notice, glossary: Glossary };
-const collections = { item: "items", decision: "decisions", note: "notes", notice: "notices", glossary: "glossaries" } as const;
+type Doc = Item | Decision | Note | Glossary;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary };
+const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries" } as const;
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
-const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, notice: Key, glossary: GlossaryId };
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
+/** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
+export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
 
 // History grows for the lifetime of the daemon. Retain recent parsed documents,
 // but fewer much larger whole boards; normalization is needed at format
 // boundaries, not for every old commit.
 const historicalDocumentLimit = 4096;
 const comparedSnapshotLimit = 4;
-type PauseHistoryMarker = { version: 1; head: string; first: string | null };
+const historicalDiffLimit = 2048;
+/** The startup cache is written at most this often, by the first commit after a write (a start that scanned writes it at once). */
+const CACHE_WRITE_DELAY_MS = 2 * 60_000;
+const CACHE_FILE = "wf-board-startup-cache.json";
 
 function pauseMetadata(value: unknown): Item["paused"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -127,7 +142,8 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
  * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
  * strict. Dropped by "Drop area short names at the owner's request" (item short), "Drop item agents: responsibility
  * moves to each project's configuration" (item agent) and "Projects are identified by themselves: drop session names
- * (agents)" (board project agents). */
+ * (agents)" (board project agents). The removed inbox's item `request` marker is not here: the legacy conversion still
+ * reads it, so parsePlanData drops it only from current-shape items. */
 const retiredFields = { item: ["short", "agent"], project: ["agents"] } as const;
 function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
@@ -150,6 +166,24 @@ function retiredItemShape(doc: unknown): boolean {
     || (fields.record !== true && !Object.hasOwn(fields, "plan"));
 }
 
+/** A board project written by the one-time import carries `migrated`. */
+function retiredBoardShape(doc: unknown): boolean {
+  const projects = (doc as { projects?: unknown } | undefined)?.projects;
+  return Array.isArray(projects) && projects.some(project => project && typeof project === "object" && Object.hasOwn(project, "migrated"));
+}
+
+/** Owner state of the retired formats still holds `archived`. */
+function retiredOwnerShape(doc: unknown): boolean {
+  return !!doc && typeof doc === "object" && Object.hasOwn(doc, "archived");
+}
+
+/** Whether a parsed data file has a shape only a retired format wrote (the conversion in `open` is for these). */
+function retiredShape(path: string, doc: unknown): boolean {
+  if (path === "board.yaml") return retiredBoardShape(doc);
+  if (path === "state/owner.yaml") return retiredOwnerShape(doc);
+  return path.startsWith("items/") && retiredItemShape(doc);
+}
+
 function docPath(kind: DocKind, id: string): string {
   validated(ids[kind], id, `${kind} id ${id}`);
   return `${collections[kind]}/${id}.yaml`;
@@ -169,12 +203,24 @@ function atomicWrite(path: string, value: unknown): void {
   }
 }
 
+/** Deep freeze. A frozen object is skipped: everything this module freezes is
+ * frozen whole, so a frozen object's children are frozen already. */
 function frozen<T>(value: T): T {
-  if (value && typeof value === "object") {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) frozen(child);
     Object.freeze(value);
   }
   return value;
+}
+
+/** A published snapshot is shared, never copied: its documents are frozen when
+ * they enter it, and the snapshot and its collections are frozen here. A write
+ * builds the next snapshot by copying only the collections it changes. */
+function sealed(state: Snapshot): Snapshot {
+  for (const collection of [state.items, state.decisions, state.notes, state.glossaries]) Object.freeze(collection);
+  frozen(state.board); frozen(state.owner);
+  if (state.activity) frozen(state.activity);
+  return Object.freeze(state);
 }
 
 /**
@@ -255,20 +301,27 @@ export class Store {
   private readonly blobs: BlobReader;
   /** Last known placement also resolves later changes to notes on a deleted card. */
   private readonly cardItems = new Map<string, string>();
-  private pauseHistory?: PauseHistoryMarker;
+  /** Whether some commit up to the head set a pause: until then the pause replay has nothing to track. */
+  private pauseStarted = false;
   /** The next short number to issue; numbers.yaml holds it once any number was issued. */
   private nextNum = 1;
   private numbersInHead = false;
-  private pauseHistoryPath?: string;
-  // Keep a defensive frozen copy, never expose mutable transaction state. Owner
-  // reads can change without a commit, and startup replaces the activity index.
-  private published?: { state: Snapshot; owner: OwnerState; activity: Snapshot["activity"]; head: string; value: Snapshot };
+  private startupCachePath?: string;
+  /** Set once the activity index is derived: from then on a commit schedules a cache write. */
+  private activityLoaded = false;
+  private cacheTimer?: NodeJS.Timeout;
+  private cacheWrite: Promise<void> = Promise.resolve();
+  private cacheDelayMs = CACHE_WRITE_DELAY_MS;
+  /** Reports the time of each startup step; a no-op after `open` unless the caller gave `startup`. */
+  private lap: (step: string, detail?: string) => void = () => {};
+  /** Rules shared by every reader of a snapshot, and the activity index kept across writes. */
+  readonly derived = new DerivedCache();
 
   private constructor(dir: string, state: Snapshot) {
     this.dir = dir;
     this.blobs = new BlobReader(dir);
     this.state = state;
-    this.committedOwner = structuredClone(state.owner);
+    this.committedOwner = frozen(structuredClone(state.owner));
   }
 
   private async git(args: string[], author?: string): Promise<string> {
@@ -281,8 +334,10 @@ export class Store {
     return result.stdout;
   }
 
-  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string } = {}): Promise<Store> {
+  /** `startup` is told how long each step of the start took (docs/design.md, Running). */
+  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number } = {}): Promise<Store> {
     dir = resolve(dir);
+    const lap = stopwatch(opts.startup);
     let entries: string[];
     try { entries = await readdir(dir); }
     catch (error) {
@@ -295,59 +350,30 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
-      for (const sub of ["items", "decisions", "notes", "notices", "state"]) mkdirSync(join(dir, sub), { recursive: true });
+      for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
       atomicWrite(join(dir, "board.yaml"), board);
       await store.git(["add", "--", "board.yaml"]);
       await store.git(["-c", "commit.gpgsign=false", "commit", "--author", "wf-board <wf-board@wf-board.invalid>", "-m", "Initialize board"], "wf-board");
     }
-    if (entries.includes("board.yaml")) {
-      const raw = await readPlanData(dir);
-      if (raw.legacy || raw.hasArchives) {
-        if (!opts.planConversionHead) throw new Error("Legacy item plans require an owner-approved dry run; set WF_BOARD_PLAN_CONVERSION_HEAD to its sourceHead");
-        if (opts.planConversionHead !== raw.snapshot.head) throw new Error(`Approved plan conversion head ${opts.planConversionHead} differs from current ${raw.snapshot.head}`);
-        const source = raw.snapshot as Legacy.Snapshot;
-        const at = new Date().toISOString();
-        const result = raw.legacy ? convertPlans(source, {at}) : removeArchives(raw.snapshot as Snapshot,{at,planConversionAt:raw.planConversionAt});
-        result.report.errors.push(...(raw.legacy ? verifyPlans(source,result) : verifyArchiveRemoval(raw.snapshot as Snapshot,result,raw.planConversionAt)));
-        updatePlanSummary(result.report,true);
-        if (result.report.errors.length) throw new Error(`Plan conversion refused:\n${result.report.errors.join("\n")}`);
-        const migration = new Store(dir, source as unknown as Snapshot);
-        const committedOwner = await migration.readAt("state/owner.yaml", source.head);
-        migration.committedOwner = committedOwner === null ? {} : validated(Legacy.OwnerState, committedOwner, "state/owner.yaml");
-        migration.ownerInHead = committedOwner !== null;
-        migration.ownerFileExists = await stat(join(dir,"state/owner.yaml")).then(()=>true).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return false;throw error;});
-        const originalOwner = structuredClone(source.owner), ownerPath = join(dir,"state/owner.yaml");
-        const ownerBytes = await readFile(ownerPath).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;});
-        migration.state.owner = structuredClone(result.snapshot.owner);
-        try {
-          await migration.commit({ author: "总管", message: PLAN_CONVERSION_MESSAGE, board: result.snapshot.board,
-            puts: Object.entries(result.snapshot.items).map(([id, doc]) => ({ kind: "item", id, doc, expectRev: source.items[id]!.rev })),
-            planConversionReport: result.report });
-        } catch(error) {
-          // Ordinary commits save pending owner reads on rollback. A failed
-          // migration must additionally restore the original owner sidefile.
-          migration.state.owner = originalOwner;
-          if(ownerBytes === undefined)rmSync(ownerPath,{force:true});else writeFileSync(ownerPath,ownerBytes);
-          throw error;
-        }
-        return Store.open(dir);
-      }
-    }
     const invalid: InvalidDocument[] = [];
+    // Whether any document has a shape only a retired format wrote.
+    let retired = false;
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
-        return validated(schema, parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" }), path);
+        const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
+        if (retiredShape(path, raw)) retired = true;
+        return validated(schema, raw, path);
       } catch (error) {
         invalid.push(...(error instanceof ValidationError ? error.invalid : [{ path, issues: String(error) }]));
         return undefined;
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "notices" | "glossaries"> = { items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {} };
-    for (const kind of ["item", "decision", "note", "notice", "glossary"] as const) {
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> = { items: {}, decisions: {}, notes: {}, glossaries: {} };
+    for (const kind of ["item", "decision", "note", "glossary"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -375,57 +401,68 @@ export class Store {
       await stat(join(dir, numbersPath));
       numbers = await load(numbersPath, Numbers);
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    lap("read documents", `${Object.values(docs).reduce((n, collection) => n + Object.keys(collection).length, 0)} documents`);
+    // A board of the retired formats is told apart, and converted, from the raw documents readPlanData reads; only a
+    // board that looks retired or does not load pays for that second read.
+    if ((retired || invalid.length) && entries.includes("board.yaml")) {
+      const raw = await readPlanData(dir).finally(() => lap("read documents again", retired ? "a document has a retired format's shape" : "a document did not load"));
+      if (raw.legacy || raw.hasArchives) {
+        await Store.convertRetired(dir, raw, opts.planConversionHead);
+        return Store.open(dir, { startup: opts.startup, cacheDelayMs: opts.cacheDelayMs });
+      }
+    }
     if (invalid.length || !board) throw new ValidationError(invalid);
     checkNumbers(docs, numbers);
+    for (const collection of Object.values(docs)) for (const doc of Object.values(collection)) frozen(doc);
     const store = new Store(dir, { board, ...docs, owner, head: "" });
+    store.lap = lap;
+    if (opts.cacheDelayMs !== undefined) store.cacheDelayMs = opts.cacheDelayMs;
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "notices", "glossaries"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
-    store.state.head = (await store.git(["rev-parse", "HEAD"])).trim();
+    store.state = sealed({ ...store.state, head: (await store.git(["rev-parse", "HEAD"])).trim() });
     // Owner state can legitimately be newer than HEAD after a daemon restart.
     const persistedOwner = await store.readAt("state/owner.yaml", store.state.head);
     store.committedOwner = persistedOwner === null ? {} : validated(OwnerState, persistedOwner, "state/owner.yaml");
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
-    await store.migrateCoordinator();
+    lap("check board", "numbers, git status, HEAD, owner state");
     await store.numberExisting();
+    lap("number documents");
     await store.loadActivity();
     return store;
   }
 
-  /** Remove once the live board has migrated from 跨项目 to 总管. */
-  private async migrateCoordinator(): Promise<void> {
-    const oldName = "跨项目", newName = "总管";
-    if (!this.state.board.projects.some(p => p.name === oldName)) return;
-    if (this.state.board.projects.some(p => p.name === newName) || Object.hasOwn(this.state.glossaries, newName)) {
-      throw new Error(`Cannot rename coordinator project ${oldName} to ${newName}: destination project or glossary already exists`);
+  /** Convert a board of the retired plan formats in one commit, once the owner approved the dry run for exactly this head. */
+  private static async convertRetired(dir: string, raw: Awaited<ReturnType<typeof readPlanData>>, planConversionHead: string | undefined): Promise<void> {
+    if (!planConversionHead) throw new Error("Legacy item plans require an owner-approved dry run; set WF_BOARD_PLAN_CONVERSION_HEAD to its sourceHead");
+    if (planConversionHead !== raw.snapshot.head) throw new Error(`Approved plan conversion head ${planConversionHead} differs from current ${raw.snapshot.head}`);
+    const source = raw.snapshot as Legacy.Snapshot;
+    const at = new Date().toISOString();
+    const result = raw.legacy ? convertPlans(source, {at}) : removeArchives(raw.snapshot as Snapshot,{at,planConversionAt:raw.planConversionAt});
+    result.report.errors.push(...(raw.legacy ? verifyPlans(source,result) : verifyArchiveRemoval(raw.snapshot as Snapshot,result,raw.planConversionAt)));
+    updatePlanSummary(result.report,true);
+    if (result.report.errors.length) throw new Error(`Plan conversion refused:\n${result.report.errors.join("\n")}`);
+    const migration = new Store(dir, source as unknown as Snapshot);
+    const committedOwner = await migration.readAt("state/owner.yaml", source.head);
+    migration.committedOwner = committedOwner === null ? {} : validated(Legacy.OwnerState, committedOwner, "state/owner.yaml");
+    migration.ownerInHead = committedOwner !== null;
+    migration.ownerFileExists = await stat(join(dir,"state/owner.yaml")).then(()=>true).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return false;throw error;});
+    const originalOwner = structuredClone(source.owner), ownerPath = join(dir,"state/owner.yaml");
+    const ownerBytes = await readFile(ownerPath).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;});
+    migration.state = { ...migration.state, owner: structuredClone(result.snapshot.owner) };
+    try {
+      await migration.commit({ author: "总管", message: PLAN_CONVERSION_MESSAGE, board: result.snapshot.board,
+        puts: Object.entries(result.snapshot.items).map(([id, doc]) => ({ kind: "item", id, doc, expectRev: source.items[id]!.rev })),
+        planConversionReport: result.report });
+    } catch(error) {
+      // Ordinary commits save pending owner reads on rollback. A failed
+      // migration must additionally restore the original owner sidefile.
+      migration.state = { ...migration.state, owner: originalOwner };
+      if(ownerBytes === undefined)rmSync(ownerPath,{force:true});else writeFileSync(ownerPath,ownerBytes);
+      throw error;
     }
-    const rename = (name: string): string => name === oldName ? newName : name;
-    const puts: Put[] = [], deletes: Del[] = [];
-    for (const [id, original] of Object.entries(this.state.items)) {
-      const doc = structuredClone(original);
-      if (doc.group === oldName) doc.group = newName;
-      if (doc.request?.by === oldName) doc.request.by = newName;
-      for (const entry of doc.log) if (entry.by === oldName) entry.by = newName;
-      if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "item", id, doc, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.notes)) {
-      if (original.repliedBy === oldName) puts.push({ kind: "note", id, doc: { ...original, repliedBy: newName }, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.notices)) {
-      if (original.author === oldName) puts.push({ kind: "notice", id, doc: { ...original, author: newName }, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.glossaries)) {
-      const doc = { ...original, terms: original.terms.map(term => ({ ...term, by: rename(term.by) })) };
-      if (id === oldName) {
-        puts.push({ kind: "glossary", id: newName, doc, expectRev: null });
-        deletes.push({ kind: "glossary", id, expectRev: original.rev });
-      } else if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "glossary", id, doc, expectRev: original.rev });
-    }
-    await this.commit({ author: newName, message: `Rename coordinator project ${oldName} to ${newName}`, board: {
-      ...this.state.board, projects: this.state.board.projects.map(p => p.name === oldName ? { ...p, name: newName } : p),
-    }, puts, deletes });
   }
 
   /** Give every unnumbered item and card a short number, oldest first, in one commit. On a board written before
@@ -441,13 +478,22 @@ export class Store {
       puts: pending.map(({ kind, id, doc }) => ({ kind, id, doc, expectRev: doc.rev })) });
   }
 
-  /** Activity is a derived index of the existing history, including replaced and deleted documents. */
+  /** Activity is a derived index of the existing history, including replaced and deleted documents. A start continues
+   * from the startup cache when it can be trusted, replaying only the commits after the commit the cache is of; with no
+   * usable cache it replays the whole history (the scan) and writes the cache at once. */
   private async loadActivity(): Promise<void> {
-    const activity: NonNullable<Snapshot["activity"]> = { writes: [], items: {} };
-    const commits = (await this.log()).reverse();
+    const cache = await this.readStartupCache();
+    if (cache) this.lap("read startup cache", `of ${cache.head.slice(0, 12)}`);
+    const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
+    this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
+    const activity: NonNullable<Snapshot["activity"]> = cache
+      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}) }
+      : { writes: [], items: {} };
+    this.cardItems.clear();
+    for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
     for (const commit of commits) {
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE) continue;
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -478,40 +524,126 @@ export class Store {
         }
       }
       this.noteActivity(activity, commit.at, touched);
+      if (commit.session) { this.noteSessions(activity, commit.at, commit.session, touched); this.noteAgent(activity, commit.at, commit.session, touched); }
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
     }
-    await this.loadPauses(activity, commits);
+    this.lap("replay activity", `${commits.length} commits`);
+    await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null, cache ? `${cache.head}..${this.state.head}` : this.state.head);
     activity.writes.sort();
-    this.state.activity = activity;
+    this.state = sealed({ ...this.state, activity });
+    this.activityLoaded = true;
+    this.lap("replay pauses");
+    // A scan is the slow path: write what it found at once, so the next start does not scan. A start that only
+    // replayed commits leaves the write to the timer, which keeps it quick.
+    if (!cache) await this.saveStartupCache();
+    else if (commits.length) this.scheduleCacheWrite();
+    this.lap("write startup cache", cache ? (commits.length ? "left to the timer" : "up to date") : undefined);
   }
 
-  /** Pause history starts at the first native paused field, not at the board's
-   * oldest legacy snapshot. Read each later changed item once; never convert
-   * whole historical boards or inspect old item bodies when no pause existed. */
-  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[]): Promise<void> {
-    if (!this.state.head || !commits.length) return;
-    const firstCommit = await this.firstPauseCommit(commits);
-    const first = commits.findIndex(commit => commit.commit === firstCommit);
-    if (first < 0) return;
-    const initial = commits[first]!;
-    const items: Snapshot["items"] = {};
-    const paths = (await this.git(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
-    for (const path of paths) {
-      const match = /^items\/(.+)\.yaml$/.exec(path);
-      if (match) {
-        const it = await this.pauseItem(path, initial.commit, match[1]!, initial.at);
-        if (it) items[match[1]!] = it;
-      }
+  /** The startup cache when it can be trusted, else null with the reason reported as a step. A cache is trusted when it
+   * parses to exactly the current format, is of a commit the head descends from, and agrees with the documents on
+   * whether any pause was ever set. */
+  private async readStartupCache(): Promise<StartupCache | null> {
+    const distrust = (why: string): null => { this.lap("startup cache refused", why); return null; };
+    this.startupCachePath ??= resolve(this.dir, (await this.git(["rev-parse", "--git-path", CACHE_FILE])).trim());
+    let text: string;
+    try { text = await readFile(this.startupCachePath, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return distrust("no startup cache file");
+      console.warn("Cannot read startup cache; scanning the history", String(error));
+      return distrust("startup cache unreadable");
     }
-    const source = rules({ ...this.state, items });
-    for (const id of Object.keys(items)) {
-      const owner = source.pausedBy(id);
-      if (owner) {
-        activity.pauses ??= {};
-        activity.pauses[id] = [{ start: items[owner]!.paused!.at }];
-      }
+    let cache: StartupCache;
+    try { cache = StartupCache.parse(JSON.parse(text)); }
+    catch (error) {
+      console.warn("Startup cache is not of the current format; scanning the history", error instanceof z.ZodError ? error.issues[0]?.message : String(error));
+      return distrust("startup cache malformed");
     }
-    for (const commit of commits.slice(first + 1)) {
+    if (!await this.inHistory(cache.head)) return distrust("startup cache is not of an ancestor of the head");
+    // Of the head itself, a cache without pauses contradicts the documents; of an older commit it may be right.
+    if (!cache.pause && cache.head === this.state.head && Object.values(this.state.items).some(it => it.paused)) return distrust("startup cache has no pause history but items are paused");
+    return cache;
+  }
+
+  /** The cache of the current state (call it where the state, the activity index and the card placements agree: after
+   * a commit or after the history was read). */
+  private startupCacheContents(): StartupCache {
+    const activity = this.state.activity ?? { writes: [], items: {} };
+    const items = Object.entries(this.state.items).flatMap(([id, it]): Array<[string, CachedPauseItem]> => {
+      const projected = pauseProjection(it, id, it.updated);
+      return projected ? [[id, { group: projected.group, record: projected.record === true, plan: projected.plan as CachedPauseItem["plan"], updated: projected.updated, ...(projected.paused ? { paused: projected.paused } : {}) }]] : [];
+    });
+    return {
+      version: STARTUP_CACHE_VERSION, head: this.state.head,
+      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null },
+      cardItems: Object.fromEntries(this.cardItems),
+      pause: this.pauseStarted ? { items: Object.fromEntries(items) } : null,
+    };
+  }
+
+  /** Write the startup cache of the current state, atomically; a failure only warns, and the next start scans. The
+   * daemon calls it after a scan and from the write timer, never at shutdown. */
+  async saveStartupCache(): Promise<void> {
+    const contents = this.startupCacheContents();
+    const write = this.cacheWrite.then(async () => {
+      try {
+        this.startupCachePath ??= resolve(this.dir, (await this.git(["rev-parse", "--git-path", CACHE_FILE])).trim());
+        const temp = `${this.startupCachePath}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temp, JSON.stringify(contents), { flag: "wx" });
+          await rename(temp, this.startupCachePath);
+        } finally {
+          await rm(temp, { force: true });
+        }
+      } catch (error) { console.warn("Cannot save startup cache; the next start will scan the history", String(error)); }
+    });
+    this.cacheWrite = write;
+    return write;
+  }
+
+  private scheduleCacheWrite(): void {
+    if (!this.activityLoaded || this.cacheTimer) return;
+    this.cacheTimer = setTimeout(() => { this.cacheTimer = undefined; void this.saveStartupCache(); }, this.cacheDelayMs);
+    this.cacheTimer.unref();
+  }
+
+  /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot. Read each later
+   * changed item once; never convert whole historical boards or inspect old item bodies when no pause existed.
+   * `prior` is the item projections the cache holds as of its commit (null: no pause had been set by then), so the
+   * replay continues from them; `range` is the commits `commits` are, for finding the first pause among them. */
+  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null, range: string): Promise<void> {
+    this.pauseStarted = prior !== null;
+    let items: Snapshot["items"], replay: CommitInfo[];
+    if (prior) {
+      items = Object.fromEntries(Object.entries(prior).map(([id, it]) => [id, { title: id, log: [], links: [], rev: 1, ...it } as Item]));
+      replay = commits;
+    } else {
+      if (!commits.length) return;
+      const firstCommit = await this.firstPauseCommit(commits, range);
+      const first = commits.findIndex(commit => commit.commit === firstCommit);
+      if (first < 0) return;
+      this.pauseStarted = true;
+      const initial = commits[first]!;
+      items = {};
+      const paths = (await this.git(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
+      for (const path of paths) {
+        const match = /^items\/(.+)\.yaml$/.exec(path);
+        if (match) {
+          const it = await this.pauseItem(path, initial.commit, match[1]!, initial.at);
+          if (it) items[match[1]!] = it;
+        }
+      }
+      const source = rules({ ...this.state, items });
+      for (const id of Object.keys(items)) {
+        const owner = source.pausedBy(id);
+        if (owner) {
+          activity.pauses ??= {};
+          activity.pauses[id] = [{ start: items[owner]!.paused!.at }];
+        }
+      }
+      replay = commits.slice(first + 1);
+    }
+    for (const commit of replay) {
       const next = { ...items }, changes: ChangedDoc[] = [];
       for (const path of commit.files) {
         const match = /^items\/(.+)\.yaml$/.exec(path);
@@ -529,41 +661,10 @@ export class Store {
     }
   }
 
-  /** This is an index hint, never board data. A missing/corrupt marker or history
-   * rewind rebuilds it; unchanged heads need no full-history pickaxe. Git's own
-   * metadata directory keeps the disposable cache out of board commits. */
-  private async firstPauseCommit(commits: CommitInfo[]): Promise<string | null> {
-    if (!this.state.head || !commits.length) return null;
-    this.pauseHistoryPath ??= resolve(this.dir, (await this.git(["rev-parse", "--git-path", "wf-board-pause-history.yaml"])).trim());
-    let marker: PauseHistoryMarker | undefined;
-    try {
-      const value: unknown = parse(await readFile(this.pauseHistoryPath, "utf8"));
-      if (value && typeof value === "object") {
-        const fields = value as Record<string, unknown>;
-        if (fields.version === 1 && typeof fields.head === "string" && (fields.first === null || typeof fields.first === "string")) {
-          const candidate = fields as PauseHistoryMarker;
-          const headIndex = commits.findIndex(c => c.commit === candidate.head), firstIndex = commits.findIndex(c => c.commit === candidate.first);
-          if (headIndex >= 0 && (candidate.first === null || (firstIndex >= 0 && firstIndex <= headIndex))) marker = candidate;
-        }
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("Cannot read pause history cache; rebuilding", String(error));
-    }
-    if (marker?.head === this.state.head && marker.first === null && Object.values(this.state.items).some(it => it.paused)) marker = undefined;
-    if (marker?.head === this.state.head) { this.pauseHistory = marker; return marker.first; }
-    const range = marker ? `${marker.head}..${this.state.head}` : this.state.head;
+  /** The first of `commits` (oldest first, all within `range`) that sets a pause, found by a pickaxe over the range. */
+  private async firstPauseCommit(commits: CommitInfo[], range: string): Promise<string | null> {
     const matches = new Set((await this.git(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
-    if (marker?.first) matches.add(marker.first);
-    const first = commits.find(c => matches.has(c.commit))?.commit ?? null;
-    this.savePauseHistory({ version: 1, head: this.state.head, first });
-    return first;
-  }
-
-  private savePauseHistory(marker: PauseHistoryMarker): void {
-    this.pauseHistory = marker;
-    if (!this.pauseHistoryPath) return;
-    try { atomicWrite(this.pauseHistoryPath, marker); }
-    catch (error) { console.warn("Cannot save pause history cache; startup will rebuild it", String(error)); }
+    return commits.find(commit => matches.has(commit.commit))?.commit ?? null;
   }
 
   /** Historical schemas are not today's write schema. Extract only the fields
@@ -611,24 +712,41 @@ export class Store {
       const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
       if (!!oldSource === !!newSource) continue;
       activity.pauses ??= {};
-      const spans = Object.hasOwn(activity.pauses, id) ? activity.pauses[id]! : (activity.pauses[id] = []);
+      // Copy on write: the previous snapshot shares the earlier spans.
+      const spans = activity.pauses[id] = Object.hasOwn(activity.pauses, id) ? [...activity.pauses[id]!] : [];
       if (newSource) {
         const pause = newItems[newSource]!.paused!;
         const newlyPaused = !oldItems[newSource]?.paused;
         spans.push({ start: newlyPaused ? pause.at : at });
       } else {
         const current = spans.at(-1);
-        if (current && current.end === undefined) current.end = at;
+        if (current && current.end === undefined) spans[spans.length - 1] = { ...current, end: at };
       }
     }
   }
 
+  /** Notice files (the retired 要你知道 list) still count in the history that has them: it keeps the active time it gave. */
   private contentPath(file: string): boolean {
     return file === "board.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(file);
   }
 
   private noteActivity(activity: NonNullable<Snapshot["activity"]>, at: string, touched: Iterable<string>): void {
     for (const id of touched) if (!Object.hasOwn(activity.items, id) || Date.parse(at) > Date.parse(activity.items[id]!)) activity.items[id] = at;
+  }
+
+  /** Later writes replace earlier attributions; a write without a session leaves the previous one. */
+  private noteSessions(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
+    for (const id of touched) {
+      const known = activity.sessions?.[id];
+      if (known && Date.parse(at) < Date.parse(known.at)) continue;
+      (activity.sessions ??= {})[id] = { name, at };
+    }
+  }
+
+  /** The session's last two items (src/agents.ts). Unlike an item's last writer, an earlier time never loses to a later one: writes arrive in history order. */
+  private noteAgent(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
+    const items = [...touched];
+    if (items.length) (activity.agents ??= {})[name] = touchAgent(activity.agents?.[name], items, at);
   }
 
   private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
@@ -654,12 +772,9 @@ export class Store {
     return touched;
   }
 
+  /** The current board, shared and frozen; a write publishes a new object and leaves this one unchanged. */
   snapshot(): Snapshot {
-    const s = this.state, previous = this.published;
-    if (previous?.state === s && previous.owner === s.owner && previous.activity === s.activity && previous.head === s.head) return previous.value;
-    const value = frozen(structuredClone(s));
-    this.published = { state: s, owner: s.owner, activity: s.activity, head: s.head, value };
-    return value;
+    return this.state;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -677,7 +792,27 @@ export class Store {
   private async apply(txn: Txn, ownerOnly = false): Promise<{ commit: string; revs: Record<string, number> }> {
     if (!txn.author.trim() || /[<>\r\n\0]/.test(txn.author)) throw new Error("Author must be a nonempty git author name without delimiters");
     if (!txn.message.trim()) throw new Error("Commit message must be nonempty");
-    const next = structuredClone(this.state);
+    const session = txn.session?.trim();
+    if (txn.session !== undefined && (!session || session.length > 80 || /\p{Cc}/u.test(session))) throw new Error("Session must be 1-80 characters without control characters");
+    // Share the current snapshot: copy only the collections this write changes,
+    // on first use, and insert new documents frozen.
+    const next: Snapshot = { ...this.state };
+    const copied = new Set<DocKind>();
+    const collection = (kind: DocKind): Record<string, Doc> => {
+      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...this.state[collections[kind]] }; }
+      return next[collections[kind]] as Record<string, Doc>;
+    };
+    // Lower-cased ids per collection, built on first use: the letter-case alias check without a scan per put.
+    const lowered = new Map<DocKind, Map<string, string[]>>();
+    const aliases = (kind: DocKind): Map<string, string[]> => {
+      let byLower = lowered.get(kind);
+      if (!byLower) {
+        byLower = new Map();
+        for (const id of Object.keys(next[collections[kind]])) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
+        lowered.set(kind, byLower);
+      }
+      return byLower;
+    };
     const changed: ChangedDoc[] = [];
     const revs: Record<string, number> = {};
     const idCounts = new Map<string, number>();
@@ -703,7 +838,7 @@ export class Store {
       const before = Object.hasOwn(records, put.id) ? records[put.id]! : null;
       // Check before any filesystem mutation, including earlier puts in this
       // transaction: these names alias on the owner's case-insensitive volume.
-      const alias = Object.keys(records).find(id => id !== put.id && id.toLowerCase() === put.id.toLowerCase());
+      const alias = aliases(put.kind).get(put.id.toLowerCase())?.find(id => id !== put.id);
       if (alias) throw new ValidationError([{ path, issues: `ID ${put.id} conflicts with ${alias} (letter case only)` }]);
       try {
         const input: Record<string, unknown> = typeof put.doc === "object" && put.doc !== null && !Array.isArray(put.doc) ? { ...put.doc } : {};
@@ -716,12 +851,13 @@ export class Store {
           } else if (given !== undefined) throw new ValidationError([{ path, issues: "num: only the store issues numbers" }]);
           else if (before === null || txn.numberExisting) input.num = nextNum++;
         }
-        const after = validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path);
+        const after = frozen(validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path));
         if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
           continue;
         }
-        records[put.id] = after;
+        if (!before) { const key = put.id.toLowerCase(), list = aliases(put.kind).get(key); if (list) list.push(put.id); else aliases(put.kind).set(key, [put.id]); }
+        collection(put.kind)[put.id] = after;
         revision(put, after.rev);
         changed.push({ kind: put.kind, id: put.id, before, after });
       } catch (error) {
@@ -730,13 +866,13 @@ export class Store {
       }
     }
     for (const del of txn.deletes ?? []) {
-      const records = next[collections[del.kind]] as Record<string, Doc>;
+      const records = collection(del.kind);
       changed.push({ kind: del.kind, id: del.id, before: records[del.id]!, after: null });
       delete records[del.id];
     }
     if (txn.board !== undefined) {
       try {
-        next.board = validated(Board, txn.board, "board.yaml");
+        next.board = frozen(validated(Board, txn.board, "board.yaml"));
         if (!isDeepStrictEqual(next.board, this.state.board)) changed.push({ kind: "board", id: "board", before: this.state.board, after: next.board });
       } catch (error) {
         if (!(error instanceof ValidationError)) throw error;
@@ -747,7 +883,8 @@ export class Store {
     const ownerChanged = this.ownerPending();
     // Ordinary no-ops don't produce a commit just to save a pending cursor.
     if (!changed.length && !(ownerOnly && ownerChanged) && !txn.planConversionReport) return { commit: this.state.head, revs };
-    const ownerAtCommit = structuredClone(this.state.owner);
+    // Owner state is frozen and replaced, never changed in place.
+    const ownerAtCommit = this.state.owner;
     if (ownerChanged) changed.push({ kind: "owner", id: "owner", before: this.ownerInHead ? this.committedOwner : null, after: ownerAtCommit });
     const paths = changed.map(c => c.kind === "board" ? "board.yaml" : c.kind === "owner" ? "state/owner.yaml" : docPath(c.kind, c.id));
     const reportPath = "import/plan-conversion.yaml";
@@ -769,14 +906,15 @@ export class Store {
       if (numbersChanged) atomicWrite(join(this.dir, numbersPath), validated(Numbers, { next: nextNum }, numbersPath));
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message], txn.author);
+      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : [])], txn.author);
       const [head, timestamp] = (await this.git(["show", "-s", "--format=%H%x00%aI", "HEAD"])).trimEnd().split("\0");
       if (!head || !/^[0-9a-f]{40}$/.test(head) || !timestamp) throw new Error("Invalid git commit metadata");
       next.head = head;
       // Owner writes arriving during git work stay out of the staged snapshot.
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
-      event = frozen(structuredClone({ commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed }));
+      // Documents in `changed` are already frozen snapshot documents.
+      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -803,21 +941,30 @@ export class Store {
       this.writing = false;
     }
     if (changed.some(c => c.kind !== "owner")) {
-      next.activity ??= { writes: [], items: {} };
-      next.activity.writes.push(event.at);
-      next.activity.writes.sort();
-      this.noteActivity(next.activity, event.at, this.changedItems(changed, next));
-      this.notePauses(next.activity, this.state.items, next.items, changed, event.at);
+      const previous = this.state.activity ?? { writes: [], items: {} };
+      // Copy on write: the previous snapshot keeps its own activity.
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
+      const touched = this.changedItems(changed, next);
+      this.noteActivity(activity, event.at, touched);
+      if (session) { this.noteSessions(activity, event.at, session, touched); this.noteAgent(activity, event.at, session, touched); }
+      this.notePauses(activity, this.state.items, next.items, changed, event.at);
+      next.activity = activity;
+      const delta = event.activity;
+      delta.write = event.at;
+      for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
+      for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
+      for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
+      for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) (delta.agents ??= {})[name] = list;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);
       }
     }
-    if (this.pauseHistory?.head === this.state.head) {
-      const introduced = changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused);
-      this.savePauseHistory({ version: 1, head: next.head, first: this.pauseHistory.first ?? (introduced ? next.head : null) });
-    }
+    sealed(next);
+    frozen(event);
+    if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
     this.state = next;
+    this.scheduleCacheWrite();
     if (numbersChanged) { this.nextNum = nextNum; this.numbersInHead = true; }
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }
     // An observer cannot turn a committed transaction into an apparent failure.
@@ -837,14 +984,14 @@ export class Store {
   }
 
   setOwner(state: OwnerState): void {
-    const owner = validated(OwnerState, state, "state/owner.yaml");
-    const before = this.state.owner;
-    this.state.owner = owner;
+    const owner = frozen(validated(OwnerState, state, "state/owner.yaml"));
+    const before = this.state;
+    this.state = sealed({ ...this.state, owner });
     try {
       if (!this.writing) this.writeOwner();
       else { this.ownerFileExists = true; this.deferredOwnerWrite = true; }
     }
-    catch (error) { this.state.owner = before; throw error; }
+    catch (error) { this.state = before; throw error; }
   }
 
   flushOwner(author: string): Promise<string | null> {
@@ -852,6 +999,17 @@ export class Store {
       if (!this.ownerPending()) return null;
       return (await this.apply({ author, message: "Save owner reading state" }, true)).commit;
     });
+  }
+
+  /** The path of a file in the data directory that belongs to the daemon and not to the board (the wake log), with git told to
+   * leave it out, so it is never committed and never makes the working tree look dirty. */
+  async localFile(path: string): Promise<string> {
+    const exclude = (await this.git(["rev-parse", "--git-path", "info/exclude"])).trim(), file = isAbsolute(exclude) ? exclude : join(this.dir, exclude);
+    mkdirSync(dirname(file), { recursive: true });
+    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (!current.split("\n").includes("/" + path)) appendFileSync(file, `${current && !current.endsWith("\n") ? "\n" : ""}/${path}\n`);
+    mkdirSync(dirname(join(this.dir, path)), { recursive: true });
+    return join(this.dir, path);
   }
 
   onChange(fn: (change: Change) => void): () => void {
@@ -889,7 +1047,9 @@ export class Store {
       const parents = fields[index++]!.split(" ").filter(Boolean);
       const at = new Date(fields[index++]!).toISOString();
       const author = fields[index++]!;
-      const message = fields[index++]!.trimEnd();
+      let message = fields[index++]!.trimEnd();
+      const trailer = SESSION_TRAILER.exec(message);
+      if (trailer) message = message.slice(0, trailer.index);
       const files: string[] = [];
       // The extra NUL following the format separates metadata from file paths.
       while (index < fields.length && !(fields[index]?.trim().match(/^[0-9a-f]{40}$/))) {
@@ -898,7 +1058,7 @@ export class Store {
       }
       // git just named these as commits, so later reads of them need no rev-parse.
       for (const c of [hash, ...parents]) this.resolved.set(c, c);
-      infos.push({ commit: hash, parents, at, author, message, files });
+      infos.push({ commit: hash, parents, at, author, message, files, ...(trailer ? { session: trailer[1]!.trim() } : {}) });
     }
     return infos;
   }
@@ -913,10 +1073,14 @@ export class Store {
     return hash;
   }
 
+  private readonly diffs = new Map<string, Promise<string>>();
+  /** Two commits and a path always name the same text, so a diff is kept by those keys: the page asks for every unread
+   * step's documents on each load, and git spawns once per new pair rather than once per request. */
   async diff(kind: DocKind, id: string, from: string, to = "HEAD"): Promise<string> {
+    const path = docPath(kind, id);
     const a = await this.resolveCommit(from);
     const b = await this.resolveCommit(to);
-    return this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", docPath(kind, id)]);
+    return cachedPromise(this.diffs, `${a}..${b}:${path}`, historicalDiffLimit, () => this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", path]));
   }
 
   private readonly historicalDocuments = new Map<string, Promise<unknown | null>>();
@@ -955,7 +1119,7 @@ export class Store {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
       for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = withoutRetiredFields(path, await this.readAt(path, hash));
-      const loaded = parsePlanData(raw, hash);
+      const loaded = parsePlanData(raw, hash, true);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
         const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
@@ -1030,7 +1194,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");
-  for (const collection of ["items","decisions","notes","notices","glossaries"]) {
+  for (const collection of ["items","decisions","notes","glossaries"]) {
     const files = await readdir(join(dir,collection)).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
     for (const file of files.sort()) {
       const path=`${collection}/${file}`;
@@ -1044,22 +1208,27 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","notices","glossaries"],{cwd:dir});
+  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
+/** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
+function withoutRequestMarker(doc: unknown): unknown {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc) || !Object.hasOwn(doc, "request")) return doc;
+  const { request: _request, ...rest } = doc as Record<string, unknown>;
+  return rest;
+}
+/** `historical`: the data is a past commit's, whose items may hold fields the schema has since dropped; only
+ * comparisonSnapshot reads data this way, and the live data stays strictly validated. */
+function parsePlanData(raw: Record<string, unknown>, head: string, historical = false): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
 
-  const boardFields = raw["board.yaml"] as { projects?: unknown } | undefined;
-  const legacyBoard = Array.isArray(boardFields?.projects) && boardFields.projects.some(project =>
-    project && typeof project === "object" && Object.hasOwn(project, "migrated"));
-  const legacy=legacyBoard || items.some(([,doc])=>retiredItemShape(doc));
+  const legacy=retiredBoardShape(raw["board.yaml"]) || items.some(([,doc])=>retiredItemShape(doc));
   // Records may omit plan in the current schema. A current work plan alongside
   // a retired work shape still indicates an incomplete migration.
   if(legacy&&items.some(([,doc])=>doc&&typeof doc==="object"&&Object.hasOwn(doc,"plan")))throw new Error("Mixed legacy and plan items are refused");
-  const schema=legacy?Legacy: {Board,Item,Decision,Note,Notice,Glossary,OwnerState};
+  const schema=legacy?Legacy: {Board,Item,Decision,Note,Glossary,OwnerState};
   const invalid: InvalidDocument[]=[];
   function load<T>(documentSchema:z.ZodType<T>, value:unknown, path:string):T|undefined {
     try {return validated(documentSchema,value,path);}
@@ -1067,15 +1236,17 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
   }
   const board=load(schema.Board,raw["board.yaml"],"board.yaml");
   const rawOwner=raw["state/owner.yaml"]??{};
-  const hasArchives=!!rawOwner&&typeof rawOwner === "object"&&Object.hasOwn(rawOwner,"archived");
+  const hasArchives=retiredOwnerShape(rawOwner);
   const owner=legacy||hasArchives?load(Legacy.OwnerState,rawOwner,"state/owner.yaml"):load(OwnerState,rawOwner,"state/owner.yaml");
-  const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},notices:{},glossaries:{}};
+  const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},glossaries:{},...(legacy?{notices:{}}:{})};
   for(const [path,doc]of Object.entries(raw)){
-    const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);if(!match)continue;
+    const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);
+    // A board of plans has no notices; those in older commits are left out of the snapshot read from them.
+    if(!match||(match[1]==="notices"&&!legacy))continue;
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load(schema[kind] as z.ZodType<unknown>,doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,historical&&!legacy&&collection==="items"?withoutRequestMarker(doc):doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);

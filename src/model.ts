@@ -105,6 +105,99 @@ export type ItemTarget = z.infer<typeof ItemTarget>;
 export const ItemTargetsInput = z.array(ItemTargetInput).refine(uniqueStepIds, "Target ids must be unique");
 export const ItemTargets = z.array(ItemTarget).refine(uniqueStepIds, "Target ids must be unique");
 
+/** A tag's name: 1–12 characters, no whitespace and no comma (ASCII, fullwidth or enumeration comma), so a list of tags reads unambiguously. */
+export const TagName = z.string().regex(/^[^\s,，、]{1,12}$/u, "use 1–12 characters without whitespace or commas");
+/** One approved tag. `projects` absent: every project may use it; otherwise only the listed ones. */
+export const Tag = z.object({
+  name: TagName,
+  /** One sentence telling agents when to apply the tag. */
+  meaning: z.string().min(1).refine(text => !!text.trim(), "Provide nonempty text after trimming"),
+  projects: z.array(z.string().min(1)).min(1).refine(p => new Set(p).size === p.length, "Projects must be unique").optional(),
+}).strict();
+export type Tag = z.infer<typeof Tag>;
+/** Whether a vocabulary tag may be used by an item of this project. */
+export const tagApplies = (tag: Tag, project: string): boolean => tag.projects === undefined || tag.projects.includes(project);
+/** Whether an item of this project must carry a tag: once the vocabulary holds a tag it may use. */
+export const tagsRequired = (tags: readonly Tag[] | undefined, project: string): boolean => (tags ?? []).some(tag => tagApplies(tag, project));
+
+/**
+ * An item's difficulty, which decides the agent that does it: 1–5, or "architect" for an item the architect does itself
+ * (a discussion, a walkthrough, a design), which is rated but never dispatched. Only the architect sets it.
+ */
+export const Difficulty = z.union([z.number().int().min(1).max(5), z.literal("architect")]);
+export type Difficulty = z.infer<typeof Difficulty>;
+/** How agents and the page write a difficulty: 「难度 2」, or 「架构师做」. */
+export const difficultyText = (difficulty: Difficulty): string => difficulty === "architect" ? "架构师做" : `难度 ${difficulty}`;
+/** Whether an item with this difficulty can be handed to an agent: rated 1–5, not the architect's own. */
+export const dispatchable = (difficulty: Difficulty | undefined): boolean => typeof difficulty === "number";
+
+/**
+ * One dispatch: an agent session the architect started on an item, recorded in the columns of the dispatch format the
+ * architect keeps (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
+ * accepted for them.
+ */
+export const DISPATCH_ROLES = ["工程师", "审查"] as const;
+export const DISPATCH_RESULTS = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+export const DISPATCH_SIGNALS = ["验收没过", "架构师打回", "做法被否", "长时间没进展", "换模型"] as const;
+const Count = z.number().int().nonnegative();
+/** US dollars with at most three decimals, so any sum of costs is exact in thousandths (see `milliDollars`). */
+export const Cost = z.number().nonnegative().refine(c => Math.abs(c * 1000 - Math.round(c * 1000)) < 1e-6, "Give at most three decimals");
+export const milliDollars = (cost: number): number => Math.round(cost * 1000);
+export const DispatchUsage = z.object({ input: Count, cacheWrite: Count, cacheRead: Count, output: Count }).strict();
+export type DispatchUsage = z.infer<typeof DispatchUsage>;
+export const DispatchSignal = z.object({ kind: z.enum(DISPATCH_SIGNALS), note: StepText.optional() }).strict();
+export type DispatchSignal = z.infer<typeof DispatchSignal>;
+export const DispatchFinish = z.object({
+  ended: Time,
+  result: z.enum(DISPATCH_RESULTS),
+  /** An engineer's reports and kickbacks; a review's rounds. Which of them a finished dispatch carries follows its role. */
+  reports: Count.optional(),
+  kickbacks: Count.optional(),
+  rounds: Count.optional(),
+  /** Minutes spent waiting for the owner, the 14900K or a dependency. */
+  waited: Count.optional(),
+  /** No signal is an empty list. */
+  signals: z.array(DispatchSignal).refine(list => new Set(list.map(s => s.kind)).size === list.length, "Name each signal once"),
+  usage: DispatchUsage,
+  cost: Cost,
+  note: StepText.optional(),
+}).strict();
+export type DispatchFinish = z.infer<typeof DispatchFinish>;
+/**
+ * What is wrong with the counts a finished dispatch of `role` carries, or undefined when they are right: an engineer
+ * carries `reports` and `kickbacks`, a review carries `rounds`, never the other role's. The one place the rule lives:
+ * the schema below and the write that ends a dispatch both ask it, the write to word the refusal.
+ */
+export function dispatchCountProblem(role: (typeof DISPATCH_ROLES)[number], c: { reports?: number | undefined; kickbacks?: number | undefined; rounds?: number | undefined }): string | undefined {
+  if (role === "工程师") {
+    if (c.reports === undefined || c.kickbacks === undefined) return `${c.reports === undefined ? "reports" : "kickbacks"}: an engineer dispatch ends with reports and kickbacks (how often it stopped to report, how often it was sent back)`;
+    return c.rounds === undefined ? undefined : "rounds: only a review dispatch carries rounds; an engineer carries reports and kickbacks";
+  }
+  if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many review rounds it took: the first review and each re-review count one)";
+  return c.reports === undefined && c.kickbacks === undefined ? undefined : `${c.reports === undefined ? "kickbacks" : "reports"}: only an engineer dispatch carries reports and kickbacks; a review carries rounds`;
+}
+export const Dispatch = z.object({
+  /** The dispatched session's full id; unique on the board. */
+  agentId: Key,
+  /** The dispatched session's name. */
+  agent: StepText,
+  role: z.enum(DISPATCH_ROLES),
+  level: z.number().int().min(1).max(5),
+  model: StepText,
+  effort: StepText.optional(),
+  worktree: StepText.optional(),
+  started: Time,
+  /** Which rows of the item the session did, in one line. */
+  did: StepText.optional(),
+  /** Present once the session has ended. */
+  finish: DispatchFinish.optional(),
+}).strict().superRefine((d, ctx) => {
+  // A record edited by hand that breaks the rule is refused with the rule's own words.
+  const problem = d.finish && dispatchCountProblem(d.role, d.finish);
+  if (problem) ctx.addIssue(problem);
+}).refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
+export type Dispatch = z.infer<typeof Dispatch>;
+
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
@@ -123,12 +216,18 @@ export type Ask = z.infer<typeof Ask>;
 export const Item = z.object({
   num: Num.optional(),
   title: z.string().min(1),
-  request: z.object({ by: z.string().min(1), at: Time }).strict().optional(),
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
-  /** Explicit owner/coordinator pause; descendants inherit it through ownership. */
+  /** Explicit owner/architect pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
+  /**
+   * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
+   * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
+   */
+  tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
+  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists. */
+  difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
   priority: Priority.optional(),
@@ -142,12 +241,15 @@ export const Item = z.object({
   /** One line of key numbers. */
   data: z.string().min(1).optional(),
   links: z.array(Link).default([]),
+  /** The agent sessions started on this item, oldest first; like the log, historical detail the owner is never told is new. */
+  dispatches: z.array(Dispatch).refine(list => new Set(list.map(d => d.agentId)).size === list.length, "Dispatch agentIds must be unique").optional(),
   ask: Ask.optional(),
   created: Time.optional(),
   updated: Time,
   rev: z.number().int().positive(),
 }).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
   .refine(it => !it.record || it.paused === undefined, "A record cannot be paused")
+  .refine(it => !it.record || it.difficulty === undefined, "A record has no difficulty")
   .refine(it => {
     const count = it.plan.filter(row => "accept" in row && row.accept).length;
     return it.record ? count === 0 : count >= 1;
@@ -213,26 +315,29 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
-/** An important non-blocking change the owner should know, written by a session and marked read by the owner. */
-export const Notice = z.object({
-  /** One or two sentences; inline markdown and [[it:key]] references. */
-  text: z.string().min(1),
-  /** The related item. */
-  item: Key.optional(),
-  /** The writing project. */
-  author: z.string().min(1),
-  at: Time,
-  /** When the owner marked it read. */
-  read: Time.optional(),
-  rev: z.number().int().positive(),
-}).strict();
-export type Notice = z.infer<typeof Notice>;
-
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
+  /** The branch merges land on when it is not the repository's default branch; the GitHub watch reads its checks. */
+  mainline: z.string().regex(/^\S+$/, "a branch name has no whitespace").optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
+
+/** The architect's author name, a configured project like any other. */
+export const ARCHITECT = "Architect";
+/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
+export const ARCHITECT_SESSION = "架构师";
+/**
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
+ * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
+ * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
+ * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ */
+export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
+export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
+export const RETIRED_COORDINATOR = "总管";
 
 /** A glossary's id and file name: the name of the project that keeps it, usable as one file name. */
 export const GlossaryId = z.string().regex(/^[^./\\\0\r\n][^/\\\0\r\n]{0,199}$/);
@@ -257,11 +362,15 @@ export type Glossary = z.infer<typeof Glossary>;
 
 export const Board = z.object({
   projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
+  /** The approved tag vocabulary; only the architect changes it, on the owner's decision card. */
+  tags: z.array(Tag).refine(t => new Set(t.map(t => t.name)).size === t.length, "Tag names must be unique").optional(),
   title: z.string().min(1),
   eyebrow: z.string().optional(),
   goal: z.string().optional(),
 }).strict();
 export type Board = z.infer<typeof Board>;
+/** The approved tags; a board written before tags existed has none. */
+export const boardTags = (board: Pick<Board, "tags">): Tag[] => board.tags ?? [];
 
 /** A board document whose changes can be read independently. */
 export const ReadDocument = z.string().regex(/^(item|decision|note):[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/);
@@ -280,7 +389,6 @@ export interface Snapshot {
   items: Record<string, Item>;
   decisions: Record<string, Decision>;
   notes: Record<string, Note>;
-  notices: Record<string, Notice>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
   owner: OwnerState;
@@ -292,5 +400,15 @@ export interface Snapshot {
     items: Record<string, string>;
     /** Historical effective pauses; inherited pauses stop each descendant's clock. */
     pauses?: Record<string, Array<{ start: string; end?: string }>>;
+    /** The session that last wrote to each item and when, from the commits' `Session:` trailers. An observation of
+     * who wrote, never an assignment of work to a session. */
+    sessions?: Record<string, { name: string; at: string }>;
+    /** Per session name, the last two distinct items it wrote to, newest first, from the same trailers. The page's
+     * agent list reads it (src/agents.ts). Like `sessions`, an observation of writes, not an assignment of work. */
+    agents?: Record<string, AgentTouch[]>;
   };
 }
+/** One item a session wrote to and when. */
+export interface AgentTouch { item: string; at: string }
+/** How many items an agent keeps in the index and the list. */
+export const AGENT_TOUCHES = 2;

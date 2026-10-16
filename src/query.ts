@@ -1,12 +1,14 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
-import { STATUSES, numRef } from "./model.ts";
+import type { Decision, Difficulty, Item, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
+import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
+/** `<session> · <time to the minute>`: the one form `context` and `brief` print for an item's last writer. */
+export const pushLine = (last: { name: string; at: string }): string => `${last.name} · ${last.at.slice(0, 16)}Z`;
 export interface Scope { group?: string; under?: string }
 export interface SearchFilters extends Scope { status?: Status[]; kind?: Kind[]; since?: string; limit?: number }
 /** One hit per matching field; `more` counts further matches in the same field. */
@@ -37,7 +39,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -112,8 +114,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
   const out: Array<Row & { updated: string; needsOwner: boolean; checks: ReturnType<Rules["checks"]> }> = [];
   const seen = new Set<string>();
   function walk(id: string): void {
-    // An untriaged request is not work yet: it shows in its project's inbox (brief, projects), not in lists.
-    if (seen.has(id) || !s.items[id] || r.isRequest(id)) return;
+    if (seen.has(id) || !s.items[id]) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
     if (inScope(r, id, f) && (f.status ? f.status.some(st => st === r.statusOf(id)) : !["done", "cancelled"].includes(r.statusOf(id) ?? "")) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
@@ -170,8 +171,9 @@ export function context(s: Snapshot, r: Rules, ref: string, options: { log?: num
   const log = count === 0 ? [] : it.log.slice(-count), cardIds = r.cardsOf(id);
   const levels = r.planRows(id).map(p => p.level), seen = new Set<number>(), repeated = new Set<number>();
   for (let i = 0; i < levels.length; i++) if (levels[i] !== levels[i - 1]) { if (seen.has(levels[i]!)) repeated.add(levels[i]!); seen.add(levels[i]!); }
+  const lastPush = s.activity?.sessions?.[id];
   const pauseOwner = r.pausedBy(id), pause = pauseOwner ? s.items[pauseOwner]?.paused : undefined;
-  return { ...row(s, r, "item", id), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), ...(lastPush ? { lastPush } : {}), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)),
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
@@ -204,51 +206,55 @@ export function overview(s: Snapshot, r: Rules, f: { group?: string; status?: St
     return { ...area, counts, ownerActions: rows.filter(it => it.needsOwner), blocked: leaves.filter(it => it.status === "blocked"), checks: rows.filter(it => it.checks.length) };
   });
   const names = [...new Set([...s.board.projects.map(p => p.name), ...areas.map(a => a.group)])];
-  return names.filter(name => f.group === undefined || name === f.group).map(name => ({ project: name, inbox: r.inbox(name).length, areas: areas.filter(a => a.group === name) }));
+  return names.filter(name => f.group === undefined || name === f.group).map(name => ({ project: name, areas: areas.filter(a => a.group === name) }));
 }
 
 export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
-    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name && !r.isRequest(id));
+    const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name);
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
-      openItems: Object.fromEntries((["todo", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])), inbox: r.inbox(project.name).length };
+      openItems: Object.fromEntries((["todo", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])) };
   });
-}
-function requestRow(s: Snapshot, r: Rules, id: string) {
-  const it = s.items[id]!, request = it.request!;
-  const prefix = `${request.by} 提出：`;
-  const first = it.log[0]?.text ?? "";
-  return { id, ...(it.num === undefined ? {} : { num: it.num }), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
   return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
     project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
+/** The approved tags, with meanings, that an item of `project` may carry; every tag when no project is given. */
+export function tagVocabulary(s: Snapshot, project?: string) {
+  return boardTags(s.board).filter(t => project === undefined || tagApplies(t, project)).map(t => ({ name: t.name, meaning: t.meaning, ...(t.projects ? { projects: t.projects } : {}) }));
+}
+const tagsOf = (doc: { tags?: string[] }) => doc.tags?.length ? { tags: doc.tags } : {};
+/** Absent for unrated work and for records, which the 缺难度 check and the item's kind already say. */
+function difficultyOf(doc: { difficulty?: Difficulty } | undefined): { difficulty?: Difficulty } { return doc?.difficulty === undefined ? {} : { difficulty: doc.difficulty }; }
 const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
   if (!config) throw new Error(`project ${project}: choose a configured project with projects`);
-  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), eligible = ids.filter(id => !r.isRequest(id) && !r.isBacklog(id));
-  const outgoing = new Set(Object.keys(s.items).filter(id => r.projectOf(id) !== project && r.isRequest(id) && s.items[id]!.request!.by === project));
+  const ids = Object.keys(s.items).filter(id => r.projectOf(id) === project), eligible = ids.filter(id => !r.isBacklog(id));
+  const outgoing = new Set<string>();
   for (const id of ids.filter(id => r.isOpenWork(id))) for (const dep of r.depsOf(id)) if (dep.kind === "item" && r.isOpenWork(dep.id) && r.projectOf(dep.id) !== project) outgoing.add(dep.id);
   const progressLines = (id: string) => ({
     ...(s.items[id]?.plan?.length ? { plan: planLines(s, r, id, true) } : {}),
     ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
   });
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
-  const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
+  /** Current work also says which session last wrote to it, so the architect sees whether it is being pushed. */
+  const wipRow = (id: string): Row & { lastPush?: string } => { const last = s.activity?.sessions?.[id]; return { ...workRow(id), ...(last ? { lastPush: pushLine(last) } : {}) }; };
+  const result = { project,
     notes: sentNotes(s,r).filter(n => n.project === project),
-    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
+    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
-    wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(workRow),
-    todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
-    outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
+    wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(wipRow),
+    todo: eligible.filter(id => r.isNeeded(id) && dispatchable(s.items[id]!.difficulty) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
+    outgoing: [...outgoing].map(workRow),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
+    tags: tagVocabulary(s, project),
   };
-  const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
+  const shown = new Set([...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
   const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
-    .map(id => ({ id, ...numOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id) }));
+    .map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */
@@ -260,8 +266,7 @@ export function glossary(s: Snapshot, project?: string) {
 export function followups(s: Snapshot, r: Rules, { minutes }: { minutes: number }, now = new Date().toISOString()) {
   if (!Number.isFinite(minutes) || minutes < 0) throw new Error("minutes: provide a nonnegative age");
   const cutoff = Date.parse(now) - minutes * 60000;
-  return { notes: sentNotes(s,r).filter(n => Date.parse(n.sentAt) < cutoff),
-    requests: s.board.projects.flatMap(p => r.inbox(p.name).map(id => requestRow(s,r,id))).filter(it => Date.parse(it.at) < cutoff).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at) || a.id.localeCompare(b.id)) };
+  return { notes: sentNotes(s,r).filter(n => Date.parse(n.sentAt) < cutoff) };
 }
 
 function documentText(s: Snapshot, kind: Kind, id: string): string {
@@ -272,31 +277,66 @@ function documentText(s: Snapshot, kind: Kind, id: string): string {
   }
   return text.join("\n");
 }
-/** Repositories the board links to (github.com/Ming-Research/<repo>), lowercased: the names a `Repo#N` or `Repo #N` reference may use. */
+/** Repositories the board knows, lowercased: the configured projects' and those its items link to (github.com/Ming-Research/<repo>).
+ * These are the names a `Repo#N` or `Repo #N` reference may use. */
 export function knownRepos(s: Snapshot): Set<string> {
   const out = new Set<string>(), urls: string[] = [];
+  for (const project of s.board.projects) if (project.repo) out.add(project.repo.split("/").pop()!.toLowerCase());
   for (const it of Object.values(s.items)) urls.push(...it.links.map(l => l.url), it.ask?.url ?? "");
   for (const url of urls) { const m = /github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)/i.exec(url); if (m) out.add(m[1]!.toLowerCase()); }
   return out;
 }
-/** PR references in prose. A name before `#N` counts as a repository only when the board links to that repository, so "see #341" stays unknown. */
+/** A PR a text names. `owner` is set only when the text wrote it: `Owner/Repo#N` or a pull request URL. */
+export interface PrRef { repo: string; number: number; owner?: string }
+/** PR references in prose. A bare name before `#N` counts as a repository only when the board knows that repository, so "see #341" stays unknown.
+ * `Owner/Repo#N` and a pull request URL name the repository themselves. */
 export function references(text: string, repos: Set<string>) {
-  const qualified: Array<{ repo: string; number: number }> = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
-  const patterns = [/https?:\/\/github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi, /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi];
+  const qualified: PrRef[] = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
+  const patterns = [
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])()([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+  ];
   for (const [i, pattern] of patterns.entries()) for (const match of text.matchAll(pattern)) {
-    const repo = match[1]!, number = Number(match[2]);
-    if (i === 1 && !repos.has(repo.toLowerCase())) continue;
+    const owner = match[1]!, repo = match[2]!, number = Number(match[3]);
+    if (i === 2 && !repos.has(repo.toLowerCase())) continue;
     ranges.push([match.index, match.index + match[0].length]);
-    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push({ repo, number });
+    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(owner ? { repo, number, owner } : { repo, number });
   }
   for (const match of text.matchAll(/#(\d+)\b/g)) if (!ranges.some(([a, b]) => match.index >= a && match.index < b) && !unknown.includes(Number(match[1]))) unknown.push(Number(match[1]));
   return { qualified, unknown };
+}
+/** A PR as the board watches it: `repo` is the `Owner/Name` a project configures. */
+export interface PrId { repo: string; number: number }
+export const prKey = (p: PrId): string => `${p.repo.toLowerCase()}#${p.number}`;
+/** The configured repository a reference names, or none: `Owner/Repo` must match a project's repo, a bare `Repo` exactly one. */
+function repoOf(projects: readonly Project[], ref: PrRef): string | undefined {
+  const repos = projects.flatMap(p => p.repo ? [p.repo] : []);
+  if (ref.owner) return repos.find(repo => repo.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase());
+  const named = repos.filter(repo => repo.split("/").pop()!.toLowerCase() === ref.repo.toLowerCase());
+  return named.length === 1 ? named[0] : undefined;
+}
+/** The PRs a text names that belong to a configured repository. */
+export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRepos(s)): PrId[] {
+  const out = new Map<string, PrId>();
+  for (const ref of references(text, repos).qualified) {
+    const repo = repoOf(s.board.projects, ref);
+    if (repo) out.set(prKey({ repo, number: ref.number }), { repo, number: ref.number });
+  }
+  return [...out.values()];
+}
+/** The PRs a step of item `id` is the merge row of: none unless it is a merge step (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
+export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
+  if (!isOpenMergeStep(step)) return [];
+  const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(s.items[id]?.head), repos).map(prKey)));
+  return named.filter(p => counted.has(prKey(p)));
 }
 export function prs(s: Snapshot, r: Rules, repo: string, number: number) {
   const qualified: Row[] = [], unknown: Row[] = [], repos = knownRepos(s);
   for (const kind of ["item", "card", "note"] as const) for (const id of Object.keys(kind === "item" ? s.items : kind === "card" ? s.decisions : s.notes)) {
     const refs = references(documentText(s, kind, id), repos);
-    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(row(s, r, kind, id));
+    // The tool's repository is a name under Ming-Research: a reference written with another owner is another repository's PR.
+    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number && (p.owner === undefined || p.owner.toLowerCase() === "ming-research"))) qualified.push(row(s, r, kind, id));
     if (refs.unknown.includes(number)) unknown.push(row(s, r, kind, id));
   }
   return { qualified, unknown };
@@ -314,6 +354,8 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
       if (planChanged(a.plan as PlanRow[] | undefined, b.plan as PlanRow[] | undefined)) changes.push("plan changed");
     } else if (key === "targets") {
       if (targetsChanged(a.targets as ItemTarget[] | undefined, b.targets as ItemTarget[] | undefined)) changes.push("targets changed");
+    } else if (key === "tags") {
+      changes.push(`tags ${((a.tags as string[] | undefined) ?? []).join(" ") || "none"}→${((b.tags as string[] | undefined) ?? []).join(" ") || "none"}`);
     } else if (key === "log") {
       const oldLog = a.log as unknown[] ?? [], newLog = b.log as unknown[] ?? [];
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);
@@ -333,7 +375,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   if (headIndex === -1) throw new Error("snapshot head: not found in store history");
   const selected = new Set((await store.log({ since })).map(c => c.commit));
   const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "notice">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;
@@ -388,6 +430,11 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
     async function recoverOwner(id: string): Promise<string | undefined> {
       const present = makeRules(view).parentOf(id);
       if (present) return present;
+      // A document alive in the snapshot keeps the ownership the snapshot gives it: a root
+      // there stays a root, and no owner is recovered for it. The search below rebuilds a
+      // whole board for every earlier commit that touched an item, and every live chain
+      // ends at a root, so searching for live roots made one call exhaust the daemon's heap.
+      if (Object.hasOwn(s.items, id)) return undefined;
       const index = all.findIndex(commit => commit.commit === boundary), tried = new Set<string>();
       for (const commit of all.slice(index)) {
         if (!commit.files.some(path => path.startsWith("items/"))) continue;

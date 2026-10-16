@@ -7,10 +7,10 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
-import { board, author, later } from "./helpers.ts";
+import { board, author, architect, asArchitect, later } from "./helpers.ts";
 import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
 import type { Step } from "../src/history.ts";
-import { describeChanges } from "../src/query.ts";
+import { describeChanges, changes } from "../src/query.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { Store, NUMBERING_MESSAGE } from "../src/store.ts";
@@ -41,9 +41,30 @@ test("cursor range, single-document grouping, author boundaries and endpoint dif
   await assert.rejects(stepDiff(store, steps[0]!, "note", "missing"), /not in this step/);
 });
 
+test("a step diff is git's own diff of the two commits, and asking again spawns no git", async t => {
+  const { store, op, dir } = await board(t), cursor = store.snapshot().head;
+  await op.setPlan({ author, id: "a", row: { id: "first", state: "todo", text: "first new entry" } });
+  await op.appendLog({ author, id: "a", text: "a log line between" });
+  await op.setPlan({ author, id: "a", row: { id: "second", state: "doing", text: "second new entry" } });
+  const [step] = await unreadSteps(store, cursor);
+  assert.ok(step && step.parent);
+  // The git path: the command the store runs, run here directly.
+  const git = (await promisify(execFile)("git", ["diff", "--no-ext-diff", "--no-textconv", step.parent, step.id, "--", "items/a.yaml"], { cwd: dir })).stdout;
+  const internals = store as unknown as { git(args: string[]): Promise<string> };
+  const spawned = t.mock.method(internals, "git");
+  const first = await stepDiff(store, step, "item", "a");
+  assert.equal(first.diff, git, "the same text git gives");
+  assert.equal(spawned.mock.calls.length, 1, "the first request runs git diff once");
+  const again = await stepDiff(store, step, "item", "a");
+  assert.equal(again.diff, git);
+  assert.equal(spawned.mock.calls.length, 1, "a repeated request is answered without git");
+  assert.equal((await store.diff("item", "b", step.parent, step.id)), "", "another path is its own entry");
+  assert.equal(spawned.mock.calls.length, 2);
+});
+
 test("multi-document writes are separate steps and deletion keeps its before document", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "child", owner: "a", accept: "Child accepted", title: "new child" });
+  await op.createItem({ ...asArchitect, key: "child", owner: "a", accept: "Child accepted", title: "new child" });
   await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "following write" } });
   const note = store.snapshot().notes["note-1"]!;
   const deleted = await store.commit({ author, message: "delete synthetic note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
@@ -117,7 +138,7 @@ test("a new commit reads only the documents of the step it creates or extends", 
 
 test("a status that became derived and changes the owner cannot see are not unread", async t => {
   const { store, op } = await board(t), cursor = store.snapshot().head;
-  await op.createItem({ author, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
+  await op.createItem({ ...asArchitect, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
   const { rev, ...doc } = store.snapshot().items.other!;
   await store.commit({ author, message: "touch time only", puts: [{ kind: "item", id: "other", doc: { ...doc, updated: "2026-10-11T09:09:09Z" }, expectRev: rev }] });
   const steps = await unreadSteps(store, cursor);
@@ -250,7 +271,7 @@ test("document read marks exclude only marked documents and disappear from stop 
   const marked = await unreadSteps(store, cursor, { "item:b": second.commit });
   assert.deepEqual(marked.map(s => s.id), [first.commit], "the later document is read without reading the earlier item");
   assert.equal(unmarked.length, 2, "read marks do not mutate the cached unmarked steps");
-  const multi = await op.createItem({ author, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
+  const multi = await op.createItem({ ...asArchitect, key: "kid", owner: "a", accept: "Child accepted", title: "kid" });
   const partial = await unreadSteps(store, cursor, { "item:a": multi.commit });
   assert.deepEqual(partial.find(s => s.id === multi.commit)!.docs.map(d => d.id).sort(), ["kid"], "other documents in a shared commit remain unread");
 });
@@ -401,7 +422,7 @@ test("the incremental unread list equals the from-scratch computation through wr
   await own.createNote({ target: "it:a", kind: "comment", text: "owner action" });
   await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "after the owner" } });
   await same("authors, board settings and owner actions break steps");
-  const multi = await op.createItem({ author, key: "child", owner: "a", accept: "Child accepted", title: "child" });
+  const multi = await op.createItem({ ...asArchitect, key: "child", owner: "a", accept: "Child accepted", title: "child" });
   const note = store.snapshot().notes["note-1"]!;
   await store.commit({ author, message: "delete note", deletes: [{ kind: "note", id: "note-1", expectRev: note.rev }] });
   const { rev, ...other } = store.snapshot().items.other!;
@@ -464,10 +485,10 @@ test("a merged history the cached run cannot hold is read from git and gives the
 
 test("done and cancelled items retain unread changes and readable endpoint diffs", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.createItem({ ...asArchitect, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
   await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
-  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
-  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  await op.createItem({ ...asArchitect, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ ...asArchitect, id: "cancelled-result", status: "cancelled", log: "Superseded" });
   const cursor = store.snapshot().head;
   await op.appendLog({ author, id: "done-result", text: "Evidence after completion" });
   await op.appendLog({ author, id: "cancelled-result", text: "Reason clarified after cancellation" });
@@ -592,6 +613,56 @@ test("historical comparison omits only fields a migration retired; raw history k
   const current = store.snapshot().items.work!;
   await assert.rejects(store.commit({ author: "P", message: "Write a retired field", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, short: "W" } }] }),
     /Unrecognized key: "short"/);
+});
+
+test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {
+  const { dir, store } = await board(t), cursor = store.snapshot().head;
+  const git = promisify(execFile);
+  const run = async (...args: string[]) => (await git("git", args, { cwd: dir })).stdout.trim();
+  const commit = async (message: string) => {
+    await run("add", ".");
+    await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  // Written by hand, as create_request wrote it: the schema no longer has the marker, so no operation can.
+  const filed = (id: string, marker: boolean) => stringify({
+    title: id, group: "Firn", priority: "P1", difficulty: 2, ...(marker ? { request: { by: "Whitefoot", at: later } } : {}),
+    plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], log: [{ at: later, by: "Whitefoot", text: "Whitefoot 提出：Need" }],
+    updated: later, rev: 1,
+  });
+  await writeFile(join(dir, "items/incoming.yaml"), filed("incoming", true));
+  const filedCommit = await commit("create_request incoming");
+  await writeFile(join(dir, "items/incoming.yaml"), filed("incoming", false));
+  await commit("triage_request incoming");
+  await writeFile(join(dir, "items/declined.yaml"), filed("declined", true));
+  const declinedCommit = await commit("create_request declined");
+  await run("rm", "-q", "items/declined.yaml");
+  await commit("remove declined");
+  const reopened = await Store.open(dir);
+  assert.equal(Object.hasOwn(reopened.snapshot().items.incoming!, "request"), false, "the live data holds no marker");
+  // The past commit's items, normalized, are read with the current schema and without the marker.
+  const past = await reopened.comparisonSnapshot(declinedCommit);
+  assert.ok(past.items.incoming && past.items.declined);
+  assert.ok(!Object.hasOwn(past.items.declined!, "request") && !Object.hasOwn(past.items.incoming!, "request"));
+  // The raw commit stays evidence: the marker is still there to read.
+  assert.deepEqual(((await reopened.show("item", "incoming", filedCommit)) as { request: unknown }).request, { by: "Whitefoot", at: later });
+  assert.match(await reopened.diff("item", "incoming", `${filedCommit}^`, filedCommit), /\+request:/, "git's own diff of the filing commit");
+  const step = (await unreadSteps(reopened, cursor)).find(step => step.commits.includes(filedCommit))!;
+  assert.ok(step, "the filing commit is an unread step");
+  const stepped = await stepDiff(reopened, step, "item", "incoming");
+  assert.equal(stepped.before, null);
+  assert.match(stepped.diff, /\+title: incoming/, "the step diff of the whole addition renders");
+  // changes must rebuild past boards to find the owner of the removed item, which holds the marker at its last commit.
+  const result = await changes(reopened, reopened.snapshot(), cursor);
+  assert.ok(JSON.stringify(result).includes("declined"), "the removed item is reported");
+});
+
+test("live data that holds a request marker is refused, never read and dropped", async t => {
+  const { dir, store } = await board(t);
+  const doc = stringify({ ...(store.snapshot().items.other as object), request: { by: "Whitefoot", at: later } });
+  await writeFile(join(dir, "items/other.yaml"), doc);
+  await promisify(execFile)("git", ["-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-aqm", "Marker in live data"], { cwd: dir });
+  await assert.rejects(Store.open(dir), /request/);
 });
 
 test("unread yields between commits even when every historical document is cached", async t => {

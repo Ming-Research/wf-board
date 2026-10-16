@@ -4,30 +4,18 @@ import { once } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import { request, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { board, author, later } from "./helpers.ts";
+import { board, author, later, server, wakeSocket } from "./helpers.ts";
 import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
-
-async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
-  const fixture = await board(t), { store, op } = fixture;
-  extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op }), now: extra.now, checkIntervalMs: extra.checkIntervalMs });
-  http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
-  const address = http.address(); assert.ok(address && typeof address !== "string");
-  const url = `http://127.0.0.1:${address.port}`;
-  async function api(path: string, data?: unknown, method = "POST") {
-    const response = await fetch(url + path, data === undefined ? {} : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-    return { status: response.status, data: await response.json() };
-  }
-  return { ...fixture, http, url, api, port: address.port };
-}
+import { applyActivityDelta } from "../src/rules.ts";
+import { Wake } from "../src/wake.ts";
 
 test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   const { store, op, api, url } = await server(t);
@@ -39,13 +27,16 @@ test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   assert.equal(response.headers.get("content-type"), "text/event-stream");
   const reader = response.body!.getReader(); await reader.read();
   const event = reader.read();
+  const prior = store.snapshot();
   const written = await op.appendLog({ author, id: "a", text: "HTTP event witness" });
   const chunk = await event; const text = new TextDecoder().decode(chunk.value);
   assert.match(text, /event: change/);
   const data = JSON.parse(text.match(/data: (.+)/)![1]!);
   assert.equal(data.commit, written.commit); assert.equal(data.author, author);
-  assert.ok(data.activity.writes.length > 0, "the event includes accumulated write timestamps");
-  assert.deepEqual(data.activity, store.snapshot().activity, "live updates carry the same active-time history as the snapshot");
+  // The event carries the activity's change, not the whole growing history; applied to the snapshot before, it gives the current one.
+  assert.equal(data.activity.from, prior.head);
+  assert.equal(data.activity.writes, undefined, "the event does not carry the accumulated write timestamps");
+  assert.deepEqual(applyActivityDelta(prior.activity, data.activity), store.snapshot().activity, "live updates keep the same active-time history as the snapshot");
   assert.deepEqual(data.changed, [{ kind: "item", id: "a", after: store.snapshot().items.a }]);
   controller.abort();
   const note = await api("/api/notes", { target: "q:choice", kind: "choice", text: "选 A", choice: "A" }); assert.equal(note.status, 200);
@@ -78,7 +69,7 @@ test("exact Host and same-Origin enforced for writes and WebSocket upgrades", as
   assert.equal((await fetch(url + "/api/notes/missing", { method: "DELETE", headers: { Origin: "null" } })).status, 403);
   assert.equal((await fetch(url + "/api/send", { method: "POST", headers: { Origin: url } })).status, 200);
   assert.equal(await hostStatus(`localhost:${port}`), 200);
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=*", { origin: "http://evil.example" });
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake", { origin: "http://evil.example" });
   socket.on("error", () => {}); t.after(() => socket.terminate());
   const [, response] = await once(socket, "unexpected-response");
   assert.equal(response.statusCode, 403);
@@ -86,39 +77,15 @@ test("exact Host and same-Origin enforced for writes and WebSocket upgrades", as
   assert.equal(await hostStatus(`localhost:${port + 1}`), 403);
 });
 
-test("wake delivers only sent notes to their project and wildcard, exactly once", async t => {
-  const { url, api } = await server(t);
-  const sockets = ["Whitefoot", "Firn", "*", "unrelated"].map(session => new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session)));
-  t.after(() => { sockets.forEach(s => s.terminate()); });
-  await Promise.all(sockets.map(s => once(s, "open")));
-  const frames: Array<Array<{note: string; target: string; kind: string; project: string; title: string}>> = sockets.map(() => []);
-  sockets.forEach((s,i) => s.on("message", data => frames[i]!.push(JSON.parse(data.toString()))));
-  const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
-  const two = await api("/api/notes", { target: "q:choice", kind: "explain", text: "two" });
-  const three = await api("/api/notes", { target: "it:other", kind: "comment", text: "three" });
-  await api("/api/send", {});
-  // Ping/pong is a wire-order barrier after every send, avoiding timing sleeps.
-  for (const socket of sockets) { const pong = once(socket, "pong"); socket.ping(); await pong; }
-  assert.deepEqual(frames.map(f => f.map(n => n.note)), [[one.data.id, two.data.id], [three.data.id], [one.data.id, two.data.id, three.data.id], []]);
-  assert.deepEqual(frames[0]![1], { event: "note", project: "Whitefoot", note: two.data.id, target: "q:choice", kind: "explain", title: "中文方案？" });
-  await api("/api/send", {});
-  for (const socket of sockets) { const pong = once(socket, "pong"); socket.ping(); await pong; }
-  assert.deepEqual(frames.map(f => f.length), [2, 1, 3, 0]);
-});
-
 test("POST /api/send with ids wakes only for those notes and refuses a non-draft id with 400", async t => {
   const { url, api } = await server(t);
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=*");
-  t.after(() => { socket.terminate(); });
-  await once(socket, "open");
-  const frames: Array<{note: string}> = [];
-  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  const { events, sync } = await wakeSocket(t, url);
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "it:other", kind: "comment", text: "two" });
   const sent = await api("/api/send", { ids: [two.data.id] });
   assert.equal(sent.status, 200); assert.deepEqual(sent.data.sent.map((n: {id: string}) => n.id), [two.data.id]);
-  const pong = once(socket, "pong"); socket.ping(); await pong;
-  assert.deepEqual(frames.map(f => f.note), [two.data.id]);
+  await sync();
+  assert.deepEqual(events().map(f => f.note), [two.data.id]);
   assert.equal((await api("/api/send", { ids: [two.data.id] })).status, 400);
   assert.equal((await api("/api/send", { ids: ["missing"] })).status, 404);
   assert.deepEqual((await api("/api/send", {})).data.sent.map((n: {id: string}) => n.id), [one.data.id]);
@@ -143,6 +110,20 @@ test("stateful MCP client initializes, lists tools, reuses session and closes it
   const result = await client.callTool({ name: "context", arguments: { id: "a" } }); assert.ok(!result.isError);
   await transport.terminateSession();
   assert.equal((await fetch(url + "/mcp", { headers: { "mcp-session-id": id, Accept: "text/event-stream" } })).status, 404);
+});
+
+test("abandoned MCP sessions are bounded: past the limit the least recently used one is closed", async t => {
+  const { url } = await server(t, { maxMcpSessions: 3 });
+  const ids: string[] = [];
+  for (let n = 0; n < 10; n++) {
+    const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
+    const client = new Client({ name: "Abandoned " + n, version: "1" }); t.after(() => client.close().catch(() => {}));
+    await client.connect(transport); ids.push(transport.sessionId!);   // never terminated, as a killed headless session
+  }
+  const alive: boolean[] = [];
+  for (const id of ids) alive.push((await fetch(url + "/mcp", { method: "DELETE", headers: { "mcp-session-id": id } })).status !== 404);
+  assert.equal(alive.filter(Boolean).length, 3, "only the limit's worth of sessions is retained after 10 abandoned ones");
+  assert.deepEqual(alive.slice(0, 7), Array(7).fill(false), "the oldest were the ones dropped");
 });
 
 test("JSON body decoding preserves Chinese codepoints split across request chunks", async t => {
@@ -203,66 +184,6 @@ test("atomic draft HTTP route returns committed notes and deletions without a li
   assert.deepEqual(cleared.data, { note: null, deleted: [note.id], commit: store.snapshot().head });
 });
 
-test("project wake routing reaches matching project sockets and the coordinator exactly once", async t => {
-  const {url,api,store,op} = await server(t);
-  const sockets=["Whitefoot","Whitefoot","Firn","*","outsider"].map(session=>new WebSocket(url.replace("http:","ws:")+"/wake?session="+encodeURIComponent(session)));
-  t.after(()=>sockets.forEach(s=>s.terminate())); await Promise.all(sockets.map(s=>once(s,"open")));
-  const frames: Array<Array<Record<string,unknown>>> = sockets.map(()=>[]);
-  // Fixture items may carry board checks; this test counts request and note events only.
-  sockets.forEach((s,i)=>s.on("message",data=>{ const frame=JSON.parse(data.toString()); if (frame.event!=="check") frames[i]!.push(frame); }));
-  const made=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Please add feature",accept:"Feature passes",priority:"P0",why:"Need it"});
-  await op.appendLog({author,id:made.id,text:"Seen"});
-  const note=await api("/api/notes",{target:"it:a",kind:"comment",text:"One note"}); await api("/api/send",{});
-  for (const socket of sockets) { const pong=once(socket,"pong"); socket.ping(); await pong; }
-  assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:"incoming",title:"Visitor request",project:"Whitefoot",by:"Firn"});
-  assert.deepEqual(frames[0]![1],{event:"note",note:note.data.id,target:"it:a",kind:"comment",title:"中文检查",project:"Whitefoot"});
-});
-
-// Exercise the real HTTP handler and upgrade routing without binding a port.
-// Only the WebSocket handshake/wire transport is replaced; network tests above
-// remain the integration gate for hosts that permit loopback listeners.
-test("project HTTP handlers route committed requests and sent notes without a listener", async t => {
-  const {WebSocketServer} = await import("ws");
-  const {EventEmitter} = await import("node:events");
-  const {store,op} = await board(t);
-  const owner = ownerOps(store);
-  const http = createHttpServer({store,ops:op,ownerOps:owner,webDir:"web",createMcp:()=>createMcpServer({store,ops:op})});
-  t.after(()=>{http.close();});
-  const frames: Array<Array<Record<string,unknown>>> = [];
-  t.mock.method(WebSocketServer.prototype,"handleUpgrade", (...args: Parameters<InstanceType<typeof WebSocketServer>["handleUpgrade"]>) => {
-    const received: Array<Record<string,unknown>> = []; frames.push(received);
-    const ws = Object.assign(new EventEmitter(),{readyState:WebSocket.OPEN,send:(data:string)=>{ const frame=JSON.parse(data); if (frame.event!=="check") received.push(frame); },terminate(){},ping(){}});
-    args[3](ws as unknown as WebSocket,args[0]);
-  });
-  function request(path:string,method="POST") {
-    const socket=new Socket(); t.after(()=>socket.destroy()); Object.defineProperty(socket,"localPort",{value:7417});
-    const req=new IncomingMessage(socket); req.method=method; req.url=path; req.headers={host:"127.0.0.1:7417"}; return req;
-  }
-  for (const name of ["Whitefoot","Whitefoot","Firn","*","outsider"]) { const req=request("/wake?session="+encodeURIComponent(name),"GET"); http.emit("upgrade",req,req.socket,Buffer.alloc(0)); }
-  async function api(path:string,data:unknown) {
-    const req=request(path), res=new ServerResponse(req);
-    const done = new Promise<{status:number;data:Record<string,unknown>}>(resolve=>{
-      res.writeHead=status=>{res.statusCode=status;return res;};
-      res.end=((body:string)=>{resolve({status:res.statusCode,data:JSON.parse(body)});return res;}) as typeof res.end;
-    });
-    http.emit("request",req,res); req.push(Buffer.from(JSON.stringify(data)));req.push(null); return done;
-  }
-  const {id}=await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Visitor request",head:"Need a feature",accept:"Feature passes",priority:"P0",why:"Need it"});
-  await op.appendLog({author,id,text:"Seen"});
-  const note=await owner.createNote({target:"q:choice",kind:"explain",text:"Explain"});
-  assert.deepEqual(frames.map(f=>f.length),[1,1,0,1,0]);
-  const sent=await api("/api/send",{});
-  assert.deepEqual(sent.data.sent,[{id:note.id,target:"q:choice",kind:"explain",project:"Whitefoot"}]);
-  await api("/api/send",{});
-  assert.deepEqual(frames.map(f=>f.length),[2,2,0,2,0]);
-  assert.deepEqual(frames[0]![0],{event:"request",item:id,title:"Visitor request",project:"Whitefoot",by:"Firn"});
-  assert.deepEqual(frames[0]![1],{event:"note",note:note.id,target:"q:choice",kind:"explain",title:"中文方案？",project:"Whitefoot"});
-  await op.createRequest({author,project:"Firn",key:"external",title:"External",head:"Witness",accept:"Witness passes",why:"Need",from:"a"});
-  assert.deepEqual(frames.map(f=>f.length),[2,2,1,3,0]);
-});
-
-
 test("HTTP document reads leave earlier documents unread and hide read step diffs", async t => {
   const { store, op } = await board(t);
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }) });
@@ -317,65 +238,26 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
 });
 
-// A root with a missing shared row carries exactly this check in the plan model.
-const BLOCKED_TEXT = "依赖的条目不存在：missing";
+// A root with a missing shared row carries a (format) check in the plan model; it is not rated, so it carries 缺难度 too.
 const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
-async function wakeSocket(t: { after(fn: () => void): void }, url: string, session: string) {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session));
-  t.after(() => socket.terminate()); await once(socket, "open");
-  const frames: Array<Record<string, unknown>> = [];
-  socket.on("message", data => frames.push(JSON.parse(data.toString())));
-  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
-  return { frames, sync };
-}
-
-test("a committed check wakes once, not again on unrelated commits, and again after it clears and returns", async t => {
+test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
-  const star = await wakeSocket(t, url, "*"), own = await wakeSocket(t, url, "Whitefoot"), other = await wakeSocket(t, url, "Firn");
-  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
-  await star.sync(); await own.sync(); await other.sync();
-  const expected = { event: "check", item: "c", project: "Whitefoot", title: "卡住的条目", label: "需核对", text: BLOCKED_TEXT };
-  assert.deepEqual(star.frames, [expected]);
-  assert.deepEqual(own.frames, [expected]);
-  assert.deepEqual(other.frames, [], "other projects' sockets do not receive it");
-  await op.appendLog({ author, id: "c", text: "Unrelated progress" });
+  const star = await wakeSocket(t, url);
+  const checked: string[] = [], shared = store.derived.rules.bind(store.derived);
+  t.mock.method(store.derived, "rules", (s: Parameters<typeof shared>[0], now?: number) => {
+    const r = shared(s, now);
+    return { ...r, checks: (id: string) => { if (s === store.snapshot()) checked.push(id); return r.checks(id); } };
+  });
   await op.appendLog({ author: "Firn", id: "other", text: "Progress elsewhere" });
   await star.sync();
-  assert.equal(star.frames.length, 1, "still-flagged check is not announced again");
-  await store.commit({ author, message: "Remove item", deletes: [{ kind: "item", id: "c", expectRev: store.snapshot().items.c!.rev }] });
-  await store.commit({ author, message: "Block item again", puts: [blockedItem("c")] });
+  assert.ok(checked.includes("other"), "the written item is checked again");
+  assert.deepEqual(checked.filter(id => ["area", "a", "b"].includes(id)), [], "items the write cannot reach are not");
+  // A write that makes a check appear scans the new item, and a check that is not 无人推进 (this item carries two: the missing row and 缺难度) is pushed to no one.
+  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
-  assert.deepEqual(star.frames, [expected, expected], "a check that disappeared and reappeared is announced again");
-});
-
-test("active time alone (one hour) raises one stalled event on the timer, and a restart announces nothing", async t => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
-  const start = Date.parse("2026-10-11T03:00:00Z");
-  let clock = start + 60 * 60 * 1000 - 1;
-  const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
-    const s = structuredClone(store.snapshot());
-    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", priority: "P1", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
-    s.activity = { writes: Array.from({ length: 2 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
-    store.snapshot = () => structuredClone(s);
-  } });
-  const star = await wakeSocket(t, url, "*");
-  t.mock.timers.tick(1000); await star.sync();
-  assert.deepEqual(star.frames.filter(f => f.item === "w"), [], "1 hour of active time not yet reached");
-  clock++;
-  t.mock.timers.tick(1000); await star.sync();
-  const stalled = star.frames.filter(f => f.item === "w");
-  assert.equal(stalled.length, 1);
-  assert.deepEqual(stalled[0], { event: "check", item: "w", project: "Whitefoot", title: "没人推进的叶子", label: "无人推进", text: "进行中但 1 小时（活跃时间）没有动静" });
-  t.mock.timers.tick(5000); await star.sync();
-  assert.equal(star.frames.filter(f => f.item === "w").length, 1, "later timer ticks do not repeat it");
-  // A restarted server over the same state seeds from it silently, including the standing stalled check.
-  const again = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }), now: () => clock, checkIntervalMs: 1000 });
-  again.listen(0, "127.0.0.1"); await once(again, "listening");
-  t.after(() => new Promise<void>(resolve => again.close(() => resolve())));
-  const address = again.address(); assert.ok(address && typeof address !== "string");
-  const restarted = await wakeSocket(t, `http://127.0.0.1:${address.port}`, "*");
-  t.mock.timers.tick(5000); await restarted.sync();
-  assert.deepEqual(restarted.frames, [], "standing checks are not announced after a restart");
+  assert.ok(checked.includes("c"));
+  assert.ok(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), "the item is not rated, so it carries 缺难度 as well");
+  assert.deepEqual(star.events(), []);
 });
 
 test("the page has no pause endpoint; pausing goes through set_pause only", async t => {
@@ -383,4 +265,18 @@ test("the page has no pause endpoint; pausing goes through set_pause only", asyn
   const checkpoint = store.snapshot();
   assert.equal((await api("/api/pause", { id: "area", paused: true, reason: "x" })).status, 404);
   assert.deepEqual(store.snapshot(), checkpoint);
+});
+
+test("an owner notice reaches each open page as an owner event, and a page that connects later gets only what follows it", async t => {
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z") });
+  const { url } = await server(t, { wake });
+  // Told before the page connects: the page must not get it.
+  wake.tell("之前的通知", "不该补发", { kind: "card", key: "choice" });
+  const controller = new AbortController(); t.after(() => controller.abort());
+  const response = await fetch(url + "/api/events", { signal: controller.signal });
+  const reader = response.body!.getReader(); await reader.read();
+  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
+  assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
 });

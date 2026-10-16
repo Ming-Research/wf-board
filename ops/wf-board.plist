@@ -3,10 +3,11 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>org.ming-research.wf-board</string>
   <key>ProgramArguments</key><array><string>{{NODE}}</string><string>{{REPO}}/src/main.ts</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{{PATH}}</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{{PATH}}</string><key>WF_BOARD_DATA</key><string>{{DATA}}</string></dict>
   <key>WorkingDirectory</key><string>{{REPO}}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>1</integer>
   <key>StandardOutPath</key><string>{{HOME}}/Library/Logs/wf-board.log</string>
   <key>StandardErrorPath</key><string>{{HOME}}/Library/Logs/wf-board.log</string>
 </dict></plist>

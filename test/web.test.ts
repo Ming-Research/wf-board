@@ -82,7 +82,7 @@ interface PageOptions {
   transform?: (code:string) => string;
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
-  now?: () => number; clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
+  now?: () => number; clock?: FakeClock; autoOpen?: boolean; notification?: unknown; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(fixture: PageInput, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const snapshot = nativeFixture(fixture);
@@ -100,7 +100,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   };
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
   roots.get("nav")!.className = "nav";
   roots.get("summary")!.appendChild(roots.get("nav")!);
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
@@ -154,12 +154,13 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, structuredClone, console, CSS: { escape: (s: string) => s },
+    ...options.notification === undefined ? {} : { Notification: options.notification },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
-    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
+    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, focus() {}, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
       const input = init?.body ? JSON.parse(init.body) : undefined; calls.push({path,body:input});
       const intercepted = options.response?.(path,input,init ?? {});
@@ -216,10 +217,11 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   const flush=async()=> { for (let i=0;i<4;i++) { if (!options.stalledFrames) options.frames?.flush(); else options.clock!.advance(100); if (options.noFrames) options.clock?.advance(0); if (options.noFrames) await new Promise(resolve=>setTimeout(resolve,0)); await setImmediate(); } };
   await flush();
   // A live update from the server, as the page's event stream delivers it.
-  const emit=(commit:string,changed:unknown[]=[])=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed: changed.map(value => {
+  // `activity`, when given, is the event's activity change (rules ActivityDelta).
+  const emit=(commit:string,changed:unknown[]=[],activity?:unknown)=>sources.at(-1)!.handlers.get("change")!({ data: JSON.stringify({commit,changed: changed.map(value => {
     const doc = value as {kind: string; id: string; after?: unknown};
     return doc.kind === "item" ? {...doc, after: nativeDocument(doc.after, doc.id)} : doc;
-  })}) });
+  }),...(activity === undefined ? {} : {activity})}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
     // Every scroll either pane was asked to make.
@@ -287,7 +289,7 @@ function planRow(p: Awaited<ReturnType<typeof page>>, itemId: string, rowId: str
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): PageFixture {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: {}, decisions: {}, notes: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -305,7 +307,7 @@ test("a paused item shows its reason and no pause or resume control on any item"
   const s=nativeSnapshot(), original=structuredClone(s.items.area!.plan);
   const p=await page(s,[]); await expand(p,"area");
   assert.equal(item(p,"area").querySelector(".pause-start"),null,"open work has no pause button");
-  assert.equal(item(p,"area").querySelector(".pause-control .sbtn"),null);
+  assert.equal(item(p,"area").querySelector(".pause-control"),null,"an unpaused item leaves no empty row under its title");
   const paused={...s.items.area!,paused:{reason:"等第一版发布",at},rev:2};
   await p.change("b".repeat(40),[{kind:"item",id:"area",after:paused}]); await p.flush();
   assert.equal(item(p,"area").querySelector(".item-head .st")!.innerHTML,"◌ PAUSE");
@@ -457,6 +459,40 @@ test("detail: existing fenced code keeps blank lines and contiguous lists and ta
   assert.match(body, /class="chg-add"[^>]*><pre class="code numbered"><code><span class="l">new<\/span>\n<span class="l"><\/span>\n<span class="l">code<\/span><\/code><\/pre>/);
   assert.match(body, /class="chg-add"[^>]*><ul><li>Keep<\/li><li>New list<\/li><\/ul>/);
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
+});
+
+test("detail: each 参考 section is a folded details from its line to the next one or the end, other text unchanged", async () => {
+  const s = snapshot(); s.items.child!.head = "Body\n\n**参考：First**\n\nFirst detail\n\n**参考：Second**\n\nSecond detail";
+  const p = await page(s,unread()); await expand(p);
+  assert.match(markup(item(p)), /<p>Body<\/p><details class="refsec" data-ref="[^"]*"><summary><strong>参考：First<\/strong><\/summary><div class="refbody"><p>First detail<\/p><\/div><\/details><details class="refsec" data-ref="[^"]*"><summary><strong>参考：Second<\/strong><\/summary><div class="refbody"><p>Second detail<\/p><\/div><\/details>/);
+});
+
+test("detail: a changed 参考 section is marked as one block, its unchanged title and body included", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"Body\n\n**参考：R**\n\nold detail"};
+  s.items.child!.head = "Body\n\n**参考：R**\n\nnew detail\n\nmore";
+  const p = await page(s,unread(),before); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /<div class="chg-add"><details class="refsec" data-ref="[^"]*"><summary><strong>参考：R<\/strong><\/summary><div class="refbody"><p>new detail<\/p><p>more<\/p><\/div><\/details><\/div>/);
+  assert.ok(!body.includes("old detail"),"the former section text is not shown");
+});
+
+test("detail: a 参考 line inside fenced code, a title-only section and one at the head's start fold as the rule says", async () => {
+  const s = snapshot(), head = "**参考：Start**\n\n```\n**参考：inside code**\n```\n\n**参考：Empty**";
+  s.items.child!.head = head;
+  const p = await page(s,unread()); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Start<\/strong><\/summary><div class="refbody">.*参考：inside code.*<\/div><\/details>/s);
+  assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Empty<\/strong><\/summary><div class="refbody"><\/div><\/details>/);
+  assert.equal((body.match(/class="refsec"/g) ?? []).length, 2,"the fenced line opens no section");
+});
+
+test("detail: 参考 text in a card's background is plain, never folded", async () => {
+  const s = snapshot(), c = card();
+  s.decisions.q = {...c, background: "**参考：Not a section**\n\nBody"};
+  const p = await page(s,unread("decision","q")); await expand(p);
+  const card1 = p.all().find(e => e.id === "q-q")!;
+  assert.match(markup(card1), /<strong>参考：Not a section<\/strong>/);
+  assert.ok(!markup(card1).includes('class="refsec"'),"a card's background shows no fold");
 });
 
 // The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
@@ -685,7 +721,7 @@ test("R9 owner controls follow shared ask/card predicates through draft and sent
   }
 });
 
-test("n reaches hidden completed items in page order, and m reads the selected item but not its sub-items", async () => {
+test("n reaches completed items holding unread content in page order, and m reads the selected item but not its sub-items", async () => {
   const s = snapshot(), id = "e".repeat(40);
   s.items.other = {title:"Completed",parent:"area",status:"done",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
   s.items.area!.deps.push({id:"other",why:"needs other"});
@@ -699,14 +735,14 @@ test("n reaches hidden completed items in page order, and m reads the selected i
   p.key("m"); await p.flush(); assert.deepEqual(p.calls.filter(c => c.path === "/api/read").map(c => c.body),[{doc:"item:area",through:id}]);
   assert.ok(item(p).className.includes("fresh"),"the sub-item stays unread");
   const areaChip=descendants(item(p,"area").querySelector(".item-head")!).filter(e=>e.className === "newtag freshchip");
-  assert.deepEqual(areaChip.map(e=>e.innerHTML),["2"],"the parent counts both open and hidden completed sub-items");
+  assert.deepEqual(areaChip.map(e=>e.innerHTML),["2"],"the parent counts both open and completed sub-items holding unread content");
   assert.match(areaChip[0]!.title,/本身没有新内容，下面的子条目有 2 条/);
   assert.ok(!item(p,"area").className.includes("fresh"),"its line leaves: nothing of its own is new, only the sub-item it counts");
   p.key("m"); assert.match(p.roots.get("hint")!.textContent,/这一条本身没有新内容；新的 2 条在下面的子条目里/,"m says where the new content is");
   p.key("n"); await p.flush(); assert.ok(item(p).className.includes("cur"),"after m, n goes on to the next stop on the page");
-  p.key("n"); await p.flush(); const completed=detailItem(p,"other"); assert.ok(completed,"the hidden completed item's detail is rendered");
-  assert.ok(completed.className.includes("cur"),"the hidden completed item remains the next unread stop");
-  assert.ok(!rowOf(p,"other"),"unread navigation leaves its node hidden");
+  p.key("n"); await p.flush(); const completed=detailItem(p,"other"); assert.ok(completed,"the completed item's detail is rendered");
+  assert.ok(completed.className.includes("cur"),"the completed item remains the next unread stop");
+  assert.ok(rowOf(p,"other")?.className.includes("fresh-ended"),"the completed item shows dimmed in the tree while it holds unread content");
 });
 
 test("inside a changed item n visits each new place in turn before the next item; a new item is one stop at its start", async () => {
@@ -746,6 +782,20 @@ test("n walks the page from top to bottom, one stop per changed document, and go
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"area's second change is not a second stop");
   p.key("m"); await p.flush(); assert.deepEqual(p.calls.filter(x => x.path === "/api/read").map(x => x.body),[{doc:"item:child",through:a}]);
   p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"after m, n continues below the read stop instead of starting over");
+});
+
+test("after the owner selects another item in the tree, n goes to the first new stop at or below it, and its reverse to the last one above it", async () => {
+  const s = snapshot(), [a,b] = ["a","b"].map(x => x.repeat(40)) as [string,string];
+  s.items.plain = {title:"Plain",group:"Project",status:"todo",priority:"P2",updated:at,rev:1,deps:[],links:[],log:[]};
+  const doc = (id:string) => ({kind:"item" as const,id,summary:"head changed",pieces:{progress:0,reply:0,other:1}});
+  // Page order: area, its child, then plain; all three hold new content.
+  const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]}]);
+  await wideCaret(p).click(); await p.flush();
+  const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["area"]);
+  // Without the fix n went on from where it last landed (child), not from the item the owner clicked.
+  await selectWide(p,"plain"); p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"n starts from the clicked item");
+  await selectWide(p,"child"); p.key("N"); await p.flush(); assert.deepEqual(cur(),["area"],"its reverse goes to the last stop above the clicked item");
 });
 
 test("shared plan rows are one line: no owner or origin line under them", async () => {
@@ -788,18 +838,10 @@ test("project page follows board project list order on load and live reorder, wi
   assert.deepEqual(names(), ["A last", "Z first", "Project", "New"]);
 });
 
-test("project page omits session assignments and shows inbox requests, including empty projects", async () => {
+test("project page omits session assignments and shows empty projects", async () => {
   const s=snapshot(); s.board.projects.push({name:"Empty"});
-  s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
   assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
-  assert.ok(p.all().some(e=>e.innerHTML==="阻塞 1 ›"));
-  const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
-  assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/);
-  const tree=p.all().find(e=>e.id==="it-incoming"); assert.ok(tree); assert.ok(descendants(inbox).includes(tree));
-  await descendants(tree).find(e=>e.className==="item-head")!.click();
-  assert.match(markup(p.all().find(e=>e.id==="detail-it-incoming")!),/Request body/);
-  assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
 });
 
 test("新 counts items: one per item however many changes, a parent adding the items below it, in one chip", async () => {
@@ -1500,7 +1542,9 @@ test("card plan rows show waiting and resolved glyphs, link their question and r
   assert.equal(planRow(p,"child","r").querySelector(".g")!.innerHTML,"✓");
   assert.equal(planRow(p,"child","gone").querySelector(".g")!.innerHTML,"⏸");
   assert.match(markup(planRow(p,"child","q")),/如何显示/); assert.match(markup(planRow(p,"child","r")),/已定的问题/);
-  assert.equal(planRow(p,"child","q").querySelector(".plan-link")!.dataset.ref,"q:q");
+  // A card another item holds unfolds under this row like the item's own card; a missing card keeps its key as a link.
+  assert.equal(planRow(p,"child","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"false");
+  assert.equal(planRow(p,"child","q").querySelector(".plan-link")!.dataset.ref,undefined);
   assert.equal(planRow(p,"child","gone").querySelector(".plan-link")!.innerHTML,"gone");
   assert.equal(item(p).querySelectorAll(".why").length,0,"plan rows have no why field");
 });
@@ -1604,17 +1648,6 @@ test("atomic owner-plan changes reconcile child membership while reusing sibling
   p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,rev:4,priority:"P0"}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"]);
 });
-test("finishing an inbox request hides it until the completed filter shows it in the normal tree", async () => {
-  const s=snapshot(), frames=new Frames(); s.items.request={...s.items.child!,parent:undefined,group:"Project",request:{by:"Elsewhere",at}}; s.items.request2={...s.items.request!,title:"Later request",priority:"P2",request:{by:"Elsewhere",at:"2026-10-12T00:00:00Z"}};
-  const p=await page(s,[],null,undefined,{frames}); assert.ok(item(p,"request").closest(".inbox"));
-  p.emit("a".repeat(40),[{kind:"item",id:"request2",after:{...s.items.request2!,priority:"P0"}}]); await p.flush();
-  assert.deepEqual(p.all().filter(e=>e.id === "it-request" || e.id === "it-request2").map(e=>e.id),["it-request","it-request2"],"inbox remains ordered by request time");
-  p.emit("b".repeat(40),[{kind:"item",id:"request",after:{...s.items.request!,status:"done"}}]); await p.flush();
-  assert.ok(!rowOf(p,"request"),"ended request leaves the inbox and default tree without a request-object edit");
-  await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "完成 1")!.click(); await p.flush();
-  assert.ok(rowOf(p,"request") && !rowOf(p,"request").closest(".inbox"),"the completed filter shows the ended request in the normal tree");
-});
-
 test("scoped unread card membership inserts replies and removes read ended cards without rebuilding peers", async t => {
   for (const kind of ["note","decision"]) for (const hosted of [true,false]) for (const showing of [true,false]) await t.test(kind+" "+(hosted ? "hosted " : "loose ")+(showing ? "insert" : "remove"),async()=> {
     const s=snapshot(), frames=new Frames(), note:Note={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2};
@@ -1644,6 +1677,8 @@ test("all card jump entry points await baselines before selecting and scrolling"
     else await button(p,"下一条（2/2）").click();
     await p.flush(); assert.equal(p.scrollCount,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
+    // The parent's plan row unfolds the card in the parent, which is unread too: its baseline alone does not release the jump.
+    if(path === "dependency") { other.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.equal(p.scrollCount,0,"the card's own baseline still holds the jump"); }
     hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
     other.resolve({before:s.items.area,after:s.items.area,diff:""});
   });
@@ -2568,7 +2603,7 @@ test("hidden closed item references open detail and Back returns without changin
   });
 });
 
-test("hidden completed and cancelled items retain unread item, card and reply stops and can be read", async t => {
+test("done and cancelled items holding unread item, card or reply content show dimmed in the tree and can be read", async t => {
   for (const state of ["done","cancelled"] as const) for (const kind of ["item","decision","note"] as const) await t.test(state+" "+kind,async()=> {
     const s=nativeSnapshot(), baseline={...s.items.child!,head:"Before"};
     s.items.child!.plan=planWork([],state === "done" ? "done" : "dropped"); s.items.child!.head="Changed";
@@ -2577,10 +2612,11 @@ test("hidden completed and cancelled items retain unread item, card and reply st
     s.notes.n={target:"it:child",kind:"comment",text:"Question",at,state:"done",reply:"New answer",repliedAt:at,rev:1};
     const id=kind === "item" ? "child" : kind === "decision" ? "q" : "n";
     const p=await page(s,unread(kind,id),kind === "item" ? baseline : null); await expand(p,"area");
-    assert.ok(!rowOf(p,"child")); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
+    // Owner, 2026-10-14: n only lands on rows on screen, so a closed item holding unread content shows, dimmed.
+    assert.ok(rowOf(p,"child")?.className.includes("fresh-ended"),"the closed item shows dimmed while it holds unread content"); assert.ok(p.all().some(e=>e.innerHTML === "新 1 ›"));
     const chip=rowOf(p,"area").querySelector(".freshchip")!; assert.ok(chip,"a hidden child's unread content still reaches its visible owner");
     await chip.click(); await p.flush();
-    const child=detailItem(p,"child"); assert.ok(child); assert.ok(!rowOf(p,"child"));
+    const child=detailItem(p,"child"); assert.ok(child); assert.ok(rowOf(p,"child"));
     const target=kind === "item" ? child : p.document.getElementById(kind === "decision" ? "q-q" : "note-n");
     assert.ok(target,"the unread target is rendered inside the hidden item's detail");
     assert.ok(target.className.includes("cur"));
@@ -2931,7 +2967,7 @@ test("the keyboard help lists the search key", async () => {
   assert.ok(p.document.getElementById("search"), "and its row opens the search");
 });
 
-// Owner waits: blocking (purple) and non-blocking (red), the 等你 panel and the 要你知道 list.
+// Owner waits: blocking (purple) and non-blocking (red), and the 等你 panel.
 function waitSnapshot(): PageFixture {
   const s=snapshot();
   s.items.hot={title:"Hot",group:"Project",priority:"P0",ask:{text:"Hot ask"},updated:"2026-10-02T00:00:00Z",rev:1,deps:[],links:[],log:[]};
@@ -2964,31 +3000,32 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
   // The walk follows board order (area before hot), blocking waits first: the first stop is the older card on child.
   assert.ok(q.all().some(e=>e.id === "detail-it-child") && !q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is a blocking card on child, which opens in the detail");
 });
-test("top controls: waits, notices, unread navigation and filters, then tools and project links occupy four rows", async () => {
+test("top controls: waits, unread navigation and filters, then tools and project links occupy three rows", async () => {
   const s=waitSnapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
-  s.notices.news={text:"A notice",author:"Project",at,rev:1};
   s.items.child!.steps=[{id:"p",text:"Progress",state:"todo"}];
   const docs=[{kind:"item",id:"child",summary:"head changed, plan changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
-  assert.deepEqual(rows.map(r=>r.id),["wait-row","notices","unread-row","tools-row"]);
-  assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","noticepanel","sum-row","sum-row"]);
+  assert.deepEqual(rows.map(r=>r.id),["wait-row","unread-row","tools-row"]);
+  assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","sum-row","sum-row"]);
   assert.ok(!summaryText(p).some(e=>e.innerHTML === "未读"),"the unread row has no visible label");
   assert.deepEqual(rows[0]!.children[0]!.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"]);
   assert.equal(rows[0]!.children[1]!.id,"wait-panel");
-  assert.deepEqual(rows[2]!.children.map(e=>e.innerHTML),["新 1 ›","","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation and its filters share one flex row, separated by a decorative line");
-  assert.equal(rows[2]!.children[1]!.className,"sum-divider");
-  assert.equal(rows[2]!.children[1]!.getAttribute("aria-hidden"),"true");
-  assert.deepEqual(rows[3]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
-  assert.equal(rows[3]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
+  assert.deepEqual(rows[1]!.children.map(e=>e.innerHTML),["新 1 ›","","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation and its filters share one flex row, separated by a decorative line");
+  assert.equal(rows[1]!.children[1]!.className,"sum-divider");
+  assert.equal(rows[1]!.children[1]!.getAttribute("aria-hidden"),"true");
+  assert.deepEqual(rows[2]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
+  assert.equal(rows[2]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
   const nav=p.roots.get("nav")!, links=[...nav.children];
-  assert.equal(rows[3]!.children[3],nav,"the existing project navigation shares the tools row");
+  assert.equal(rows[2]!.children[3],nav,"the existing project navigation shares the tools row");
   assert.deepEqual(links.map(e=>e.innerHTML),["Project"]);
-  await p.change("e".repeat(40),[{kind:"notice",id:"news",after:{...s.notices.news!,read:at,rev:2}}]); await p.flush();
+  // Ruling a blocking card changes the waits row and rebuilds the header.
+  s.decisions.old={...s.decisions.old!,status:"ruled",ruling:"A",choice:"A"};
+  await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
   assert.equal(p.document.getElementById("nav"),nav,"rebuilding the header preserves the navigation element");
   assert.equal(nav.parentElement!.id,"tools-row");
-  assert.deepEqual(nav.children,links,"header-only notice changes retain the existing project links");
-  assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"],"no empty notice row remains after the last notice is read");
+  assert.deepEqual(nav.children,links,"a header rebuild retains the existing project links");
+  assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"]);
 });
 test("top controls: a filter with no matching new content keeps its controls without a dangling divider", async () => {
   const docs=[{kind:"item",id:"child",summary:"head changed",pieces:{progress:0,reply:0,other:1}}];
@@ -3039,28 +3076,6 @@ test("等你 panel is gone when the last blocking wait is answered", async () =>
   await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
   assert.ok(!p.all().some(e=>e.id === "wait-panel"));
 });
-test("要你知道 lists unread notices newest first, 已读 hides one through the API, and the section disappears when none is left", async () => {
-  const s=snapshot();
-  s.notices={n1:{text:"旧的 **通知**",author:"总管",at:"2026-10-01T00:00:00Z",rev:1},n2:{text:"新的，见 [[it:child]]",item:"child",author:"Firn",at:"2026-10-03T00:00:00Z",rev:1},n3:{text:"已读的",author:"Firn",at:"2026-10-02T00:00:00Z",read:at,rev:1}};
-  const p=await page(s,[],null,undefined,{response:(path)=> path === "/api/notice-read" ? {ok:true,status:200,json:async()=>({marked:[]})} : undefined});
-  const section=()=>p.all().find(e=>e.id === "notices");
-  assert.equal(section()!.children[0]!.innerHTML,"要你知道 2");
-  const rows=section()!.children.filter(e=>e.className === "notice");
-  assert.equal(rows.length,2); assert.match(markup(rows[0]!),/新的/); assert.match(markup(rows[0]!),/Firn/); assert.match(markup(rows[1]!),/旧的/);
-  assert.ok(!markup(section()!).includes("已读的"));
-  assert.ok(rows[0]!.children.some(e=>e.className.includes("notice-item")),"a notice with an item links to it");
-  const kids=p.roots.get("summary")!.children;
-  assert.ok(kids.includes(section()!) && kids.indexOf(section()!) < kids.findIndex(e=>e.id === "tools-row"),"the notice list is its own summary row, above the tools");
-  await rows[0]!.children.find(e=>e.className.includes("notice-read"))!.click();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/notice-read").map(c=>c.body),[{id:"n2"}]);
-  await p.change("f".repeat(40),[{kind:"notice",id:"n2",after:{...s.notices.n2!,read:at,rev:2}}]); await p.flush();
-  assert.equal(section()!.children[0]!.innerHTML,"要你知道 1"); assert.ok(!markup(section()!).includes("新的"));
-  await p.change("g".repeat(40),[{kind:"notice",id:"n1",after:{...s.notices.n1!,read:at,rev:2}}]); await p.flush();
-  assert.equal(section(),undefined,"all read, no section");
-  await p.change("h".repeat(40),[{kind:"notice",id:"n4",after:{text:"又一条",author:"Firn",at,rev:1}}]); await p.flush();
-  assert.match(section()!.children[0]!.innerHTML,/要你知道 1/);
-});
-
 test("等你 panel shortens a long card question at 40 characters", async () => {
   const s=snapshot(), q40="问".repeat(40), q41=q40+"题";
   s.decisions.a40={...card(),question:q40,blocks:"停着甲"}; s.decisions.a41={...card(),question:q41,blocks:"停着乙"};
@@ -3083,6 +3098,35 @@ test("record labels render in the page and stay outside status counts", async ()
   assert.match(counts[2]!, /完成 0$/);
 });
 
+// Records each item the page signs (rules presentationSignature) as a render entry "sign:<id>".
+const recordSigning = (code: string) => { assert.ok(code.includes("function signPresentation(it, next, scope) {")); return code.replace("function signPresentation(it, next, scope) {", "function signPresentation(it, next, scope) { recordRender(\"sign:\" + it.id);"); };
+test("a live update signs and repaints only the items it can change, applying the activity change to the page's copy", async () => {
+  const s = snapshot(), began = Date.parse(at), head = "a".repeat(40);
+  s.items.lone = { title: "Unrelated", group: "Project", priority: "P2", updated: at, rev: 1, deps: [], links: [], log: [] };
+  s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
+  const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000, transform: recordSigning}); await expand(p); await p.flush();
+  const checkText = (id = "child") => rowOf(p, id).querySelectorAll(".checktag").map(e => e.title).join("\n");
+  assert.ok(p.renders.includes("sign:lone"), "the first pass signs every item");
+  assert.ok(checkText().includes("活跃时间"), "the leaf is stalled before the update");
+  const lone = rowOf(p, "lone"), snapshots = p.calls.filter(c => c.path === "/api/snapshot").length;
+  p.renders.length = 0;
+  // A write to the child an hour later. Its document carries no new time, so only the activity change moves its clock;
+  // nothing reaches the unrelated item.
+  const written = new Date(began + 59 * 60 * 1000).toISOString();
+  p.emit("b".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, rev: 2, head: "Progress" } }], { from: head, write: written, items: { child: written }, pauses: {} });
+  await p.flush();
+  assert.ok(!checkText().includes("活跃时间"), "the activity change reset the child's clock on the page");
+  assert.ok(p.renders.includes("sign:child") && p.renders.includes("sign:area"), "the changed item and its owner are signed again");
+  assert.ok(!p.renders.includes("sign:lone"), "an unrelated item is not signed again");
+  assert.ok(!p.renders.some(r => r instanceof Set && (r.has("item:lone") || r.has("all"))), "nor repainted");
+  assert.strictEqual(rowOf(p, "lone"), lone, "its row is the same element");
+  assert.equal(p.calls.filter(c => c.path === "/api/snapshot").length, snapshots, "a delta against the page's head needs no reload");
+  // A delta made against another head means the page missed or overtook an event: it reloads the snapshot.
+  p.emit("d".repeat(40), [{ kind: "item", id: "lone", after: { ...s.items.lone!, rev: 2, head: "Later" } }], { from: "c".repeat(40), write: written, items: { lone: written }, pauses: {} });
+  await p.flush();
+  assert.equal(p.calls.filter(c => c.path === "/api/snapshot").length, snapshots + 1, "an out-of-order delta reloads the snapshot");
+});
+
 test("page refreshes the stalled check when active time crosses the threshold without another write", async () => {
   const s = snapshot(), began = Date.parse(at);
   let now = began + 60 * 60 * 1000 - 1;
@@ -3102,8 +3146,8 @@ test("a stalled leaf shows 无人推进 beside its title with the full explanati
   const s = snapshot(), began = Date.parse(at);
   s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
   const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000});
-  // Other checks (here the missing completion condition) keep their own 需核对 tag; only the stalled tags are asserted on.
-  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对");
+  // Other checks (here the missing completion condition and the missing difficulty) keep their own tags; only the stalled tags are asserted on.
+  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对" && e.innerHTML !== "缺难度");
   const folded = tags("area");
   assert.deepEqual(folded.map(e => e.innerHTML), ["无人推进 1"], "the folded parent counts its stalled leaf");
   assert.equal(folded[0]!.title, "1 个进行中的下级条目 1 小时（活跃时间）没有动静", "the subtree chip uses the same one-hour threshold as the leaf check");
@@ -3390,7 +3434,7 @@ test("plan rows refresh when a shared target's title or card blocking text chang
   s.items.area!.plan=planWork([ownedRow("child"),sharedRow("dependency"),cardRow("q")]);
   const p=await page(s,[]); await expand(p,"area");
   assert.match(markup(planRow(p,"area","dependency")),/Shared result/);
-  assert.match(markup(planRow(p,"area","q")),/决策卡/);
+  assert.match(markup(planRow(p,"area","q")),/待裁定/);
   await p.change("b".repeat(40),[{kind:"item",id:"dependency",after:{...s.items.dependency!,title:"Renamed result"}}]); await p.flush();
   assert.match(markup(planRow(p,"area","dependency")),/Renamed result/);
   assert.doesNotMatch(markup(planRow(p,"area","dependency")),/Shared result/);
@@ -3589,18 +3633,90 @@ test("a card its item's plan names unfolds inline under its row, once, and navig
   assert.equal(reloaded.all().filter(e=>e.id === "q-q").length,1,"a reload keeps it unfolded");
   await planRow(p,"child","q").querySelector(".cardtoggle")!.click(); await p.flush();
   assert.equal(cards().length,0,"a second click folds it again");
-  // Another item's plan row for the card stays a link to the card's own item.
+  // Another item's plan row for the card unfolds it too, rather than linking to the card's own item.
   await expand(p,"area");
-  const link=planRow(p,"area","q").querySelector(".plan-link")!;
-  assert.equal(link.dataset.ref,"q:q"); assert.equal(planRow(p,"area","q").querySelector(".cardtoggle"),null);
-  // Following a link to the card opens its item and unfolds it inline under the plan row.
+  assert.equal(planRow(p,"area","q").querySelector(".cardtoggle")!.attributes["aria-expanded"],"false");
+  // Following a reference to the card from an item whose plan does not name it opens the card's item and unfolds it
+  // inline under the plan row.
   storage.delete("board-inline-cards");
+  s.items.area!.plan=s.items.area!.plan.filter(row => !("card" in row));
   const q=await page(s,[],null,undefined,{storage}); await expand(q,"area");
-  await planRow(q,"area","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await q.flush();
+  const ref=q.document.createElement("a"); ref.className="itemref"; ref.setAttribute("data-ref","q:q"); ref.bubbleClick=true; q.roots.get("sendbox")!.appendChild(ref);
+  await ref.click(); await q.flush();
+  assert.equal(storage.get("board-selected"),"child","the card's own item is selected");
   const shown=q.all().filter(e=>e.id === "q-q");
   assert.equal(shown.length,1);
   const target=planRow(q,"child","q"), host=target.parentElement!;
   assert.equal(host.children[host.children.indexOf(target)+1],shown[0],"navigation unfolds the card under its row");
+});
+
+test("a card row whose card belongs to another item unfolds inline there and keeps the selection", async () => {
+  // The card's own item is the finished parent, whose plan does not name it; the child's plan shares it.
+  const s=nativeSnapshot(); s.decisions.q={...card(),item:"area",blocks:"Release waits for the ruling"};
+  s.items.area!.plan=planWork([planStep("work","Work","done")],"done");
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  assert.ok(item(p,"child").id === "detail-it-child");
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(storage.get("board-selected"),"child","the shown item stays selected");
+  assert.ok(p.all().some(e => e.id === "detail-it-child") && !p.all().some(e => e.id === "detail-it-area"),"the detail pane still shows the child");
+  const shown=p.all().filter(e => e.id === "q-q"), row=planRow(p,"child","q"), parent=row.parentElement!;
+  assert.equal(shown.length,1,"one card element");
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"the card unfolds under the row that was clicked");
+  assert.ok(shown[0]!.className.split(" ").includes("cur"),"the unfolded card is selected, so c and m act on it");
+  // Commenting on it keeps the child shown and comments on the same card.
+  p.key("c"); await settle();
+  assert.equal(storage.get("board-selected"),"child","c on the inline card does not switch to the card's own item");
+  assert.ok(p.all().some(e => e.id === "ed-q_q"),"the comment box is the card's own");
+  // A second click folds it again, still in place.
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(p.all().filter(e => e.id === "q-q").length,0);
+  assert.equal(storage.get("board-selected"),"child");
+});
+
+test("a click anywhere on a card row folds and unfolds its card, while links inside the row keep their action", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card();
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  // The row element itself, as a click in the blank space after a wrapped question hits it.
+  await planRow(p,"child","q").click({clientX:0,clientY:0}); await p.flush();
+  const row=planRow(p,"child","q"), parent=row.parentElement!, shown=p.all().filter(e => e.id === "q-q");
+  assert.equal(shown.length,1,"a click on the row unfolds the card");
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"under its row");
+  assert.equal(row.querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+  assert.equal(storage.get("board-selected"),"child");
+  await planRow(p,"child","q").click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(p.all().filter(e => e.id === "q-q").length,0,"a second click on the row folds it");
+  // A link inside the row acts as itself and does not also fold or unfold the card.
+  const link=p.document.createElement("a"); link.className="itemref"; link.setAttribute("data-ref","it:area"); link.bubbleClick=true;
+  planRow(p,"child","q").appendChild(link);
+  await link.click(); await p.flush();
+  assert.equal(storage.get("board-selected"),"area","the link inside the row followed its target");
+  assert.equal(JSON.parse(storage.get("board-inline-cards")!).q,false,"the card's fold did not change");
+});
+
+test("a card row for the item's own card unfolds inline when a finished item's plan also names the card", async () => {
+  // A ruled card, so the other item naming it can be finished.
+  const s=nativeSnapshot(); s.decisions.q={...card(),status:"ruled",ruling:"B"};
+  s.items.child!.plan=planWork([planStep("work","Work"),cardRow("q")]);
+  s.items.finished={...s.items.area!,title:"Finished",plan:[cardRow("q"),planAcceptance("done")]};
+  // The finished item comes first in board order, so a lookup by card name across plans would find it first.
+  s.items={finished:s.items.finished!,...s.items};
+  const storage=new Map<string,string>();
+  const p=await page(s,[],null,undefined,{storage}); await expand(p);
+  assert.equal(rules(s).statusOf("finished"),"done");
+  await planRow(p,"child","q").querySelector(".plan-link")!.click({clientX:0,clientY:0}); await p.flush();
+  assert.equal(storage.get("board-selected"),"child","the click does not move to the finished item");
+  const shown=p.all().filter(e => e.id === "q-q"), row=planRow(p,"child","q"), parent=row.parentElement!;
+  assert.equal(shown.length,1);
+  assert.equal(parent.children[parent.children.indexOf(row)+1],shown[0],"the card unfolds under the child's row");
+  // Following the card from the finished item's own row, with the finished item shown, unfolds it there instead.
+  await expand(p,"finished");
+  assert.equal(storage.get("board-selected"),"finished");
+  const there=planRow(p,"finished","q"), host=there.parentElement!;
+  assert.equal(host.children[host.children.indexOf(there)+1],p.all().find(e => e.id === "q-q"),"the remembered unfolded card shows under the finished item's row");
 });
 
 test("n visits an item, then the cards its plan unfolds, then its comments, then its other cards", async () => {
@@ -3616,4 +3732,474 @@ test("n visits an item, then the cards its plan unfolds, then its comments, then
   }
   assert.deepEqual(visited,["detail-it-child","q-q","note-n","q-loose"]);
   assert.ok(planRow(p,"child","q").parentElement!.children.some(e=>e.id === "q-q"),"n unfolded the planned card under its row");
+});
+
+function taggedSnapshot(): Snapshot {
+  const s = nativeSnapshot();
+  s.board.tags = [{ name: "健全性", meaning: "改动影响程序是否被正确拒绝或接受" }, { name: "报错信息", meaning: "改动影响诊断" }];
+  s.items.child!.tags = ["健全性", "报错信息"];
+  return s;
+}
+test("a tree row shows its tags after the title, and the detail shows them on a line directly under the title", async () => {
+  const p = await page(taggedSnapshot(), []);
+  await expand(p, "child");
+  const head = rowOf(p, "child").querySelector(".item-head")!;
+  const kinds = head.children.map(e => e.className.split(" ")[0]);
+  assert.ok(kinds.indexOf("tagchips") > kinds.indexOf("item-title"), "the chips follow the title on the same row");
+  const chips = head.querySelector(".tagchips")!.children;
+  assert.deepEqual(chips.map(c => c.innerHTML), ["健全性", "报错信息"]);
+  assert.equal(chips[0]!.title, "改动影响程序是否被正确拒绝或接受", "hovering a tag shows its meaning");
+  assert.equal(rowOf(p, "child").querySelector(".item-tags"), null, "the tree row has no separate tag line");
+  const detail = item(p, "child");
+  assert.equal(detail.id, "detail-it-child");
+  assert.ok(detail.children[0]!.classList.contains("item-row"));
+  assert.ok(detail.children[1]!.classList.contains("item-tags"), "the tag line comes directly after the title row");
+  assert.deepEqual(detail.children[1]!.children.map(c => c.innerHTML), ["健全性", "报错信息"]);
+  assert.equal(detail.children[0]!.querySelector(".tagchips"), null, "the detail title row does not repeat them");
+  assert.equal(rowOf(p, "area").querySelector(".item-head .tagchips"), null, "an untagged item shows no chips and no warning");
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html, /\.tagchip \{[^}]*background/, "the chips are neutral, not a status colour");
+  assert.doesNotMatch(html.match(/\.tagchip \{[^}]*\}/)![0], /--(wip|done|blocked|todo)/);
+});
+
+test("the tag filter shows items carrying any selected tag and their ancestors, and hides the rest", async () => {
+  const s = taggedSnapshot();
+  s.items.sibling = { ...structuredClone(s.items.child!), title: "Sibling", tags: ["报错信息"] } as Item;
+  s.items.area!.plan = [...s.items.area!.plan.filter(r => !("accept" in r)), { id: "sibling", item: "sibling", own: true, after: [] }, ...s.items.area!.plan.filter(r => "accept" in r)];
+  s.items.other = { ...structuredClone(s.items.child!), title: "Other", tags: ["健全性"], group: "Project" } as Item;
+  s.items.area!.plan.splice(-1, 0, { id: "other", item: "other", own: true, after: [] });
+  s.items.child!.tags = ["健全性"];
+  const p = await page(s, []); await expand(p, "child");
+  assert.ok(rowOf(p, "child") && rowOf(p, "sibling") && rowOf(p, "other"), "unfiltered: all visible");
+  const button = (text: string) => p.all().find(e => e.tagName === "BUTTON" && e.innerHTML === text);
+  assert.ok(button("健全性 2") && button("报错信息 1"), "the filter row offers each tag with its item count");
+  await button("报错信息 1")!.click(); await p.flush();
+  assert.ok(rowOf(p, "sibling"), "the item carrying the tag stays");
+  assert.ok(rowOf(p, "area"), "its ancestor stays for context");
+  assert.equal(rowOf(p, "child"), undefined, "an item without the selected tag is hidden");
+  assert.equal(rowOf(p, "other"), undefined);
+  await button("健全性 2")!.click(); await p.flush();
+  assert.ok(rowOf(p, "sibling") && rowOf(p, "child") && rowOf(p, "other"), "any selected tag keeps an item");
+  await button("报错信息 1")!.click(); await p.flush();
+  assert.equal(rowOf(p, "sibling"), undefined);
+  assert.ok(rowOf(p, "child") && rowOf(p, "other"));
+});
+
+test("a tag name is shown as text, not markup, in the chips and the filter button", async () => {
+  const s = taggedSnapshot();
+  s.board.tags = [{ name: "<b>x</b>", meaning: "markup in a name" }];
+  s.items.child!.tags = ["<b>x</b>"];
+  const p = await page(s, []); await expand(p, "child");
+  const chip = rowOf(p, "child").querySelector(".tagchips")!.children[0]!;
+  assert.equal(chip.innerHTML, "&lt;b&gt;x&lt;/b&gt;");
+  assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "&lt;b&gt;x&lt;/b&gt; 1"), "the filter button escapes the name");
+});
+
+test("the detail shows the difficulty first on the line under the title, before the tags; the tree row and an unrated item show none", async () => {
+  const s = taggedSnapshot();
+  s.items.child!.difficulty = 3;
+  const p = await page(s, []);
+  await expand(p, "child");
+  const line = item(p, "child").children[1]!;
+  assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
+  assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
+  assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
+  assert.ok(!line.children[1]!.classList.contains("diffchip"));
+  assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
+  // The architect's own item has the label, and its line exists without any tag.
+  const own = taggedSnapshot(); own.items.area!.difficulty = "architect";
+  const q = await page(own, []); await selectWide(q, "area");
+  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["架构师做"]);
+  // An item without a difficulty and tags has no line.
+  const bare = await page(taggedSnapshot(), []); await selectWide(bare, "area");
+  assert.equal(detailItem(bare, "area")!.querySelector(".item-tags"), null);
+  const html = await readFile("web/index.html", "utf8");
+  assert.doesNotMatch(html.match(/\.diffchip \{[^}]*\}/)![0], /--tag-/, "the difficulty is not drawn as one of the teal tags");
+});
+
+test("a live change of the difficulty repaints the chip, also when it first appears or goes", async () => {
+  const s = taggedSnapshot(); s.items.child!.difficulty = 2;
+  const p = await page(s, []); await expand(p, "child");
+  const chips = () => item(p, "child").querySelector(".item-tags")?.children.map(c => c.innerHTML);
+  assert.deepEqual(chips(), ["难度 2", "健全性", "报错信息"]);
+  await p.change("c".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, difficulty: 4, rev: 2 } }]); await p.flush();
+  assert.deepEqual(chips(), ["难度 4", "健全性", "报错信息"], "the changed difficulty is painted");
+  const { difficulty: _gone, ...unrated } = s.items.child!;
+  await p.change("d".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, rev: 3 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["健全性", "报错信息"], "an item that loses its difficulty keeps its tags");
+  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: "architect", rev: 4 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["架构师做", "健全性", "报错信息"]);
+});
+
+test("writing a note on an unfolded inline card keeps it unfolded through save and send", async () => {
+  const s=nativeSnapshot(); s.decisions.q=card();
+  s.items.child!.plan=planWork([planStep("work","Work"),{...cardRow("q"),id:"ask-owner"}]);
+  const storage=new Map<string,string>([["board-inline-cards",'{"q":true}'],["board-notes",'{"q:q":true}']]); // unfolded earlier and remembered; its plan row id differs from the card key
+  const p=await page(s,[],null,undefined,{storage,response:path=>path === "/api/notes" ? reply({id:"saved"}) : undefined}); await expand(p);
+  const cards=()=>p.all().filter(e=>e.id === "q-q");
+  assert.equal(cards().length,1,"unfolded");
+  await cards()[0]!.click(); await p.flush();
+  p.key("c"); await settle();
+  const editor=p.all().find(e=>e.id === "ed-q_q")!; assert.ok(editor,"the card's comment editor is open");
+  editor.value="Draft on the card";
+  await editor.parentElement!.querySelector(".save")!.click(); await p.flush(); await settle();
+  const draft={target:"q:q",kind:"comment" as const,text:"Draft on the card",at,state:"draft" as const,rev:1};
+  await p.change("c".repeat(40),[{kind:"note",id:"saved",after:draft},{kind:"item",id:"child",after:{...s.items.child!,rev:2}},{kind:"decision",id:"q",after:{...s.decisions.q!,rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"saving the draft keeps the card unfolded");
+  assert.equal(planRow(p,"child","ask-owner").querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+  assert.equal(JSON.parse(storage.get("board-inline-cards")!).q,true);
+  assert.match(markup(cards()[0]!),/Draft on the card/,"the draft note is visible on the card");
+  await cardSend(p).click(); await p.flush(); await settle();
+  await p.change("d".repeat(40),[{kind:"note",id:"saved",after:{...draft,state:"sent",rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"sending keeps the card unfolded");
+  assert.equal(planRow(p,"child","ask-owner").querySelector(".cardtoggle")!.attributes["aria-expanded"],"true");
+});
+
+test("an item's purple number cycles only through the blocking cards it counts, also after an unrelated re-render", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.decisions.y1={...card(),item:"y",blocks:"Y work 1"}; s.decisions.y2={...card(),item:"y",blocks:"Y work 2"};
+  const p=await page(s,[]);
+  assert.equal(wideHead(p,"y").children.find(e=>e.className === "waittag")!.innerHTML,"2");
+  // A blocking card appears on an item that comes earlier on the board; only that item's row is repainted.
+  p.emit("b".repeat(40),[{kind:"decision",id:"x1",after:{...card(),item:"x",blocks:"X work"}}]); await p.flush();
+  assert.equal(wideHead(p,"x").children.find(e=>e.className === "waittag")!.innerHTML,"1");
+  const landed=new Set<string>();
+  for (let i=0;i<4;i++) {
+    await wideHead(p,"y").children.find(e=>e.className === "waittag")!.click(); await p.flush();
+    const cur=p.all().find(e=>e.id.startsWith("q-") && e.className.split(" ").includes("cur"));
+    assert.ok(cur,"a card is selected"); landed.add(cur!.id);
+    assert.ok(["q-y1","q-y2"].includes(cur!.id),"click "+(i+1)+" landed on "+cur!.id+", not on one of Y's own cards");
+  }
+  assert.deepEqual([...landed].sort(),["q-y1","q-y2"],"the clicks cycle through both of Y's cards");
+});
+
+test("an item's red number leads to the non-blocking cards it counts, also after an unrelated re-render", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.z={title:"Z",parent:"y",status:"wip",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.decisions.y1={...card(),item:"y"}; s.decisions.z1={...card(),item:"z"};
+  const p=await page(s,[]);
+  const red=()=>wideHead(p,"y").children.find(e=>e.className === "asktag")!;
+  assert.equal(red().innerHTML,"2","the collapsed child's card counts");
+  p.emit("b".repeat(40),[{kind:"decision",id:"x1",after:{...card(),item:"x"}}]); await p.flush();
+  const landed=new Set<string>();
+  for (let i=0;i<4;i++) {
+    await red().click(); await p.flush();
+    const cur=p.all().find(e=>e.id.startsWith("q-") && e.className.split(" ").includes("cur"));
+    assert.ok(cur && ["q-y1","q-z1"].includes(cur.id),"click "+(i+1)+" landed on "+cur?.id+", outside Y's subtree");
+    landed.add(cur!.id);
+  }
+  assert.deepEqual([...landed].sort(),["q-y1","q-z1"]);
+});
+
+test("a comment saved on an open card of a record item no plan names stays in view with its send button", async () => {
+  const s=nativeSnapshot();
+  s.items.queue={title:"Queue",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[],record:true,plan:[]} as never;
+  s.decisions.q={...card(),item:"queue",blocks:"perf measurements"};
+  s.notes.old={target:"q:q",kind:"comment",text:"Earlier comment",at,state:"sent",rev:1};
+  // The list was folded by hand earlier, as on the owner's board.
+  const storage=new Map<string,string>([["board-notes",'{"q:q":false}']]);
+  const p=await page(s,[],null,undefined,{storage,response:path=>path === "/api/notes" ? reply({id:"saved"}) : undefined}); await expand(p,"queue");
+  const cards=()=>p.all().filter(e=>e.id === "q-q");
+  assert.equal(cards().length,1,"the open card is shown");
+  assert.doesNotMatch(markup(cards()[0]!),/Earlier comment/,"the list starts folded");
+  await cards()[0]!.click(); await p.flush();
+  p.key("c"); await settle();
+  const editor=p.all().find(e=>e.id === "ed-q_q")!; assert.ok(editor,"the card's comment editor is open");
+  editor.value="Draft on the card";
+  await editor.parentElement!.querySelector(".save")!.click(); await p.flush(); await settle();
+  const draft={target:"q:q",kind:"comment" as const,text:"Draft on the card",at:"2026-10-11T01:02:04Z",state:"draft" as const,rev:1};
+  await p.change("c".repeat(40),[{kind:"note",id:"saved",after:draft},{kind:"item",id:"queue",after:{...(s.items.queue as object),rev:2} as never},{kind:"decision",id:"q",after:{...s.decisions.q!,rev:2}}]); await p.flush(); await settle();
+  assert.equal(cards().length,1,"saving keeps the card");
+  assert.match(markup(cards()[0]!),/Draft on the card/,"the saved draft is visible without unfolding the comment list");
+  assert.ok(descendants(cards()[0]!).some(e=>e.className === "cardsend" && e.innerHTML === "发送"),"its send button is reachable");
+});
+
+test("an item's blue number leads to its own first new place after an unrelated item gains new content", async () => {
+  const s=snapshot();
+  s.items.x={title:"X",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.y={title:"Y",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  s.items.z={title:"Z",parent:"y",status:"wip",group:"Project",priority:"P1",updated:at,rev:1,deps:[],links:[],log:[]};
+  const yStep=unread("item","z","7".repeat(40)), xStep=unread("item","x","8".repeat(40));
+  let steps=yStep;
+  const p=await page(s,yStep,null,undefined,{response:path=>path === "/api/unread" ? reply({steps}) : undefined});
+  const blue=()=>wideHead(p,"y").children.find(e=>e.className.includes("freshchip"))!;
+  assert.equal(blue().innerHTML,"1","Y shows the new content of its child");
+  // New unread content appears on X, which comes earlier on the board; Y's row is not repainted.
+  steps=[...xStep,...yStep];
+  p.emit("b".repeat(40),[{kind:"item",id:"x",after:{...s.items.x!,rev:2}}]); await p.flush(); await settle();
+  await blue().click(); await p.flush(); await settle();
+  const selected=p.all().find(e=>e.id.startsWith("detail-it-"));
+  assert.equal(selected?.id,"detail-it-z","the click lands on Y's new place (its child Z), not on X");
+});
+
+test("code blocks are set in Monaco: the inner code element inherits the block's font instead of the inline-code font", async () => {
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html.match(/\.rich pre\.code \{[^}]*\}/)![0], /font-family: Monaco/);
+  assert.match(html.match(/\.rich pre\.code code \{[^}]*\}/)![0], /font: inherit/, "the global code rule would otherwise reset the family to the mono stack");
+});
+
+test("tag chips are one teal with text readable at 4.5:1 in the light theme and both dark-theme blocks", async () => {
+  const html = await readFile("web/index.html", "utf8");
+  assert.match(html.match(/\n\.tagchip \{[^}]*\}/)![0], /background: var\(--tag-bg\); color: var\(--tag-ink\); border: 1px solid var\(--tag-rule\)/);
+  const lum = (hex: string) => {
+    const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * c[0]! + 0.7152 * c[1]! + 0.0722 * c[2]!;
+  };
+  const pairs = [...html.matchAll(/--tag-bg: (#[0-9a-f]{6}); --tag-ink: (#[0-9a-f]{6});/g)];
+  assert.equal(pairs.length, 3, "light :root, the prefers-color-scheme dark block and the data-theme dark block each set the tag colors");
+  for (const [, bg, ink] of pairs) {
+    const [hi, lo] = [lum(bg!), lum(ink!)].sort((a, b) => b - a);
+    assert.ok((hi! + 0.05) / (lo! + 0.05) >= 4.5, `tag text ${ink} on ${bg} is below 4.5:1`);
+  }
+});
+
+test("an open card with two options shows the option check on the card and its item; three options show none", async () => {
+  const s = snapshot(), frames = new Frames();
+  s.decisions.short = card();
+  s.decisions.full = {...card(), options: [...card().options, {key:"C",text:"以后再说"}]};
+  const p = await page(s, [], null, undefined, {frames}); await expand(p); await p.flush();
+  const shown = (id: string) => markup(p.all().find(e => e.id === "q-" + id)!);
+  const warning = "决策卡只有 2 个选项";
+  assert.match(shown("short"), /需核对：决策卡只有 2 个选项，至少要给三个都走得通的做法/, "the open two-option card shows the check");
+  assert.ok(!shown("full").includes(warning), "three options show no check");
+  assert.match(markup(item(p)), /需核对：决策卡只有 2 个选项/, "the item lists the check under its body");
+  assert.deepEqual(rowOf(p).querySelectorAll(".checktag").map(e => e.innerHTML).filter(label => label === "选项不足"), ["选项不足"], "the item row carries the tag");
+});
+
+test("an owner notice from the stream shows one browser notice; its click opens the card it is about; an obsolete stream shows none", async () => {
+  const s = snapshot(), clock = new FakeClock();
+  s.decisions.hard = { item: "child", question: "选哪个？", background: "背景", options: [{ key: "A", text: "是", recommended: true }], status: "open", blocks: "挡住 chrome-notify", updated: at, rev: 1 };
+  const shown: Array<{ title: string; options: { body: string; tag: string }; onclick: (() => void) | null; closed: boolean; close(): void }> = [];
+  class FakeNotification {
+    static permission = "granted";
+    onclick: (() => void) | null = null; closed = false; title: string; options: { body: string; tag: string };
+    constructor(title: string, options: { body: string; tag: string }) { this.title = title; this.options = options; shown.push(this); }
+    close() { this.closed = true; }
+  }
+  const p = await page(s, [], null, undefined, { clock, notification: FakeNotification }); await expand(p);
+  const owner = (notice: unknown) => p.sources.at(-1)!.handlers.get("owner")!({ data: JSON.stringify(notice) });
+  owner({ title: "挡事的卡 · Whitefoot", message: "选哪个？（挡住：挡住 chrome-notify）", target: { kind: "card", key: "hard" } });
+  assert.equal(shown.length, 1, "one notice for one owner event");
+  assert.equal(shown[0]!.title, "挡事的卡 · Whitefoot");
+  assert.equal(shown[0]!.options.tag, "card:hard", "the tag is the card's key, so open tabs share one notice");
+  shown[0]!.onclick!(); await p.flush();
+  assert.equal(shown[0]!.closed, true);
+  assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
+  // A notice about no card or item opens the home view, which selects no card.
+  owner({ title: "架构师一小时没响应", message: "x" });
+  shown[1]!.onclick!(); await p.flush();
+  assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
+  // After a reconnect the old stream's events are ignored; the new one shows its notices.
+  p.sources.at(-1)!.onerror!(); clock.advance(5000); await settle();
+  const obsolete = p.sources[0]!;
+  obsolete.handlers.get("owner")!({ data: JSON.stringify({ title: "旧的", message: "不该弹" }) });
+  assert.equal(shown.length, 2, "an obsolete stream shows nothing");
+  owner({ title: "新的", message: "弹" });
+  assert.equal(shown.length, 3);
+  assert.equal(shown[2]!.options.tag, "新的", "a notice with no target is tagged with its title");
+});
+
+// --- The agent list --------------------------------------------------------------------------------------------------
+
+const NOW = Date.parse("2026-10-16T12:00:00Z");
+const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+/** The page's fixture with a session list: `eng` touched child and area; `child` has a step in progress. */
+function agentSnapshot(agents: NonNullable<Snapshot["activity"]>["agents"], steps?: PlanStep[]) {
+  const s = snapshot();
+  if (steps) s.items.child!.steps = steps;
+  s.activity = { writes: [], items: {}, agents };
+  return s;
+}
+const agentRowsOf = (p: Awaited<ReturnType<typeof page>>) => p.roots.get("agents")!.querySelectorAll(".agent");
+const agentText = (e: Element) => descendants(e).map(x => x.textContent || x.innerHTML.replace(/<[^>]*>/g, "")).join(" ");
+
+test("agent list: a row per session with its level, state word, how long ago it wrote and its two items", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }, { item: "area", at: minutesAgo(70) }] });
+  s.items.child!.dispatches = [{ agentId: "x1", agent: "eng", role: "工程师", level: 2, model: "Sonnet", started: minutesAgo(90) }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const host = p.roots.get("agents")!;
+  assert.equal(host.hidden, false);
+  assert.equal(host.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 1");
+  const [row] = agentRowsOf(p);
+  assert.ok(row);
+  assert.equal(row!.dataset.agent, "eng");
+  assert.equal(row!.querySelector(".agent-name")!.innerHTML, "eng");
+  assert.equal(row!.querySelector(".diffchip")!.innerHTML, "2 级");
+  assert.equal(row!.querySelector(".agent-state")!.innerHTML, "干活");
+  assert.equal(row!.querySelector(".agent-ago")!.innerHTML, "5 分钟前写过");
+  const cells = row!.querySelectorAll(".agitem");
+  assert.deepEqual(cells.map(c => c.querySelector(".agitem-title")!.innerHTML), ["Child", "Parent"], "newest first");
+  assert.deepEqual(cells.map(c => c.querySelector(".agitem-time")!.innerHTML), ["5 分钟前", "1 小时 10 分钟前"]);
+  assert.ok(cells.every(c => c.id.startsWith("ag-eng--cell-")), "cells carry the row's prefix and their own infix");
+  assert.ok(!descendants(host).some(e => e.id.startsWith("it-")), "no element of the list has an id the tree uses");
+  assert.match(host.querySelector(".agents-note")!.innerHTML, /不是看到的/, "the list says its state is inferred");
+});
+
+test("agent list: waiting shows the step's own text, a long wait is amber, a stale step reads maybe stopped, no step has no word", async () => {
+  const waiting = (waits: string): PlanStep[] => [planStep("work", "Work", "doing", { waits }), planAcceptance()];
+  const word = async (m: number, steps?: PlanStep[], item = "child") => {
+    const p = await page(agentSnapshot({ a: [{ item, at: minutesAgo(m) }] }, steps), [], null, undefined, { now: () => NOW });
+    const state = agentRowsOf(p)[0]!.querySelector(".agent-state");
+    return state ? [state.innerHTML, state.className] : null;
+  };
+  assert.deepEqual(await word(20, waiting("PR 草稿 CI")), ["在等：PR 草稿 CI", "agent-state waiting"]);
+  assert.deepEqual(await word(61, waiting("PR 草稿 CI")), ["在等：PR 草稿 CI", "agent-state waiting amber"]);
+  assert.deepEqual(await word(29), ["干活", "agent-state working"]);
+  assert.deepEqual(await word(31), ["可能停了", "agent-state maybe-stopped"]);
+  assert.equal(await word(5, undefined, "area"), null, "no step in progress on the item: only the time");
+});
+
+test("agent list: a reviewer with a dispatch record and no write is listed by its start, with no state word", async () => {
+  const s = agentSnapshot({});
+  s.items.child!.dispatches = [{ agentId: "r1", agent: "child-review", role: "审查", level: 3, model: "Opus", started: minutesAgo(12) }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const [row] = agentRowsOf(p);
+  assert.equal(row!.dataset.agent, "child-review");
+  assert.equal(row!.querySelector(".diffchip")!.innerHTML, "审查 3 级");
+  assert.equal(row!.querySelector(".agent-state"), null);
+  assert.equal(row!.querySelector(".agent-ago")!.innerHTML, "12 分钟前起");
+  assert.deepEqual(row!.querySelectorAll(".agitem-title").map(t => t.innerHTML), ["Child"]);
+});
+
+test("agent list: the architect's session, sessions out of the window and ended dispatches are not listed; with none the list hides", async () => {
+  const s = agentSnapshot({ "架构师": [{ item: "child", at: minutesAgo(1) }], old: [{ item: "child", at: minutesAgo(400) }], done: [{ item: "child", at: minutesAgo(40) }] });
+  s.items.child!.dispatches = [{ agentId: "d1", agent: "done", role: "工程师", level: 2, model: "Sonnet", started: minutesAgo(100), finish: { ended: minutesAgo(30), result: "一次通过", reports: 0, kickbacks: 0, signals: [], usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0 } }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  assert.equal(agentRowsOf(p).length, 0);
+  assert.equal(p.roots.get("agents")!.hidden, true);
+});
+
+test("agent list: 在树中 reveals the item in the tree and remembers the place, and the title selects it", async () => {
+  const p = await page(agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] }), [], null, undefined, { now: () => NOW });
+  const cell = agentRowsOf(p)[0]!.querySelector(".agitem")!;
+  assert.equal(p.all().find(e => e.id === "backbtn")?.hidden ?? true, true);
+  p.roots.get("page-left")!.scrollTop = 120;
+  await cell.querySelector(".agitem-tree")!.click(); await p.flush();
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "the jump is remembered");
+  assert.ok(rowOf(p, "child"), "the tree row for the item exists, parent unfolded");
+  assert.ok(p.all().find(e => e.id === "detail-it-child"), "the item is selected, so its detail shows");
+  assert.ok(!p.roots.get("agents")!.querySelectorAll(".agitem").some(e => e.id.startsWith("it-")), "the list has no element with a tree id");
+  p.roots.get("page-left")!.scrollTop = 900;
+  await p.all().find(e => e.id === "backbtn")!.click(); await p.flush();
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, true, "Back returns");
+  assert.equal(p.scrollY, 120, "Back returns to where the list was scrolled, not to an item below it");
+  // The title selects the other item without moving the page.
+  const area = agentRowsOf(p)[0]!;
+  await area.querySelector(".agitem-title")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "detail-it-child"));
+});
+
+test("agent list: the heading folds the list and the choice is kept", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] }), storage = new Map<string, string>();
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  await p.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await p.flush();
+  assert.equal(agentRowsOf(p).length, 0, "folded");
+  assert.equal(p.roots.get("agents")!.querySelector(".agents-toggle")!.innerHTML, "▸ 代理 1");
+  assert.equal(storage.get("board-agents"), "closed");
+  const again = await page(s, [], null, undefined, { now: () => NOW, storage });
+  assert.equal(agentRowsOf(again).length, 0, "a reload keeps it folded");
+  await again.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await again.flush();
+  assert.equal(agentRowsOf(again).length, 1);
+});
+
+test("agent list: a write by a session shows its row within two seconds, and a minute passing updates the times", async () => {
+  let now = NOW;
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] });
+  const p = await page(s, [], null, undefined, { now: () => now });
+  assert.equal(agentRowsOf(p).length, 1);
+  const began = performance.now();
+  p.emit("b".repeat(40), [{ kind: "item", id: "area", after: { ...s.items.area!, rev: 2 } }], { from: s.head, write: minutesAgo(0), items: {}, pauses: {}, sessions: {}, agents: { newcomer: [{ item: "area", at: minutesAgo(0) }] } });
+  await p.flush();
+  assert.ok(performance.now() - began < 2000, "the row is there well inside the two-second target");
+  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["newcomer", "eng"], "the writer is newest");
+  assert.equal(p.roots.get("agents")!.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 2");
+  now += 3 * 60_000;
+  for (const tick of p.intervals) tick();
+  await p.flush();
+  assert.equal(agentRowsOf(p)[1]!.querySelector(".agent-ago")!.innerHTML, "5 分钟前写过", "the minute timer repaints the time");
+});
+
+test("agent list: a write that changes the list changes it once, and one elsewhere leaves it untouched", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] });
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const before = agentRowsOf(p)[0]!;
+  p.emit("c".repeat(40), [{ kind: "item", id: "area", after: { ...s.items.area!, rev: 2, updated: at } }]);
+  await p.flush();
+  assert.equal(agentRowsOf(p)[0], before, "the row element is kept when nothing it shows changed");
+});
+
+test("agent list: a cell unfolds its sub-items in place, they unfold further, and the list folds apart from the tree", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }], other: [{ item: "area", at: minutesAgo(3) }] });
+  s.items.grand = { title: "Grand", parent: "child", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] };
+  const storage = new Map<string, string>();
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const cell = (name: string) => agentRowsOf(p).find(r => r.dataset.agent === name)!.querySelector(".agitem")!;
+  const caret = cell("eng").querySelector(".agitem-caret")!;
+  assert.deepEqual([caret.disabled, caret.innerHTML], [false, "▸"], "an item with sub-items has an arrow");
+  assert.equal(cell("eng").querySelector(".agitem-time") !== null, true);
+  await caret.click(); await p.flush();
+  const sub = p.all().find(e => e.id === "ag-eng--it-child")!;
+  assert.ok(sub, "the sub-item is an item row under the cell, with the row's prefix");
+  assert.ok(sub.classList.contains("item"), "and it is the tree's item row, so it unfolds the same way");
+  assert.equal(cell("eng").querySelector(".agitem-caret")!.innerHTML, "▾");
+  assert.equal(cell("other").querySelectorAll(".item").length, 0, "the same item in another session's row stays folded");
+  await sub.querySelector(".caret")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "ag-eng--it-grand"), "sub-items unfold further");
+  assert.equal(p.all().some(e => e.id === "it-child"), false, "the tree's own area is still folded: no tree row for the sub-item yet");
+  assert.notEqual(rowOf(p, "area").querySelector(".caret")!.attributes["aria-expanded"], "true");
+  // Unfolding the tree's row leaves the list as it was, and both rows exist side by side.
+  await rowOf(p, "area").querySelector(".caret")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "it-child"), "the tree row exists once unfolded there");
+  assert.ok(p.all().find(e => e.id === "ag-eng--it-grand"), "the list kept its folds");
+  assert.deepEqual(p.all().filter(e => e.id === "it-child" || e.id === "ag-eng--it-child").map(e => e.id).sort(), ["ag-eng--it-child", "it-child"]);
+  // A click on the list's row selects the item, and the selection mark shows in the tree only.
+  await sub.querySelector(".item-head")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "detail-it-child"), "selected: its detail shows");
+  assert.ok(rowOf(p, "child").classList.contains("selected"), "the tree's row is marked");
+  assert.ok(!p.all().find(e => e.id === "ag-eng--it-child")!.classList.contains("selected"), "the list's row is not");
+  // Drawn afresh (the list folded and unfolded), the list's row is still not marked.
+  for (let k = 0; k < 2; k++) { await p.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await p.flush(); }
+  assert.ok(!p.all().find(e => e.id === "ag-eng--it-child")!.classList.contains("selected"), "nor when the list is drawn afresh");
+  // The folds are kept across a reload, and 全部折叠 folds the list too.
+  const again = await page(s, [], null, undefined, { now: () => NOW, storage });
+  assert.ok(again.all().find(e => e.id === "ag-eng--it-grand"), "unfolded cells stay unfolded after a reload");
+  const fold = again.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "全部折叠")!;
+  await fold.click(); await again.flush();
+  assert.equal(again.all().some(e => e.id.startsWith("ag-") && e.classList.contains("item")), false, "全部折叠 folds the list");
+});
+
+test("agent list: with nothing selected, a key command finds the tree's first row, not an unfolded row of the list", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const unfolded = p.all().find(e => e.id === "ag-eng--it-child");
+  assert.ok(unfolded, "the list shows an unfolded item row, before the tree in page order");
+  assert.equal(p.all().some(e => e.id.startsWith("detail-it-")), false, "nothing is selected");
+  p.key("c"); await p.flush();
+  assert.ok(p.all().some(e => e.id === "detail-it-area"), "c opened a comment on the tree's first row (and selected it), not on a name cut from the list's element id");
+});
+
+test("agent list: a cell and the item row an unfolded parent draws for the same item have different ids, and no two names share a prefix", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }, { item: "child", at: minutesAgo(3) }], "x y": [{ item: "area", at: minutesAgo(4) }], "x_20y": [{ item: "area", at: minutesAgo(5) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const ids = descendants(p.roots.get("agents")!).map(e => e.id).filter(Boolean);
+  assert.equal(new Set(ids).size, ids.length, "every id in the list is unique: " + ids.join(", "));
+  assert.ok(ids.includes("ag-eng--cell-child") && ids.includes("ag-eng--it-child"), "both the child's own cell and the item row under its parent's cell");
+  assert.equal(agentRowsOf(p).length, 3);
+});
+
+test("agent list: an unfolded sub-item row repaints at once when what it shows changes, not at the next minute", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const sub = () => p.all().find(e => e.id === "ag-eng--it-child")!;
+  assert.equal(sub().querySelector(".tagchip"), null);
+  p.emit("d".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, tags: ["看板"], rev: 2 } }]);
+  await p.flush();
+  assert.ok(sub().querySelector(".tagchip"), "the new tag shows in the list's row with the change");
 });

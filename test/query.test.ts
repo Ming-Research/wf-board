@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rules } from "../src/rules.ts";
 import * as q from "../src/query.ts";
-import { board, at, later, author } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect } from "./helpers.ts";
 import type { PlanStepInput } from "../src/model.ts";
 const acceptance = (text = "验收通过"): PlanStepInput => ({ id: "accept", accept: true, text, state: "todo" });
 
@@ -41,8 +41,8 @@ test("search finds target goal, target value, current value and distinctive comp
 
 test("context exposes the owner chain, compact plan, shared waiters, cards, replies, links and bounded logs", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "child-low", owner: "a", title: "Low", accept: "Low accepted" });
-  await op.createItem({ author, key: "child-high", owner: "a", title: "High", accept: "High accepted" });
+  await op.createItem({ ...asArchitect, key: "child-low", owner: "a", title: "Low", accept: "Low accepted" });
+  await op.createItem({ ...asArchitect, key: "child-high", owner: "a", title: "High", accept: "High accepted" });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
   assert.ok("plan" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
@@ -58,7 +58,7 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   const ruled = c.cards.find(card => card.key === "ruled")!;
   assert.equal(ruled.ruling, "中文裁决"); assert.equal("background" in ruled, false);
   assert.equal(c.notes.length, 2); assert.equal(c.notes[0]!.reply, "中文回复");
-  assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
+  assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341, owner: "Ming-Research" }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
   assert.ok("earlierLogs" in all && "earlierLogs" in none);
   assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, all.item.log.length - 5);
@@ -119,7 +119,11 @@ test("PR index separates qualified text, links, cards, notes and bare refs, avoi
   assert.deepEqual(prs.unknown.map(it => `${it.kind}:${it.id}`), ["item:b", "note:note-2"]);
   assert.deepEqual(q.prs(s, r, "Whitefoot", 34), { qualified: [], unknown: [] });
   const repos = new Set(["whitefoot", "other"]);
-  assert.deepEqual(q.references("Whitefoot#341 Whitefoot #341 Whitefoot PR #341 https://github.com/Ming-Research/Whitefoot/pull/341 #341 #34 Other #3410", repos), { qualified: [{ repo: "Whitefoot", number: 341 }, { repo: "Other", number: 3410 }], unknown: [341, 34] });
+  // A URL names its owner; the first spelling of a PR is the one kept.
+  assert.deepEqual(q.references("Whitefoot#341 Whitefoot #341 Whitefoot PR #341 https://github.com/Ming-Research/Whitefoot/pull/341 #341 #34 Other #3410", repos), { qualified: [{ repo: "Whitefoot", number: 341, owner: "Ming-Research" }, { repo: "Other", number: 3410 }], unknown: [341, 34] });
+  // `Owner/Repo#N` names its repository itself, known to the board or not, and its number is not left over as a bare one.
+  assert.deepEqual(q.references("Ming-Research/wf-board#23 mbbill/agents_config#7, https://github.com/Ming-Research/wf-board/pull/23", new Set()), { qualified: [{ repo: "wf-board", number: 23, owner: "Ming-Research" }, { repo: "agents_config", number: 7, owner: "mbbill" }], unknown: [] });
+  assert.deepEqual(q.references("### Ming-Research/wf-board#23 Check cards\n- see #4", new Set()), { qualified: [{ repo: "wf-board", number: 23, owner: "Ming-Research" }], unknown: [4] });
   // A word before #N names a repository only when the board links to it.
   assert.deepEqual(q.references("see #341, Whitefoot #7", repos), { qualified: [{ repo: "Whitefoot", number: 7 }], unknown: [341] });
 });
@@ -129,7 +133,7 @@ test("changes summarizes net fields over commits, groups areas, and history/diff
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author: "Firn", key: "new", owner: "other", title: "New witness", accept: "Witness accepted" });
+  await op.createItem({ ...asArchitect, key: "new", owner: "other", title: "New witness", accept: "Witness accepted" });
   await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;
@@ -162,9 +166,21 @@ test("changes stays anchored to its snapshot even if a later commit lands, and i
   assert.equal(deleted.summary, "deleted item"); assert.equal(deleted.title, "阻塞证据");
 });
 
+test("changes recovers no owner for a live root, so it rebuilds no earlier whole board", async t => {
+  const { store, op } = await board(t);
+  for (let i = 0; i < 5; i++) await op.appendLog({ author, id: "b", text: `Earlier ${i}` });
+  const baseline = store.snapshot().head;
+  await op.appendLog({ author, id: "a", text: "Recent" });
+  const rebuilt = t.mock.method(store, "comparisonSnapshot");
+  const changed = await q.changes(store, store.snapshot(), baseline);
+  assert.equal(changed.length, 1); assert.equal(changed[0]!.areaId, "area");
+  assert.deepEqual(changed[0]!.documents.map(d => d.id), ["a"]);
+  assert.equal(rebuilt.mock.callCount(), 0, "the chain ends at a live root, which keeps the ownership its snapshot gives it");
+});
+
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
-  await op.createItem({ author, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
+  await op.createItem({ ...asArchitect, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
   await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", background: "Evidence", options: [{ key: "A", text: "A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
@@ -249,21 +265,21 @@ test("context names the responsible project without agents", async t => {
 test("brief queues own work and frontier steps, folds resolved rows and projects count all open items", async t => {
   const {store,op} = await board(t);
   await op.clearAsk({author,id:"a",log:"Handled"});
-  await op.createRequest({author:"Firn",project:"Whitefoot",key:"incoming",title:"Incoming",head:"Detail",accept:"Incoming accepted",priority:"P0",why:"Need help"});
-  await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",why:"Need feature",from:"a"});
+  await op.createItem({...asArchitect,key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",group:"Firn",priority:"P1"});
+  await op.setPlan({author,id:"a",row:{item:"outgoing",own:false}});
   await op.setPlan({author,id:"a",row:{id:"doing",text:"Own current work",state:"doing",after:[]}});
   await op.setPlan({author,id:"area",row:{id:"own",text:"Parent current work",state:"doing",after:[]}});
-  await op.createItem({author,key:"backlog",title:"Backlog",group:author,record:true});
-  await op.createItem({author,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
+  await op.createItem({...asArchitect,key:"backlog",title:"Backlog",group:author,record:true});
+  await op.createItem({...asArchitect,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
   await op.setPlan({author,id:"parked",row:{id:"future",text:"Future work",state:"todo"}});
   const s=store.snapshot(),r=rules(s),brief=q.brief(s,r,author);
-  assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Firn",why:"Need help"}]);
+  assert.equal(Object.hasOwn(brief,"inbox"),false);
   assert.deepEqual(brief.wip.map(x=>x.id).sort(),["a","area"],"a parent with its own doing step is queued");
   assert.ok(!brief.todo.some(x=>x.id==="parked"),"backlog is no commitment");
-  assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"]);
+  assert.deepEqual(brief.outgoing.map(x=>x.id),["outgoing"],"open work of another project that an open item waits on");
   assert.ok(brief.progress.some(x=>x.id==="backlog"),"even an empty record may be inspected");
   const project=q.projects(s,r)[0]!;
-  assert.equal(project.inbox,1); assert.equal(project.openItems.wip,2); assert.equal(project.openItems.blocked,1);
+  assert.equal(Object.hasOwn(project,"inbox"),false); assert.equal(project.openItems.wip,2); assert.equal(project.openItems.blocked,1);
   assert.equal(Object.hasOwn(project,"migrated"),false); assert.equal(Object.hasOwn(project,"agents"),false);
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
 });
@@ -281,51 +297,40 @@ test("brief excludes an ask-blocked frontier but retains ready parallel work bes
   assert.ok(q.brief(running,r,author).wip.some(row=>row.id === "a"));
 });
 
-test("project followups use strict age boundary and omit drafts, replies, closures and triaged requests", async t => {
-  const {store,op} = await board(t);
-  await op.createRequest({author,project:"Firn",key:"old-request",title:"Old",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
-  await op.createRequest({author,project:"Firn",key:"handled-request",title:"Handled",head:"Detail",accept:"Request accepted",priority:"P1",why:"Need"});
-  await op.triageRequest({author:"Firn",id:"handled-request",priority:"P2",log:"Taken as an area"});
+test("project followups use strict age boundary and omit drafts, replies and closures", async t => {
+  const {store} = await board(t);
   const s = structuredClone(store.snapshot());
-  s.items["handled-request"]!.log[0]!.at=at;
   s.notes.closed={...s.notes["note-1"]!,state:"done",repliedAt:later,repliedBy:"Firn"};
-  assert.ok(!q.list(s,rules(s),{}).some(x=>x.id==="old-request"),"an untriaged request is not listed as work");
-  assert.ok(q.list(s,rules(s),{}).some(x=>x.id==="handled-request"),"a triaged request is ordinary work");
-  s.items["old-request"]!.request!.at=at;
   s.notes.fresh={...s.notes["note-1"]!,sentAt:later};
   s.notes.draft={...s.notes["note-1"]!,state:"draft"};
   const r=rules(s), cutoff = new Date(Date.parse(at)+60*60000).toISOString();
-  assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[],requests:[]});
+  assert.deepEqual(q.followups(s,r,{minutes:60},cutoff),{notes:[]});
   const f=q.followups(s,r,{minutes:59},cutoff);
   assert.deepEqual(f.notes.map(n=>n.id),["note-1"]);
-  assert.deepEqual(f.requests.map(n=>[n.id,n.project,n.by]),[["old-request","Firn",author]]);
-  for (const entry of [...f.notes,...f.requests]) assert.equal(Object.hasOwn(entry,"agents"),false);
+  for (const entry of f.notes) assert.equal(Object.hasOwn(entry,"agents"),false);
   assert.throws(()=>q.followups(s,r,{minutes:-1},cutoff),/minutes/);
 });
 
 
-test("project identity read shapes omit agents and outgoing requests use requesting project without a dependency", async t => {
+test("project identity read shapes omit agents", async t => {
   const { store } = await board(t);
   const s = structuredClone(store.snapshot());
-  s.items["outgoing-alone"] = { ...s.items.other!, title: "Unlinked request", log: [{ at, by: "Whitefoot", text: "Whitefoot 提出：Needed" }], request: { by: "Whitefoot", at } };
-  s.items["foreign-request"] = { ...s.items.other!, title: "Other project's request", log: [], request: { by: "Firn", at } };
   const r = rules(s), summary = q.brief(s, r, "Whitefoot");
-  await t.test("outgoing selection", () => assert.deepEqual(summary.outgoing.map(it => it.id), ["outgoing-alone"]));
   await t.test("brief shape", () => assert.equal(Object.hasOwn(summary, "agents"), false));
   const followups = q.followups(s, r, { minutes: 0 }, later);
-  const groups = { row: [q.row(s, r, "item", "a")], list: q.list(s, r), projects: q.projects(s, r), overview: q.overview(s, r), notes: followups.notes, requests: followups.requests };
+  const groups = { row: [q.row(s, r, "item", "a")], list: q.list(s, r), projects: q.projects(s, r), overview: q.overview(s, r), notes: followups.notes };
   for (const [name, rows] of Object.entries(groups)) {
     await t.test(`${name} shape`, () => {
       assert.ok(rows.length > 0, "the shape guard observes at least one result");
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 }, inbox: 0 }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 } }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "record", group: author, title: "Queue", priority: "P1", record: true });
+  await op.createItem({ ...asArchitect, key: "record", group: author, title: "Queue", priority: "P1", record: true });
   const s = structuredClone(store.snapshot()), now = Date.parse("2026-10-11T06:00:00Z");
   s.items.a!.plan.unshift({id:"doing",text:"Own work",state:"doing",since:at}); s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
   s.activity = { writes: Array.from({length: 7}, (_, i) => new Date(now - i * 30 * 60 * 1000).toISOString()), items: {} };
@@ -420,8 +425,8 @@ test("context and brief retain multiple acceptance rows before delivery with ord
 
 test("brief progress retains records and blocked work without repeating queues or adding closed/todo backlog", async t => {
   const {store,op}=await board(t);
-  await op.createItem({author,key:"record",title:"Reference",group:author,record:true});
-  await op.createItem({author,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
+  await op.createItem({...asArchitect,key:"record",title:"Reference",group:author,record:true});
+  await op.createItem({...asArchitect,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
   await op.setPlan({author,id:"closed",row:{...acceptance("Closed accepted"),state:"done"}});
   const s=structuredClone(store.snapshot()); delete s.items.a!.ask;
   s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {...acceptance(),id:"accept"}];
@@ -449,10 +454,10 @@ test("context and brief retain compact target lines beside plans", async t => {
 
 test("default lists omit done and cancelled items, while explicit status filters and plan rows retain them", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.createItem({ ...asArchitect, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
   await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
-  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
-  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  await op.createItem({ ...asArchitect, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ ...asArchitect, id: "cancelled-result", status: "cancelled", log: "Superseded" });
   const s = store.snapshot(), r = rules(s);
   const visible = q.list(s, r).map(item => item.id);
   assert.ok(!visible.includes("done-result")); assert.ok(!visible.includes("cancelled-result"));
@@ -471,7 +476,7 @@ test("paused items have explicit list, overview and project counts and are absen
   const { store, op } = await board(t);
   await op.clearAsk({ author, id: "a", log: "Owner approval complete" });
   await op.setPlan({ author, id: "a", row: { id: "doing", text: "Implementation", state: "doing" } });
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "After the next release" });
+  await op.setPause({ ...asArchitect, id: "area", paused: true, reason: "After the next release" });
   const s = store.snapshot(), r = rules(s);
   assert.deepEqual(q.list(s, r, { group: author, status: ["paused"] }).map(row => row.id).sort(), ["a", "area", "b"]);
   assert.deepEqual(q.list(s, r, { group: author, status: ["wip", "todo", "blocked"] }), []);
