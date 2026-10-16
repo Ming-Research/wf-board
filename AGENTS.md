@@ -26,6 +26,9 @@ matches what the artifact board offered.
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
+- `src/dispatch.ts`: dispatch records (the agent sessions the architect
+  started on items, kept on the item as `dispatches`): reading them across the
+  board, the tallies, and the log lines the two write tools append.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
@@ -68,8 +71,7 @@ matches what the artifact board offered.
 
 ## Rules
 
-- The main line is `claude/first-board`: branch from it and merge into it.
-  `main` holds only the first commit.
+- The main line is `main`: branch from it and merge into it.
 - Board data lives in the directory `WF_BOARD_DATA` names, on the owner's Mac
   `~/dev/wf/wf-board-data` (private remote `Ming-Research/wf-board-data`).
   Only the daemon writes it; tests use temporary directories.
@@ -90,7 +92,7 @@ matches what the artifact board offered.
 ## Deploy
 
 The architect deploys after merging. Fast-forward `~/dev/wf/wf-board` to the
-merged head of `claude/first-board` and run `npm run -s build:web` there (the
+merged head of `main` and run `npm run -s build:web` there (the
 bundle is not in git). When server code changed, restart the daemon
 (`launchctl kickstart -k gui/$(id -u)/org.ming-research.wf-board`; log
 `~/Library/Logs/wf-board.log`) and wait until

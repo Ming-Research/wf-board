@@ -1,4 +1,4 @@
-import { tagApplies } from "../src/model.ts";
+import { tagApplies, difficultyText } from "../src/model.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
@@ -1966,7 +1966,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
-    if (detail && it.tags?.length) { const tags = el("div", "tagchips item-tags"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; box.appendChild(tags); }
+    // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
+    if (detail && (it.tags?.length || it.difficulty !== undefined)) {
+      const chips = el("div", "tagchips item-tags");
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有架构师能改";
+      for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
+      box.appendChild(chips);
+    }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {

@@ -238,7 +238,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
 });
 
-// A root with a missing shared row carries a (format) check in the plan model.
+// A root with a missing shared row carries a (format) check in the plan model; it is not rated, so it carries 缺难度 too.
 const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
@@ -252,10 +252,11 @@ test("after a write the check scan rederives only the items the write can reach"
   await star.sync();
   assert.ok(checked.includes("other"), "the written item is checked again");
   assert.deepEqual(checked.filter(id => ["area", "a", "b"].includes(id)), [], "items the write cannot reach are not");
-  // A write that makes a check appear scans the new item, and a check that is not 无人推进 is pushed to no one.
+  // A write that makes a check appear scans the new item, and a check that is not 无人推进 (this item carries two: the missing row and 缺难度) is pushed to no one.
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
   assert.ok(checked.includes("c"));
+  assert.ok(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), "the item is not rated, so it carries 缺难度 as well");
   assert.deepEqual(star.events(), []);
 });
 

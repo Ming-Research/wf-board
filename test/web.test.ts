@@ -3165,8 +3165,8 @@ test("a stalled leaf shows 无人推进 beside its title with the full explanati
   const s = snapshot(), began = Date.parse(at);
   s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
   const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000});
-  // Other checks (here the missing completion condition) keep their own 需核对 tag; only the stalled tags are asserted on.
-  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对");
+  // Other checks (here the missing completion condition and the missing difficulty) keep their own tags; only the stalled tags are asserted on.
+  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对" && e.innerHTML !== "缺难度");
   const folded = tags("area");
   assert.deepEqual(folded.map(e => e.innerHTML), ["无人推进 1"], "the folded parent counts its stalled leaf");
   assert.equal(folded[0]!.title, "1 个进行中的下级条目 1 小时（活跃时间）没有动静", "the subtree chip uses the same one-hour threshold as the leaf check");
@@ -3812,6 +3812,42 @@ test("a tag name is shown as text, not markup, in the chips and the filter butto
   const chip = rowOf(p, "child").querySelector(".tagchips")!.children[0]!;
   assert.equal(chip.innerHTML, "&lt;b&gt;x&lt;/b&gt;");
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "&lt;b&gt;x&lt;/b&gt; 1"), "the filter button escapes the name");
+});
+
+test("the detail shows the difficulty first on the line under the title, before the tags; the tree row and an unrated item show none", async () => {
+  const s = taggedSnapshot();
+  s.items.child!.difficulty = 3;
+  const p = await page(s, []);
+  await expand(p, "child");
+  const line = item(p, "child").children[1]!;
+  assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
+  assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
+  assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
+  assert.ok(!line.children[1]!.classList.contains("diffchip"));
+  assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
+  // The architect's own item has the label, and its line exists without any tag.
+  const own = taggedSnapshot(); own.items.area!.difficulty = "architect";
+  const q = await page(own, []); await selectWide(q, "area");
+  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["架构师做"]);
+  // An item without a difficulty and tags has no line.
+  const bare = await page(taggedSnapshot(), []); await selectWide(bare, "area");
+  assert.equal(detailItem(bare, "area")!.querySelector(".item-tags"), null);
+  const html = await readFile("web/index.html", "utf8");
+  assert.doesNotMatch(html.match(/\.diffchip \{[^}]*\}/)![0], /--tag-/, "the difficulty is not drawn as one of the teal tags");
+});
+
+test("a live change of the difficulty repaints the chip, also when it first appears or goes", async () => {
+  const s = taggedSnapshot(); s.items.child!.difficulty = 2;
+  const p = await page(s, []); await expand(p, "child");
+  const chips = () => item(p, "child").querySelector(".item-tags")?.children.map(c => c.innerHTML);
+  assert.deepEqual(chips(), ["难度 2", "健全性", "报错信息"]);
+  await p.change("c".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, difficulty: 4, rev: 2 } }]); await p.flush();
+  assert.deepEqual(chips(), ["难度 4", "健全性", "报错信息"], "the changed difficulty is painted");
+  const { difficulty: _gone, ...unrated } = s.items.child!;
+  await p.change("d".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, rev: 3 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["健全性", "报错信息"], "an item that loses its difficulty keeps its tags");
+  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: "architect", rev: 4 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["架构师做", "健全性", "报错信息"]);
 });
 
 test("writing a note on an unfolded inline card keeps it unfolded through save and send", async () => {
