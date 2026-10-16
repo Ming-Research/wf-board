@@ -593,7 +593,7 @@ export class Store {
 
   /** Notice files (the retired 要你知道 list) still count in the history that has them: it keeps the active time it gave. */
   private contentPath(file: string): boolean {
-    return file === "board.yaml" || /^(items|decisions|notes|glossaries)\/.+\.yaml$/.test(file);
+    return file === "board.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(file);
   }
 
   private noteActivity(activity: NonNullable<Snapshot["activity"]>, at: string, touched: Iterable<string>): void {
