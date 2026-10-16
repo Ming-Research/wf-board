@@ -4,8 +4,8 @@ import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, 
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter } from "./rules.ts";
-import { describeChanges } from "./query.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, isOpenMergeStep, mergeRowDone } from "./rules.ts";
+import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 
 export class OpError extends Error {}
 /** `dropped`: items whose stored priority the write removed because they are non-roots. */
@@ -18,6 +18,8 @@ export interface Ops {
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
+  markMerged(a: { author: string; session?: string; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
   setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
@@ -472,6 +474,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    markMerged: a => edit(a, "mark_merged", (it, s, at) => {
+      // The row as it is now decides, not the one the watch read before GitHub answered: a row edited, dropped or removed meanwhile stays as written.
+      const row = it.plan.find(r => r.id === a.row);
+      if (!row || !isOpenMergeStep(row) || !mergeRowDone(mergeRowPulls(s, a.id, row).map(prKey), new Set(a.merged.map(prKey)))) return it;
+      const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row;
+      return { ...it, updated: at, plan: it.plan.map(r => r === row ? stampPlanRow({ ...input, state: "done" }, row, at) : r), log: [...it.log, entry(a.author, at, a.log)] };
+    }),
     journalEntry: a => run(a, (s, at) => {
       onlyArchitect(a, `write the journal under ${JOURNAL.notes}`);
       const { day, clock } = localStamp(at);

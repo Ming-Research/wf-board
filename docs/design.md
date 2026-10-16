@@ -1592,8 +1592,11 @@ would otherwise do by hand on each round: it tells the architect when a pull
 request can merge or the checks went red, and it marks the merge row of a
 merged pull request done (`src/watch.ts`, `src/github.ts`).
 
-**The look.** At the daemon's start and then every five minutes (every session
-on the owner's account shares GitHub's quota, so not oftener), the daemon asks
+**The look.** Every five minutes, and not oftener, because every session on the
+owner's account shares GitHub's quota. The time of the last look is kept in
+`state/github-watch.json` beside the board (git excludes it), so a restart waits
+out what is left of the interval (no record: it looks at once; a record in the
+future, from a clock that went back, counts as at most one interval). The daemon asks
 `gh api graphql`, signed in as the owner, one question per configured
 repository: the newest commit of the main line with its check roll-up, the open
 pull requests (newest 100) with draft state, base branch, newest commit,
@@ -1604,9 +1607,13 @@ reported by `/health` (`github.problems`) and logged once; the other
 repositories go on. `GithubSource` (`src/github.ts`) is the interface the
 tests replace.
 
-**Which pull requests.** Those the 改动 section of an open item names: the text
-from its `## 改动` heading to the next `##` heading of an item's head
-(`### Repo#N` subsections inside it belong to it). A pull request is written as
+**Which pull requests.** Those the 改动 section of an open item names
+(`changesSection` in `src/rules.ts`). The section starts at a `## 改动` heading,
+or at a line that is `**改动**` with or without a colon after it (text after the
+colon on that line belongs to it). It ends at the next heading (after a `##`
+heading, one of its own level or above, so `### Repo#N` subsections stay inside),
+at the next line that is a bold section name alone, or at a line that starts a
+参考 section. A pull request is written as
 `Owner/Repo#N`, `Repo#N` (a repository a project configures, unique by name) or its
 URL; a text that names a repository no project configures names no pull request
 the board watches. Pull requests named elsewhere (logs, links, other sections)
@@ -1624,10 +1631,18 @@ kept are read again at start, so a restart neither repeats a push nor loses one
 (an event the log dropped may be told once more).
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
-dropped, not an acceptance step, says 合入 and names the pull request in the
-forms above. When GitHub reports the pull request merged, the board marks the
-row done, as the item's project and session 看板, and appends a log entry naming
-the pull request and the merge time. A row that also says more (a deployment)
+dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
+a pull request, in the forms above, which the item's own 改动 section names as
+well (`mergeRowPulls` in `src/query.ts`). Those are the pull requests that count
+for the row. A line that waits for another pull request to merge names it too,
+and that one is not the item's own, so it does not count and a line naming only
+such pull requests is no merge row. When GitHub reports every pull request that
+counts for the row merged (`mergeRowDone`), the board marks the row done and
+appends a log entry naming them and their merge times, in one commit, as the
+item's project and session 看板. That write (`markMerged`, an operation without
+an MCP tool) reads the row as it is by then: a row that was edited, dropped,
+removed or already done since the look, or whose counted pull requests are no
+longer all merged, is left as written. A row that also says more (a deployment)
 is marked as a whole, so a merge row says only the merge. A write that fails is
 tried at the next look.
 

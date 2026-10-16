@@ -1,47 +1,18 @@
-import type { PlanRow, PlanStep, Project, Snapshot } from "./model.ts";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import type { PlanRow, PlanStep, Snapshot } from "./model.ts";
+import { changesSection, mergeRowDone } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
-import { knownRepos, references } from "./query.ts";
-import type { PrRef } from "./query.ts";
+import { knownRepos, mergeRowPulls, prKey, pullsIn } from "./query.ts";
+import type { PrId } from "./query.ts";
 import type { GithubSource, RepoState } from "./github.ts";
 import type { Wake } from "./wake.ts";
 
 /** What the board does with GitHub (docs/design.md, Watching GitHub): it finds the PRs the open items name, tells the architect
- * when the main line or such a PR has red checks or a PR can be merged, and marks the merge row of a merged PR done. */
-
-/** A PR as the board names it: `repo` is the configured `Owner/Name` of a project, `number` the PR's number. */
-export interface PrId { repo: string; number: number }
-const idKey = (p: PrId): string => `${p.repo.toLowerCase()}#${p.number}`;
-
-/** The text of an item's 改动 section: from its `## 改动` heading to the next `##` heading. Subsections (`###`) stay inside. */
-export function changesSection(head: string | undefined): string {
-  const out: string[] = [];
-  let inside = false;
-  for (const line of (head ?? "").split("\n")) {
-    if (/^##\s+改动\s*$/.test(line)) { inside = true; continue; }
-    if (inside && /^##\s/.test(line)) break;
-    if (inside) out.push(line);
-  }
-  return out.join("\n");
-}
-
-/** The configured repository a reference names, or none: `Owner/Repo` must match a project's repo, a bare `Repo` exactly one. */
-function repoOf(projects: readonly Project[], ref: PrRef): string | undefined {
-  const repos = projects.flatMap(p => p.repo ? [p.repo] : []);
-  if (ref.owner) return repos.find(repo => repo.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase());
-  const named = repos.filter(repo => repo.split("/").pop()!.toLowerCase() === ref.repo.toLowerCase());
-  return named.length === 1 ? named[0] : undefined;
-}
-/** The PRs a text names that belong to a configured repository. */
-function pullsIn(s: Snapshot, text: string, repos: Set<string>): PrId[] {
-  const out = new Map<string, PrId>();
-  for (const ref of references(text, repos).qualified) {
-    const repo = repoOf(s.board.projects, ref);
-    if (repo) out.set(idKey({ repo, number: ref.number }), { repo, number: ref.number });
-  }
-  return [...out.values()];
-}
+ * when the main line or such a PR has red checks or a PR can be merged, and marks the merge row of a merged PR done.
+ * What counts as an item's 改动 section and as a merge row is in src/rules.ts and src/query.ts. */
 
 export interface Watched { pr: PrId; /** The open items whose 改动 section names it. */ items: string[] }
 /** The PRs the open items name in their 改动 section. */
@@ -50,25 +21,23 @@ export function watchedPulls(s: Snapshot, r: Rules): Map<string, Watched> {
   for (const [id, item] of Object.entries(s.items)) {
     if (!r.isOpenWork(id)) continue;
     for (const pr of pullsIn(s, changesSection(item.head), repos)) {
-      const entry = out.get(idKey(pr)) ?? { pr, items: [] };
-      entry.items.push(id); out.set(idKey(pr), entry);
+      const entry = out.get(prKey(pr)) ?? { pr, items: [] };
+      entry.items.push(id); out.set(prKey(pr), entry);
     }
   }
   return out;
 }
 
-export interface MergeRow { item: string; step: PlanStep }
-/** The merge rows: a step of an open item that is not done or dropped, is no acceptance step, says 合入 and names the PR. */
-export function mergeRows(s: Snapshot, r: Rules): Map<string, { pr: PrId; rows: MergeRow[] }> {
-  const repos = knownRepos(s), out = new Map<string, { pr: PrId; rows: MergeRow[] }>();
+/** A merge row of an open item with the PRs that count for it. */
+export interface MergeRow { item: string; step: PlanStep; prs: PrId[] }
+export function mergeRows(s: Snapshot, r: Rules): MergeRow[] {
+  const repos = knownRepos(s), out: MergeRow[] = [];
   for (const [id, item] of Object.entries(s.items)) {
     if (!r.isOpenWork(id)) continue;
     for (const row of item.plan) {
-      if (!("text" in row) || row.accept || (row.state !== "todo" && row.state !== "doing") || !row.text.includes("合入")) continue;
-      for (const pr of pullsIn(s, row.text, repos)) {
-        const entry = out.get(idKey(pr)) ?? { pr, rows: [] };
-        entry.rows.push({ item: id, step: row }); out.set(idKey(pr), entry);
-      }
+      if (!("text" in row)) continue;
+      const prs = mergeRowPulls(s, id, row, repos);
+      if (prs.length) out.push({ item: id, step: row, prs });
     }
   }
   return out;
@@ -112,7 +81,7 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Pus
       pushes.push({ event: "main-red", key: pushKey("main-red", { repo: state.repo, branch, commit })!, fields: { repo: state.repo, project, branch, commit, failed: checks.failed, url: `https://github.com/${state.repo}/commit/${commit}` } });
     }
     for (const pull of state.pulls) {
-      const entry = watched.get(idKey({ repo: state.repo, number: pull.number }));
+      const key = prKey({ repo: state.repo, number: pull.number }), entry = watched.get(key);
       if (!entry || pull.draft) continue;
       const common = { repo: state.repo, number: pull.number, project, title: pull.title, commit: pull.commit, url: pull.url };
       const item = (id: string) => ({ item: id, title: s.items[id]!.title, project: r.projectOf(id) });
@@ -123,7 +92,7 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Pus
           ...item(id),
           // Open cards that stop work on the item, and the cards its merge row for this PR waits on.
           blocking: r.cardsOf(id).filter(card => r.cardBlocking(card)).map(card => ({ card, question: s.decisions[card]!.question, blocks: s.decisions[card]!.blocks })),
-          approval: (merges.get(idKey(entry.pr))?.rows ?? []).filter(row => row.item === id).flatMap(row => cardsBefore(s, id, row.step.id)),
+          approval: merges.filter(row => row.item === id && row.prs.some(p => prKey(p) === key)).flatMap(row => cardsBefore(s, id, row.step.id)),
         }));
         pushes.push({ event: "pr-ready", key: pushKey("pr-ready", common)!, fields: { ...common, base: pull.base, items } });
       }
@@ -132,13 +101,14 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Pus
   return pushes;
 }
 
-export interface Merged { pr: PrId; row: MergeRow; mergedAt?: string }
-/** The merge rows whose PR GitHub reports merged. */
+export interface Merged { item: string; step: PlanStep; prs: Array<PrId & { mergedAt?: string }> }
+/** The merge rows whose every counted PR GitHub reports merged. */
 export function mergedRows(s: Snapshot, r: Rules, states: readonly RepoState[]): Merged[] {
+  const merged = new Map<string, string | undefined>();
+  for (const state of states) for (const pull of state.named) if (pull.state === "MERGED") merged.set(prKey({ repo: state.repo, number: pull.number }), pull.mergedAt);
   const out: Merged[] = [];
-  for (const { pr, rows } of mergeRows(s, r).values()) {
-    const merged = states.find(state => state.repo.toLowerCase() === pr.repo.toLowerCase())?.named.find(n => n.number === pr.number && n.state === "MERGED");
-    if (merged) for (const row of rows) out.push({ pr, row, mergedAt: merged.mergedAt });
+  for (const row of mergeRows(s, r)) {
+    if (mergeRowDone(row.prs.map(prKey), new Set(merged.keys()))) out.push({ item: row.item, step: row.step, prs: row.prs.map(pr => ({ ...pr, mergedAt: merged.get(prKey(pr)) })) });
   }
   return out;
 }
@@ -148,6 +118,8 @@ export interface WatchOptions {
   now?: () => number;
   /** The time between two looks at GitHub; every session on the account shares its quota, so not under five minutes in use. */
   everyMs?: number;
+  /** Where the time of the last look is kept, so a restart waits out the rest of the interval instead of looking at once. */
+  stateFile?: string;
   /** The session the board's own writes carry. */
   session?: string;
 }
@@ -159,11 +131,11 @@ export class GithubWatch {
   private readonly problems = new Map<string, string>();
   private readonly now: () => number;
   private readonly session: string;
-  private polledAt?: string;
+  private readonly o: WatchOptions;
+  private looked?: number;
   private timer?: NodeJS.Timeout;
   private polling = false;
   private stopped = false;
-  private readonly o: WatchOptions;
 
   constructor(o: WatchOptions) {
     this.o = o;
@@ -171,22 +143,47 @@ export class GithubWatch {
     this.session = o.session ?? "看板";
     // What the kept events already told the architect is not told again, so a restart neither repeats nor forgets a push.
     for (const frame of o.wake.since(0).frames) { const key = pushKey(frame.event, frame); if (key) this.announced.add(key); }
+    // A state file that cannot be read costs one early look, never the watch.
+    if (o.stateFile) {
+      try {
+        const last = Date.parse((JSON.parse(readFileSync(o.stateFile, "utf8")) as { polledAt?: string }).polledAt ?? "");
+        if (Number.isFinite(last)) this.looked = last;
+      } catch { /* no file, or not ours */ }
+    }
   }
 
+  private get every(): number { return this.o.everyMs ?? 5 * 60_000; }
+  /** How long until the next look is due: at once when none is known, else what is left of the interval since the last. */
+  nextDelayMs(): number {
+    if (this.looked === undefined) return 0;
+    return Math.min(this.every, Math.max(0, this.looked + this.every - this.now()));
+  }
   start(): void {
     this.stopped = false;
-    void this.poll();
-    this.timer = setInterval(() => { void this.poll(); }, this.o.everyMs ?? 5 * 60_000);
+    this.schedule(this.nextDelayMs());
+  }
+  private schedule(ms: number): void {
+    this.timer = setTimeout(() => { void this.poll().finally(() => { if (!this.stopped) this.schedule(this.every); }); }, ms);
     this.timer.unref();
   }
-  stop(): void { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
-  status(): WatchStatus { return { ...(this.polledAt ? { polledAt: this.polledAt } : {}), problems: Object.fromEntries(this.problems) }; }
+  stop(): void { this.stopped = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  status(): WatchStatus { return { ...(this.looked !== undefined ? { polledAt: new Date(this.looked).toISOString() } : {}), problems: Object.fromEntries(this.problems) }; }
 
   private problem(repo: string, message: string | undefined): void {
     if (message === undefined) { this.problems.delete(repo); return; }
     // Said once while it lasts: a look every five minutes would fill the log with the same line.
     if (this.problems.get(repo) !== message) console.error(`github watch ${repo}: ${message}`);
     this.problems.set(repo, message);
+  }
+  private remember(at: number): void {
+    this.looked = at;
+    if (!this.o.stateFile) return;
+    const temporary = this.o.stateFile + ".tmp";
+    try {
+      mkdirSync(dirname(this.o.stateFile), { recursive: true });
+      writeFileSync(temporary, JSON.stringify({ polledAt: new Date(at).toISOString() }) + "\n");
+      renameSync(temporary, this.o.stateFile);
+    } catch (error) { console.error("github watch state not written", error); }
   }
 
   /** One look at every configured repository, then what follows from it. */
@@ -196,7 +193,11 @@ export class GithubWatch {
     try {
       const { store, github } = this.o, before = store.snapshot(), earlier = store.derived.rules(before, this.now());
       const numbers = new Map<string, number[]>();
-      for (const { pr } of mergeRows(before, earlier).values()) numbers.set(pr.repo.toLowerCase(), [...(numbers.get(pr.repo.toLowerCase()) ?? []), pr.number]);
+      for (const { prs } of mergeRows(before, earlier)) for (const pr of prs) {
+        const known = numbers.get(pr.repo.toLowerCase()) ?? [];
+        if (!known.includes(pr.number)) numbers.set(pr.repo.toLowerCase(), [...known, pr.number]);
+      }
+      this.remember(this.now());
       const states: RepoState[] = [], looked = new Set<string>();
       for (const project of before.board.projects) {
         // Two projects may share a repository; it is looked at once.
@@ -209,7 +210,6 @@ export class GithubWatch {
         } catch (error) { this.problem(project.repo, error instanceof Error ? error.message : String(error)); }
       }
       if (this.stopped) return;
-      this.polledAt = new Date(this.now()).toISOString();
       // The board may have changed while GitHub answered: decide on what it is now.
       const s = store.snapshot(), r = store.derived.rules(s, this.now());
       for (const push of decide(s, r, states)) {
@@ -222,13 +222,14 @@ export class GithubWatch {
     finally { this.polling = false; }
   }
 
-  /** Mark one merge row done and say so in the item's log. A write that fails is tried again at the next look, as the row stays open. */
-  private async markMerged(s: Snapshot, { pr, row, mergedAt }: Merged): Promise<void> {
-    const { ops } = this.o, author = s.items[row.item]!.group;
+  /** Mark one merge row done and say so in the item's log, in one write that checks the row as it is by then. A write that fails is tried again at the next look, as the row stays open. */
+  private async markMerged(s: Snapshot, { item, step, prs }: Merged): Promise<void> {
+    const named = prs.map(pr => `${pr.repo}#${pr.number}${pr.mergedAt ? `（${pr.mergedAt}）` : ""}`).join("、");
     try {
-      const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row.step;
-      await ops.setPlan({ author, session: this.session, id: row.item, row: { ...input, state: "done" } });
-      await ops.appendLog({ author, session: this.session, id: row.item, text: `${pr.repo}#${pr.number} 已在 GitHub 合入${mergedAt ? `（${mergedAt}）` : ""}，看板把合入行「${row.step.text.slice(0, 60)}」标成完成。` });
-    } catch (error) { console.error(`github watch: marking ${row.item}/${row.step.id} done failed`, error); }
+      await this.o.ops.markMerged({
+        author: s.items[item]!.group, session: this.session, id: item, row: step.id, merged: prs.map(({ repo, number }) => ({ repo, number })),
+        log: `${named} 已在 GitHub 合入，看板把合入行「${step.text.slice(0, 60)}」标成完成。`,
+      });
+    } catch (error) { console.error(`github watch: marking ${item}/${step.id} done failed`, error); }
   }
 }

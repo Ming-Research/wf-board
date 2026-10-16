@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
-import { rules } from "../src/rules.ts";
+import { changesSection, rules } from "../src/rules.ts";
 import { Wake } from "../src/wake.ts";
-import { GithubWatch, changesSection, decide, mergeRows, mergedRows, pushKey, watchedPulls } from "../src/watch.ts";
+import { GithubWatch, decide, mergeRows, mergedRows, pushKey, watchedPulls } from "../src/watch.ts";
 import { ghSource, parseResponse, queryText, summarize } from "../src/github.ts";
 import type { Checks, Gh, GithubSource, PullState, RepoState } from "../src/github.ts";
 import { asArchitect, server, wakeSocket } from "./helpers.ts";
@@ -94,6 +94,7 @@ const heads = {
   watch: "**问题**：x\n\n## 改动\n\n### Ming-Research/wf-board#23 Check cards\n\n- `src/rules.ts`: a check\n\n### wf-board#24 Follow-up\n\n## 参考：old\n\nMing-Research/wf-board#99",
   second: "**问题**：y\n\n## 改动\n\nMing-Research/wf-board#25, https://github.com/Ming-Research/wf-board/pull/26, #27 and wf-board PR #29\n\n- Whitefoot#5, Ming-Research/Whitefoot#6, mbbill/agents_config#2, Ming-Research/Other#1",
   gone: "## 改动\n\nMing-Research/wf-board#30",
+  bold: "**问题**：z\n\n**改动**：\n\n[wf-board#40](https://github.com/Ming-Research/wf-board/pull/40)：a change\n- x\n\n**参考：表**\n\nwf-board#41",
 };
 
 async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
@@ -109,6 +110,7 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   const accept = { id: "accept", accept: true as const, text: "验收通过", state: "todo" as const };
   await op.createItem({ ...asArchitect, key: "watch", group: author, priority: "P1", title: "Watch it", head: heads.watch, accept: "验收通过" });
   await op.createItem({ ...asArchitect, key: "second", group: author, priority: "P1", title: "Second", head: heads.second, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "bold", group: author, priority: "P1", title: "Bold", head: heads.bold, accept: "验收通过" });
   await op.createItem({ ...asArchitect, key: "gone", group: author, priority: "P1", title: "Cancelled", head: heads.gone, accept: "验收通过" });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "not needed" });
   const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, background: "见正文", options: [{ key: "A", text: "是" }, { key: "B", text: "否" }], ...(blocks ? { blocks } : {}) });
@@ -128,12 +130,24 @@ const pull = (number: number, fields: Partial<PullState> = {}): PullState => ({ 
 const repoState = (repo: string, fields: Partial<RepoState> = {}): RepoState => ({ repo, ...(repo === "Ming-Research/wf-board" ? { main: { branch: "claude/first-board", commit: "m0", checks: green } } : {}), pulls: [], truncated: false, named: [], ...fields });
 const WB = "Ming-Research/wf-board";
 
-test("the 改动 section is the text from its heading to the next ## heading, subsections included", () => {
+test("the 改动 section is a ## heading with its subsections, or a bold 改动 line, up to the next heading, bold section name or 参考", () => {
+  // The heading form: subsections stay inside, a heading of its level or above ends it.
   assert.equal(changesSection("a\n## 改动\nx\n### y\nz\n## 参考：q\nw"), "x\n### y\nz");
   assert.equal(changesSection("## 改动\nonly"), "only");
+  assert.equal(changesSection("## 改动\nx\n**参考：表**\nw"), "x", "a bold 参考 ends it");
+  assert.equal(changesSection("## 改动\nx\n参考：表\nw"), "x", "so does a plain 参考 line");
+  assert.equal(changesSection("## 改动\nx\n**验证**\nw"), "x", "and a bold section name alone");
+  assert.equal(changesSection("## 改动\n**注意**：x\ny"), "**注意**：x\ny", "bold text with words after it is no section name");
+  // The bold form, with or without a colon, or with the text on the same line.
+  assert.equal(changesSection("**做法**：a\n\n**改动**：\n\n[wf-board#24](u)：t\n- f\n\n**参考：表**\nw"), "\n[wf-board#24](u)：t\n- f\n");
+  assert.equal(changesSection("**改动**\n- a\n## 参考\nb"), "- a");
+  assert.equal(changesSection("**改动**：[wf-board#24](u) inline\n- b"), "[wf-board#24](u) inline\n- b");
+  assert.equal(changesSection("**改动**\nx\n### s\ny"), "x", "a bold section ends at a heading of any level");
+  // What is no 改动 section.
   assert.equal(changesSection("## 做法\nno changes here"), "");
   assert.equal(changesSection(undefined), "");
   assert.equal(changesSection("### 改动\nnot a section heading of this level"), "");
+  assert.equal(changesSection("**改动正确的理由**：x\n改动：x\n**改动**说明"), "");
 });
 
 test("the watched PRs are those an open item's 改动 section names, however the repository is written, and only in configured repositories", async t => {
@@ -141,11 +155,11 @@ test("the watched PRs are those an open item's 改动 section names, however the
   const named = [...watched.values()].map(w => `${w.pr.repo}#${w.pr.number}:${w.items.join("+")}`).sort();
   assert.deepEqual(named, [
     "Ming-Research/Whitefoot#5:second", "Ming-Research/Whitefoot#6:second", "Ming-Research/wf-board#23:watch", "Ming-Research/wf-board#24:watch",
-    "Ming-Research/wf-board#25:second", "Ming-Research/wf-board#26:second", "Ming-Research/wf-board#29:second", "mbbill/agents_config#2:second",
-  ], "#99 is outside the section, #27 has no repository, Other is not configured, #30 is on a cancelled item");
+    "Ming-Research/wf-board#25:second", "Ming-Research/wf-board#26:second", "Ming-Research/wf-board#29:second", "Ming-Research/wf-board#40:bold", "mbbill/agents_config#2:second",
+  ], "#99 and #41 are outside the section, #27 has no repository, Other is not configured, #30 is on a cancelled item; #40 is in a bold section");
 });
 
-test("a merge row is an open item's step that says 合入 and names the PR, and is neither done, dropped nor an acceptance step", async t => {
+test("a merge row is an open item's step that says 合入 and names a PR its item's 改动 section names too, and is neither done, dropped nor an acceptance step", async t => {
   const { store, op, author } = await fixture(t);
   await op.setPlan({ author, id: "second", rows: [
     { id: "a", text: "合入 Ming-Research/wf-board#25", state: "todo" },
@@ -155,11 +169,16 @@ test("a merge row is an open item's step that says 合入 and names the PR, and 
     { id: "e", text: "合入 Ming-Research/wf-board#29", state: "dropped", reason: "不做了" },
     { id: "f", text: "合入 Ming-Research/wf-board#31 之后验收", state: "todo", accept: true },
     { id: "g", text: "合入 PR，部署到本机的看板服务", state: "todo" },
+    // A row that waits for another PR names it too; that PR is not the item's own, so it is no merge row of it.
+    { id: "h", text: "设计日志已写；等 Ming-Research/wf-board#74 合入后，并入最新主线，合入主线", state: "todo" },
+    { id: "i", text: "合入 Ming-Research/wf-board#25 和 Ming-Research/wf-board#26", state: "todo" },
+    { id: "j", text: "等 Ming-Research/wf-board#74 合入后合入 Ming-Research/wf-board#29", state: "todo" },
+    { id: "k", text: "合入 Ming-Research/wf-board#74", state: "todo" },
   ] });
   const s = store.snapshot(), merges = mergeRows(s, rules(s));
-  assert.deepEqual([...merges.values()].map(m => `${m.pr.repo}#${m.pr.number}:${m.rows.map(r => `${r.item}/${r.step.id}`).join("+")}`).sort(), [
-    "Ming-Research/wf-board#23:watch/merge", "Ming-Research/wf-board#25:second/a", "Ming-Research/wf-board#26:second/b",
-  ]);
+  assert.deepEqual(merges.map(m => `${m.item}/${m.step.id}:${m.prs.map(p => p.number).join("+")}`).sort(), [
+    "second/a:25", "second/b:26", "second/i:25+26", "second/j:29", "watch/merge:23",
+  ], "#74 is on no 改动 section: h and k are no merge rows, and j is the merge row of #29 only");
 });
 
 // --- What to tell ------------------------------------------------------------------------------------------------------------------
@@ -216,12 +235,20 @@ test("approval cards are found through the rows the merge row follows, and a row
   assert.deepEqual(approval.map(a => a.card).sort(), ["approval", "late"]);
 });
 
-test("merged PRs: the rows naming a PR that GitHub reports merged", async t => {
-  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
-  const merged = mergedRows(s, r, [repoState(WB, { named: [{ number: 23, state: "MERGED", url: "u", mergedAt: "2026-10-16T01:00:00Z" }, { number: 25, state: "CLOSED", url: "u" }] })]);
-  assert.deepEqual(merged.map(m => [m.pr.number, m.row.item, m.row.step.id, m.mergedAt]), [[23, "watch", "merge", "2026-10-16T01:00:00Z"]]);
-  assert.deepEqual(mergedRows(s, r, [repoState(WB, { named: [{ number: 23, state: "OPEN", url: "u" }] })]), []);
-  assert.deepEqual(mergedRows(s, r, []), []);
+test("a merge row is done when GitHub reports merged every PR that counts for it, and not before", async t => {
+  const { store, op, author } = await fixture(t);
+  await op.setPlan({ author, id: "second", rows: [
+    { id: "a", text: "合入 Ming-Research/wf-board#25", state: "todo" },
+    { id: "i", text: "合入 Ming-Research/wf-board#25 和 Ming-Research/wf-board#26", state: "todo" },
+    { id: "j", text: "等 Ming-Research/wf-board#74 合入后合入 Ming-Research/wf-board#29", state: "todo" },
+    { id: "accept", accept: true, text: "验收通过", state: "todo" },
+  ] });
+  const s = store.snapshot(), r = rules(s), named = (...pulls: Array<[number, "MERGED" | "OPEN" | "CLOSED"]>) => [repoState(WB, { named: pulls.map(([number, state]) => ({ number, state, url: "u", ...(state === "MERGED" ? { mergedAt: `t${number}` } : {}) })) })];
+  const done = (states: RepoState[]) => mergedRows(s, r, states).map(m => `${m.item}/${m.step.id}:${m.prs.map(p => `${p.number}@${p.mergedAt}`).join("+")}`).sort();
+  assert.deepEqual(done(named([23, "MERGED"], [25, "CLOSED"], [26, "OPEN"], [29, "OPEN"], [74, "MERGED"])), ["watch/merge:23@t23"], "closed is not merged, and #74 merged finishes nothing");
+  assert.deepEqual(done(named([25, "MERGED"], [26, "OPEN"], [29, "MERGED"])), ["second/a:25@t25", "second/j:29@t29"], "i waits for #26");
+  assert.deepEqual(done(named([25, "MERGED"], [26, "MERGED"])), ["second/a:25@t25", "second/i:25@t25+26@t26"]);
+  assert.deepEqual(done([]), [], "a repository that could not be asked finishes nothing");
 });
 
 test("a push is the same push again for the same commit only", () => {
@@ -290,16 +317,17 @@ test("a red main line is told once per commit", async t => {
 test("a merged PR marks its merge row done, writes the item's log under the board's own session, and does not write again", async t => {
   const { store, op } = await fixture(t), github = fake({ [WB]: repoState(WB, { named: [{ number: 23, state: "MERGED", url: "u", mergedAt: "2026-10-16T01:00:00Z" }] }) });
   const watch = new GithubWatch({ store, ops: op, wake: new Wake(), github: github.source });
-  const before = store.snapshot().head;
+  const before = store.snapshot().head, commits = (await store.log()).length;
   await watch.poll();
   const s = store.snapshot(), row = s.items.watch!.plan.find(p => p.id === "merge") as { state: string; doneAt?: string; text: string; after?: string[] };
   assert.equal(row.state, "done"); assert.ok(row.doneAt, "dated");
   assert.equal(row.text, "合入 Ming-Research/wf-board#23", "its text and place are kept");
   assert.deepEqual(row.after, ["approval"]);
-  assert.match(s.items.watch!.log.at(-1)!.text, /Ming-Research\/wf-board#23 已在 GitHub 合入（2026-10-16T01:00:00Z），看板把合入行「合入 Ming-Research\/wf-board#23」标成完成。/);
+  assert.match(s.items.watch!.log.at(-1)!.text, /^Ming-Research\/wf-board#23（2026-10-16T01:00:00Z） 已在 GitHub 合入，看板把合入行「合入 Ming-Research\/wf-board#23」标成完成。$/);
   assert.equal(s.items.watch!.log.at(-1)!.by, "wf-board");
-  const log = await store.log({ limit: 2 });
-  assert.deepEqual(log.map(c => c.session), ["看板", "看板"]);
+  const log = await store.log();
+  assert.equal(log.length, commits + 1, "the row and its log entry are one commit");
+  assert.deepEqual([log[0]!.session, log[0]!.files], ["看板", ["items/watch.yaml"]]);
   const after = s.head;
   await watch.poll();
   assert.equal(store.snapshot().head, after, "the row is no longer open: nothing is written again");
@@ -310,7 +338,7 @@ test("a merged PR marks its merge row done, writes the item's log under the boar
 test("a merged PR whose row cannot be written is tried again at the next look", async t => {
   const { store, op } = await fixture(t), github = fake({ [WB]: repoState(WB, { named: [{ number: 23, state: "MERGED", url: "u" }] }) });
   let fail = true;
-  const flaky = { ...op, setPlan: (a: Parameters<typeof op.setPlan>[0]) => fail ? Promise.reject(new Error("busy")) : op.setPlan(a) };
+  const flaky = { ...op, markMerged: (a: Parameters<typeof op.markMerged>[0]) => fail ? Promise.reject(new Error("busy")) : op.markMerged(a) };
   const watch = new GithubWatch({ store, ops: flaky, wake: new Wake(), github: github.source });
   await quiet(() => watch.poll());
   assert.equal((store.snapshot().items.watch!.plan.find(p => p.id === "merge") as { state: string }).state, "todo");
@@ -347,6 +375,90 @@ test("start looks at once and then at every interval, and stop ends it", async t
   const settled = polls();
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(polls(), settled, "no look after stop");
+});
+
+// The time of the last look is kept in a file, so restarts do not add looks to the one in five minutes.
+async function stateDir(t: { after(fn: () => void | Promise<void>): void }) {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-watch-state-"));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  return join(dir, "state", "github-watch.json");
+}
+
+test("a look records its time, and a watch started over that file waits out the rest of the interval", async t => {
+  const { store, op } = await fixture(t), stateFile = await stateDir(t), at = Date.parse("2026-10-16T02:00:00Z"), every = 300_000;
+  const watch = (now: number, file = stateFile) => new GithubWatch({ store, ops: op, wake: new Wake(), github: fake().source, now: () => now, everyMs: every, stateFile: file });
+  assert.equal(watch(at).nextDelayMs(), 0, "no look known: look at once");
+  await watch(at).poll();
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { polledAt: "2026-10-16T02:00:00.000Z" });
+  assert.equal(watch(at + 120_000).nextDelayMs(), 180_000, "two minutes after the last look, three are left");
+  assert.equal(watch(at + every).nextDelayMs(), 0);
+  assert.equal(watch(at + 2 * every).nextDelayMs(), 0, "overdue: at once");
+  assert.equal(watch(at - 60_000).nextDelayMs(), every, "a clock that went back waits one interval, not more");
+  assert.equal(watch(at + 120_000).status().polledAt, "2026-10-16T02:00:00.000Z");
+  await writeFile(stateFile, "not json");
+  assert.equal(watch(at).nextDelayMs(), 0, "a file that cannot be read costs one early look");
+  await writeFile(stateFile, JSON.stringify({ polledAt: "yesterday" }));
+  assert.equal(watch(at).nextDelayMs(), 0);
+});
+
+test("start does not look before the interval since the last look has passed, and looks at once when it has", async t => {
+  const { store, op } = await fixture(t), stateFile = await stateDir(t), github = fake();
+  const watch = () => new GithubWatch({ store, ops: op, wake: new Wake(), github: github.source, everyMs: 10_000, stateFile });
+  const polls = () => github.calls.filter(c => c.repo === WB).length;
+  await mkdir(dirname(stateFile), { recursive: true });
+  await writeFile(stateFile, JSON.stringify({ polledAt: new Date().toISOString() }));
+  const recent = watch(); recent.start();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  recent.stop();
+  assert.equal(polls(), 0, "a look just happened: a restart does not look again");
+  await writeFile(stateFile, JSON.stringify({ polledAt: new Date(Date.now() - 60_000).toISOString() }));
+  const overdue = watch(); overdue.start();
+  for (let i = 0; i < 300 && polls() < 1; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  overdue.stop();
+  assert.equal(polls(), 1, "the interval has passed: the first look is at once");
+});
+
+test("a merge row is marked done with its log in one commit, and only if it is still open, still counts these PRs, and all of them are merged", async t => {
+  const { store, op, author } = await fixture(t);
+  const row = () => store.snapshot().items.watch!.plan.find(p => p.id === "merge") as { state: string; text: string };
+  const mark = (merged: Array<{ repo: string; number: number }> = [{ repo: WB, number: 23 }]) => op.markMerged({ author, session: "看板", id: "watch", row: "merge", merged, log: "合入了" });
+  const head = () => store.snapshot().head;
+  // Rows that changed since the watch read them are left as written.
+  const before = head();
+  await mark([{ repo: WB, number: 24 }]);
+  assert.equal(head(), before, "a PR that is not the row's: nothing written");
+  await op.setPlan({ author, id: "watch", row: { id: "merge", text: "合入 Ming-Research/wf-board#23 和 Ming-Research/wf-board#24", state: "todo", after: ["approval"] } });
+  const edited = head();
+  await mark();
+  assert.equal(head(), edited, "the row now counts #24 too, which is not merged: nothing written");
+  await op.setPlan({ author, id: "watch", row: { id: "merge", text: "合入 Ming-Research/wf-board#23", state: "dropped", reason: "不做了", after: ["approval"] } });
+  const dropped = head();
+  await mark();
+  assert.equal(head(), dropped, "a dropped row stays dropped");
+  await op.setPlan({ author, id: "watch", row: { id: "merge", text: "合并 Ming-Research/wf-board#23", state: "todo", after: ["approval"] } });
+  const reworded = head();
+  await mark();
+  assert.equal(head(), reworded, "a row that no longer says 合入 is no merge row");
+  await op.setPlan({ author, id: "watch", remove: "merge" });
+  const removed = head();
+  await mark();
+  assert.equal(head(), removed, "a removed row is not put back");
+  assert.equal(store.snapshot().items.watch!.plan.some(p => p.id === "merge"), false);
+  // The row as it is, done, and its log entry are one commit.
+  await op.setPlan({ author, id: "watch", row: { id: "merge", text: "合入 Ming-Research/wf-board#23", state: "doing", after: ["approval"] } });
+  const commits = (await store.log()).length;
+  await mark();
+  assert.equal(row().state, "done");
+  assert.equal(row().text, "合入 Ming-Research/wf-board#23");
+  const log = await store.log();
+  assert.equal(log.length, commits + 1);
+  assert.deepEqual([log[0]!.session, log[0]!.files], ["看板", ["items/watch.yaml"]]);
+  assert.equal(store.snapshot().items.watch!.log.at(-1)!.text, "合入了");
+  const done = head();
+  await mark();
+  assert.equal(head(), done, "a done row is not written again");
+  // Another project's item is not the board's to write as that project's author.
+  await assert.rejects(op.markMerged({ author: "Whitefoot", session: "看板", id: "watch", row: "merge", merged: [{ repo: WB, number: 23 }], log: "x" }), /belongs to project wf-board/);
 });
 
 test("the watch runs inside the server: a ready PR reaches a wake client and /health reports the look", async t => {

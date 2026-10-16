@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Decision, Item, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
+import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
@@ -311,6 +311,31 @@ export function references(text: string, repos: Set<string>) {
   }
   for (const match of text.matchAll(/#(\d+)\b/g)) if (!ranges.some(([a, b]) => match.index >= a && match.index < b) && !unknown.includes(Number(match[1]))) unknown.push(Number(match[1]));
   return { qualified, unknown };
+}
+/** A PR as the board watches it: `repo` is the `Owner/Name` a project configures. */
+export interface PrId { repo: string; number: number }
+export const prKey = (p: PrId): string => `${p.repo.toLowerCase()}#${p.number}`;
+/** The configured repository a reference names, or none: `Owner/Repo` must match a project's repo, a bare `Repo` exactly one. */
+function repoOf(projects: readonly Project[], ref: PrRef): string | undefined {
+  const repos = projects.flatMap(p => p.repo ? [p.repo] : []);
+  if (ref.owner) return repos.find(repo => repo.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase());
+  const named = repos.filter(repo => repo.split("/").pop()!.toLowerCase() === ref.repo.toLowerCase());
+  return named.length === 1 ? named[0] : undefined;
+}
+/** The PRs a text names that belong to a configured repository. */
+export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRepos(s)): PrId[] {
+  const out = new Map<string, PrId>();
+  for (const ref of references(text, repos).qualified) {
+    const repo = repoOf(s.board.projects, ref);
+    if (repo) out.set(prKey({ repo, number: ref.number }), { repo, number: ref.number });
+  }
+  return [...out.values()];
+}
+/** The PRs a step of item `id` is the merge row of: none unless it is a merge step (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
+export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
+  if (!isOpenMergeStep(step)) return [];
+  const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(s.items[id]?.head), repos).map(prKey)));
+  return named.filter(p => counted.has(prKey(p)));
 }
 export function prs(s: Snapshot, r: Rules, repo: string, number: number) {
   const qualified: Row[] = [], unknown: Row[] = [], repos = knownRepos(s);
