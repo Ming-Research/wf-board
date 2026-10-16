@@ -7,6 +7,7 @@ import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
+import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
@@ -2578,6 +2579,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   get<HTMLButtonElement>("send-all").addEventListener("click", () => sendDrafts());
 
+  // The writes the page has sent and not yet seen answered; a reload now would cut them off (the page updater waits for none).
+  let writesInFlight = 0;
   const DISCONNECTED = "已和看板服务器断开，正在重连…";
   const WRITE_TIMEOUT = "看板服务器没有响应，请刷新页面后核对操作结果。";
   async function api<T = unknown>(path: string, data?: unknown, method = "POST", signal?: AbortSignal): Promise<T> {
@@ -2592,11 +2595,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     })();
     if (!writing) return request;
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    writesInFlight++;
     try {
       return await Promise.race([request,new Promise<never>((_resolve,reject) => {
         deadline = setTimeout(() => { reject(new Error(WRITE_TIMEOUT)); controller!.abort(); },8000);
       })]);
-    } finally { if (deadline !== undefined) clearTimeout(deadline); }
+    } finally { writesInFlight--; if (deadline !== undefined) clearTimeout(deadline); }
   }
   // A hint answers a key that found nothing to act on. Unlike an error it is not kept: it leaves after a few seconds or
   // at the next key or click.
@@ -2840,6 +2844,28 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
     document.addEventListener("click", () => { void Notification.requestPermission().catch(() => {}); }, { once: true });
   }
+  // The server announces the current version of the page on the stream. A page on another version reloads itself, and waits for the
+  // owner to finish writing first (web/update.ts). What the next page needs is kept in sessionStorage: where the panes were scrolled,
+  // and the last reload made for a new version. The selected item, the folds and the filters are in localStorage already.
+  const SCROLL_KEY = "board-scroll", RELOAD_KEY = "board-reload", SCROLL_FRESH_MS = 30_000;
+  function readSession<T>(key: string): T | undefined { try { const text = sessionStorage.getItem(key); return text ? JSON.parse(text) as T : undefined; } catch { return undefined; } }
+  function writeSession(key: string, value: unknown) { try { sessionStorage.setItem(key, JSON.stringify(value)); } catch {} }
+  // Read once, so only the page that follows a reload restores the scroll.
+  let scrollToRestore = readSession<{list:number;detail:number;at:number}>(SCROLL_KEY);
+  try { sessionStorage.removeItem(SCROLL_KEY); } catch {}
+  if (scrollToRestore && Date.now() - scrollToRestore.at > SCROLL_FRESH_MS) scrollToRestore = undefined;
+  const pageUpdates = pageUpdater({
+    // The server fills in the version this page was served as (src/page-version.ts); anything else means it is not known.
+    own: (() => { const content = document.getElementById("page-version")?.getAttribute("content") ?? ""; return /^[0-9a-f]+$/.test(content) ? content : ""; })(),
+    // An open comment box, a comment typed and not saved, a saved draft being edited, or a request in flight.
+    busy: () => editing !== null || draftEdits.size > 0 || Object.values(drafts).some(text => text.trim() !== "") || sending || writesInFlight > 0,
+    banner: text => { const line = document.getElementById("update-banner"); if (!line) return; line.hidden = text === null; line.textContent = text ?? ""; },
+    reload: () => { writeSession(SCROLL_KEY, { list: get("page-left").scrollTop, detail: get("item-detail").scrollTop, at: Date.now() }); location.reload(); },
+    lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),
+    rememberReload: reload => writeSession(RELOAD_KEY, reload),
+    now: () => Date.now(),
+    later: (fn, ms) => { setTimeout(fn, ms); },
+  });
   function connect() {
     if (retry !== undefined) clearTimeout(retry);
     source?.close(); connectionAbort?.abort();
@@ -2859,9 +2885,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (!active()) return;
         if (retry !== undefined) clearTimeout(retry);
         retry = undefined; connected = true; get("server-banner").hidden = true; scheduleRender("all");
+        // After a reload for a new version the panes are scrolled back to where they were, once the page is drawn.
+        if (scrollToRestore) {
+          await rendered();
+          if (!active()) return;
+          const saved = scrollToRestore; scrollToRestore = undefined;
+          listScroller().to(saved.list); detailScroller().to(saved.detail);
+        }
       } catch(e) { if (active()) serverDown(next); }
     };
     next.onerror = () => serverDown(next);
+    next.addEventListener("page", event => {
+      if (!active()) return;
+      pageUpdates.announce((JSON.parse((event as MessageEvent).data) as { version: string }).version);
+    });
     next.addEventListener("owner", event => {
       if (!active()) return;
       showNotice(JSON.parse((event as MessageEvent).data) as OwnerNotice, noticeEnv);

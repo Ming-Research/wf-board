@@ -22,7 +22,7 @@ import { seedBoard } from "./seed.ts";
 export const ROOT = join(import.meta.dirname, "../..");
 interface Hooks { after(fn: () => unknown): void }
 
-export interface BoardServer { url: string; store: Store; gen: Generated; dir: string }
+export interface BoardServer { url: string; store: Store; gen: Generated; dir: string; webDir: string }
 /** Viewer state that draws every tree row: each item's sub-items unfolded. */
 export function openAll(board: BoardServer): Record<string, unknown> {
   return { "board-open": Object.fromEntries(Object.keys(board.store.snapshot().items).map(id => [id, true])) };
@@ -33,13 +33,13 @@ export async function startBoard(t: Hooks, opts: { seed?: number; webDir?: strin
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(opts.seed ?? 1);
   const { store } = await seedBoard(dir, gen);
-  const op = ops(store);
-  const server: Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: opts.webDir ?? join(ROOT, "web"), createMcp: () => createMcpServer({ store, ops: op }) });
+  const op = ops(store), webDir = opts.webDir ?? join(ROOT, "web");
+  const server: Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir, createMcp: () => createMcpServer({ store, ops: op }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("no address");
-  return { url: `http://127.0.0.1:${address.port}`, store, gen, dir };
+  return { url: `http://127.0.0.1:${address.port}`, store, gen, dir, webDir };
 }
 
 export async function launch(t: Hooks): Promise<Browser> {

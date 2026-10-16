@@ -44,6 +44,9 @@ matches what the artifact board offered.
 - `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
   time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
   entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
+- `src/page-version.ts`: the version of the page the daemon serves (a hash of `web/index.html` and `web/dist/app.js`) and
+  the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
+  tests call directly (design section 4, Deploying; section 7, Updating the page).
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
@@ -144,4 +147,6 @@ changed, restart the daemon
 `~/Library/Logs/wf-board.log`) and wait until
 `curl -s http://127.0.0.1:7417/health` answers, which can take more than ten
 seconds. The wake stream and MCP sessions drop during the restart and
-reconnect. Then check the change on the live page.
+reconnect. Restart the daemon also when only `web/` changed and the pages open
+in the browser should replace themselves: without a restart they are told only
+by the deploy job's push. Then check the change on the live page.
