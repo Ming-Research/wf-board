@@ -255,6 +255,8 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
     if (!placed) {
       if (!m.note || !m.note.includes("没标位置") || !m.note.includes(`[[q:${card}]]`)) v.push(`card-unplaced: card ${card} has no line in the head but no line before it says so, it has "${m.note}"`);
       if (!m.afterHead && item.head) v.push(`card-unplaced: card ${card} has no line in the head but does not follow the head`);
+      // Only an open card can be withdrawn, so only its line offers that.
+      if ((d.status === "open") !== !!m.note?.includes("撤回")) v.push(`card-unplaced: ${d.status} card ${card}'s line ${d.status === "open" ? "does not offer" : "offers"} withdrawing it`);
     } else if (m.note) v.push(`card-place: card ${card} has its line in the head but a line before it says it has no place`);
     if (placed && m.inHead) {
       // The card follows the paragraph that precedes its line and comes before the one after it.

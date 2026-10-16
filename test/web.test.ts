@@ -1638,6 +1638,13 @@ test("a card its head places is drawn once at its line; a card it does not place
   assert.equal(p.all().filter(e => e.id === "q-r").length,1,"a card the head does not place is drawn once");
   const r=p.all().find(e => e.id === "q-r")!, before=r.parentElement!.children[r.parentElement!.children.indexOf(r)-1]!;
   assert.equal(before.className,"unplacednote","a line before it says it has no place in the head"); assert.match(markup(before),/没标位置.*\[\[q:r\]\]/);
+  assert.match(markup(before),/撤回/,"an open card can be withdrawn, so the line offers it");
+});
+test("the line before a closed card with no place does not offer to withdraw it", async () => {
+  const s=nativeSnapshot(); s.decisions.t={...card(),question:"已定的问题",item:"child",status:"ruled",choice:"A",ruledAt:at}; s.items.child!.head="Intro";
+  const p=await page(s,[]); await expand(p);
+  const t=p.all().find(e => e.id === "q-t")!, before=t.parentElement!.children[t.parentElement!.children.indexOf(t)-1]!;
+  assert.equal(before.className,"unplacednote"); assert.match(markup(before),/没标位置.*\[\[q:t\]\]/); assert.doesNotMatch(markup(before),/撤回/,"withdraw_card refuses a card that is not open");
 });
 test("card rulings and item progress refresh plan consumers and transitive priority", async () => {
   const s=nativeSnapshot(), frames=new Frames(); s.decisions.q={...card(),item:"area"};

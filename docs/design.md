@@ -1253,9 +1253,11 @@ where the design reaches it.
   so a rewritten head can move it with no card write; a revision of the head
   that drops a decision drops its card (`withdraw_card`).
 - **Cards with no place.** A card the head does not place (a new card written
-  without its line, which raises 卡没标位置) is still drawn once in the body,
-  after the head, under a line saying it has no place there and how to give it
-  one. Every card is drawn once, in the body: its plan row, its 决策 button and
+  without its line, which raises 卡没标位置, or a closed card whose line a
+  rewrite of the head dropped, which the check does not flag) is still drawn
+  once in the body, after the head, under a line saying it has no place there
+  and how to give it one: add the line, or, for an open card only, withdraw it,
+  since `withdraw_card` refuses a card that is not open. Every card is drawn once, in the body: its plan row, its 决策 button and
   any link go to that card, wherever it stands, and nothing expands under a
   row. A closed card is one folded line wherever it stands.
 - **Ruling.** The owner's pick on the page is recorded by the board itself:

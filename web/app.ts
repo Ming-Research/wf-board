@@ -2083,7 +2083,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       // A card the head does not place (a new card written without its line) follows the head, each with a line saying so.
       cardOrder(it.id).filter(key => !placed.has(key)).forEach(key => {
         const d = index().decById.get(key); if (!d) return;
-        body.appendChild(el("div", "unplacednote", "这张卡在正文里没标位置：补上一行 <code>[[q:" + esc(key) + "]]</code>，或者撤回它。"));
+        body.appendChild(el("div", "unplacednote", "这张卡在正文里没标位置：补上一行 <code>[[q:" + esc(key) + "]]</code>" + (d.status === "open" ? "，或者撤回它。" : "。")));
         body.appendChild(decisionCard(d));
       });
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));

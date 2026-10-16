@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops } from "../../src/ops.ts";
-import { rules } from "../../src/rules.ts";
+import { rules, placedCards } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
@@ -134,6 +134,17 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "a card with no place has no note", find: "body.appendChild(el(\"div\", \"unplacednote\", \"这张卡在正文里没标位置：补上一行 <code>[[q:\" + esc(key) + \"]]</code>，或者撤回它。\"));", replace: "" }],
     family: "card-unplaced",
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "the line before a closed card with no place told the reader to withdraw it, which the board refuses for a card that is not open (review of card-in-plan)",
+    // Every such line offers to withdraw the card.
+    reverts: [{ file: "web/app.ts", edit: "a closed card with no place is told to be withdrawn", find: "(d.status === \"open\" ? \"，或者撤回它。\" : \"。\")", replace: "\"，或者撤回它。\"" }],
+    family: "card-unplaced",
+    run: async (bp, b) => {
+      const o = await oracle(b.store), closed = Object.keys(o.s.decisions).find(key => { const d = o.s.decisions[key]!; return d.status === "ruled" && !placedCards(o.s.items[d.item]!.head).includes(key); });
+      assert.ok(closed, "the generated board has a closed card its head does not place");
+      return checkCardBox(bp, o, [closed!], true);
+    },
   },
   {
     bug: "a card showed its question twice, once in its heading and again in a second heading (owner, 2026-10-14)",
