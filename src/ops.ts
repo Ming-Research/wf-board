@@ -612,13 +612,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const r = rulesOf(s);
       // The item and everything it owns, at any depth and in any state: ownership stays within one project, so they move together.
       const moved = new Set([a.id]);
-      for (const id of moved) for (const child of r.children(id)) {
-        const doc = Object.hasOwn(s.items, child) ? s.items[child] : undefined;
-        if (doc && doc.group !== from) throw new OpError(`item ${child}: owned by ${id} but belongs to project ${doc.group}, not ${from}; fix its 跨项目拥有 first`);
-        if (doc) moved.add(child);
-      }
+      for (const id of moved) for (const child of r.children(id)) if (Object.hasOwn(s.items, child)) moved.add(child);
       const ids = [...moved], puts: Put[] = [];
       for (const id of ids) {
+        // A stored cross-project owned row would only be carried along; the board's own check names it.
+        const crossed = r.checks(id).find(check => check.text === "跨项目拥有");
+        if (crossed) throw new OpError(`item ${id}: owned by ${crossed.target!.id} of project ${r.groupOf(crossed.target!.id)} but belongs to project ${r.groupOf(id)} (跨项目拥有); fix that with set_plan first`);
         const it = ownedItem(s, id, a.author);
         try { checkedTags(s, a.project, it.tags, false); }
         catch (error) { throw error instanceof OpError ? new OpError(`item ${id}: ${error.message}`) : error; }
@@ -633,15 +632,18 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           plan: doc.plan.map(row => "item" in row && row.own && targets.includes(row.item) ? { ...row, own: false } : row),
           log: [...doc.log, entry(a.author, at, `${targets.map(id => `「${s.items[id]!.title}」`).join("")}换到了项目 ${a.project}；计划不再拥有，改成依赖`)] }));
       }
-      // The moved item arrives as a top item of the new project.
+      // The moved item arrives as a top item of the new project; the board's own check says whether that leaves it owned by no item while an open item there waits on it.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
-      const after = rules(next), open = after.isOpenWork(a.id);
-      const waiting = after.dependents(a.id).filter(d => !d.own && !moved.has(d.id) && after.isOpenWork(d.id) && after.groupOf(d.id) === a.project).map(d => d.id);
-      if (open && waiting.length) throw new OpError(`project: ${waiting.join(", ")} in ${a.project} still wait on ${a.id} through shared rows, and it would arrive there owned by no item (同项目有条目在等它，却没有条目拥有它); have ${a.project} remove those rows first, and take ${a.id} into a plan with an owned row after the move`);
+      const after = rules(next);
+      if (after.checks(a.id).some(check => check.text.startsWith("同项目有条目在等它"))) {
+        const waiting = after.dependents(a.id).filter(d => !d.own && after.groupOf(d.id) === a.project && after.isOpenWork(d.id)).map(d => d.id);
+        throw new OpError(`project: ${waiting.join(", ")} in ${a.project} wait on ${a.id} through shared rows, and an item others wait on needs an owner in its project (同项目有条目在等它，却没有条目拥有它), which this call cannot name; have ${a.project} drop those rows with set_plan first, move ${a.id}, then let the item that needs it own it with an owned row (or leave the dependency out)`);
+      }
       if (a.priority !== undefined) {
         priorityAllowed(next, a.id);
-        putDoc(puts, itemPut(a.id, { ...docOf(s, puts, a.id), priority: a.priority }));
-      } else if (open && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project}; give priority P0 (urgent), P1 (soon) or P2 (later)`);
+        const doc = docOf(s, puts, a.id);
+        putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority, log: root.priority && root.priority !== a.priority ? [...doc.log, entry(a.author, at, `优先级：${root.priority} 改为 ${a.priority}`)] : doc.log }));
+      } else if (after.isOpenWork(a.id) && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project} with no stored priority; give priority P0 (urgent), P1 (soon) or P2 (later)`);
       return { id: a.id, kind: "item", puts, moved: ids, message: `move_item_project ${a.id} ${a.project}` };
     }),
     clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {

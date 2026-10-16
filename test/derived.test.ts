@@ -57,6 +57,10 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   const rand = random(20261013), start = Date.now() - 24 * 60 * MINUTE;
   const { dir, store, now, advance } = await synthetic(t, rand, start);
   const base = ops(store, advance), owner = ownerOps(store, advance);
+  // Moves to another project come from their own stream and their own clock (the current synthetic time), so they take nothing
+  // from the random sequence or the clock the other actions draw on.
+  const mover = ops(store, () => iso(now())), moveRand = random(20261016);
+  let projectMoves = 0;
   // Most writes name one of three sessions, some none (an older client): the session attribution then has to follow the
   // same incremental and from-history derivations as the activity times.
   const op = new Proxy(base, { get: (target, name) => {
@@ -73,7 +77,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const itemsOf = (s: Snapshot, group?: string) => Object.keys(s.items).filter(id => !group || s.items[id]!.group === group);
-  let made = 0, projectMoves = 0;
+  let made = 0;
   const actions: Array<(s: Snapshot) => Promise<unknown>> = [
     async s => { const id = pick(itemsOf(s)); return op.appendLog({ author: s.items[id]!.group, id, text: "progress" }); },
     async s => {
@@ -89,7 +93,6 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     },
     async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ author: s.items[owner]!.group, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
-    async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, project = pick(["Whitefoot", "Firn"].filter(p => p !== group)); const moved = await op.moveItemProject({ author: group, id, project, ...(rand() < 0.5 ? { priority: pick(["P0", "P1", "P2"] as const) } : {}) }); projectMoves++; return moved; },
     async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ author: it.group, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
@@ -119,6 +122,13 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   for (let round = 0; round < 140; round++) {
     try { await pick(actions)(store.snapshot()); }
     catch (error) { if (!(error instanceof OpError)) throw error; }
+    if (moveRand() < 0.25) {
+      const s = store.snapshot(), ids = itemsOf(s), id = ids[Math.floor(moveRand() * ids.length)]!, group = s.items[id]!.group;
+      try {
+        await mover.moveItemProject({ author: group, id, project: group === "Whitefoot" ? "Firn" : "Whitefoot", ...(moveRand() < 0.5 ? { priority: (["P0", "P1", "P2"] as const)[Math.floor(moveRand() * 3)]! } : {}) });
+        projectMoves++;
+      } catch (error) { if (!(error instanceof OpError)) throw error; }
+    }
     for (const { change, after } of events.slice(handled)) {
     const before = previous;
     previous = after;
@@ -164,7 +174,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
   // A daemon restart derives the whole activity, session attribution included, from history alone.
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
-  assert.ok(projectMoves > 0, "the random sequence moved an item to another project at least once");
+  assert.ok(projectMoves > 2, `the random sequence moved items to another project (${projectMoves})`);
   assert.ok(compared > 60, `enough writes compared (${compared})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
