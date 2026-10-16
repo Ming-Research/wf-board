@@ -60,19 +60,23 @@ function cardsBefore(s: Snapshot, itemId: string, rowId: string): Array<{ card: 
   return cards.flatMap(row => "card" in row && s.decisions[row.card] ? [{ card: row.card, question: s.decisions[row.card]!.question, ruled: s.decisions[row.card]!.status !== "open" }] : []);
 }
 
-export type PushEvent = "main-red" | "pr-red" | "pr-ready";
+export type PushEvent = "main-red" | "pr-red" | "pr-ready" | "pr-orphan";
 export interface Push { event: PushEvent; /** What makes it the same push again: it is sent once per key. */ key: string; fields: Record<string, unknown> }
 /** The key of a push, or none for a frame that is not one of these. A main line is told once per commit, a PR once per kind and head commit. */
 export function pushKey(event: string, f: Record<string, unknown>): string | undefined {
   if (event === "main-red") return `${event} ${f.repo} ${f.branch} ${f.commit}`;
   if (event === "pr-red" || event === "pr-ready") return `${event} ${f.repo}#${f.number} ${f.commit}`;
+  // Once per pull request: whether an open item names it does not depend on its commit.
+  if (event === "pr-orphan") return `${event} ${f.repo}#${f.number}`;
   return undefined;
 }
 
 /** What to tell the architect now, from what GitHub says: a red main line; a red non-draft PR an open item names; a non-draft PR
  * an open item names whose checks all passed and which can merge, with the open blocking cards of those items and the cards the
- * item's merge row waits on. A draft PR is never told. */
-export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Push[] {
+ * item's merge row waits on; an open PR no open item names (drafts too). A draft PR's checks are never told. */
+/** How old an open PR must be before it is told as an orphan: the engineer writes its 改动 section right after opening it. */
+export const ORPHAN_AFTER_MS = 10 * 60_000;
+export function decide(s: Snapshot, r: Rules, states: readonly RepoState[], now = Date.now()): Push[] {
   const watched = watchedPulls(s, r), merges = mergeRows(s, r), pushes: Push[] = [];
   for (const state of states) {
     const project = s.board.projects.find(p => p.repo?.toLowerCase() === state.repo.toLowerCase())?.name ?? "";
@@ -82,7 +86,12 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[]): Pus
     }
     for (const pull of state.pulls) {
       const key = prKey({ repo: state.repo, number: pull.number }), entry = watched.get(key);
-      if (!entry || pull.draft) continue;
+      if (!entry) {
+        if (now - Date.parse(pull.createdAt) < ORPHAN_AFTER_MS) continue;
+        pushes.push({ event: "pr-orphan", key: pushKey("pr-orphan", { repo: state.repo, number: pull.number })!, fields: { repo: state.repo, number: pull.number, project, title: pull.title, url: pull.url, draft: pull.draft } });
+        continue;
+      }
+      if (pull.draft) continue;
       const common = { repo: state.repo, number: pull.number, project, title: pull.title, commit: pull.commit, url: pull.url };
       const item = (id: string) => ({ item: id, title: s.items[id]!.title, project: r.projectOf(id) });
       if (pull.checks.state === "failure") {
@@ -212,7 +221,7 @@ export class GithubWatch {
       if (this.stopped) return;
       // The board may have changed while GitHub answered: decide on what it is now.
       const s = store.snapshot(), r = store.derived.rules(s, this.now());
-      for (const push of decide(s, r, states)) {
+      for (const push of decide(s, r, states, this.now())) {
         if (this.announced.has(push.key)) continue;
         this.o.wake.push(push.event, push.fields);
         this.announced.add(push.key);

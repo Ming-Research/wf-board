@@ -838,18 +838,10 @@ test("project page follows board project list order on load and live reorder, wi
   assert.deepEqual(names(), ["A last", "Z first", "Project", "New"]);
 });
 
-test("project page omits session assignments and shows inbox requests, including empty projects", async () => {
+test("project page omits session assignments and shows empty projects", async () => {
   const s=snapshot(); s.board.projects.push({name:"Empty"});
-  s.items.incoming={title:"Request title",group:"Project",ask:{text:"Approve request"},request:{by:"Visitor",at},status:"todo",priority:"P0",head:"Request body",updated:at,rev:1,log:[{at,by:"Visitor",text:"Visitor 提出：Need feature"}],deps:[],links:[]};
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
   assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
-  assert.ok(p.all().some(e=>e.innerHTML==="阻塞 1 ›"));
-  const inbox=p.all().find(e=>e.className==="inbox"); assert.ok(inbox);
-  assert.match(markup(inbox),/收件箱 1/); assert.match(markup(inbox),/Request title/);
-  const tree=p.all().find(e=>e.id==="it-incoming"); assert.ok(tree); assert.ok(descendants(inbox).includes(tree));
-  await descendants(tree).find(e=>e.className==="item-head")!.click();
-  assert.match(markup(p.all().find(e=>e.id==="detail-it-incoming")!),/Request body/);
-  assert.ok(p.all().some(e=>e.className==="request-meta" && e.innerHTML.includes("Visitor") && e.innerHTML.includes("Need feature")));
 });
 
 test("新 counts items: one per item however many changes, a parent adding the items below it, in one chip", async () => {
@@ -1656,17 +1648,6 @@ test("atomic owner-plan changes reconcile child membership while reusing sibling
   p.emit("e".repeat(40),[{kind:"item",id:"other",after:{...s.items.other!,rev:4,priority:"P0"}}]); await p.flush();
   assert.deepEqual(p.all().filter(e=>e.id === "it-area" || e.id === "it-other").map(e=>e.id),["it-area","it-other"]);
 });
-test("finishing an inbox request hides it until the completed filter shows it in the normal tree", async () => {
-  const s=snapshot(), frames=new Frames(); s.items.request={...s.items.child!,parent:undefined,group:"Project",request:{by:"Elsewhere",at}}; s.items.request2={...s.items.request!,title:"Later request",priority:"P2",request:{by:"Elsewhere",at:"2026-10-12T00:00:00Z"}};
-  const p=await page(s,[],null,undefined,{frames}); assert.ok(item(p,"request").closest(".inbox"));
-  p.emit("a".repeat(40),[{kind:"item",id:"request2",after:{...s.items.request2!,priority:"P0"}}]); await p.flush();
-  assert.deepEqual(p.all().filter(e=>e.id === "it-request" || e.id === "it-request2").map(e=>e.id),["it-request","it-request2"],"inbox remains ordered by request time");
-  p.emit("b".repeat(40),[{kind:"item",id:"request",after:{...s.items.request!,status:"done"}}]); await p.flush();
-  assert.ok(!rowOf(p,"request"),"ended request leaves the inbox and default tree without a request-object edit");
-  await p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML === "完成 1")!.click(); await p.flush();
-  assert.ok(rowOf(p,"request") && !rowOf(p,"request").closest(".inbox"),"the completed filter shows the ended request in the normal tree");
-});
-
 test("scoped unread card membership inserts replies and removes read ended cards without rebuilding peers", async t => {
   for (const kind of ["note","decision"]) for (const hosted of [true,false]) for (const showing of [true,false]) await t.test(kind+" "+(hosted ? "hosted " : "loose ")+(showing ? "insert" : "remove"),async()=> {
     const s=snapshot(), frames=new Frames(), note:Note={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2};

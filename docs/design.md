@@ -538,8 +538,8 @@ log:
   commit must also write. Only `Architect` changes the vocabulary, after the owner
   approves the change on a decision card; the server enforces the author, not
   the card. An item's `tags` are unique, each in the vocabulary and applicable
-  to the item's project, and every item needs at least one, records and
-  requests included. `tags` is optional on read for data written before tags
+  to the item's project, and every item needs at least one, records
+  included. `tags` is optional on read for data written before tags
   existed; the 缺标签 check lists such items until a session backfills them.
   A tag change is a real change in `changes` and in unread, unlike `num`.
 - **Difficulty.** A work item may carry `difficulty`: an integer 1–5, which
@@ -599,7 +599,7 @@ log:
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
-  status, priority and request rows, and added or changed link rows, are not
+  status and priority rows, and added or changed link rows, are not
   coloured either.
   New items and cards carry no per-block marks; added plan and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
@@ -846,8 +846,7 @@ owned row still requires moving or cancelling its target first, for
 - **Top items.** An item no row owns is a top item (what earlier sections
   call an area), drawn at the top level of its project. A top item is one of: a root (below); an item another
   project's shared row waits on, such as a collecting item (drawn under the
-  existing 被其他项目依赖 separator, its priority derived); an open inbox
-  request (drawn in the inbox until triaged); or a closed item (done or
+  existing 被其他项目依赖 separator, its priority derived); or a closed item (done or
   cancelled), which needs nothing further. An open top item that an open work
   item of its own project waits on through a shared row shows
   同项目有条目在等它，却没有条目拥有它, and a write that introduces this is
@@ -897,8 +896,7 @@ stored priority.
 
 An open work item is *needed* when an unpaused root needs it: it is an unpaused
 root, or an unpaused, open item holds an item row (owned or shared) for it and
-is itself needed. An untriaged request is not work yet and is neither a root
-here nor needs anything, and a record is not work. So backlog work is needed
+is itself needed. A record is not work. So backlog work is needed
 only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
@@ -925,8 +923,7 @@ logging every step's text; setting `record: false` requires `accept` text for
 the new acceptance step. A real change of mode in either direction appends a
 server-stamped log line saying the item became a record or a work item; a
 call that leaves the mode unchanged logs nothing. Records receive no
-status-based checks, and the page shows `记录` in place of a status. A record
-may retain request metadata but is not an open inbox request.
+status-based checks, and the page shows `记录` in place of a status.
 `parent_own_work` no longer exists: an item's own
 work is step rows in its own plan, so no conversion ever needs to invent an
 own-work sub-item.
@@ -967,7 +964,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, an untriaged request, backlog work and what hangs under it, paused work, work only a paused root needs, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or an item rated `architect`) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1295,13 +1292,13 @@ instructions within the limit and free of rule text.
 | `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
-| `overview(group?, status?)` | The board at a glance | Project name and inbox count once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
+| `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions the architect started done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
-| `projects()` | Which project matches this repository? | Project configuration, top items, open items by status and inbox counts |
-| `brief(project)` | What does this project need now? | Inbox, sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
+| `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
-| `followups(minutes)` | What is still unhandled? | Older sent notes and inbox requests with project |
+| `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
 ### Changing things
 
@@ -1325,10 +1322,10 @@ vocabulary tools, and the page order and other projects' repositories in
 `create_project` and `update_project`.
 Turning a cancelled item into a record in `update_item` is reserved too, but
 its refusal comes after the ownership and revision checks, because it depends
-on the item's state. `create_request`, which
-files an item into another project's inbox, stays open to every project until
-the inbox is removed. A write under the retired author `总管` is refused by
-every tool.
+on the item's state. Work another project needs is not filed by a tool: the
+session that needs it reports it, and `Architect` creates it in the project
+that delivers it, joined by a shared row. A write under the retired author
+`总管` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
@@ -1358,8 +1355,6 @@ every tool.
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by `Architect` |
 | `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or `Architect`; the main line has no whitespace; order: only `Architect` |
-| `create_request(project, key, title, head, accept, why, priority?, from?, after?, tags?)` | Files into any project's inbox with the acceptance step the filing project needs; `why` is the filing reason, kept as the request's first log line; with `from`, the filing item's plan gains a shared row for the request (optional `after`), which gives the request its priority | Author is a configured project; receiving project exists; `from` belongs to the author's project; atomic; priority required without `from` and refused with it; tags as for `create_item`, applicable to the receiving project |
-| `triage_request(id, owner?, after?, priority?, log)` | Accepts a request: with `owner`, the owner's plan in the request's project gains an owned row for it (usually the item collecting the filing project's needs); without, it stays a top item | Author is the request's project; same-project owner; priority only when the request stays a root |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
@@ -1765,7 +1760,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Eight kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Nine kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1775,16 +1770,15 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 - the timed wake, every 30 minutes;
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
-  failed (`pr-red`), and one whose checks all passed and which can merge
-  (`pr-ready`);
+  failed (`pr-red`), one whose checks all passed and which can merge
+  (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below).
 
-Not pushed: a new request, a blocking card (the owner is told on the Mac and in open pages, below),
+Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: a pull request on no open item (wf-board item
-watch-github, its second row) and a slow board operation (item slow-op-alerts).
+table and one row below: a slow board operation (item slow-op-alerts).
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1815,6 +1809,7 @@ the forms the server sends:
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
+| `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
@@ -1949,15 +1944,24 @@ to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
 runs no pull request check for a pull request with a merge conflict, and a
 commit nobody has run yet looks the same.
 
-**The three pushes.** All are about non-draft pull requests; a draft's checks
-are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say
-success and GitHub reports the pull request mergeable (not conflicting; still
-being computed counts as not yet). A pull request whose checks are pending or
-none, or that cannot merge, is told nothing. `main-red`: the checks of the main
-line's newest commit say failure. A push is made once per key: `main-red` per
-branch and commit, `pr-red` and `pr-ready` per pull request and newest commit.
+**The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
+requests; a draft's checks are the engineer's. `pr-red`: the checks say
+failure. `pr-ready`: the checks say success and GitHub reports the pull request
+mergeable (not conflicting; still being computed counts as not yet). A pull
+request whose checks are pending or none, or that cannot merge, is told nothing.
+`main-red`: the checks of the main line's newest commit say failure. A push is
+made once per key: `main-red` per branch and commit, `pr-red` and `pr-ready` per
+pull request and newest commit, `pr-orphan` per pull request.
 The keys of the events still kept are read again at start, so a restart neither
 repeats a push nor loses one (an event the log dropped may be told once more).
+
+**The orphan push.** `pr-orphan`: an open pull request, draft or not, that no open
+item's 改动 section names. It is told once per pull request, whatever its checks
+and commits, so a draft nobody names is told too: nothing else reports it. A pull
+request is told only once it is ten minutes old (GitHub's creation time), so the
+engineer has time to write its 改动 section after opening it; one an item names
+within those ten minutes is never told. A pull request an item names after it has
+been told is no orphan any more; the push is not taken back.
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
@@ -2016,15 +2020,14 @@ as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
 `author === Architect`; this applies to items, their cards and owner-note
-replies or closures. Only `Architect` creates items, in any project
-(`create_request` aside, section 6).
+replies or closures. Only `Architect` creates items, in any project.
 `set_term` and `delete_term` change only the author's own glossary,
 `Architect`'s included. Moving work requires the source and destination to
 belong to one project, which the author must own unless it is `Architect`
 (`move_item_project` leaves its source project, so only `Architect` may use
 it, section 6), and revising a card’s owning item checks both owners the same
 way. A refusal names the item’s project
-and directs the caller to file into it with `create_request`. Cross-project
+and directs the caller to report what it needs from the item to `Architect`. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
 owner-note, send and read operations are separate from agent
 operations and remain unrestricted. Project names are supplied by trusted
@@ -2049,45 +2052,36 @@ the one path every agent write takes, refuses any write under that author
 with a message naming `Architect`. Store migrations commit under `总管`
 directly and do not pass through it; the historical authors stay as written.
 
-Any configured project can call `create_request(project, key, title, head,
-accept, why, priority?, from?, after?)`. It creates a top item in the
-receiving project with `request: {by: author, at}`, a plan holding the
-acceptance step `accept` that the filing project needs met, and first log
-`${author} 提出：${why}`. With `from`, the filing item must belong to author’s
-project; its plan gains a shared row for the new request in the same commit,
-and the request takes its priority from that item, so `priority` is refused.
-Without `from` the request is a root and `priority` is required.
-Requests stay in a separate inbox, oldest first, until the receiving project
-triages them. `triage_request` removes the marker, sets an optional priority
-when the request stays a root (no owner and no open item depending on it),
-logs the disposition, and either gives the request an owned row in an item of
-its project (normally the item collecting the filing project's needs) or
-keeps it a top item. Placement also appends
-`分拣：放到「<owner title>」下` before the supplied log. Moving a
-request under an owner in its project also triages it and logs the placement.
-A receiving project cannot decline a request itself; the architect declines it
-with `set_status cancelled`, which clears the marker and records the reason. An open inbox request is not an area in listings; completed or
-cancelled items are not open requests.
+There is no inbox. Work another project needs is not filed into that
+project: the session that needs it reports it to `Architect`, who creates the
+item in the project that delivers it and joins it to the needing item by a
+shared row. The board once had `create_request` and `triage_request`, which
+filed an item into another project's inbox with a `request: {by, at}` marker;
+both tools, the marker in the item schema, the inbox rules and the page's inbox
+are removed. Items in older commits can still hold the marker. Past commits
+are read as written (`show`, `diff`), and `comparisonSnapshot`, which
+validates a past commit's whole board with the current schema, drops the
+marker first and no other unknown field. Live data holding a marker is refused
+at start with the schema's own error, so nothing is read and silently
+discarded.
 
-`projects` reports name, repo, top-item counts, open item status counts
-(excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
-sent item/card owner notes, checks including cleared blockers, open cards
+`projects` reports name, repo, top-item counts and open item status counts.
+`brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items in progress with a doing step of their own,
 the next ten items rated 1–5 that an unpaused root needs and whose frontier holds a step that can start, by priority,
-outstanding work requested from other projects, and the project's glossary
+outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
 `{id, title, plan?, targets?}` rows for records and blocked items
-that are not already represented in the inbox, checks, WIP, TODO or
+that are not already represented in the checks, WIP, TODO or
 outgoing rows. It does not repeat those rows or add closed work and the TODO
-backlog. The outgoing list includes open requests with `request.by === project` and open items
-targeted by its items’ cross-project shared rows, so triage does not hide
-linked work. Read rows, project summaries
+backlog. The outgoing list holds the open items
+targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
-`group` filter. The page shows an inbox above each project’s areas and counts
+`group` filter. The page counts
 sent notes per project, such as `已发出 3 条：Halo-wf×2 · Firn-wf×1`.
-Requests come from projects; the owner asks for work through notes and the
-coordinator, so the page files none. Delivery belongs to the coordinator:
+The page creates no work items: the owner asks for work through notes and the
+coordinator. Delivery belongs to the coordinator:
 it finds a project’s live session by its working directory, independently
 of its current session name.
 
@@ -2352,8 +2346,8 @@ evidence is never rewritten.
 **Phase 2: rewriting plans, per project.** The coordinator files one item into
 each project, "Every plan of <project> is rewritten from the work it needs".
 Its acceptance step: the project has no provisional plan left, and every open
-item of the project is either a root, another project's collecting item, an
-inbox request or owned by exactly one row, and has an acceptance step that is
+item of the project is either a root, another project's collecting item
+or owned by exactly one row, and has an acceptance step that is
 not the placeholder. The board shows progress as the number of 待重写 flags
 left. The project's session follows this procedure:
 
@@ -2376,7 +2370,8 @@ left. The project's session follows this procedure:
    another item owns it, take it with `move_item`; if it is a top item, own it
    with the new plan. Create the items no existing item covers with
    `create_item`. Rows that point at another project are shared rows to that
-   project's collecting item, filed with `create_request` when none exists.
+   project's collecting item; when none exists, the session reports it to
+   `Architect`, who creates it in that project.
 4. **Dispose of what the new plan does not use.** Every open item that was a
    provisional owned row of this plan and is not in the new plan is either
    moved under the item that needs it (`move_item`), moved into the backlog
@@ -2442,13 +2437,13 @@ the board.
     record without rows raises nothing.
 11. **What dropping the why loses.** A shared row into another project no
     longer says, on the row, why the other project needs the item; the
-    receiving session reads it from the request's head and acceptance step
-    and from the filing reason in its first log line. `context` and `graph`
+    receiving session reads it from the needed item's head and acceptance step
+    and from its first log line. `context` and `graph`
     show titles only, and the old whys live only in logs, which `search`
     still covers. The rule "every dependency carries a why" disappears from
     the server instructions, the operations' checks and CLAUDE.md. Proceeding
-    on: accept this, as the owner decided; if a receiving session finds a
-    request unclear, it asks with a note or comment, not a row field.
+    on: accept this, as the owner decided; if a receiving session finds the
+    item unclear, it asks with a note or comment, not a row field.
 12. **What clears the provisional mark.** Proceeding on: any whole-plan write
     by the session clears it, so a session could clear it by rewriting the
     rows unchanged. The coordinator checks each project's phase 2 item log,
@@ -2534,7 +2529,7 @@ plan, 19 named only by other items' plans, 8 open cards no plan names (one on
 a record), 2 open cards on done items; 754 notes (603 on cards, 201 with
 replies, 23 anchored); 257 heads with code blocks; 28 tags, every item
 tagged. Shapes the real board lacks today but the schema allows and the page
-handles (pending asks, inbox requests) are generated too.
+handles (pending asks) are generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 

@@ -192,10 +192,9 @@ test("a sent note is pushed with a number whatever project its item is in, a dra
   assert.equal(star.events().length, 3);
 });
 
-test("only the kinds in the table are pushed: not a new request, a blocking card, an ask or a format check", async t => {
+test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);
-  await op.createRequest({ author: "Firn", project: "Whitefoot", key: "incoming", title: "Visitor request", head: "Please", accept: "Passes", priority: "P0", why: "Need it" });
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });

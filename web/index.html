@@ -330,7 +330,7 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .waittag { font-size: 12px; font-weight: 600; background: var(--blockwait); color: var(--surface); padding: 0 7px; border-radius: 4px; }
 .asktag { font-size: 12px; font-weight: 600; background: var(--ask); color: var(--surface); padding: 0 7px; border-radius: 4px; }
 .body { display: flex; flex-direction: column; gap: 4px; padding-left: 1.6em; }
-/* Each part of an open item (被依赖, 正文, 依赖, 进展, request, cards, checks, links) sits under a rule; the numbers line belongs to the head. */
+/* Each part of an open item (被依赖, 正文, 依赖, 进展, cards, checks, links) sits under a rule; the numbers line belongs to the head. */
 .body > * + * { border-top: 1px solid var(--rule); padding-top: 8px; margin-top: 4px; }
 .body > .rich + .data { border-top: 0; padding-top: 0; margin-top: 0; }
 .body p { margin: 0; max-width: 78ch; font-size: 14px; }
@@ -465,9 +465,6 @@ details.refsec > .refbody p { margin: 0; }
 .search-list { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
 .refopt.sel, .searchrow.sel { background: var(--accent-soft); }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
-.inbox { margin-top: 12px; padding: 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
-.inbox h3 { margin: 0; font-size: 14px; }
-.request-meta { margin: 2px 8px 10px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 </style>
 
 <body class="wide">

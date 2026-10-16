@@ -149,10 +149,8 @@ export interface Rules {
   lineOf(id: string): string;
   groupOf(id: string): string;
   projectOf(id: string): string;
-  isRequest(id: string): boolean;
   /** An existing work item whose status is neither done nor cancelled. Records are not open work. */
   isOpenWork(id: string): boolean;
-  inbox(project: string): string[];
   isLeaf(id: string): boolean;
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
@@ -165,10 +163,10 @@ export interface Rules {
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
-  /** Open work an unpaused root needs: an unpaused root that is not an untriaged request, or work such a root waits on
+  /** Open work an unpaused root needs: an unpaused root, or work such a root waits on
    * through open, unpaused rows, owned or shared. Backlog work is needed only when a needed item other than its record
    * also holds a row for it, and what hangs under it only when that work is; paused work and what only a paused root
-   * needs are not needed. A request not yet triaged is not work yet. */
+   * needs are not needed. */
   isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
@@ -446,7 +444,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
     return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
-      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isRequest(id), r.isNeeded(id), r.checks(id)]);
+      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
   const examined = new Set<string>(), queue: string[] = [];
@@ -594,10 +592,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function isPaused(id: string): boolean { return statusOf(id) === "paused"; }
   function groupOf(id: string): string { return item(id)?.group || ""; }
-  function isRequest(id: string): boolean { return !!item(id)?.request && isOpenWork(id); }
   function areas(include?: (id: string) => boolean): string[] {
     function ordered(): string[] {
-      const list = kids("").filter(id => !isRequest(id) && (!include || include(id))), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
+      const list = kids("").filter(id => !include || include(id)), groups = new Map(s.board.projects.map((p, i) => [p.name, i]));
       for (const id of list) { const g = item(id)?.group || ""; if (!groups.has(g)) groups.set(g, groups.size); }
       return list.sort((a, b) => groups.get(item(a)?.group || "")! - groups.get(item(b)?.group || "")! || byOrder(a, b));
     }
@@ -739,7 +736,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   function neededSet(): Set<string> {
     return cached("needed", "", () => {
       const ids = [...index().items.keys()], out = new Set<string>();
-      const eligible = (id: string): boolean => isOpenWork(id) && !isRequest(id) && !isPaused(id);
+      const eligible = (id: string): boolean => isOpenWork(id) && !isPaused(id);
       for (const id of ids) if (eligible(id) && isRoot(id)) out.add(id);
       for (let changed = true; changed;) {
         changed = false;
@@ -885,7 +882,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
         // Work an unpaused root needs gets a difficulty before it is dispatched. What no such root needs (backlog work,
-        // what hangs under it, paused work, an untriaged request) is not about to be, so it is not asked for one yet.
+        // what hangs under it, paused work) is not about to be, so it is not asked for one yet.
         if (it.difficulty === undefined && neededSet().has(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
@@ -899,7 +896,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
+    isOpenWork,
     isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),

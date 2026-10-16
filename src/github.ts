@@ -9,6 +9,8 @@ export interface Checks { state: CheckState; /** Names of the checks that failed
 export interface MainLine { branch: string; commit: string; checks: Checks }
 export interface PullState {
   number: number; title: string; url: string; draft: boolean;
+  /** When GitHub opened it, ISO 8601. */
+  createdAt: string;
   /** The branch the PR merges into. */
   base: string;
   /** Its newest commit, the one the checks belong to. */
@@ -45,7 +47,7 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
   return `query($owner: String!, $name: String!${branch ? ", $ref: String!" : ""}) { repository(owner: $owner, name: $name) {
   ${main} { name target { ... on Commit { oid ${CHECKS} } } }
   pullRequests(states: OPEN, first: ${LIMIT}, orderBy: {field: CREATED_AT, direction: DESC}) { pageInfo { hasNextPage } nodes {
-    number title url isDraft baseRefName headRefOid mergeable commits(last: 1) { nodes { commit { ${CHECKS} } } } } }
+    number title url isDraft createdAt baseRefName headRefOid mergeable commits(last: 1) { nodes { commit { ${CHECKS} } } } } }
   ${named}
 } }`;
 }
@@ -66,7 +68,7 @@ const Response = z.object({
       pullRequests: z.object({
         pageInfo: z.object({ hasNextPage: z.boolean() }),
         nodes: z.array(z.object({
-          number: z.number(), title: z.string(), url: z.string(), isDraft: z.boolean(), baseRefName: z.string(), headRefOid: z.string(), mergeable: z.string(),
+          number: z.number(), title: z.string(), url: z.string(), isDraft: z.boolean(), createdAt: z.string(), baseRefName: z.string(), headRefOid: z.string(), mergeable: z.string(),
           commits: z.object({ nodes: z.array(z.object({ commit: z.object({ statusCheckRollup: Rollup }) })) }),
         })),
       }),
@@ -143,7 +145,7 @@ export function parseResponse(repo: string, text: string): RepoState {
     repo,
     ...(main?.target ? { main: { branch: main.name, commit: main.target.oid, checks: summarize(main.target.statusCheckRollup) } } : {}),
     pulls: pullRequests.nodes.map(pull => ({
-      number: pull.number, title: pull.title, url: pull.url, draft: pull.isDraft, base: pull.baseRefName, commit: pull.headRefOid,
+      number: pull.number, title: pull.title, url: pull.url, draft: pull.isDraft, createdAt: pull.createdAt, base: pull.baseRefName, commit: pull.headRefOid,
       mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
       checks: summarize(pull.commits.nodes[0]?.commit.statusCheckRollup),
     })),
