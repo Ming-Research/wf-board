@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Key, Time, Status, Priority, Link, Option, NOTE_KINDS, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, isArchitectSession } from "./model.ts";
+import { Key, Time, Status, Priority, Link, Option, NOTE_KINDS, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, isArchitectSession, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
 import * as q from "./query.ts";
+import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
+import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
 
@@ -101,6 +103,9 @@ const scope = {
   under: Key.describe("Restrict to this item and its descendants, including their cards and notes.").optional(),
 };
 const statuses = z.array(Status).describe("Include items with these derived statuses; for cards/notes this filters their owning item's status.").optional();
+/** A dispatch time: UTC to the minute (2026-10-16T09:02Z) or in full. */
+const dispatchTime = (description: string) => z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/).describe(description);
+const count = (description: string) => z.number().int().nonnegative().describe(description);
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
@@ -144,6 +149,17 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
   register("list", "Which items match structured filters? Browse compact rows in page sibling order, then use context on the relevant ids. Done and cancelled items require an explicit status filter.", {
     filters: z.object({ ...scope, status: statuses, priority: z.array(Priority).describe("Match displayed priority: a root stores it; other work inherits it from open dependents. Record-owned work inherits shared dependents' priority, or none without them.").optional(), needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
   }, a => { const x = read(); return q.list(x.snapshot, x.rules, a.filters).map(it => `${formatRow(it)}${it.needsOwner ? " · owner waiting" : ""}${it.checks.length ? ` · ${it.checks.length} checks` : ""}`).join("\n") || "No items."; });
+  register("dispatches", "How have the agent sessions the architect started done? Tallies the dispatch records of every project, by level, by role and by the item's tags: dispatches, how many are still running, how many ended in each result, the rework share, the mean kickbacks and rounds, and the cost; then how many ended with each failure signal. Every figure is added up from the rows, so rows: true lists the rows that add up to it. An item with several tags counts under each of them. since and until bound the start time (since inclusive, until exclusive).", {
+    filters: z.object({ id: Key.describe("Only the dispatches on this item.").optional(), role: z.enum(DISPATCH_ROLES).optional(), level: z.number().int().min(1).max(5).optional(), since: dispatchTime("Only dispatches started at or after this UTC time.").optional(), until: dispatchTime("Only dispatches started before this UTC time.").optional() }).strict().describe("Narrow the dispatches counted.").optional(),
+    rows: z.boolean().describe("Also list every counted dispatch, oldest start first.").optional(),
+  }, a => {
+    const f = a.filters ?? {}, snapshot = read().snapshot;
+    if (f.id !== undefined && !Object.hasOwn(snapshot.items, f.id)) throw new Error(`id ${f.id}: choose an existing item`);
+    // A minute-form time is made the full time it means, and a time that is no date is refused rather than ignored.
+    const utc = (field: string, text: string): string => normalizeTime(text) ?? ((): never => { throw new Error(`${field} ${text}: give a UTC time such as 2026-10-16T09:02Z`); })();
+    const filters: DispatchFilters = { ...f, since: f.since && utc("since", f.since), until: f.until && utc("until", f.until) };
+    return dispatchReport(dispatchRows(snapshot, filters), a.rows);
+  });
   register("notes", "What did the owner say? Find notes by state, kind, subtree or time, with project replies, before handling or replying to them.", {
     filters: z.object({ under: scope.under, state: z.array(z.enum(["draft", "sent", "done"])).describe("Include these note states; sent finds unhandled owner messages.").optional(), kind: z.array(z.enum(NOTE_KINDS)).describe("Include these kinds of owner note.").optional(), since: Time.describe("Notes sent, created or replied to at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Narrow owner notes to relevant messages.").optional(),
   }, a => q.notes(read().snapshot, a.filters).map(formatNote).join("\n") || "No notes.");
@@ -176,6 +192,8 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     if (res.rev === undefined) return lines.join("\n");
     const kind = Object.hasOwn(after.snapshot.items, res.id) ? "item" : Object.hasOwn(after.snapshot.decisions, res.id) ? "card" : "note";
     if (kind !== "note") lines.push(formatRow(q.row(after.snapshot, after.rules, kind, res.id)));
+    // The card writer sees its own option check now, not only on the next read.
+    if (kind === "card") for (const check of after.rules.cardChecks(res.id)) lines.push(`check: ${check.text}`);
     if (kind === "item") for (const a of after.rules.ancestors(res.id)) {
       const was = Object.hasOwn(before.snapshot.items, a) ? `${label(before.rules.statusOf(a))} ${before.rules.priorityOf(a)}` : "";
       const now = `${label(after.rules.statusOf(a))} ${after.rules.priorityOf(a)}`;
@@ -188,6 +206,12 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
   }, a => result(ops.createItem(a)), true);
   register("journal_entry", "Add one timed entry to today's architect journal (local date) and create that day's record under the architect notes if it does not exist yet. Only author Architect with session 架构师 may call it; the entry goes to the end of the record's text and marks it new for the owner.", { author, session, text: text("The entry text, possibly several lines; kept as written after the time stamp.") }, a => result(ops.journalEntry(a)), true);
   register("append_log", "Append historical detail without reading a revision. Appends are retried on concurrent writes and stamped by the server. Logs never mark an item new for the owner; use set_plan to keep progress current.", { author, session, id, text: text("Evidence, detail or stop reason to append; nonempty.") }, a => result(ops.appendLog(a)), true);
+  register("dispatch_start", "Record an agent session you started on an item, and log the start on the item. author is the item's project, session your own session; agent is the started session's name and agentId its full id, which names one dispatch on the whole board. role is 工程师 or 审查. effort is omitted when the model has none (Haiku). startedAt is UTC (2026-10-16T09:02Z or in full), now when omitted. did names, in one line, which rows of the item the session does. Call dispatch_finish when the session ends.", {
+    author, session, id: id.describe("The subtree root item you gave the session; the tag tally counts the dispatch under this item's tags."), role: z.enum(DISPATCH_ROLES), level: z.number().int().min(1).max(5).describe("The level the session was started at."), model: text("Model name as the level table writes it, e.g. Sonnet."), effort: text("Reasoning effort, e.g. xhigh; omit when the model has none.").optional(), agent: text("The started session's name."), agentId: Key.describe("The started session's full id."), worktree: text("The session's worktree path.").optional(), startedAt: dispatchTime("UTC start time; now when omitted.").optional(), did: text("Which rows of the item the session does, one line.").optional(),
+  }, a => result(ops.dispatchStart(a)), true);
+  register("dispatch_finish", "Complete a dispatch when its session ends: result, counts, usage, cost, failure signals and a note; logs the end on the item. result is 一次通过, 返工后通过, 换人 or 放弃. An engineer dispatch carries reports (how often it stopped to report) and kickbacks (how often you sent it back: a review's findings handed back to fix, or a rejected approach); a review dispatch carries rounds (how many review rounds it took: the first review and each re-review count one). A wrong-role count is refused. usage is the session's tokens summed from its transcript; cost is in US dollars, rounded to three decimals. signals lists the failure signals that occurred, none when omitted. waited is minutes spent waiting for the owner, the 14900K or a dependency. endedAt is UTC, now when omitted. An ended dispatch is changed only with replace: true.", {
+    author, session, id: id.describe("The item the dispatch was recorded on by dispatch_start."), agentId: Key.describe("The session's full id, as given to dispatch_start."), result: z.enum(DISPATCH_RESULTS), usage: DispatchUsage.describe("Tokens, summed over the session's transcript with duplicate messages removed: input, cacheWrite, cacheRead, output."), cost: z.number().nonnegative().describe("US dollars; more than three decimals are rounded."), reports: count("Engineer only: how often it stopped to report.").optional(), kickbacks: count("Engineer only: how often it was sent back.").optional(), rounds: count("Review only: how many review rounds it took; the first review and each re-review count one.").optional(), waited: count("Minutes spent waiting for the owner, the 14900K or a dependency.").optional(), signals: z.array(z.object({ kind: z.enum(DISPATCH_SIGNALS), note: text("One sentence on this occurrence.").optional() }).strict()).describe("The failure signals that occurred, each at most once; none when omitted.").optional(), note: text("One sentence: a sign the level was set too high or too low.").optional(), endedAt: dispatchTime("UTC end time; now when omitted.").optional(), replace: z.boolean().describe("Explicitly replace an ended dispatch's record.").optional(),
+  }, a => result(ops.dispatchFinish(a)), true);
   register("set_plan", "Edit the item's plan. Exactly one mode: rows replaces the whole plan, row upserts by stable id (new rows before the first acceptance step, or at the end when there is none), remove deletes an existing row. Dates are server-owned. Whole writes clear provisional and log the rewrite. Status, blocking and priority derive from the plan; open owned rows require move_item before removal for every author. Project writes cannot indirectly resume paused open work. after names earlier rows. Work plans require at least one acceptance step anywhere; records take none. Acceptance uses ordinary step after, waits and state rules. Identical results are no-ops; concurrent writes retry atomically.", {
     author, session, id, rows: PlanInput.describe("Whole ordered plan replacement; clears provisional and logs its rewrite.").optional(), row: PlanRowInput.describe("Complete row upsert; keeps an existing id in place or inserts before the first acceptance step (appends when there is none). Use rows to choose another position.").optional(), remove: Key.describe("Existing row id; later after users must be rewritten first.").optional(),
   }, a => result(ops.setPlan(a)), true);
