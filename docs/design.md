@@ -134,6 +134,60 @@ sends what this run left. A push still running when the signal arrives holds
 the write queue, so the local commit of the reading state waits behind it (item
 `push-blocks-writes`).
 
+**Time limits.** Every page request and every MCP tool call is timed at the one
+place each passes through: the request handler in `src/http.ts`, and `register` in
+`src/mcp.ts`, which every tool goes through. One line of the service log says what
+ran, how it ended and for how many milliseconds: `GET /api/snapshot 200 62 ms`,
+`tool context ok 12 ms` (`error` for a tool that failed). A request whose
+connection closed before the answer went out ends as `closed`, with the time it
+had run, so a page that gave up waiting is timed too. `SlowOps`
+(`src/slow-ops.ts`) does the timing, the logging and the telling.
+
+An operation has a class, and is slow when it takes more than its class's limit:
+
+| Class | Limit | Operations |
+|---|---|---|
+| read | 1 s | `GET /`, `/app.js`, `/health`, `/api/snapshot`; every tool that reads the board except those of the next row |
+| history | 10 s | `GET /api/unread`, `GET /api/step`; the tools `changes`, `history` and `diff`, which read the git history |
+| write | 2 s | `POST /api/notes`, `/api/draft`, `/api/send`, `/api/read`, `/api/wake`; `DELETE /api/notes/<id>`; every tool that changes the board |
+
+`POST /api/read`, the owner's mark-read key, has a limit of its own, 0.3 s, since
+the owner waits on it. The key that jumps to the next unread change sends no
+request, so it has none here. The event stream (`GET /api/events`) and the
+requests of the MCP transport (`/mcp`) last as long as their client does, and a
+tool call is timed as its tool: they are logged with their time and never held
+to a limit. The wake socket (an upgrade, not a request) is not timed. The log
+line of a request carries its path without the query, and the operation's name
+(what the one-hour rule and the push go by) drops ids: a path the board does not
+serve is counted under one name, `<method> (unknown route)`, and
+`DELETE /api/notes/<id>` under `DELETE /api/notes/:id`, so the names stay a small
+fixed set. The routes the board serves are that one list (`PAGE_ROUTES` in
+`src/slow-ops.ts`, the table above with its streams): the router answers 404 to a
+request that matches no row of it, so a route cannot be served without a class,
+and the classes are never out of step with the routes.
+
+An operation over its limit is logged on a `slow` warning line with a summary of
+its parameters, and told to the architect as a `slow-op` push (section 8): its
+name, its time, its limit and the summary. One operation is told once an hour;
+its later slow calls are only logged, so one slow stretch does not become a string
+of pushes. The hour is counted from the pushes the board keeps, so a restart does
+not tell again. The summary holds no body text: numbers and the names of things
+(an id, a project, a kind, a filter, a search query cut at 60 characters) are
+written out, any other string shows only as its length (`head(2100 chars)`), and
+a list as its count.
+
+The 1, 2 and 10 seconds are starting values, not measurements. After a day on the
+live board, the times in the log show which ordinary operations exceed them; each
+is then looked at to see whether it is slow, and the number changed or the
+slowness fixed. While a push to the remote holds the store's write queue (item
+`push-blocks-writes`), a write that waits behind it exceeds its limit; that is
+real slowness and is told.
+
+**Why at the entries.** The request handler and `register` are the places every
+operation already passes. A timer inside each tool or route would miss the next
+one someone adds. Logging alone leaves the architect to read the log; a timed
+probe of `/health` from outside cannot say which operation was slow.
+
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
@@ -1796,7 +1850,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Ten kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eleven kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1808,6 +1862,8 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+- a page request or tool call that took longer than its time limit (`slow-op`,
+  section 4, Time limits), once per operation per hour;
 - what the look at the Actions billing finds (Watching Actions usage, below):
   the month's use reaching a level, a day of heavy use, or the included minutes
   all used with a budget of 0 (`actions-usage`);
@@ -1817,7 +1873,7 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
 Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: a slow board operation (item slow-op-alerts).
+table and one row below.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1849,6 +1905,7 @@ the forms the server sends:
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
+| `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
