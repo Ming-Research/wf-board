@@ -5,12 +5,16 @@ on:
     branches: [e2e-git-tmp-flake-study]
 jobs:
   probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        packer: [on, off, on2, off2]
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - run: git --version
-      - name: Mechanism, git alone, with the repack of the automatic maintenance
-        run: bash scripts/tmp-flake-mechanism.sh 240 on
-      - name: Control, the same writers without the repack loop
-        run: bash scripts/tmp-flake-mechanism.sh 120 off
+      - name: Four writers, with or without the repack loop of the automatic maintenance
+        run: bash scripts/tmp-flake-mechanism.sh 600 "${MODE%2}"
+        env:
+          MODE: ${{ matrix.packer }}
