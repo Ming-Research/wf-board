@@ -2049,9 +2049,12 @@ at that look; an unknown repository counts. Minutes are included minutes: a
 Windows minute is 2 and a macOS minute is 10. The runner names are those of the
 organization's own report ("Actions Linux", "Actions Windows", "Actions macOS 3-core");
 GitHub's billing page names the same runners but states no multipliers, only per-minute
-prices (Linux $0.006, Windows $0.010, macOS $0.062), so the 2 and 10, taken from GitHub's
-earlier pages and near the price ratios 1.7 and 10.3, are provisional until a private
-repository runs Windows or macOS and the line can be checked against the billing page.
+prices (Linux $0.006, Windows $0.010, macOS $0.062). The 2 and 10 come from GitHub's earlier
+billing description, are not on today's page and were not checked against a bill: they are
+provisional. No private repository runs Windows or macOS now, so they change no figure, and
+counting too many is the safer error (an early push, not a missed one). When a private
+repository first runs Windows or macOS, the line is checked against that month's
+included-usage figure on the billing page and the 2 and 10 are replaced by what it shows.
 Storage uses no minutes. An Actions minutes row with a name not in that list (a larger or
 arm runner, say) in a repository that is not public is not guessed at: it is left out of
 the account and named in the line. A report revised downwards adds nothing. The account starts

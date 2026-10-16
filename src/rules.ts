@@ -73,8 +73,11 @@ export const USAGE_DAY_LIMIT = 300;
  * organization's own report, read on 2026-10-16: it holds "Actions Linux", "Actions Windows" and "Actions macOS 3-core" rows. GitHub's
  * page on how Actions is billed (docs.github.com/en/billing/concepts/product-billing/github-actions, "baseline minute costs")
  * names the same runners and prices them per minute: Linux 2-core $0.006, Windows 2-core $0.010, macOS 3-core or 4-core $0.062.
- * It states no multipliers. The 2 and 10 are those of GitHub's earlier billing pages, close to the price ratios (1.7 and 10.3);
- * provisional, as no private repository here runs Windows or macOS: check the line against the billing page when one does.
+ * It states no multipliers. Source of the 2 and 10: GitHub's earlier billing description (Windows minutes count twice, macOS
+ * ten times against the included minutes), not found on today's page and not checked against a bill. Provisional: no private
+ * repository here runs Windows or macOS, so they change no figure today, and counting too many is the safer error (an early
+ * push, not a missed one). When a private repository first runs Windows or macOS, check the line against that month's
+ * included-usage figure on the billing page and replace the 2 and 10 by what that shows.
  * A sku not listed is not guessed at: the account leaves it out and `unknownSkus` names it. */
 const USAGE_MULTIPLIER: ReadonlyMap<string, number> = new Map([["actions linux", 1], ["actions windows", 2], ["actions macos 3-core", 10]]);
 const multiplierOf = (sku: string): number | undefined => USAGE_MULTIPLIER.get(sku.toLowerCase());
