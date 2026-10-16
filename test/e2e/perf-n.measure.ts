@@ -31,9 +31,9 @@ const { values: args } = parseArgs({ options: {
   profile: { type: "string", default: "30" }, reps: { type: "string", default: "2" }, writes: { type: "string", default: "0" },
   open: { type: "string", default: "none" }, variants: { type: "string", default: "head" }, commits: { type: "string", default: "" },
   out: { type: "string", default: "perf-out" }, label: { type: "string", default: "run" }, "no-profile": { type: "boolean", default: false },
-  mark: { type: "boolean", default: false }, history: { type: "string", default: "0" },
+  mark: { type: "boolean", default: false }, history: { type: "string", default: "0" }, "head-kb": { type: "string", default: "0" }, load: { type: "string", default: "0" },
 } });
-const HISTORY = Number(args.history), SCALE = Number(args.scale), EXTRA = Number(args.extra), PRESSES = Number(args.presses), PROFILE = Number(args.profile), REPS = Number(args.reps), WRITES = Number(args.writes);
+const HEAD_KB = Number(args["head-kb"]), LOAD = Number(args.load), HISTORY = Number(args.history), SCALE = Number(args.scale), EXTRA = Number(args.extra), PRESSES = Number(args.presses), PROFILE = Number(args.profile), REPS = Number(args.reps), WRITES = Number(args.writes);
 const serverReads: number[] = [];
 const cleanups: Array<() => unknown> = [];
 const t = { after: (fn: () => unknown) => { cleanups.push(fn); } };
@@ -48,6 +48,16 @@ async function makeBoard(): Promise<BoardServer & { servers: Server[] }> {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-perf-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(1, SCALE);
+  // The live board's snapshot is about 15 MB for 1,600 items; the generated heads are short, so pad them to the same weight.
+  if (HEAD_KB > 0) {
+    const sentence = "解释器通过长脚本时，检查器先把计划里每一行的状态算出来，再和上一次的结果比对，只重画变了的部分。";
+    for (const batch of gen.batches) for (const put of batch.puts) if (put.kind === "item") {
+      const doc = put.doc as { head?: string };
+      let head = doc.head ?? "", k = 0;
+      while (head.length * 3 < HEAD_KB * 1024) head += `\n\n**第 ${++k} 段**：${sentence}${sentence}\n- 要点一：${sentence}\n- 要点二：${sentence}`;
+      doc.head = head;
+    }
+  }
   const t0 = Date.now();
   const { store } = await seedBoard(dir, gen);
   const snap0 = store.snapshot(), r0 = rules(snap0);
@@ -81,7 +91,7 @@ async function makeBoard(): Promise<BoardServer & { servers: Server[] }> {
   }
   const snap = store.snapshot();
   const board = { url: "", store, gen, dir, servers: [] as Server[] };
-  out(`BOARD scale=${SCALE} items=${Object.keys(snap.items).length} cards=${Object.keys(snap.decisions).length} notes=${Object.keys(snap.notes).length} extraCommits=${EXTRA} seeded in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  out(`BOARD scale=${SCALE} headKb=${HEAD_KB} snapshotMB=${(JSON.stringify(snap).length / 1e6).toFixed(1)} items=${Object.keys(snap.items).length} cards=${Object.keys(snap.decisions).length} notes=${Object.keys(snap.notes).length} extraCommits=${EXTRA} seeded in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return board;
 }
 /** An HTTP server for the board serving the page from `webDir`; one board can be served by several pages. */
@@ -106,6 +116,14 @@ async function pageAt(commit: string): Promise<string> {
   await build({ entryPoints: [join(dir, "web/app.ts")], bundle: true, format: "esm", target: "es2022", outfile: join(dir, "web/dist/app.js"), logLevel: "silent" });
   return join(dir, "web");
 }
+
+import type { Revert } from "./harness.ts";
+const KEEP_EDITS: Revert[] = [
+  { file: "web/app.ts", edit: "scheduleRender keeps rules", find: "    invalidate(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;", replace: "    memo = {}; scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;" },
+  { file: "web/app.ts", edit: "renderNow keeps rules", find: "function renderNow(...scope:string[]) { invalidate();", replace: "function renderNow(...scope:string[]) { memo = {};" },
+  { file: "web/app.ts", edit: "the minute tick still refreshes", find: "setInterval(() => { rulePresentationDirty = true;", replace: "setInterval(() => { invalidate(); rulePresentationDirty = true;" },
+];
+const FILTER_EDIT: Revert = { file: "web/app.ts", edit: "no filter row redraw", find: "if (filters) filters.replaceWith(filterRow(g.name));", replace: "if (filters && scope.has(\"all\")) filters.replaceWith(filterRow(g.name));" };
 
 const INIT = `(() => {
   window.__cnt = { inv: 0, render: 0, scopes: [] };
@@ -232,11 +250,19 @@ async function profiled(browser: Browser, board: BoardServer, url: string, label
 }
 
 
+/** Other clients of the daemon, as sessions and open pages are: LOAD loops that fetch the whole board and the unread list. */
+function startLoad(url: string) {
+  let stopped = false;
+  for (let k = 0; k < LOAD; k++) void (async () => { while (!stopped) { try { await (await fetch(url + "/api/snapshot")).arrayBuffer(); await (await fetch(url + "/api/unread")).arrayBuffer(); } catch { /* a closing server */ } await sleep(150); } })();
+  return () => { stopped = true; };
+}
 /** The owner's reading loop: n to a stop, then m to mark it read, each waited out; what m sets going in the page and on the server. */
 async function marking(browser: Browser, board: BoardServer, url: string, variant: string) {
   const { bp, cdp } = await openPage(browser, board, url);
   const writer = WRITES > 0 ? startWriter(board, WRITES) : null;
   serverReads.length = 0;
+  const stopLoad = startLoad(url);
+  if (!args["no-profile"]) { await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 200 }); await cdp.send("Profiler.start"); }
   const cycles: Array<{ n: Press; m: Press; reqs: Array<[string, string, number, number]> }> = [];
   for (let k = 0; k < Math.floor(PRESSES / 2); k++) {
     const n = await pressOnce(bp, cdp, "n");
@@ -247,6 +273,8 @@ async function marking(browser: Browser, board: BoardServer, url: string, varian
     cycles.push({ n, m, reqs });
   }
   if (writer) await writer.stop();
+  stopLoad();
+  if (!args["no-profile"]) { const { profile } = await cdp.send("Profiler.stop") as { profile: CpuProfile }; summarize(`${args.label} page, per cycle (n then m)`, profile, cycles.length); }
   const reads = [...serverReads];
   await bp.context.close();
   const snap = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/snapshot")), unread = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/unread")), read = cycles.flatMap(c => c.reqs.filter(r => r[0] === "/api/read"));
@@ -268,15 +296,14 @@ try {
     if (v === "head") pages.set(v, join(ROOT, "web"));
     else if (v === "noagents") pages.set(v, await variantWeb(t, [{ file: "web/app.ts", edit: "no agent list", find: "function renderAgents() {\n    const host = get(\"agents\"); if (!host) return;", replace: "function renderAgents() { return;\n    const host = get(\"agents\"); if (!host) return;" }]));
     else if (v === "count") pages.set(v, await variantWeb(t, [
-      { file: "web/app.ts", edit: "count invalidate", find: "function invalidate() { memo = {};", replace: "function invalidate() { (window as any).__cnt.inv++; memo = {};" },
-      { file: "web/app.ts", edit: "time renderPage", find: "function renderPage(scope:Set<string>) {", replace: "function renderPage(scope:Set<string>) { const __t = performance.now(); try { renderPageInner(scope); } finally { const c = (window as any).__cnt; c.render++; c.scopes.push([...scope].slice(0, 4).join(\",\") + \" \" + (performance.now() - __t).toFixed(0) + \"ms\"); } }\n  function renderPageInner(scope:Set<string>) {" },
+      { file: "web/app.ts", edit: "count invalidate", find: "function invalidate() { memo = {};", replace: "function invalidate() { ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }).inv++; memo = {};" },
+      { file: "web/app.ts", edit: "time renderPage", find: "function renderPage(scope:Set<string>) {", replace: "function renderPage(scope:Set<string>) { const __t = performance.now(); try { renderPageInner(scope); } finally { const c = ((window as any).__cnt ??= { inv: 0, render: 0, scopes: [] }); c.render++; c.scopes.push([...scope].slice(0, 4).join(\",\") + \" \" + (performance.now() - __t).toFixed(0) + \"ms\"); } }\n  function renderPageInner(scope:Set<string>) {" },
     ]));
     // The falsifier for the suspected cause: a render that changes only the view keeps the derived rules of the unchanged board.
-    else if (v === "keeprules") pages.set(v, await variantWeb(t, [
-      { file: "web/app.ts", edit: "scheduleRender keeps rules", find: "    invalidate(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;", replace: "    memo = {}; scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;" },
-      { file: "web/app.ts", edit: "renderNow keeps rules", find: "function renderNow(...scope:string[]) { invalidate();", replace: "function renderNow(...scope:string[]) { memo = {};" },
-      { file: "web/app.ts", edit: "the minute tick still refreshes", find: "setInterval(() => { rulePresentationDirty = true;", replace: "setInterval(() => { invalidate(); rulePresentationDirty = true;" },
-    ]));
+    else if (v === "keeprules") pages.set(v, await variantWeb(t, KEEP_EDITS));
+    // The filter counts of every project are not redrawn at each render (their upper bound: never outside the first draw).
+    else if (v === "nofilter") pages.set(v, await variantWeb(t, [FILTER_EDIT]));
+    else if (v === "keepnofilter") pages.set(v, await variantWeb(t, [...KEEP_EDITS, FILTER_EDIT]));
     else throw new Error("unknown variant " + v);
   }
   for (const c of args.commits!.split(",").filter(Boolean)) pages.set(c, await pageAt(c));

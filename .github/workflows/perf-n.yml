@@ -110,6 +110,7 @@ jobs:
           node test/e2e/perf-n.measure.ts --label history --reps 2 --no-profile --presses 25 --variants head
           --commits b1e6ffb,6b25705,654b785,af9ded6,f1aedf6,6a79bbe,ec093d8,b233ee7,8cf371f,bdac0da,1dfbbc3,be2f7ef,bf3151a,219bd8b,7b3a104,90b6016
   variants:
+    if: contains(github.event.head_commit.message, 'run-all')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -144,6 +145,7 @@ jobs:
           name: perf-n-variants
           path: perf-out
   mark:
+    if: contains(github.event.head_commit.message, 'run-all')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -180,3 +182,102 @@ jobs:
         with:
           name: perf-n-mark
           path: perf-out
+  variants2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - name: quiet board at the live board's weight, five variants
+        run: node test/e2e/perf-n.measure.ts --label q2 --head-kb 8 --variants head,count,keeprules,nofilter,keepnofilter --reps 2 --no-profile
+      - name: profiles of the page and of the page with the rules kept
+        if: always()
+        run: node test/e2e/perf-n.measure.ts --label p2 --head-kb 8 --variants head,keeprules --reps 1 --presses 30
+      - name: sessions writing 3 times a second, five variants
+        if: always()
+        run: node test/e2e/perf-n.measure.ts --label w2 --head-kb 8 --writes 3 --variants head,keeprules,keepnofilter --reps 2 --no-profile
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-n-variants2
+          path: perf-out
+  mark2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - name: n then m at the live board's weight, 3000 earlier commits, sessions writing and other clients loading
+        run: node test/e2e/perf-n.measure.ts --mark --label m-live --head-kb 8 --history 3000 --writes 3 --load 4 --variants head --presses 40
+      - name: the same with the rules kept
+        if: always()
+        run: node test/e2e/perf-n.measure.ts --mark --label m-live-keep --head-kb 8 --history 3000 --writes 3 --load 4 --variants keeprules --presses 40 --no-profile
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-n-mark2
+          path: perf-out
+  small:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - name: the size the e2e tests use, and the next size up
+        run: |
+          node test/e2e/perf-n.measure.ts --label scale1 --scale 1 --extra 60 --head-kb 8 --reps 2 --no-profile --presses 30
+          node test/e2e/perf-n.measure.ts --label scale3 --scale 3 --extra 120 --head-kb 8 --reps 2 --no-profile --presses 30
