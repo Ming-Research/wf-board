@@ -143,14 +143,18 @@ const WITNESSES: Witness[] = [
       await bp.settle();
       await bp.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
       if (await bp.selected() !== null) return ["witness setup: an item is already selected"];
+      // The unfolded list is taller than the screen: scroll its first item row near the top (a little below it, so rounding cannot push it out of range), so that the tree's first row is on screen too.
+      const shown = await bp.page.evaluate(() => {
+        const pane = document.getElementById("page-left")!, row = document.querySelector("#agents .item")!, tree = document.querySelector("#areas .item")!;
+        pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - 24;
+        const p = pane.getBoundingClientRect(), t = tree.getBoundingClientRect();
+        return t.top >= p.top && t.top < p.bottom;
+      });
+      if (!shown) return ["witness setup: no tree row is on screen with the list's row near the top"];
       await bp.page.keyboard.press("c");
       await bp.settle();
       const sel = await bp.selected();
-      const geo = await bp.page.evaluate(() => {
-        const pane = document.getElementById("page-left")!.getBoundingClientRect(), top = (e: Element | null) => e ? Math.round(e.getBoundingClientRect().top) : null;
-        return { pane: [Math.round(pane.top), Math.round(pane.bottom)], agentsBottom: Math.round(document.getElementById("agents")!.getBoundingClientRect().bottom), firstTree: top(document.querySelector("#areas .item")), listRows: document.querySelectorAll("#agents .item").length, active: document.activeElement?.tagName, detail: !!document.querySelector("#item-detail > .item") };
-      });
-      return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree ${JSON.stringify(geo)}`];
+      return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
     },
   },
 ];
