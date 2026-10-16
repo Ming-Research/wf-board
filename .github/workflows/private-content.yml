@@ -9,7 +9,7 @@ on:
     # edited: a changed title, body or base branch is checked again.
     types: [opened, synchronize, reopened, edited]
 concurrency:
-  # A push to main is checked from the commit before it, so a run for a push is never replaced by the next one:
+  # A push is checked from the commit before it, so a run for a push is never replaced by the next one:
   # only a pull request shares its group between runs.
   group: private-content-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
