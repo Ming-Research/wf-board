@@ -1,7 +1,13 @@
 name: ci
 on:
+  # Pushes run only on the main line; a pull request branch is checked once, by its pull_request run.
   push:
+    branches: [claude/first-board]
   pull_request:
+# A newer push to the same pull request cancels the run still going; the main line always finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/claude/first-board' }}
 jobs:
   test:
     runs-on: ubuntu-latest
