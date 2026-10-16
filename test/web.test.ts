@@ -3974,3 +3974,16 @@ test("tag chips are one teal with text readable at 4.5:1 in the light theme and 
     assert.ok((hi! + 0.05) / (lo! + 0.05) >= 4.5, `tag text ${ink} on ${bg} is below 4.5:1`);
   }
 });
+
+test("an open card with two options shows the option check on the card and its item; three options show none", async () => {
+  const s = snapshot(), frames = new Frames();
+  s.decisions.short = card();
+  s.decisions.full = {...card(), options: [...card().options, {key:"C",text:"以后再说"}]};
+  const p = await page(s, [], null, undefined, {frames}); await expand(p); await p.flush();
+  const shown = (id: string) => markup(p.all().find(e => e.id === "q-" + id)!);
+  const warning = "决策卡只有 2 个选项";
+  assert.match(shown("short"), /需核对：决策卡只有 2 个选项，至少要给三个都走得通的做法/, "the open two-option card shows the check");
+  assert.ok(!shown("full").includes(warning), "three options show no check");
+  assert.match(markup(item(p)), /需核对：决策卡只有 2 个选项/, "the item lists the check under its body");
+  assert.deepEqual(rowOf(p).querySelectorAll(".checktag").map(e => e.innerHTML).filter(label => label === "选项不足"), ["选项不足"], "the item row carries the tag");
+});

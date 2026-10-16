@@ -21,8 +21,8 @@ export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | und
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
 }
 
-/** The one rule that log entries never count as owner-unread: owner-facing item comparisons drop the log first. */
-export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { log: _log, ...rest } = doc as T & { log?: unknown }; return rest; }
+/** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
+export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
  * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
  * first rating left out of `after`; any other pair comes back as it is. */
@@ -88,6 +88,9 @@ export const CHECK_LABEL = "需核对";
 export const STALLED_LABEL = "无人推进";
 /** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
 export const WAITS_TEXT_LABEL = "在等文字";
+/** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
+export const CARD_MIN_OPTIONS = 3;
+export const OPTIONS_LABEL = "选项不足";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
@@ -133,6 +136,8 @@ export interface Rules {
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
+  /** The checks of one open decision card (too few options); the item of the card lists them too. */
+  cardChecks(key: string): Check[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
   /** A waiting card that names the work stopped until the owner rules (its `blocks`). */
@@ -786,6 +791,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return total + Math.max(0, end - from) - paused;
     }, 0) >= STALLED_AFTER_MS;
   }
+  function cardChecks(key: string): Check[] {
+    return cached("cardChecks", key, () => {
+      const d = index().decisions.get(key);
+      if (!d || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
+      return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
+    });
+  }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
@@ -801,6 +813,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
+      for (const card of cardsOf(id)) for (const check of cardChecks(card)) out.push({ ...check, target: { kind: "card", id: card } });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       // Titles of closed items are not revised, so only open items and records are checked.
       const titleLength = [...it.title.replace(/\s/g, "")].length;
@@ -841,7 +854,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    cardsOf: id => cardsOf(id).slice(), cardChecks: key => cardChecks(key).map(c => ({ ...c })), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
     checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),

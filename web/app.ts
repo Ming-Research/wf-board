@@ -2109,6 +2109,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (top.children.length) c.appendChild(top);
     if (closed && d.ruling) c.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + linkTerms(markedBlocks(before?.ruling ?? (before ? "" : undefined),d.ruling || ""),terms) + (d.ruledAt ? '<p>' + esc(day(d.ruledAt)) + '</p>' : '')));
     if (d.background) c.appendChild(el("div", "rich", '<div class="sub">背景</div>' + linkTerms(markedBlocks(before?.background,d.background || ""),terms)));
+    derived.cardChecks(d.id).forEach(k => c.appendChild(el("div", "checks", "需核对：" + esc(k.text))));
     const chosen = choiceOf(d);
     if (d.options.length) {
       c.appendChild(el("p", null, '<span class="lbl">选项：</span>'));

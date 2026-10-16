@@ -76,3 +76,14 @@ test("write_card stores blocks, a revision can keep, replace or clear it, and co
   const tool = (await client.listTools()).tools.find(x => x.name === "write_card")!;
   assert.match((tool.inputSchema.properties!.blocks as { description: string }).description, /Set it only when named work/);
 });
+
+test("write_card replies with the option check of a card that has fewer than three options", async t => {
+  const { client, text } = await mcp(t);
+  const two = [{ key: "A", text: "是" }, { key: "B", text: "否" }];
+  const short = await client.callTool({ name: "write_card", arguments: { ...cardArgs, options: two } });
+  assert.equal(short.isError, undefined, text(short));
+  assert.match(text(short), /\ncheck: 决策卡只有 2 个选项，至少要给三个都走得通的做法$/, "the writer sees the check in the reply");
+  const full = await client.callTool({ name: "write_card", arguments: { ...cardArgs, key: "full", options: [...two, { key: "C", text: "以后" }] } });
+  assert.equal(full.isError, undefined, text(full));
+  assert.doesNotMatch(text(full), /check: /, "three options get no check");
+});

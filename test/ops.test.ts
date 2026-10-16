@@ -1109,6 +1109,8 @@ test("every write under the retired author 总管 is refused and changes nothing
     createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass", priority: "P1" }),
     appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),
     journalEntry: () => op.journalEntry({ author: retired, text: "Entry" }),
+    dispatchStart: () => op.dispatchStart({ author: retired, id: "a", role: "工程师", level: 1, model: "Haiku", agent: "worker", agentId: "agent-0001" }),
+    dispatchFinish: () => op.dispatchFinish({ author: retired, id: "a", agentId: "agent-0001", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 0, reports: 0, kickbacks: 0 }),
     setPlan: () => op.setPlan({ author: retired, id: "a", row: { id: "work", text: "Work", state: "doing" } }),
     setTargets: () => op.setTargets({ author: retired, id: "a", target: goalNumbers }),
     updateItem: () => op.updateItem({ author: retired, id: "a", rev: before.items.a!.rev, title: "Renamed" }),
