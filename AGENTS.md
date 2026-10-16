@@ -20,6 +20,9 @@ matches what the artifact board offered.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
   runs git.
+- `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
+  metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
+  line and the start-up step timings.
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   priority from open work plans, parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner

@@ -94,7 +94,11 @@ hidden in a database.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit. `GET /health` reports its state; the page shows a banner when the server
-does not answer, and every MCP tool error names the cause.
+does not answer, and every MCP tool error names the cause. Every line of the
+service log carries its time, and a start logs how long each step took (reading
+the documents, checking them against the repository, reading the startup cache
+and the commits after it, replaying them) and the time from the start of the
+process to listening.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
@@ -426,11 +430,26 @@ log:
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
   touch both items; later notes on deleted cards retain their last known
-  item. No extra board data file is stored. A disposable marker in git metadata
-  records the checked HEAD and first pause commit (or that none existed).
-  Unchanged history needs no pickaxe; fast-forwards scan only new commits.
-  Missing, corrupt or rewound cache state triggers one historical scan, so
-  clones and resumed items retain restart correctness. Historical pause reads
+  item. No extra board data file is stored. A start does not derive the index
+  from the whole history: a disposable startup cache in git's metadata
+  directory (`wf-board-startup-cache.json`) holds the whole index as of one
+  commit, with where each card last was and the item projections the pause
+  replay continues from (none while no commit had set a pause). A start reads
+  it and replays only the commits after it, with the same code that scans the
+  history, so its time grows with the commits since the cache, not with the
+  history. The cache is trusted only when it has exactly the current format
+  (every field of the index present and none unknown: a field added to the
+  index must be added to the cache, and does not compile until it is), is of a
+  commit the head descends from, and, when it is of the head itself, agrees
+  with the documents on whether a pause was ever set. Otherwise (missing,
+  damaged, another version, a history rewound or gone another way) the start
+  scans the whole history, as the first start after this cache was introduced
+  does, and writes the cache at once, so clones and resumed items retain
+  restart correctness. A start that only replayed commits leaves the write to
+  the timer; afterwards a commit schedules a write at most every two minutes.
+  The daemon writes none at shutdown, which must fit the time launchd gives.
+  Changing what the cache holds, or how the replay derives it, changes
+  `STARTUP_CACHE_VERSION`; the next start is then a scan. Historical pause reads
   extract only project, record, pause and owned-target metadata rather than
   validating against today's write schema. Unreadable blobs are logged and
   skipped; unknown fields and malformed plan entries do not prevent startup.
