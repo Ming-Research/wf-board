@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -591,63 +591,6 @@ test("history queries honor an explicit upper revision and reject an unknown bou
   assert.equal((await store.log())[0]!.commit, second.commit, "the default still follows HEAD");
 });
 
-test("startup renames coordinator identity once without changing free text", async t => {
-  const { store, dir } = await setup(t);
-  const prose = "跨项目、跨项目依赖和前缀跨项目后缀都保留。\n第二行。";
-  const seed = await store.commit({ author: "跨项目", message: "Seed legacy coordinator", board: {
-    title: prose, eyebrow: prose, goal: prose, projects: [{ name: "跨项目", repo: "Org/Board" }, { name: "Other" }],
-  }, puts: [
-    put("area", { ...item(prose, prose), group: "跨项目", data: prose, ask: { text: prose }, log: [{ at, by: "跨项目", text: prose }, { at, by: "前缀跨项目后缀", text: prose }] }),
-    put("request", { ...item(prose, prose), group: "Other", request: { by: "跨项目", at }, log: [{ at, by: "跨项目", text: prose }] }),
-    { kind: "decision", id: "card", expectRev: null, doc: { item: "area", question: prose, background: prose, options: [{ key: "A", text: prose }], status: "ruled", ruling: prose, updated: at } },
-    { kind: "note", id: "reply", expectRev: null, doc: { target: "q:card", kind: "comment", text: prose, reply: prose, repliedBy: "跨项目", repliedAt: at, at, state: "done" } },
-    { kind: "glossary", id: "跨项目", expectRev: null, doc: { terms: [{ term: "跨项目依赖", definition: prose, by: "跨项目", updated: at }] } },
-    { kind: "glossary", id: "Other", expectRev: null, doc: { terms: [{ term: "跨项目", definition: prose, by: "跨项目", updated: at }] } },
-  ] });
-  const before = store.snapshot();
-  const migrated = await Store.open(dir), after = migrated.snapshot();
-  const expected = structuredClone(before);
-  expected.board.projects[0]!.name = "总管";
-  expected.items.area!.group = "总管";
-  expected.items.area!.log[0]!.by = "总管";
-  expected.items.area!.rev++;
-  expected.items.request!.request!.by = "总管";
-  expected.items.request!.log[0]!.by = "总管";
-  expected.items.request!.rev++;
-  expected.notes.reply!.repliedBy = "总管";
-  expected.notes.reply!.rev++;
-  expected.glossaries["总管"] = expected.glossaries["跨项目"]!;
-  delete expected.glossaries["跨项目"];
-  expected.glossaries["总管"]!.terms[0]!.by = "总管";
-  expected.glossaries.Other!.terms[0]!.by = "总管";
-  expected.glossaries.Other!.rev++;
-  expected.head = after.head;
-  expected.activity = after.activity;
-  assert.deepEqual(after, expected, "all prose and unrelated identity strings remain byte-for-byte identical");
-  const commits = await migrated.log({ since: seed.commit });
-  assert.equal(commits.length, 1);
-  assert.equal(commits[0]!.author, "总管");
-  assert.equal(commits[0]!.message, "Rename coordinator project 跨项目 to 总管");
-  assert.ok(commits[0]!.files.includes("glossaries/跨项目.yaml"));
-  assert.ok(commits[0]!.files.includes("glossaries/总管.yaml"));
-  await assert.rejects(readFile(join(dir, "glossaries/跨项目.yaml")), { code: "ENOENT" });
-  assert.equal((await migrated.show("item", "area", seed.commit) as { group: string }).group, "跨项目", "history is not rewritten");
-  assert.deepEqual((await Store.open(dir)).snapshot(), after, "reopening performs no second migration");
-  assert.equal(await git(dir, "rev-parse", "HEAD"), after.head);
-});
-
-test("startup coordinator rename refuses destination project and glossary collisions without changing data", async t => {
-  for (const collision of ["project", "glossary"] as const) {
-    const { store, dir } = await setup(t);
-    await store.commit({ author: "Fixture", message: "Conflicting coordinator", board: { title: "Board", projects: [{ name: "跨项目" }, ...(collision === "project" ? [{ name: "总管" }] : [])] }, puts: collision === "glossary" ? [{ kind: "glossary", id: "总管", expectRev: null, doc: { terms: [] } }] : [] });
-    const before = store.snapshot(), bytes = await readFile(join(dir, "board.yaml"));
-    await assert.rejects(Store.open(dir), /Cannot rename coordinator project 跨项目 to 总管: destination project or glossary already exists/);
-    assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
-    assert.deepEqual(await readFile(join(dir, "board.yaml")), bytes);
-    assert.equal(await git(dir, "status", "--porcelain"), "");
-  }
-});
-
 test("activity retains every content revision and deletion across restart, but excludes owner reading writes", async t => {
   const { store, dir } = await setup(t);
   const initialCount = store.snapshot().activity!.writes.length;
@@ -995,14 +938,6 @@ test("live pause indexing accepts conversion inputs with no plan and no pause wi
   assert.deepEqual(activity, { writes: [at], items: { work: at } });
 });
 
-test("startup leaves identity references alone when no legacy coordinator project is configured", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Historical authors without legacy project", puts: [put("a", { ...item(), group: "Unconfigured", log: [{ at, by: "跨项目", text: "Historical author" }] })] });
-  const before = store.snapshot();
-  assert.deepEqual((await Store.open(dir)).snapshot(), before);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), before.head);
-});
-
 const card = (item: string, fields: object = {}) => ({ item, question: "Choose?", background: "Evidence", options: [{ key: "A", text: "A" }], status: "open", updated: at, ...fields });
 const putCard = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "decision" as const, id, doc, expectRev });
 
@@ -1111,68 +1046,17 @@ test("localFile gives a path in the data directory that git leaves out, once, an
   assert.equal((await Store.open(dir)).snapshot().head, store.snapshot().head, "a reopened store accepts the file beside a clean board");
 });
 
-test("the notices of the retired 要你知道 list are deleted once, in one commit that history and active time ignore", async t => {
+test("the commit that deleted the retired notices does not count as active time", async t => {
   const { dir, store } = await setup(t);
   await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
   await mkdir(join(dir, "notices"));
   for (const id of ["one", "two"]) await writeFile(join(dir, `notices/${id}.yaml`), `text: 通知 ${id}\nauthor: Whitefoot\nat: ${at}\nread: ${at}\nrev: 1\n`);
   await git(dir, "add", "notices"); await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "post_notice one");
-  const before = store.snapshot().items;
-  const reopened = await Store.open(dir), head = await git(dir, "rev-parse", "HEAD");
+  await git(dir, "rm", "-q", "-r", "--", "notices");
+  await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", RETIRE_NOTICES_MESSAGE);
   assert.equal(await git(dir, "log", "-1", "--format=%s"), RETIRE_NOTICES_MESSAGE);
-  assert.equal(await git(dir, "log", "-1", "--format=%an"), "wf-board");
-  assert.equal(await git(dir, "show", "--name-status", "--format=", "HEAD"), "D\tnotices/one.yaml\nD\tnotices/two.yaml", "only the notices go");
-  assert.equal(await git(dir, "status", "--porcelain"), "");
-  await assert.rejects(readFile(join(dir, "notices/one.yaml")), /ENOENT/);
-  assert.match(await git(dir, "log", "--format=%s", "--", "notices/one.yaml"), /post_notice one/, "history keeps them");
-  const snapshot = reopened.snapshot();
-  assert.equal(snapshot.head, head);
-  assert.ok(!("notices" in snapshot), "the board has no notices any more");
-  assert.deepEqual(snapshot.items, before);
-  // Active time: the notice commit still counts as a write, the deletion does not.
+  const snapshot = (await Store.open(dir)).snapshot();
+  // The notice commit still counts as a write; the deletion does not.
   const contentCommits = Number(await git(dir, "rev-list", "--count", "HEAD~1", "--", "board.yaml", "items", "decisions", "notes", "notices", "glossaries"));
   assert.equal(snapshot.activity!.writes.length, contentCommits);
-  // A second start finds nothing to do.
-  assert.equal((await Store.open(dir)).snapshot().head, head);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), head);
-});
-
-test("notices are left alone, and the start goes on after a line in the log, when one is unread, a file is not committed or the deletion fails", async t => {
-  const logged: string[] = [], original = console.error;
-  console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
-  t.after(() => { console.error = original; });
-  const notice = (dir: string, id: string, read: boolean) => writeFile(join(dir, `notices/${id}.yaml`), `text: 通知 ${id}\nauthor: Whitefoot\nat: ${at}\n${read ? `read: ${at}\n` : ""}rev: 1\n`);
-  async function withNotices(files: Record<string, boolean>) {
-    const { dir, store } = await setup(t);
-    await mkdir(join(dir, "notices"));
-    for (const [id, read] of Object.entries(files)) await notice(dir, id, read);
-    await git(dir, "add", "notices"); await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "post_notice");
-    return { dir, head: await git(dir, "rev-parse", "HEAD"), store };
-  }
-  // One notice the owner has not read: all stay.
-  const unread = await withNotices({ one: true, two: false });
-  const reopened = await Store.open(unread.dir);
-  assert.equal(await git(unread.dir, "rev-parse", "HEAD"), unread.head, "no commit");
-  assert.equal(reopened.snapshot().head, unread.head);
-  assert.deepEqual(await git(unread.dir, "ls-files", "notices"), "notices/one.yaml\nnotices/two.yaml");
-  assert.ok(logged.some(l => l.includes("notices/ not deleted") && l.includes("two.yaml")), logged.join("\n"));
-  // A file git does not hold: nothing is deleted, the file survives, the start succeeds.
-  logged.length = 0;
-  const untracked = await withNotices({ one: true });
-  await writeFile(join(untracked.dir, "notices/scratch.txt"), "mine");
-  assert.equal((await Store.open(untracked.dir)).snapshot().head, untracked.head);
-  assert.equal(await readFile(join(untracked.dir, "notices/scratch.txt"), "utf8"), "mine");
-  assert.equal(await git(untracked.dir, "ls-files", "notices"), "notices/one.yaml");
-  assert.ok(logged.some(l => l.includes("not committed as they are")), logged.join("\n"));
-  // A deletion that fails (here a hook refusing the commit) puts the index and the files back.
-  logged.length = 0;
-  const failing = await withNotices({ one: true, two: true });
-  const hook = join(failing.dir, ".git/hooks/pre-commit");
-  await mkdir(join(failing.dir, ".git/hooks"), { recursive: true });
-  await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
-  assert.equal((await Store.open(failing.dir)).snapshot().head, failing.head);
-  assert.equal(await git(failing.dir, "rev-parse", "HEAD"), failing.head);
-  assert.equal(await git(failing.dir, "status", "--porcelain"), "", "nothing staged, nothing missing");
-  assert.equal(await readFile(join(failing.dir, "notices/two.yaml"), "utf8"), `text: 通知 two\nauthor: Whitefoot\nat: ${at}\nread: ${at}\nrev: 1\n`);
-  assert.ok(logged.some(l => l.startsWith("notices/ not deleted")), logged.join("\n"));
 });
