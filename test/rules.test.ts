@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -474,6 +474,23 @@ test("current notice and note write times count as active windows across project
   assert.equal(hasStalled(s), true); s.notices = {};
   for (let i = 0; i < 6; i++) s.notes["n" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
   assert.equal(hasStalled(s), true);
+});
+
+test("a todo step that writes its waits as text gets one check per open item, listing its rows", () => {
+  const s = snapshot({
+    two: { plan: workPlan([step("ci", "todo", { text: "Run CI", waits: "CI" }), step("pr", "todo", { text: "Open PR", waits: "Owner card" })]) },
+    doing: { plan: workPlan([step("ci", "doing", { text: "Run CI", waits: "CI", since: T0 })]) },
+    plain: { plan: workPlan([step("write", "todo", { text: "Write docs" })]) },
+    cancelled: { status: "cancelled", plan: workPlan([step("ci", "todo", { text: "Run CI", waits: "CI" })]) },
+    record: { record: true, plan: [step("ci", "todo", { text: "Run CI", waits: "CI" })] },
+  });
+  const r = rules(s);
+  const waitsChecks = (id: string) => r.checks(id).filter(check => check.label === WAITS_TEXT_LABEL);
+  assert.deepEqual(waitsChecks("two"), [{ label: WAITS_TEXT_LABEL, text: "在等的事写在文字里，看板看不出：等别的条目就用共享依赖，等主人就出卡，暂时不做就挪进待选。写了在等的行：「Run CI」等CI；「Open PR」等Owner card" }]);
+  assert.deepEqual(waitsChecks("doing"), [], "a doing step's waits is a live wait, not a check");
+  assert.deepEqual(waitsChecks("plain"), [], "a todo step without waits text passes");
+  assert.deepEqual(waitsChecks("cancelled"), [], "cancelled items stay silent");
+  assert.deepEqual(waitsChecks("record"), [], "records are not work");
 });
 
 test("step text and days retain state markers, dates, waits and whole-day boundaries", () => {
