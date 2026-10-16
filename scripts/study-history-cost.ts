@@ -27,7 +27,7 @@ import { stringify, parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
-  "old-src": { type: "string" }, case: { type: "string" }, dir: { type: "string" }, src: { type: "string" }, branch: { type: "string" },
+  "old-src": { type: "string" }, cases: { type: "string" }, case: { type: "string" }, dir: { type: "string" }, src: { type: "string" }, branch: { type: "string" },
   items: { type: "string", default: "1674" }, decisions: { type: "string", default: "633" }, notes: { type: "string", default: "927" },
   history: { type: "string", default: "18000" },
 } });
@@ -149,7 +149,7 @@ async function runCase(name: string, dir: string, src: string): Promise<unknown>
     result.serializedMB = mb(serialized.length);
     const t0 = performance.now();
     const worker = new Worker(`const { parentPort } = require("node:worker_threads"); const v8 = require("node:v8");
-      parentPort.on("message", m => { const n = Object.keys(m.items).length; global.gc(); global.gc(); parentPort.postMessage({ n, heap: v8.getHeapStatistics().used_heap_size }); });`, { eval: true, execArgv: ["--expose-gc"] });
+      parentPort.on("message", m => { const n = Object.keys(m.items).length; parentPort.postMessage({ n, heap: v8.getHeapStatistics().used_heap_size }); });`, { eval: true });
     await new Promise(ok => worker.once("online", ok));
     const ready = performance.now();
     worker.postMessage(s);
@@ -189,16 +189,32 @@ async function runCase(name: string, dir: string, src: string): Promise<unknown>
   return result;
 }
 
+/** A Worker with a 256 MB heap limit allocating without bound, three ways: a tight loop, allocation between awaits
+ * (as a request reading git does), and parsed YAML kept alive. Each reports whether the worker ended with an error, how
+ * long that took, and how often the main thread's 10 ms timer ran meanwhile (it runs about 100 times a second when free). */
 async function workerOom(): Promise<unknown> {
-  const worker = new Worker(`const a = []; for (;;) a.push(new Array(1e5).fill({ x: Math.random() }));`, { eval: true, resourceLimits: { maxOldGenerationSizeMb: 256 } });
-  let ticks = 0;
-  const timer = setInterval(() => ticks++, 10);
-  const t0 = performance.now();
-  const error = await new Promise<Error>(ok => worker.once("error", ok));
-  const exit = await new Promise<number>(ok => worker.once("exit", ok));
-  await new Promise(ok => setTimeout(ok, 200));
-  clearInterval(timer);
-  return { case: "worker-oom", errorCode: (error as NodeJS.ErrnoException).code, message: error.message, exit, ms: Math.round(performance.now() - t0), mainTicksDuring: ticks, mainHeapMB: mb(heap()) };
+  const loads = {
+    tight: `const a = []; for (;;) a.push(new Array(1e5).fill({ x: Math.random() }));`,
+    awaiting: `const a = []; (async () => { for (;;) { for (let i = 0; i < 20; i++) a.push({ s: "x".repeat(1000) + Math.random(), n: [1, 2, 3] }); await new Promise(r => setImmediate(r)); } })();`,
+    yaml: `const { parse } = require(${JSON.stringify(join(here, "../node_modules/yaml/dist/index.js"))}); const text = "head: |-\n" + "  看板服务读历史 keeps the cost bounded.\n".repeat(2000); const a = []; (async () => { for (;;) { a.push(parse(text)); await new Promise(r => setImmediate(r)); } })();`,
+  };
+  const out: Record<string, unknown> = { case: "worker-oom" };
+  for (const [name, code] of Object.entries(loads)) {
+    const worker = new Worker(code, { eval: true, resourceLimits: { maxOldGenerationSizeMb: 256 } });
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 10);
+    const t0 = performance.now();
+    const progress = setInterval(() => console.error(`worker-oom ${name}: ${Math.round((performance.now() - t0) / 1000)} s, main ticks ${ticks}`), 5000);
+    const ended = await Promise.race([
+      new Promise<{ code?: string; message: string }>(ok => worker.once("error", e => ok({ code: (e as NodeJS.ErrnoException).code, message: e.message }))),
+      new Promise<null>(ok => setTimeout(() => ok(null), 120_000)),
+    ]);
+    const ms = Math.round(performance.now() - t0);
+    clearInterval(timer); clearInterval(progress);
+    if (!ended) await worker.terminate();
+    out[name] = { ended: ended ? `${ended.code}: ${ended.message}` : "no error within 120 s; terminated", ms, mainTicksPerSecond: Math.round(ticks / (ms / 1000)), mainHeapMB: mb(heap()) };
+  }
+  return out;
 }
 
 if (args.case) {
@@ -230,10 +246,11 @@ try {
       ok();
     });
   });
-  for (const name of ["open", "board", "clone", "log", "parsed", "diff", "unread"]) await child(name, join(root, "tail-0"), src, 4096, "tail-0");
-  for (const d of DELETIONS) await child("changes", join(root, `tail-${d}`), src, 4096, `tail-${d}`);
-  await child("worker-oom", root, src, 1024, "-");
-  if (args["old-src"]) await child("old", join(root, "tail-0"), resolve(args["old-src"]), 2048, "tail-0");
+  const wanted = (name: string) => !args.cases || args.cases.split(",").includes(name);
+  for (const name of ["open", "board", "clone", "log", "parsed", "diff", "unread"]) if (wanted(name)) await child(name, join(root, "tail-0"), src, 4096, "tail-0");
+  if (wanted("changes")) for (const d of DELETIONS) await child("changes", join(root, `tail-${d}`), src, 4096, `tail-${d}`);
+  if (wanted("worker-oom")) await child("worker-oom", root, src, 1024, "-");
+  if (args["old-src"] && wanted("old")) await child("old", join(root, "tail-0"), resolve(args["old-src"]), 2048, "tail-0");
 } finally {
   await rm(root, { recursive: true, force: true });
 }

@@ -23,6 +23,6 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/old" 92b29e5^
           (cd "$RUNNER_TEMP/old" && npm ci --no-audit --no-fund)
       - name: Smoke run (small board)
-        run: node scripts/study-history-cost.ts --items 150 --decisions 60 --notes 80 --history 600 --old-src "$RUNNER_TEMP/old/src"
+        run: node scripts/study-history-cost.ts --items 150 --decisions 60 --notes 80 --history 600 --cases clone,worker-oom
       - name: Full run (the live board's size)
-        run: node scripts/study-history-cost.ts --old-src "$RUNNER_TEMP/old/src"
+        run: node scripts/study-history-cost.ts --cases clone,worker-oom
