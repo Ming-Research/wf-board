@@ -24,7 +24,7 @@ jobs:
       - name: Write-path benchmark (non-gating)
         continue-on-error: true
         env:
-          BENCH_BASE: origin/claude/first-board
+          BENCH_BASE: origin/main
         run: |
           node scripts/bench-writes.ts --label "this tree"
           base=$(git merge-base HEAD "$BENCH_BASE")

@@ -76,8 +76,7 @@ matches what the artifact board offered.
 
 ## Rules
 
-- The main line is `claude/first-board`: branch from it and merge into it.
-  `main` holds only the first commit.
+- The main line is `main`: branch from it and merge into it.
 - Board data lives in the directory `WF_BOARD_DATA` names, on the owner's Mac
   `~/dev/wf/wf-board-data` (private remote `Ming-Research/wf-board-data`).
   Only the daemon writes it; tests use temporary directories.
@@ -98,7 +97,7 @@ matches what the artifact board offered.
 ## Deploy
 
 The architect deploys after merging. Fast-forward `~/dev/wf/wf-board` to the
-merged head of `claude/first-board` and run `npm run -s build:web` there (the
+merged head of `main` and run `npm run -s build:web` there (the
 bundle is not in git). When server code changed, restart the daemon
 (`launchctl kickstart -k gui/$(id -u)/org.ming-research.wf-board`; log
 `~/Library/Logs/wf-board.log`) and wait until

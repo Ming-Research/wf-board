@@ -58,7 +58,7 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   const ruled = c.cards.find(card => card.key === "ruled")!;
   assert.equal(ruled.ruling, "中文裁决"); assert.equal("background" in ruled, false);
   assert.equal(c.notes.length, 2); assert.equal(c.notes[0]!.reply, "中文回复");
-  assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
+  assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341, owner: "Ming-Research" }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
   assert.ok("earlierLogs" in all && "earlierLogs" in none);
   assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, all.item.log.length - 5);
@@ -119,7 +119,11 @@ test("PR index separates qualified text, links, cards, notes and bare refs, avoi
   assert.deepEqual(prs.unknown.map(it => `${it.kind}:${it.id}`), ["item:b", "note:note-2"]);
   assert.deepEqual(q.prs(s, r, "Whitefoot", 34), { qualified: [], unknown: [] });
   const repos = new Set(["whitefoot", "other"]);
-  assert.deepEqual(q.references("Whitefoot#341 Whitefoot #341 Whitefoot PR #341 https://github.com/Ming-Research/Whitefoot/pull/341 #341 #34 Other #3410", repos), { qualified: [{ repo: "Whitefoot", number: 341 }, { repo: "Other", number: 3410 }], unknown: [341, 34] });
+  // A URL names its owner; the first spelling of a PR is the one kept.
+  assert.deepEqual(q.references("Whitefoot#341 Whitefoot #341 Whitefoot PR #341 https://github.com/Ming-Research/Whitefoot/pull/341 #341 #34 Other #3410", repos), { qualified: [{ repo: "Whitefoot", number: 341, owner: "Ming-Research" }, { repo: "Other", number: 3410 }], unknown: [341, 34] });
+  // `Owner/Repo#N` names its repository itself, known to the board or not, and its number is not left over as a bare one.
+  assert.deepEqual(q.references("Ming-Research/wf-board#23 mbbill/agents_config#7, https://github.com/Ming-Research/wf-board/pull/23", new Set()), { qualified: [{ repo: "wf-board", number: 23, owner: "Ming-Research" }, { repo: "agents_config", number: 7, owner: "mbbill" }], unknown: [] });
+  assert.deepEqual(q.references("### Ming-Research/wf-board#23 Check cards\n- see #4", new Set()), { qualified: [{ repo: "wf-board", number: 23, owner: "Ming-Research" }], unknown: [4] });
   // A word before #N names a repository only when the board links to it.
   assert.deepEqual(q.references("see #341, Whitefoot #7", repos), { qualified: [{ repo: "Whitefoot", number: 7 }], unknown: [341] });
 });
