@@ -141,9 +141,10 @@ restart.
   on the Mac, with the same notification code as the daemon, only when the
   daemon does not answer, since then no daemon can push. The job only undoes
   what it did to a checkout that is still the one it moved: on the main line's
-  branch, without local changes to tracked files, and on the deploy's target or
-  on the commit to go back to. A checkout in any other state was changed by hand
-  since (a deploy by hand, a branch made to look into something): nothing is
+  branch, without local changes to tracked files, and on the commit where the
+  job last left it (the record keeps that, also while a move is under way), even
+  when someone else's hand lands on the deploy's target or the commit to go back
+  to. A checkout in any other state was changed by hand since (a deploy by hand, a branch made to look into something): nothing is
   reset or moved, the record is dropped with one push, and the run goes on from
   what the checkout holds, with its usual refusals. If the daemon does not
   answer there, the owner is told on the Mac.

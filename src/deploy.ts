@@ -18,6 +18,9 @@ export interface Pending {
   to: string;
   /** A restart was begun for this deploy, so the daemon may run the target's code. */
   restarted: boolean;
+  /** Where the checkout's HEAD may be if only the job has moved it: where the job put it last, and, while it is moving it, where
+   * it is about to. Anywhere else was someone's doing, even on the deploy's target or the commit to go back to. */
+  heads: string[];
 }
 
 /** The kinds of standing problem that are pushed once: the fetch fails, a refusal to move the checkout, a rollback that did not
@@ -135,7 +138,9 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
    * run the target's code or does not answer, left alone when the process that served before still answers. `thorough` installs the
    * packages whatever the lock file says: a rollback that failed part way may have left them half there. */
   async function goBack(pending: Pending, thorough: boolean) {
+    pending.heads = [...new Set([...pending.heads, pending.to])]; save();
     await d.git(["reset", "--keep", pending.to]);
+    pending.heads = [pending.to]; save();
     const differs = (await d.git(["diff", "--no-renames", "--name-only", pending.target, pending.to])).split("\n").includes("package-lock.json");
     await build(thorough || differs);
     if (pending.restarted || !await answers(SETTLE_MS)) await restartAndWait(pending);
@@ -160,13 +165,14 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     return serving ? "stuck" : "down";
   }
   /** Why the job must not go back on `pending`, or undefined when it may: it only undoes what it did to the checkout it moved. A
-   * checkout that is on another branch, has local changes to tracked files, or is on a commit that is neither the deploy's target
-   * nor the one to go back to has been taken over by someone since (a deploy by hand, a branch made to look into something). */
+   * checkout that is on another branch, has local changes to tracked files, or is on a commit the job did not put it on has been
+   * taken over by someone since (a deploy by hand, a branch made to look into something), even when that commit is the deploy's
+   * target or the one to go back to. */
   async function takenOver(pending: Pending): Promise<string | undefined> {
     const branch = await d.git(["symbolic-ref", "--short", "HEAD"]).then(line, () => "");
     if (branch !== d.branch) return `it is on ${branch || "no branch"}, not ${d.branch}`;
     const head = line(await d.git(["rev-parse", "HEAD"]));
-    if (head !== pending.target && head !== pending.to) return `it is on ${head}, neither ${pending.target} nor ${pending.to}`;
+    if (!pending.heads.includes(head)) return `it is on ${head}, not where the job left it (${pending.heads.join(" or ")})`;
     if (line(await d.git(["status", "--porcelain", "--untracked-files=no"]))) return "it has local changes to tracked files";
   }
   async function recover(pending: Pending): Promise<DeployOutcome> {
@@ -233,13 +239,13 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     const changes = commits.length > MAX_CHANGES ? [...commits.slice(0, MAX_CHANGES), { more: commits.length - MAX_CHANGES }] : commits;
 
     d.log(`deploying ${target} over ${head}${restart ? ", restarting" : ", without a restart"}`);
-    const pending: Pending = { target, to: rollbackTo, restarted: false };
+    const pending: Pending = { target, to: rollbackTo, restarted: false, heads: [head, target] };
     state.pending = pending; save();
     // A target is marked failed only once its code was in the checkout: a merge that git refused says nothing about the commit.
     let merged = false;
     try {
       await d.git(["merge", "--ff-only", target]);
-      merged = true;
+      merged = true; pending.heads = [target]; save();
       await build(changed.includes("package-lock.json"));
       if (restart) await restartAndWait(pending);
       else if (!await answers(d.waitMs)) throw new Error("the daemon stopped answering");

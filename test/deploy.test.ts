@@ -224,7 +224,7 @@ test("when going back fails too the owner is told on the Mac, and the push says 
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", bad, null]]);
   assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, r.first], "the commit the daemon was serving when the run began is the last healthy one");
   // The rollback is unfinished, so the next run tries it again, and does not alarm anyone twice with the same news.
-  assert.deepEqual(w.saved.pending, { target: bad, to: r.first, restarted: true });
+  assert.deepEqual(w.saved.pending, { target: bad, to: r.first, restarted: true, heads: [r.first] });
   assert.equal(await deploy(), "down");
   assert.equal(w.restarts, 3);
   assert.equal(w.notices.length, 1); assert.equal(w.posts.length, 1);
@@ -417,7 +417,7 @@ test("when going back fails but the daemon still answers, the owner is not alarm
   assert.equal(w.notices.length, 0);
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", sha, null]]);
   assert.match(String(w.posts[0]!.reason), /still answers.*tries again/);
-  assert.deepEqual(w.saved.pending, { target: sha, to: r.first, restarted: false });
+  assert.deepEqual(w.saved.pending, { target: sha, to: r.first, restarted: false, heads: [r.first] });
   // It is not skipped as a failed commit: it is retried, and the same news is not pushed again.
   assert.equal(await deploy(), "stuck");
   assert.equal(w.posts.length, 1);
@@ -455,7 +455,7 @@ test("a deploy interrupted part way is finished first on the next run, then the 
   // The job died after it moved the checkout and before it restarted the daemon.
   sh(r.checkout, "fetch", "-q", "origin");
   sh(r.checkout, "merge", "-q", "--ff-only", sha);
-  w.saved.pending = { target: sha, to: r.first, restarted: false };
+  w.saved.pending = { target: sha, to: r.first, restarted: false, heads: [sha] };
   assert.equal(await deploy(), "rolledBack");
   assert.equal(r.head(), r.first);
   assert.deepEqual(w.builds, [{ args: ["npm", "ci"], head: r.first }, { args: BUILD, head: r.first }]);
@@ -470,7 +470,7 @@ test("an interrupted deploy that had begun the restart restarts the daemon again
   const sha = r.land({ "src/a.ts": "a" }, "A");
   sh(r.checkout, "fetch", "-q", "origin");
   sh(r.checkout, "merge", "-q", "--ff-only", sha);
-  w.saved.pending = { target: sha, to: r.first, restarted: true };
+  w.saved.pending = { target: sha, to: r.first, restarted: true, heads: [sha] };
   assert.equal(await deploy(), "rolledBack");
   assert.equal(w.restarts, 1);
 });
@@ -515,6 +515,44 @@ test("a hand-made checkout the daemon does not answer on is the one failure the 
   assert.equal(w.notices.length, 1);
   assert.equal(w.notices[0]![0], "看板起不来");
   assert.equal(w.restarts, 0);
+});
+
+test("a hand fix that lands exactly on the deploy's target is not undone: where the job left the checkout is what counts", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "package-lock.json": "lock 2", "src/a.ts": "a" }, "new dependency");
+  // npm cannot reach its registry: the job merged, failed, went back to `first`, and could not reinstall.
+  w.failCi = true;
+  assert.equal(await deploy(), "stuck");
+  assert.equal(r.head(), r.first);
+  // The registry is back and the architect fixes it by hand: the same commit, deployed, built and serving.
+  w.failCi = false;
+  sh(r.checkout, "merge", "-q", "--ff-only", sha);
+  w.builds.length = 0;
+  assert.equal(await deploy(), "current");
+  assert.equal(r.head(), sha, "the hand fix stays, though it is the commit the job had gone back from");
+  assert.deepEqual({ builds: w.builds.length, restarts: w.restarts, notices: w.notices.length }, { builds: 0, restarts: 0, notices: 0 });
+  assert.match(String(w.posts.at(-1)!.reason), /changed by hand/);
+  assert.equal(w.saved.pending, undefined);
+});
+
+test("a checkout the job left where a hand deploy had put it is the job's own: a refused merge does not make it 'changed by hand'", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  // A hand deploy to C left the daemon down; the job's record of the last healthy commit is older.
+  const c = r.land({ "src/a.ts": "a" }, "C");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", c);
+  w.saved.healthy = r.first; w.daemon.ok = false;
+  r.land({ "src/b.ts": "b" }, "M");
+  const lock = join(r.checkout, ".git/index.lock");
+  writeFileSync(lock, "");
+  assert.equal(await deploy(), "down");
+  assert.equal(w.notices.length, 1);
+  rmSync(lock);
+  // The unfinished deploy is finished, going back to the last healthy commit as a daemon that does not answer calls for.
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(r.head(), r.first);
+  assert.doesNotMatch(w.posts.map(p => String(p.reason)).join("\n"), /changed by hand/);
+  assert.equal(w.notices.length, 1, "the owner was not alarmed a second time with a wrong story");
 });
 
 for (const { name, touch, why } of [
