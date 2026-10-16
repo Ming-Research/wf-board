@@ -102,7 +102,7 @@ const JOURNAL = { project: "Architect", notes: "architect-notes", tag: "协作�
 /** The local calendar day and clock time of an ISO instant, as the journal's key and entry stamp use them. */
 function localStamp(at: string): { day: string; clock: string } {
   const d = new Date(at), pad = (n: number) => String(n).padStart(2, "0");
-  return { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, clock: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
+  return { day: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`, clock: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` };
 }
 
 function newKey(s: Snapshot, key: string): void {
