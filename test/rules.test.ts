@@ -455,9 +455,35 @@ test("only own changes reset a doing item's clock, including historical card and
   ];
   for (const change of changes) { const s = activeBoard(); assert.equal(hasStalled(s), true); change(s); assert.equal(hasStalled(s), false); }
   const s = activeBoard(); s.items.child = Item.parse({ title: "Child", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
-  s.items.quiet!.plan = workPlan([step("work", "doing"), own("child")]); assert.equal(hasStalled(s), true, "child progress does not reset the owner's doing clock");
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("child")]); assert.equal(hasStalled(s), true, "a child not in progress does not reset the owner's doing clock");
+  s.items.child!.plan = workPlan([step("child-work", "doing")]); assert.equal(hasStalled(s), false, "an owned child in progress resets the owner's doing clock");
   s.items.record = Item.parse({ title: "Queue", group: "Default", record: true, plan: [], updated: timeAt(2.5), rev: 1 });
   s.items.quiet!.plan = workPlan([step("work", "doing"), own("record")]); assert.equal(hasStalled(s), true, "record child progress does not reset the owner's doing clock");
+});
+
+test("a doing step's clock reads the items it names and the items they own, but not other rows", () => {
+  // A doing step of its own keeps the clock; the second step is the one under test.
+  const mentions = (s: Snapshot, text: string, state: PlanStep["state"] = "doing") => { s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", state, { text })]); return hasStalled(s); };
+  // The named item changed within the hour: the step is not quiet.
+  let s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), false, "a doing step naming an item that changed recently is not quiet");
+  assert.equal(mentions(s, "see [[it:named]]", "todo"), true, "a todo step naming the item does not count");
+  assert.equal(mentions(s, "no mention here"), true, "a step without a reference counts only the item itself");
+  // Both the item and the named one are quiet for an hour: flagged.
+  s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: T0, plan: workPlan(), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), true, "a named item quiet as well as the item keeps the step quiet");
+  // The named item's owned item, two layers down, counts too.
+  s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", plan: workPlan([own("deep")]), updated: T0, rev: 1 });
+  s.items.deep = Item.parse({ title: "Deep", group: "Default", updated: timeAt(2.5), plan: workPlan([step("deep-work", "doing")]), rev: 1 });
+  assert.equal(mentions(s, "see [[it:named]]"), false, "a change two layers under a named item resets the step's clock");
+});
+
+test("an owned item in progress keeps the owner's clock, across every layer below it", () => {
+  const s = activeBoard();
+  s.items.middle = Item.parse({ title: "Middle", group: "Default", plan: workPlan([own("leaf")]), updated: T0, rev: 1 });
+  s.items.leaf = Item.parse({ title: "Leaf", group: "Default", updated: timeAt(2.5), plan: workPlan([step("leaf-work", "doing")]), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), own("middle")]);
+  assert.equal(hasStalled(s), false, "a leaf two layers below a progressing owned item resets the owner's clock");
 });
 
 test("a parent with only owned progress has no clock, but its own doing step has one", () => {

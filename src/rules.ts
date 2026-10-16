@@ -131,6 +131,8 @@ export interface Rules {
   checks(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
+  /** Items whose plan step text names this item with [[it:key]], any state. */
+  mentionedBy(id: string): string[];
   stepDays(step: PlanStep): number;
   stepLine(step: PlanStep): string;
   planRows(id: string): DerivedPlanRow[];
@@ -153,6 +155,9 @@ const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
+const ITEM_REF = /\[\[it:([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
+/** The item keys a text names with [[it:key]]. */
+function mentionsIn(text: string): string[] { return [...text.matchAll(ITEM_REF)].map(m => m[1]!); }
 
 /** A Rules object belongs to one immutable snapshot. Create another after a write.
  * Array/object results are defensive copies; item() returns the snapshot's item.
@@ -391,6 +396,11 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
   }
   const out = new Set(examined);
   for (const id of examined) for (const r of [before, after]) for (const a of r.ancestors(id)) out.add(a);
+  // A doing step's clock also reads the items it names, so a change under a named item (itself or any owner of it) reaches the step's item.
+  for (const id of examined) for (const r of [before, after]) for (const target of [id, ...r.ancestors(id)]) for (const waiter of r.mentionedBy(target)) {
+    out.add(waiter);
+    for (const a of r.ancestors(waiter)) out.add(a);
+  }
   return out;
 }
 /** The items a live change touches directly, or null when it changes what every item reads (the board, the owner's
@@ -466,11 +476,16 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       const children = new Map<string, string[]>();
       const owners = new Map<string, string[]>();
       const notes = new Map<string, Note[]>();
-      const cards = new Map<string, string[]>();
+      const cards = new Map<string, string[]>(), mentioned = new Map<string, string[]>();
       for (const [id, it] of items) {
         const owned = it.plan.filter(row => "item" in row && row.own).map(row => (row as Extract<PlanRow, { item: string }>).item);
         children.set(id, owned);
         for (const target of owned) { const list = owners.get(target) || []; list.push(id); owners.set(target, list); }
+        for (const row of it.plan) if ("text" in row) for (const target of new Set(mentionsIn(row.text))) {
+          const list = mentioned.get(target) || [];
+          if (!list.includes(id)) list.push(id);
+          mentioned.set(target, list);
+        }
       }
       children.set("", [...items.keys()].filter(id => !owners.has(id)).sort(byOrder));
       for (const n of Object.values(s.notes)) {
@@ -482,7 +497,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         list.push(key); cards.set(d.item, list);
       }
       for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
-      return { items, children, owners, notes, cards, decisions: new Map(Object.entries(s.decisions)) };
+      return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
   // Called while building the index too, so it must not call index().
@@ -715,9 +730,19 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return { intervals, changedAt: (id: string) => changed.get(id) ?? -Infinity };
     });
   }
+  /** The items whose changes count as the progress of this item's doing steps: the item itself, every item an
+   * in-progress item row points at, and every item a doing step names, each with the items it owns down every layer. */
+  function stallRelated(id: string): string[] {
+    const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
+    for (const { row, state } of planRows(id)) {
+      if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
+      else if ("item" in row && state === "progress") down(row.item);
+    }
+    return [...out];
+  }
   function stalled(id: string): boolean {
     if (isPaused(id)) return false;
-    const { intervals, changedAt } = activity(), since = changedAt(id);
+    const { intervals, changedAt } = activity(), since = Math.max(...stallRelated(id).map(changedAt));
     if (!Number.isFinite(since)) return false;
     const pauses: Array<[number, number]> = [];
     const recorded = (s.activity?.pauses?.[id] ?? []).map(pause => [Date.parse(pause.start), pause.end ? Date.parse(pause.end) : now] as [number, number])
@@ -771,6 +796,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
+    mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
