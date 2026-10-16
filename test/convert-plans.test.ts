@@ -11,6 +11,7 @@ import type { Snapshot as LegacySnapshot } from "../src/legacy-model.ts";
 import { convertPlans, removeArchives, extractAcceptance, MISSING_ACCEPT, CLOSED_ACCEPT, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "../src/convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "../src/verify-plans.ts";
 import { derivePlanOracle } from "../src/plan-conversion-oracle.ts";
+import { Item } from "../src/model.ts";
 import { rules } from "../src/rules.ts";
 import { rules as legacyRules } from "../src/legacy-rules.ts";
 import { unreadSteps, stepDiff } from "../src/history.ts";
@@ -38,6 +39,13 @@ test("phase one preserves original steps, closed acceptance states, dates, own-w
  assert.equal(finalText(result.snapshot.items.closed!.plan),CLOSED_ACCEPT);
  assert.equal(result.snapshot.items.root!.head,"**问题**：Some problem\n\n**何时**：Today");
  assert.ok(result.report.findings.some(f=>f.kind==="child not listed"));
+});
+
+test("a legacy item that still carries the removed inbox's request marker converts to an item the current schema accepts",()=>{
+ const source=snapshot();source.items.root=item({request:{by:"Q",at:since}});
+ const result=checked(source);
+ assert.equal(Object.hasOwn(result.snapshot.items.root!,"request"),false);
+ assert.equal(Item.safeParse(result.snapshot.items.root).success,true);
 });
 
 test("dependency rows precede unchanged steps; differences are reported without fabricating waits",()=>{

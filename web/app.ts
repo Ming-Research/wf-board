@@ -418,7 +418,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const roots=derived.areas().map(id => index().byId.get(id)!);
     const groups=[...new Set([...snapshot.board.projects.map(g => g.name),...roots.map(groupOf)])];
     for (const group of groups) {
-      walk(derived.inbox(group).map(id => index().byId.get(id)!));
       const items=roots.filter(it => groupOf(it) === group);
       walk([...items.filter(it => !neededElsewhere(it)),...items.filter(neededElsewhere)]);
     }
@@ -2009,10 +2008,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       sub.forEach(k => ul.appendChild(itemNode(k)));
       li.appendChild(ul);
     }
-    if (derived.isRequest(it.id) && detail) {
-      const prefix = `${it.request!.by} 提出：`, first = it.log[0]?.text || "";
-      li.appendChild(el("div", "request-meta", esc(it.request!.by) + " · " + esc(day(it.request!.at)) + " · " + inline(first.startsWith(prefix) ? first.slice(prefix.length) : first)));
-    }
     return li;
   }
   // A top-level item that an open item of another project depends on directly: its priority comes from those dependents.
@@ -2053,13 +2048,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const gh = el("h2", "group-head", inline(g.name || "其他"));
       box.appendChild(gh);
       if (!partial) { const gl = el("a", "grp", esc(g.name || "其他")); gl.href = "#group-" + gi; nav.appendChild(gl); }
-      const requests = derived.inbox(g.name);
-      if (requests.length) {
-        const inbox = el("section", "inbox"); inbox.appendChild(el("h3", null, "收件箱 " + requests.length));
-        const rows = el("ul", "tree lines");
-        for (const id of requests) rows.appendChild(itemNode(index().byId.get(id)!));
-        inbox.appendChild(rows); box.appendChild(inbox);
-      }
       box.appendChild(filterRow(g.name));
       const shown = g.items.filter(passes);
       if (shown.length) {
@@ -2183,7 +2171,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let rulePresentationDirty=true;
   // Items a live update may have changed (rules affectedItems); only these are signed again while nothing asks for all.
   let presentationAffected:Set<string> | null=null;
-  let presentations=new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>();
+  let presentations=new Map<string,{signature:string;shown:boolean;group:string}>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
     let finished=false, raf:number | undefined;
@@ -2206,19 +2194,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!rulePresentationDirty && !presentationAffected) return;
     const all=rulePresentationDirty, only=presentationAffected;
     rulePresentationDirty=false; presentationAffected=null;
-    const next=all ? new Map<string,{signature:string;shown:boolean;request:boolean;group:string}>() : new Map(presentations);
+    const next=all ? new Map<string,{signature:string;shown:boolean;group:string}>() : new Map(presentations);
     if (!all) for (const id of only!) if (!index().byId.has(id)) next.delete(id);
     for (const it of all ? state.items : [...only!].flatMap(id => index().byId.get(id) ?? [])) signPresentation(it,next,scope);
     presentations=next;
   }
-  function signPresentation(it:ViewItem,next:Map<string,{signature:string;shown:boolean;request:boolean;group:string}>,scope:Set<string>) {
+  function signPresentation(it:ViewItem,next:Map<string,{signature:string;shown:boolean;group:string}>,scope:Set<string>) {
     const id=it.id;
     const signature=presentationSignature(derived,snapshot.decisions,id);
-    const current={signature,shown:passes(it),request:derived.isRequest(id),group:groupOf(it)}, previous=presentations.get(id);
+    const current={signature,shown:passes(it),group:groupOf(it)}, previous=presentations.get(id);
     next.set(id,current);
     if (!previous) return;
     if (previous.signature !== signature) scope.add("item:"+id);
-    if (previous.shown !== current.shown || previous.request !== current.request) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
+    if (previous.shown !== current.shown) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
   }
   function scopeForDoc(kind:string,id:string,target?:string):string[] {
     return kind === "item" ? ["item:"+id] : kind === "decision" ? ["card:"+id] : target ? ["notes:"+target] : [];
@@ -2770,7 +2758,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const before=previous as Item | undefined, after=doc.after as Item | null;
           scope.add("item:"+doc.id);
           if (before?.title !== after?.title) retitled.push("it:"+doc.id);
-          if (!before || !after || !sameValue(before.plan.filter(row => "item" in row && row.own), after.plan.filter(row => "item" in row && row.own)) || before.group !== after.group || before.order !== after.order || !sameValue(before.request,after.request)) {
+          if (!before || !after || !sameValue(before.plan.filter(row => "item" in row && row.own), after.plan.filter(row => "item" in row && row.own)) || before.group !== after.group || before.order !== after.order) {
             if (before) { scope.add("group:"+derived.groupOf(doc.id)); derived.ancestors(doc.id).forEach(p => scope.add("item:"+p)); } relocated.push(doc.id);
           }
           else {

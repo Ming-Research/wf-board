@@ -1091,7 +1091,7 @@ export class Store {
       const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
       for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
-      const loaded = parsePlanData(raw, hash);
+      const loaded = parsePlanData(raw, hash, true);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
         const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
@@ -1185,7 +1185,15 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
+/** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
+function withoutRequestMarker(doc: unknown): unknown {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc) || !Object.hasOwn(doc, "request")) return doc;
+  const { request: _request, ...rest } = doc as Record<string, unknown>;
+  return rest;
+}
+/** `historical`: the data is a past commit's, whose items may hold fields the schema has since dropped; only
+ * comparisonSnapshot reads data this way, and the live data stays strictly validated. */
+function parsePlanData(raw: Record<string, unknown>, head: string, historical = false): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
 
   const legacy=retiredBoardShape(raw["board.yaml"]) || items.some(([,doc])=>retiredItemShape(doc));
@@ -1210,7 +1218,7 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,historical&&!legacy&&collection==="items"?withoutRequestMarker(doc):doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);

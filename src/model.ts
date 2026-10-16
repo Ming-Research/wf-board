@@ -216,7 +216,6 @@ export type Ask = z.infer<typeof Ask>;
 export const Item = z.object({
   num: Num.optional(),
   title: z.string().min(1),
-  request: z.object({ by: z.string().min(1), at: Time }).strict().optional(),
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),

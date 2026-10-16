@@ -54,7 +54,7 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
     await bp.reset(openAll(board));
     const o = await oracle(board.store), ids = Object.keys(o.s.items), st = (id: string) => o.r.statusOf(id);
     const sample = [w.unpaused, w.pausedRoot, w.code, ...o.r.children(w.pausedRoot).slice(0, 1), ids.find(id => o.s.items[id]!.record), ids.find(id => st(id) === "done"),
-      ids.find(id => st(id) === "cancelled"), ids.find(id => o.r.isRequest(id)), ids.find(id => st(id) === "blocked"), ids.find(id => o.r.askPending(id))].filter((id): id is string => !!id);
+      ids.find(id => st(id) === "cancelled"), ids.find(id => st(id) === "blocked"), ids.find(id => o.r.askPending(id))].filter((id): id is string => !!id);
     none(await checkEmptyRows(bp, [...new Set(sample)]));
   });
   await t.test("tag chips name the item's tags and read at 4.5:1 or more", async () => {
