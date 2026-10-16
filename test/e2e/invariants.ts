@@ -504,7 +504,6 @@ async function sectionViolations(bp: BoardPage, r: Rules, items: Snapshot["items
  * and returns to the project's own roots when the shared row goes. Writes to the board: a shared row on an item of
  * another project and its removal. */
 export async function checkSharedSection(bp: BoardPage, b: BoardServer): Promise<string[]> {
-  bp.page.on("console", m => { if (m.text().startsWith("TRACE")) console.log("PAGE", m.text()); });
   const s = b.store.snapshot(), r = rules(s), drawn = new Set(await bp.treeRows());
   const v = await sectionViolations(bp, r, s.items);
   const live = (id: string) => !s.items[id]!.record && !/^(done|cancelled)$/.test(r.statusOf(id) ?? "");
