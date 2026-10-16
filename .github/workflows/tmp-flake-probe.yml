@@ -5,11 +5,23 @@ on:
     branches: [e2e-git-tmp-flake-study]
 jobs:
   probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [default, nodetach]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
-      - run: git --version
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: How large must a commit be to start background maintenance
-        run: bash scripts/tmp-flake-threshold.sh
+      - name: Writes on a board of the live board's size, with the maintenance in the background or in the foreground
+        run: |
+          if [ "$MODE" = nodetach ]; then export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=gc.autoDetach GIT_CONFIG_VALUE_0=false GIT_CONFIG_KEY_1=maintenance.autoDetach GIT_CONFIG_VALUE_1=false; fi
+          node scripts/tmp-flake-bench.ts --label "$MODE" --writes 1000
+        env:
+          MODE: ${{ matrix.mode }}
