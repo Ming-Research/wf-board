@@ -153,7 +153,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   const server = http.createServer((req, res) => {
     // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
-    const ended = slow.start(pageOperation(req.method ?? "", pathnameOf(req.url)));
+    const ended = slow.start(pageOperation(req.method ?? "", (req.url ?? "/").split("?")[0]!));
     res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
     // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
     res.on("finish", () => { if (closing) server.closeIdleConnections(); });
