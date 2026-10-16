@@ -206,9 +206,25 @@ test("缺难度 waits while the next step is an unfinished sub-item, and comes b
   await unrated("study-root"); await unrated("study", { owner: "study-root", group: undefined, priority: undefined });
   assert.equal(missing(b, "study-root").length, 0, "the next step is the sub-item, not an own step");
   assert.equal(missing(b, "study").length, 1, "the sub-item itself asks for its rating");
+  // The study is under way: the root is in progress, and neither asks for a rating.
+  await op.setPlan({ author, id: "study", row: { id: "build", text: "做调研", state: "doing" } });
+  assert.equal(rules(store.snapshot()).statusOf("study-root"), "wip");
+  assert.equal(missing(b, "study-root").length, 0, "an in-progress root under a study asks for none");
+  assert.equal(missing(b, "study").length, 0, "the study is being done, so its rating is not the next thing");
+  await op.setPlan({ author, id: "study", row: { id: "build", text: "做调研", state: "done" } });
   await op.setPlan({ author, id: "study", row: { id: "accept", accept: true, text: "通过", state: "done" } });
   assert.equal(rules(store.snapshot()).statusOf("study-root"), "todo");
   assert.equal(missing(b, "study-root").length, 1, "once the sub-item is done, the root's own step is next and it asks");
+});
+
+test("缺难度 is not raised for an item in progress, even with a ready todo step beside its doing step", async t => {
+  const b = await withArchitect(t); const { store, op, unrated } = b;
+  await unrated("busy");
+  // The doing step and the parallel todo step are both ready; the todo step waits on nothing, so only the item's state keeps the check off.
+  await op.setPlan({ author, id: "busy", row: { id: "step", text: "在做的一步", state: "doing", after: [] } });
+  await op.setPlan({ author, id: "busy", row: { id: "other", text: "并行的一步", state: "todo", after: [] } });
+  assert.equal(rules(store.snapshot()).statusOf("busy"), "wip");
+  assert.equal(missing(b, "busy").length, 0, "an item in progress is being done, not waiting for a rating");
 });
 
 test("缺难度 waits while the next step waits on another item, and while the next step's text says it waits", async t => {

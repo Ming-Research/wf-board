@@ -593,13 +593,15 @@ log:
   (reason 建条目时评). `changes` shows every change
   of difficulty; unread shows a changed level but not a first rating (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
-  check when the rating is the only thing left before it can be dispatched:
-  it is todo, its next own step is a todo step that waits on nothing (not an
-  item or card the step names, and no `waits` text). A root whose next step
-  is an unfinished sub-item, such as a study, raises none until that step is
-  done. It is not listed as startable (`brief.todo`); a work item rated
-  `architect` raises no check and is not listed either, since the architect
-  schedules its own items itself. Only the architect clears 缺难度.
+  check only when the rating is the only thing left before it can be
+  dispatched: the item is todo, and one of its ready steps (every step before
+  it done) is a todo text step with no `waits` text. A step that is another
+  item or a card, such as an unfinished study sub-item, is not such a step, so
+  the item raises no check until that sub-item is done. A blocked item, or
+  one with a step in progress, raises none either. Work is not listed as
+  startable (`brief.todo`) without a rating; a work item rated `architect`
+  raises no check and is not listed either, since the architect schedules its
+  own items itself. Only the architect clears 缺难度.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -941,8 +943,8 @@ only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
 started and has no stored priority is. The same walk
-decides which items 缺难度 asks a difficulty for and which items `brief`
-lists as startable. Whether an item is needed is part of the summary
+decides which items 缺难度 asks a difficulty for (with the state and next-step
+conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
 priority and checks stay the same.
 

@@ -256,6 +256,7 @@ test("after a write the check scan rederives only the items the write can reach"
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
   assert.ok(checked.includes("c"));
+  assert.ok(shared(store.snapshot()).checks("c").some(c => c.text.startsWith("依赖的条目不存在")), "the missing row is still reported");
   assert.equal(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), false, "its next step waits on the missing row, so the rating is not what holds it");
   assert.deepEqual(star.events(), []);
 });
