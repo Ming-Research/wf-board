@@ -1,0 +1,34 @@
+name: tmp-flake-probe
+# TEMPORARY, for the item e2e-git-tmp-flake-study; removed before the branch is ready. Runs only on a push to this branch.
+on:
+  push:
+    branches: [e2e-git-tmp-flake-study]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Git version and maintenance settings
+        run: |
+          git --version
+          git config --show-origin --get-regexp 'gc|maint' || echo "no gc or maintenance settings"
+          nproc
+      - name: Mechanism, git alone
+        run: bash scripts/tmp-flake-mechanism.sh 20
+      - name: One traced seed, default settings
+        run: node scripts/tmp-flake-seeds.ts default 2 detail
+      - name: Seed loops, three processes at a time
+        run: |
+          for mode in default off nodetach eager; do
+            for i in 1 2 3; do node scripts/tmp-flake-seeds.ts $mode 10 > "out-$mode-$i.jsonl" & done
+            wait
+            echo "== $mode"; cat out-$mode-*.jsonl | grep summary
+            cat out-$mode-*.jsonl | grep '"err"' | head -5 || true
+          done
