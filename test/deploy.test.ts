@@ -18,6 +18,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { server, wakeSocket } from "./helpers.ts";
+import { fakeSsh } from "./fake-ssh.ts";
 
 const BRANCH = "main";
 const identity = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -52,12 +53,15 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
     daemon: { pid: 100 as number | undefined, ok: true, flap: false, takes: true },
     saved: { outbox: [] } as DeployState,
   };
+  const git: DeployDeps["git"] = async args => {
+    try { return execFileSync("git", args, { cwd: r.checkout, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }); }
+    catch (error) { throw Object.assign(new Error(String((error as { stderr?: unknown }).stderr)), { code: (error as { status?: number }).status }); }
+  };
   const deps: DeployDeps = {
     branch: BRANCH, remote: "origin",
-    git: async args => {
-      try { return execFileSync("git", args, { cwd: r.checkout, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }); }
-      catch (error) { throw Object.assign(new Error(String((error as { stderr?: unknown }).stderr)), { code: (error as { status?: number }).status }); }
-    },
+    git,
+    // The fetch goes through its own dependency, which scripts/deploy.ts bounds in time (test below); here it is plain git.
+    network: git,
     // The head is read when npm runs: a build must come after the checkout has moved, in both directions.
     run: async (command, args) => {
       w.builds.push({ args: [command, ...args], head: r.head() });
@@ -75,7 +79,7 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
     notify: (title, message) => { w.notices.push([title, message]); },
     load: () => structuredClone(w.saved), save: state => { w.saved = structuredClone(state); },
     sleep: async ms => { w.clock += ms; }, now: () => w.clock, log: () => {},
-    waitMs: 90_000, stableMs: 5000,
+    waitMs: 90_000, stableMs: 5000, fetchRetryMs: 10_000,
   };
   return { w, deps, deploy: () => deployOnce({ ...deps, ...override }) };
 }
@@ -345,7 +349,7 @@ test("a fetch that fails once and then works is no news", async t => {
   const r = await repos(t), { w, deps } = world(r);
   let failures = 1;
   const sha = r.land({ "src/a.ts": "a" }, "A");
-  const outcome = await deployOnce({ ...deps, git: async args => { if (args[0] === "fetch" && failures-- > 0) throw new Error("Could not resolve host"); return deps.git(args); } });
+  const outcome = await deployOnce({ ...deps, network: async args => { if (failures-- > 0) throw new Error("Could not resolve host"); return deps.network(args); } });
   assert.equal(outcome, "deployed");
   assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]]);
 });
@@ -683,4 +687,26 @@ esac
   assert.deepEqual({ ...frames().at(-1), reason: undefined }, { n: 3, event: "deployFailed", version: blocked, running: page, reason: undefined });
   assert.equal(await run(), "refused");
   assert.equal(star.events().length, 3, "the same refusal is not pushed again");
+});
+
+test("scripts/deploy.ts: a fetch that never answers is killed at its cap with its ssh, tried three times, and the remote counts as unreachable", async t => {
+  const r = await repos(t);
+  const { url, port } = await server(t);
+  const star = await wakeSocket(t, url);
+  const ssh = await fakeSsh(t);
+  await ssh.set("stall");
+  sh(r.checkout, "remote", "set-url", "origin", ssh.url(r.origin));
+  // Without the cap the job waits for the fetch for good, and launchd never starts a second run: the timeout here turns that into a failure of the test.
+  const { stdout } = await promisify(execFile)(process.execPath, [join(import.meta.dirname, "../scripts/deploy.ts")], { timeout: 60_000, env: {
+    ...process.env, ...identity, ...ssh.env, WF_BOARD_REPO: r.checkout, WF_BOARD_PORT: String(port), WF_BOARD_LABEL: "test.label",
+    WF_BOARD_DEPLOY_STATE: join(r.dir, "state/deploy.json"), WF_BOARD_DEPLOY_WAIT_MS: "20000", WF_BOARD_DEPLOY_STABLE_MS: "0",
+    WF_BOARD_DEPLOY_NET_CAP_MS: "1000", WF_BOARD_DEPLOY_FETCH_RETRY_MS: "0",
+  } });
+  await star.sync();
+  assert.equal(stdout.trim().split("\n").at(-1)!.replace(/^\S+ /, ""), "unreachable");
+  assert.equal(await ssh.connections(), 3, "one connection for each try");
+  await ssh.gone();
+  const [frame] = star.events();
+  assert.equal(frame!.event, "deployFailed");
+  assert.match(String(frame!.reason), /could not fetch origin\/main: .*killed by the cap after 1 s/);
 });

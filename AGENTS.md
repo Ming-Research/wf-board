@@ -19,7 +19,12 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git.
+  runs git against them; its push runs beside the write queue, not in it.
+- `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
+  git against a remote: its own process group, a time cap, killed with its ssh
+  (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
+  remote, their log lines, ending the push on shutdown, and the push to the
+  architect when the remote copy stays behind for an hour.
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line and the start-up step timings.
@@ -57,7 +62,8 @@ matches what the artifact board offered.
   walks, and `find.ts`, title search and reference tokens, as plain functions
   tests call directly), bundled by esbuild.
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
-  never enters this repository. `test/e2e/` holds the browser layer: a seeded
+  never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
+  that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
   headless Chromium) and the click invariants.
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage

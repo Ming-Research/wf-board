@@ -20,6 +20,8 @@ import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
+import { netGit, netGitReason } from "./net-git.ts";
+import type { NetGitResult } from "./net-git.ts";
 import type { StartupStep } from "./log.ts";
 
 export type DocKind = "item" | "decision" | "note" | "glossary";
@@ -1154,21 +1156,37 @@ export class Store {
     return Number((await this.git(["rev-list", "--count", ...range])).trim());
   }
 
-  push(): Promise<boolean> {
-    return this.enqueue(async () => {
-      if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return false;
-      const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-      const remote = (await this.git(["ls-remote", "--heads", "origin", `refs/heads/${branch}`])).trim().split(/\s+/)[0];
-      if (remote) {
-        // ls-remote may name an object this clone has never fetched.
-        await this.git(["fetch", "--no-tags", "origin", `refs/heads/${branch}`]);
-        const remoteHead = await this.resolveCommit("FETCH_HEAD");
-        const ahead = Number((await this.git(["rev-list", "--count", `${remoteHead}..HEAD`])).trim());
-        if (ahead === 0) return false;
-      }
-      await this.git(["push", "origin", `HEAD:refs/heads/${branch}`]);
-      return true;
-    });
+  private pushing?: Promise<boolean>;
+
+  /** Sends the commits the remote lacks, outside the write queue: a write waits for no network (docs/design.md, Storage). Only one
+   * push runs at a time; a call made while one runs gets that push's result. Resolves true when commits were sent and false when
+   * there is no remote, the remote already has them, or it is ahead of this clone; rejects when the remote has commits this
+   * clone lacks, or the push failed or was killed (the cap, or `signal`). The commits written after the push began go in the next. */
+  push(signal?: AbortSignal): Promise<boolean> {
+    return this.pushing ??= this.pushOnce(signal).finally(() => { this.pushing = undefined; });
+  }
+
+  private async pushOnce(signal?: AbortSignal): Promise<boolean> {
+    if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return false;
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+    // The head as of now: a commit made while git is sending, or one a failed write took back, is not in this push.
+    const head = this.state.head;
+    // One connection: git itself says whether it sent commits, found the remote current, or was refused.
+    const pushed = await this.network(["push", "--porcelain", "origin", `${head}:refs/heads/${branch}`], signal);
+    if (pushed.code === 0) return !/^=\t/m.test(pushed.stdout);
+    // A refusal for a remote that has moved on. Anything else (no connection, killed, a hook's refusal) is an error.
+    if (!/^!\t[^\t]*\t\[rejected\]/m.test(pushed.stdout)) throw new Error(`git push ${netGitReason(pushed)}`);
+    // Only now a second connection: a remote that is ahead of this clone is no error, one that has diverged is.
+    const fetched = await this.network(["fetch", "--no-tags", "origin", `refs/heads/${branch}`], signal);
+    if (fetched.code !== 0) throw new Error(`git fetch ${netGitReason(fetched)}`);
+    const remoteHead = await this.resolveCommit("FETCH_HEAD");
+    if (Number((await this.git(["rev-list", "--count", `${remoteHead}..${head}`])).trim()) === 0) return false;
+    throw new Error(`The remote has commits this clone lacks: ${pushed.stdout.trim()}`);
+  }
+
+  /** The only way this store runs git against a remote (src/net-git.ts): bounded in time, killed with its ssh, no maintenance. */
+  private network(args: string[], signal?: AbortSignal): Promise<NetGitResult> {
+    return netGit(args, { cwd: this.dir, signal });
   }
 }
 
