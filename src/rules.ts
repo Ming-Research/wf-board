@@ -1002,7 +1002,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // step waits on nothing, and an unpaused root needs it. While another item is the next step (a study, say), the
         // rating waits too, and what no such root needs (backlog work, what hangs under it, paused work) is not asked for.
         const nextStepReady = rows.some(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
-        if (it.difficulty === undefined && neededSet().has(id) && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
