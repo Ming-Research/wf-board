@@ -1574,14 +1574,15 @@ level, and whether that someone is working, waiting or has gone quiet.
   the sessions or hooks that report, which add a process or a Claude Code format
   to keep alive; the item's last writer alone (`activity.sessions`), which
   loses a session's earlier items when another session writes the same item and
-  needs the in-progress row to know whose item it is. The comparison of all
-  six sources, with the timing measurements behind the thresholds below, is in
-  the item 「代理状态显示的调研」 (agents-visible-study).
+  needs the in-progress row to know whose item it is. The dispatch records are
+  read because they give the level a session was started at and the time it
+  started, before it has written anything (a reviewer may never write).
 - **Who is listed.** A session whose last activity is at most six hours old.
   Activity is a write with its session name, or the start of a dispatch record
   naming it (`agent`), whichever is later; a reviewer that only reads has a row
-  from its start. The architect's own session is left out: it wrote 521 of the
-  1158 writes on the day measured and would head the list every time. A name
+  from its start. The architect's own session is left out: on 2026-10-16 it made
+  521 of the 1158 board writes since 00:00 UTC and would head the list every
+  time. A name
   whose newest dispatch record has ended is not listed until it writes again
   more than a minute after the recorded end (the end may be recorded to the
   minute); names are reused (one item's study and its implementation are both
@@ -1591,7 +1592,9 @@ level, and whether that someone is working, waiting or has gone quiet.
   or 「N 分钟前起」 when the last activity is a dispatch start); its two items.
   The level is the one in the newest dispatch record naming the session, which
   is what it was started at (「审查 3 级」 for a review); with no record, the
-  difficulty of the newest of its items that has a step in progress.
+  difficulty (1 to 5) of the newest of its items that has a step in progress
+  and a difficulty in that range: an item the architect does itself, or an
+  unrated one, is passed over for an older item that has one.
 - **State word.** Read from the steps in progress on its two items, never from
   the host. A step with `waits` text: 「在等：」 and that text, whatever the
   time (the text is the session's own); amber when it has not written for over
@@ -1601,10 +1604,13 @@ level, and whether that someone is working, waiting or has gone quiet.
   word, only the time. A review dispatch gets no word at all: the steps on the
   item it reviews are the engineer's, and a reviewer reads for minutes without
   writing, so any word would claim more than the board knows. The 30 minutes
-  come from one afternoon of 13 sessions: of 428 moments a session was working,
-  0.2% were more than 30 minutes after its last write (22% more than 10, 11%
-  more than 15), and the longest gap between two writes of one engineer was 25
-  minutes; waiting for the architect lasted up to 61 minutes. The word is
+  come from three hours of 2026-10-16 with 13 sessions, comparing each session's
+  status timeline with the board's write times: of 428 moments a session was
+  working, 0.2% were more than 30 minutes after its last write (22% more than
+  10, 11% more than 15), and the longest gap between two writes of one engineer
+  was 25 minutes; waiting for the architect lasted up to 61 minutes. One
+  afternoon is a small sample: reopen the threshold if a working session is
+  seen silent for longer. The word is
   inferred from declarations, so the list says so on its face and every row
   carries the time since the session wrote.
 - **Reading a row with the tree.** Each item cell has the status chip and

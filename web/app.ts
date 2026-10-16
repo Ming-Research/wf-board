@@ -1668,11 +1668,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // The tree draws an ended item only while something open hangs on it, so only then is there a row to jump to.
   function inTree(it: ViewItem) { return visible(it) && ancestors(it).every(visible); }
-  // An item can sit in several rows, so each row's cells carry the row's own id prefix; none starts with 「it-」, which is the tree's.
-  function agentMount(name: string) { return "ag-" + encodeURIComponent(name).replace(/%/g, "_") + "--"; }
+  // An item can sit in several rows, so each row's elements carry the row's own id prefix; none starts with 「it-」, which is the
+  // tree's. The name is written so that two names never share a prefix: every character but a letter, digit or hyphen becomes
+  // its code point in hex between underscores.
+  function agentMount(name: string) { return "ag-" + [...name].map(c => /[A-Za-z0-9-]/.test(c) ? c : "_" + c.codePointAt(0)!.toString(16) + "_").join("") + "--"; }
   function agentItem(r: AgentRow, t: AgentTouch, it: ViewItem) {
     const st = statusOf(it) ?? "record", li = el("li", "agitem"), m: Mount = { prefix: agentMount(r.name) };
-    li.id = m.prefix + "it-" + it.id;
+    // A cell and the item row an unfolded parent draws for the same item must not share an id.
+    li.id = m.prefix + "cell-" + it.id;
     const row = el("div", "agitem-row"), sub = kids(it.id, true).filter(passes), open = rowOpen(m, it) && sub.length > 0;
     // The arrow unfolds the sub-items under the cell, as the tree's arrow does; the list's folds are its own.
     const caret = el("button", "agitem-caret", sub.length ? open ? "▾" : "▸" : "");
@@ -1719,9 +1722,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function renderAgents() {
     const host = get("agents"); if (!host) return;
     const rows = agentRowsNow();
-    // What an unfolded cell shows below it is the item rows' own presentation, so their signature joins the list's.
-    const unfolded = (prefix: string, id: string): unknown => agentOpen[prefix + id]
-      ? [presentationSignature(derived, snapshot.decisions, id), kids(id, true).filter(passes).map(k => [k.id, unfolded(prefix, k.id)])] : 0;
+    // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
+    // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
+    const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
+      agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0];
+    const unfolded = (prefix: string, id: string): unknown => agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0;
     const signature = JSON.stringify([agentsOpen, rows.map(r => [r.name, r.level, r.role, r.state, r.waits, r.amber, r.lastKind, agoText(r.lastAt), r.touched.map(t => {
       const it = index().byId.get(t.item);
       return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;

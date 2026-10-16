@@ -4053,7 +4053,7 @@ test("agent list: a row per session with its level, state word, how long ago it 
   const cells = row!.querySelectorAll(".agitem");
   assert.deepEqual(cells.map(c => c.querySelector(".agitem-title")!.innerHTML), ["Child", "Parent"], "newest first");
   assert.deepEqual(cells.map(c => c.querySelector(".agitem-time")!.innerHTML), ["5 分钟前", "1 小时 10 分钟前"]);
-  assert.ok(cells.every(c => c.id.startsWith("ag-eng--it-")), "cells carry the row's prefix");
+  assert.ok(cells.every(c => c.id.startsWith("ag-eng--cell-")), "cells carry the row's prefix and their own infix");
   assert.ok(!descendants(host).some(e => e.id.startsWith("it-")), "no element of the list has an id the tree uses");
   assert.match(host.querySelector(".agents-note")!.innerHTML, /不是看到的/, "the list says its state is inferred");
 });
@@ -4189,4 +4189,36 @@ test("agent list: a cell unfolds its sub-items in place, they unfold further, an
   const fold = again.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "全部折叠")!;
   await fold.click(); await again.flush();
   assert.equal(again.all().some(e => e.id.startsWith("ag-") && e.classList.contains("item")), false, "全部折叠 folds the list");
+});
+
+test("agent list: with nothing selected, a key command finds the tree's first row, not an unfolded row of the list", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const unfolded = p.all().find(e => e.id === "ag-eng--it-child");
+  assert.ok(unfolded, "the list shows an unfolded item row, before the tree in page order");
+  assert.equal(p.all().some(e => e.id.startsWith("detail-it-")), false, "nothing is selected");
+  p.key("c"); await p.flush();
+  assert.ok(p.all().some(e => e.id === "detail-it-area"), "c opened a comment on the tree's first row (and selected it), not on a name cut from the list's element id");
+});
+
+test("agent list: a cell and the item row an unfolded parent draws for the same item have different ids, and no two names share a prefix", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }, { item: "child", at: minutesAgo(3) }], "x y": [{ item: "area", at: minutesAgo(4) }], "x_20y": [{ item: "area", at: minutesAgo(5) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const ids = descendants(p.roots.get("agents")!).map(e => e.id).filter(Boolean);
+  assert.equal(new Set(ids).size, ids.length, "every id in the list is unique: " + ids.join(", "));
+  assert.ok(ids.includes("ag-eng--cell-child") && ids.includes("ag-eng--it-child"), "both the child's own cell and the item row under its parent's cell");
+  assert.equal(agentRowsOf(p).length, 3);
+});
+
+test("agent list: an unfolded sub-item row repaints at once when what it shows changes, not at the next minute", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }] });
+  const storage = new Map<string, string>([["board-agent-open", JSON.stringify({ "ag-eng--area": true })]]);
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const sub = () => p.all().find(e => e.id === "ag-eng--it-child")!;
+  assert.equal(sub().querySelector(".tagchip"), null);
+  p.emit("d".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, tags: ["看板"], rev: 2 } }]);
+  await p.flush();
+  assert.ok(sub().querySelector(".tagchip"), "the new tag shows in the list's row with the change");
 });

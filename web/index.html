@@ -127,6 +127,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .waitmore { font-size: 12px; color: var(--muted); }
 /* The agent list: one row per session, then the two items it touched last. */
 .agents { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.agents[hidden] { display: none; }
 .agents-head { margin: 0; font-size: 15px; }
 .agents-toggle { font: inherit; font-weight: 700; background: none; border: 0; padding: 0; color: var(--ink); cursor: pointer; }
 .agents-note { margin: 0; font-size: 12px; color: var(--muted); max-width: 68ch; }

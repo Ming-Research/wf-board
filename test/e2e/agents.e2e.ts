@@ -24,7 +24,7 @@ test("the agent list is above the projects, and 在树中 lands on the item's tr
   const board = await startBoard(t), browser = await launch(t);
   const bp = await BoardPage.open(browser, board, openAll(board));
   const id = await farItem(bp, board);
-  assert.equal(await bp.page.locator("#agents:not([hidden])").count(), 0, "no session has written yet: no list");
+  assert.equal(await bp.page.evaluate(() => getComputedStyle(document.getElementById("agents")!).display), "none", "no session has written yet: no list, and no space for it");
   const base = await bp.changes();
   await write(board, "agent-x", id);
   await bp.waitChanges(base + 1);
@@ -79,6 +79,8 @@ test("two sessions on one item each show it, and the tree's element is still fou
   assert.equal(await bp.page.locator("#agents .agitem").count(), 2);
   const ids = await bp.page.locator("#agents .agitem").evaluateAll(cells => cells.map(c => c.id));
   assert.equal(new Set(ids).size, 2, "each cell has its own id");
+  const all = await bp.page.locator("#agents [id]").evaluateAll(els => els.map(e => e.id));
+  assert.equal(new Set(all).size, all.length, `every id in the list is unique (${all.join(", ")})`);
   assert.equal(await bp.page.locator(`[id="it-${id}"]`).count(), 1);
   await bp.page.locator('#agents [data-agent="agent-x"] .agitem-title').first().click();
   await bp.settle();

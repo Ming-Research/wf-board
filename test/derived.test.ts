@@ -134,8 +134,16 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   // The first rounds pause and resume the two roots that store no priority, whatever the seed draws later: nothing below them
   // changes except whether it is needed, which only 缺难度 on an unrated item shows.
   const forced = ["W2", "F2"].flatMap(id => [true, false].map(paused => async (s: Snapshot) => op.setPause({ ...asArchitect, id, paused, ...(paused ? { reason: "wait" } : {}) }) ));
+  // The last round is two writes by one session to one item in a row, which the random draws rarely make: an index that kept
+  // the item twice would show only then.
+  const tailItem = "W0";
+  const tail = async (s: Snapshot) => {
+    const group = s.items[tailItem]!.group;
+    await base.appendLog({ author: group, session: "session-a", id: tailItem, text: "again" });
+    return base.appendLog({ author: group, session: "session-a", id: tailItem, text: "and again" });
+  };
   for (let round = 0; round < 140; round++) {
-    try { await (forced[round] ?? pick(actions))(store.snapshot()); }
+    try { await (forced[round] ?? (round === 139 ? tail : pick(actions)))(store.snapshot()); }
     catch (error) { if (!(error instanceof OpError)) throw error; }
     if (moveRand() < 0.25) {
       const s = store.snapshot(), ids = itemsOf(s), id = ids[Math.floor(moveRand() * ids.length)]!, group = s.items[id]!.group;
@@ -215,6 +223,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.deepEqual(store.snapshot().activity?.agents, expectedAgents, "the agent index equals the two latest items each session touched");
   assert.deepEqual(Object.keys(expectedAgents).sort(), ["session-a", "session-b", "session-c", "架构师"], "every session wrote, the architect's writes under its own name");
   assert.ok(Object.values(expectedAgents).every(list => list.length === 2), "each kept two items");
+  assert.equal(expectedAgents["session-a"]![0]!.item, tailItem, "the closing double write by one session to one item happened"); 
   const attributed = Object.keys(store.snapshot().activity?.sessions ?? {}).length;
   assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
   // A daemon restart derives the whole activity, session attribution included, from history alone.
