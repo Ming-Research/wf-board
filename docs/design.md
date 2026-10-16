@@ -287,8 +287,8 @@ log:
   of its own; the owned item with the doing step carries the flag. Each board
   content write starts a
   30-minute active interval; overlapping intervals count only once, and the
-  measure clips their union to the item's last change through the current
-  time. When no one writes, all clocks stop after the last interval ends.
+  measure clips their union to the clock items' latest change through the
+  current time. When no one writes, all clocks stop after the last interval ends.
   Item revisions, log entries, cards and notes on a clock item reset its last
   change. Records and items in other statuses are never flagged.
   Effective pauses suppress the flag and freeze the clock: the union of

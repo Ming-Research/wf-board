@@ -484,6 +484,12 @@ test("a shared item in progress does not reset the owner's clock: that item is s
   assert.equal(hasStalled(s), true, "a shared row in progress leaves the owner's clock alone");
 });
 
+test("a card reference never continues the clock of an item with the same key", () => {
+  const s = activeBoard(); s.items.named = Item.parse({ title: "Named", group: "Default", updated: timeAt(2.5), plan: workPlan(), rev: 1 });
+  s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "see [[q:named]]" })]);
+  assert.equal(hasStalled(s), true, "[[q:named]] names a decision card, not the item named");
+});
+
 test("a reference to a missing, finished or dropped step, or to the item itself, follows the same rule", () => {
   const s = activeBoard();
   s.items.quiet!.plan = workPlan([step("work", "doing"), step("ref", "doing", { text: "see [[it:nowhere]]" })]);
