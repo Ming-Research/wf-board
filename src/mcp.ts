@@ -155,8 +155,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const parsed = schema.parse(a);
         // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
-        const caller = credential?.ok ? credential.who.session : args.session;
-        if (typeof caller === "string" && isArchitectSession(caller)) wake?.receipt();
+        // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
+        if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
         return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "") }] };
       }

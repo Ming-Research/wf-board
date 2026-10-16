@@ -333,9 +333,11 @@ export const ARCHITECT_SESSION = "架构师";
  * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
  * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
  * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
- * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ * project author. A write over a credential is the architect's when the credential's role is, whatever names it carries
+ * (src/credentials.ts); the names of a write without one are not authenticated: that stops misuse, not impersonation.
  */
-export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+export const isArchitect = (who: { author: string; session?: string; access?: { role: string } }): boolean =>
+  who.access ? who.access.role === "架构师" : who.author === ARCHITECT && isArchitectSession(who.session);
 /** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */

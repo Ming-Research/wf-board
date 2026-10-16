@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
+import { Budget, withBudget } from "../src/budget.ts";
 import { board, author, asArchitect, at } from "./helpers.ts";
 
 async function clocked(t: Parameters<typeof board>[0]) {
@@ -122,4 +123,31 @@ test("set_status sent again by the same session is answered with the first write
   // The same words a minute later are a new decision, and the refusal of a reopen of an open item stands.
   setClock("2026-10-16T10:03:00Z");
   await assert.rejects(op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Resume" }), /only a cancelled item can be reopened/);
+});
+
+test("a second cancel after a reopen is a decision of its own, not the repeat of the first cancel", async t => {
+  const { store, op, setClock } = await clocked(t);
+  const cancel = () => op.setStatus({ ...asArchitect, id: "other", status: "cancelled", log: "Superseded" });
+  await cancel();
+  setClock("2026-10-16T10:00:20Z");
+  await op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Resume" });
+  setClock("2026-10-16T10:00:50Z");
+  const second = await cancel();
+  assert.equal(second.repeated, undefined, "the first cancel is behind a reopen: the item is open and the call asks for the opposite");
+  assert.equal(store.snapshot().items.other!.status, "cancelled");
+  // And the repeat of that second cancel, which the item now shows, is still recognised.
+  setClock("2026-10-16T10:01:10Z");
+  assert.equal((await cancel()).repeated, true);
+});
+
+test("a repeat found while the history cannot be read is written: the check gives way to the request's budget", async t => {
+  const { store, op, setClock } = await clocked(t);
+  await op.appendLog({ author, session: "S", id: "a", text: "done" });
+  const lines = logOf(store).length;
+  setClock("2026-10-16T10:00:20Z");
+  // A budget with nothing to read: the first read of history in the check exceeds it.
+  const spent = new Budget("t", { bytes: 0, bytesPerCommit: 0, boards: 0, heapShare: 0.75 }, () => ({ used: 0, limit: 1e9 }));
+  const warn = console.warn; console.warn = () => {};
+  try { await withBudget(spent, () => op.appendLog({ author, session: "S", id: "a", text: "done" })); } finally { console.warn = warn; }
+  assert.equal(logOf(store).length, lines + 1, "written, with at worst one line too many");
 });

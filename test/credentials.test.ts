@@ -93,7 +93,8 @@ test("a dispatch issues a credential for its session, role, item and project, an
   assert.deepEqual(credentials.resolve(`Bearer ${credential}`, store.snapshot()), { ok: true, who: { author: "Whitefoot", session: "a-worker", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } });
   // The architect's session name is the architect's alone: a dispatch credential under it would be taken for the architect's.
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师", agentId: "agent-3" }), /agent.*the architect's session name/);
-  assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent === "架构师") ?? false, false, "and no dispatch was recorded");
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师 ", agentId: "agent-4" }), /agent.*the architect's session name/, "spaces around the name do not make another name: the board ignores them where it takes a session for the architect's");
+  assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师") ?? false, false, "and no dispatch was recorded");
   const review = await op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 3, model: "Opus", agent: "a-review", agentId: "agent-2" });
   const reviewer = credentials.resolve(`Bearer ${review.credential}`, store.snapshot()) as Extract<Resolved, { ok: true }>;
   assert.equal(reviewer.who.access.role, "审查");

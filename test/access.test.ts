@@ -152,6 +152,19 @@ test("a subtree credential cannot change an item outside its subtree through the
   await op.appendLog({ ...who, id: "free", text: "inside now" });
 });
 
+test("a credential speaks for the architect by its role, whatever author and session it carries", async t => {
+  const { op, store } = await board(t);
+  // Author Architect from the session 架构师 is what the board takes for the architect when nothing else tells; a credential of
+  // another role is not the architect's, so it has no right over another project's items (`a` belongs to Whitefoot).
+  const head = store.snapshot().head;
+  const engineerAsArchitect = { author: "Architect", session: "架构师", access: { role: "工程师" as const, project: "Architect", roots: ["a"] } };
+  await assert.rejects(op.appendLog({ ...engineerAsArchitect, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
+  assert.equal(store.snapshot().head, head);
+  // The architect's own credential does.
+  await op.appendLog({ author: "Architect", session: "架构师", access: { role: "架构师" as const, project: "Architect", roots: [] }, id: "a", text: "from the architect" });
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "from the architect");
+});
+
 test("a review writes the log of its subtree and nothing else", async t => {
   const { op } = await board(t);
   const who = { author: "Whitefoot", session: "rev", access: { role: "审查" as const, project: "Whitefoot", roots: ["a"] } };

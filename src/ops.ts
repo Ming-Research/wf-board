@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -479,13 +479,18 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     const who = session?.trim();
     // Any write of this window left the item updated in it, so an item last updated before the window has no earlier write to find.
     if (!who || !(Date.parse(at) - Date.parse(it.updated) <= REPEAT_MS)) return undefined;
-    for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
-      if (commit.session !== who || commit.message !== message) continue;
-      const doc = await store.show("item", id, commit.commit) as Item | null;
-      if (!doc) continue;
-      // The commits come newest first: a write of this kind older than the window is followed by older ones only.
-      if (!(Date.parse(at) - Date.parse(doc.updated) <= REPEAT_MS)) break;
-      if (same(doc)) return { commit: commit.commit, id, rev: doc.rev, summary: commit.message };
+    try {
+      for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
+        if (commit.session !== who || commit.message !== message) continue;
+        const doc = await store.show("item", id, commit.commit) as Item | null;
+        if (!doc) continue;
+        // The commits come newest first: a write of this kind older than the window is followed by older ones only.
+        if (!(Date.parse(at) - Date.parse(doc.updated) <= REPEAT_MS)) break;
+        if (same(doc)) return { commit: commit.commit, id, rev: doc.rev, summary: commit.message };
+      }
+    } catch (error) {
+      // The check is a courtesy to a retrying client: when the request's budget for reading history is spent, the write is made, at worst once too often.
+      if (!(error instanceof BudgetError)) throw error;
     }
     return undefined;
   }
@@ -596,7 +601,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
-        if (a.agent === ARCHITECT_SESSION) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
+        if (isArchitectSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
           if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
@@ -770,7 +775,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     setStatus: a => run(a, "item.cancel", async (s, at) => {
       onlyArchitect(a, "cancel or reopen an item");
       const it = ownedItem(s, a.id, a), message = `set_status ${a.id} ${a.status}`;
-      const earlier = await earlierWrite(it, a.id, a.session, at, message, doc => lastLine(doc, a.author, a.log));
+      // A repeat finds the item already as the first write left it; after a reopen, a cancel is a decision of its own.
+      const asked = a.status === "cancelled" ? it.status === "cancelled" : it.status !== "cancelled";
+      const earlier = asked ? await earlierWrite(it, a.id, a.session, at, message, doc => lastLine(doc, a.author, a.log)) : undefined;
       if (earlier) return replay(a.id, earlier);
       if (it.record) throw new OpError("status: a record has no status");
       if (a.status !== "cancelled" && a.status !== "open") throw new OpError("status: only cancelled or open; all other statuses are derived from the plan");

@@ -172,7 +172,10 @@ else stops the second: `append_log`, `close_note`, `set_status` and
 of the same operation on the same target from the same session, made in the
 last minute, that left the item holding the line this write adds (the last log
 line of the same author with the same text; for `journal_entry`, the same text
-at the end of the head). The answer is that first commit, marked `repeated`. The
+at the end of the head; for `set_status`, also only while the item is in the state the
+call asks for, so a cancel after a reopen is a new decision). The answer is that first
+commit, marked `repeated`. The check reads history under the request's budget; when
+the budget is spent the write is made, at worst once too often. The
 rule reads the commit's message and `Session:` trailer and the item as the
 commit left it, so it holds across a restart with nothing kept in memory, and
 one function serves the four writes. A caller that names no session is not
@@ -2503,10 +2506,12 @@ the writer from it.
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session name `架构师`** is the architect's alone: the board takes author `Architect`
-  writing from that session for the architect (section 6) and skips checks for it. A file
-  entry of another role under that name is refused, and so is `dispatch_start` for an agent
-  of that name.
+- **The session name `架构师`** is the architect's alone: without a credential the board takes
+  author `Architect` writing from that session for the architect (section 6) and skips
+  checks for it. A file entry of another role under that name is refused, and so is
+  `dispatch_start` for an agent of that name (spaces around it are ignored, as everywhere the
+  board compares it). With a credential, a write is the architect's when the credential's
+  role is, whatever names it carries.
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads
