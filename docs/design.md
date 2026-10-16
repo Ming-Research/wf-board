@@ -176,8 +176,9 @@ restart.
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
-  on the Mac by a macOS notification, only when the daemon does not answer, since then no daemon can push. The job only undoes
-  what it did to a checkout that is still the one it moved: on the main line's
+  on the Mac by a macOS notification, only when the daemon does not answer, since
+  then no daemon can push. The job only undoes what it did to a checkout that is
+  still the one it moved: on the main line's
   branch, without local changes to tracked files, and on the commit where the
   job last left it (the record keeps that, also while a move is under way), even
   when someone else's hand lands on the deploy's target or the commit to go back
@@ -1896,7 +1897,7 @@ focuses the page and opens the card or item, or the home view when there is no
 target. The event is live only: a page that connects later gets nothing from
 before its connection, and a reconnect does not replay. A closed page gets
 nothing; Web Push is not used. The daemon shows no macOS notification of its own;
-the deploy job's notice on the Mac (above) is the only one that runs `osascript`,
+the deploy job's notice on the Mac (section 4, Deploying) is the only one that runs `osascript`,
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item

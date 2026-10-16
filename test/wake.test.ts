@@ -498,6 +498,21 @@ test("a told notice goes to each listener with its card or item; a listener adde
   assert.deepEqual(told, [JSON.stringify({ title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } })]);
 });
 
+test("a listener that throws is logged; the listeners after it still get the notice, and tell does not throw", () => {
+  const errors: unknown[][] = [], original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  const got: string[] = [];
+  try {
+    const wake = new Wake({ now: () => T0 });
+    wake.onTell(() => { throw new Error("listener broke"); });
+    wake.onTell(notice => got.push(notice.title));
+    wake.tell("挡事的卡 · Whitefoot", "问题");
+  } finally { console.error = original; }
+  assert.deepEqual(got, ["挡事的卡 · Whitefoot"], "the listener after the one that threw still gets the notice");
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]![0]), /owner notice listener failed/);
+});
+
 test("a no-receipt notice opens the item or card its oldest unanswered event is about, and none when that event has no target", () => {
   let clock = T0;
   const targets: unknown[] = [];
