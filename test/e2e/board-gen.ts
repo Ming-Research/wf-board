@@ -224,6 +224,8 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const multiPlanCard = newCard(home, "open", true);
   const doneHome = pickItem(x => !x.record && !x.status && x.leafKind === "done");
   const donePlanCard = newCard(doneHome, "ruled", false, true);
+  // Its row names a long pick: the option has no name, so the row shows the first line of its detail.
+  if (!donePlanCard.old) convert(donePlanCard, "背景：渲染器在旧格式数据上出错。");
   const otherHome = pickItem(x => open(x) && x.group === p1);
   const otherPlanCard = newCard(otherHome, "open");
   const record = order.find(x => x.record)!;

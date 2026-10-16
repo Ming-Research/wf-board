@@ -141,6 +141,13 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard], true); },
   },
   {
+    bug: "a ruled card's plan row showed no question when the pick it names is long: the pick would not shrink and squeezed the question to nothing (feature, card-in-plan)",
+    // The pick takes its full width again.
+    reverts: [{ file: "web/index.html", edit: "the pick of a card row does not shrink", find: ".plan-row.cardrow > .plan-main > span:not(.cardpick) { flex: none; }", replace: ".plan-row.cardrow > .plan-main > span { flex: none; }" }],
+    family: "plan-card-row",
+    run: async (bp, b) => { const o = await oracle(b.store); return checkPlanRows(bp, o, [o.s.decisions[b.gen.witness.donePlanCard]!.item]); },
+  },
+  {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
     reverts: [{ commit: "756e5ea", file: "web/app.ts" }], family: "empty-row",
     run: (bp, b) => checkEmptyRows(bp, [b.gen.witness.unpaused, b.gen.witness.code]),
@@ -158,7 +165,7 @@ const WITNESSES: Witness[] = [
   },
   {
     bug: "a 参考 section the reader opened folded again after the item re-rendered (ref-fold)",
-    reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    refOpen[d.dataset.ref!] = d.open;\n    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}\n', replace: "" }], family: "ref-fold-keep",
+    reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    rememberRef(d.dataset.ref!, d.open);\n', replace: "" }], family: "ref-fold-keep",
     run: async (bp, b) => checkRefFold(bp, b),
   },
 ];

@@ -349,7 +349,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-s
 .cardsend:disabled { opacity: .45; cursor: default; }
 .body .card { margin-top: 4px; }
 .plan-row.cardrow > .plan-main { display: flex; align-items: baseline; gap: 6px; }
-.plan-row.cardrow > .plan-main > span { flex: none; }
+.plan-row.cardrow > .plan-main > span:not(.cardpick) { flex: none; }
 .plan-row.cardrow .cardgo { font-weight: 700; min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .plan-row.cardrow .cardpick { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .card .pick { display: flex; gap: 6px; align-items: baseline; }

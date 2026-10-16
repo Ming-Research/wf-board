@@ -57,7 +57,7 @@ export async function oracle(store: Store): Promise<Oracle> {
 const q = (s: string) => s.replace(/["\\]/g, "\\$&");
 const sameSet = (a: Iterable<string>, b: Iterable<string>) => { const x = [...new Set(a)].sort(), y = [...new Set(b)].sort(); return x.length === y.length && x.every((v, i) => v === y[i]); };
 async function attempt(v: string[], what: string, fn: () => Promise<unknown>): Promise<boolean> {
-  try { await fn(); return true; } catch (e) { v.push(`${what}: ${(e instanceof Error ? e.message : String(e)).split("\n")[0]}`); return false; }
+  try { await fn(); return true; } catch (e) { v.push(`${what}: ${(e instanceof Error ? e.message : String(e)).split("\n").map(l => l.trim()).filter((l, i, all) => l && all.indexOf(l) === i).slice(0, 10).join(" | ")}`); return false; }
 }
 /** Where a wait landed: the current card, or an item's own request when no card is current. */
 async function landing(bp: BoardPage): Promise<string> {
@@ -115,6 +115,8 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
         if (picked && !rowText.includes(((picked.text || picked.detail || "").split("\n")[0]!).replace(/[*`]/g, "").trim().slice(0, 4))) v.push(`plan-card-row: in ${x}'s plan, the ruled card ${card}'s row does not name the option chosen`);
         const placed = placedCards(o.s.items[x]!.head).includes(card), cardEl = page.locator(`#item-detail [id="q-${q(card)}"]`);
         const shownBefore = await cardEl.count();
+        const goWidth = await page.locator(sel + " .plan-main a").first().evaluate(a => a.getBoundingClientRect().width);
+        if (goWidth < 20) { v.push(`plan-card-row: in ${x}'s plan, the question of card ${card} is squeezed to ${Math.round(goWidth)} px by the rest of its row`); continue; }
         if (!await attempt(v, `plan-card-row ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
         await bp.settle();
         const got = await bp.selected();
@@ -160,7 +162,7 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
     const box = page.locator(`#item-detail [id="q-${q(card)}"]`);
     let asked = false;
     if (!placed) {
-      if (fresh && await box.count()) v.push(`card-place: card ${card} has no line in the head but is drawn before it was asked for`);
+      if (fresh && await box.count()) v.push(`card-unplaced: card ${card} has no line in the head but is drawn before it was asked for`);
       if (!await box.count()) {
         // Ask for it where the page offers it: its plan row, else the item's 决策 line.
         const entry = row ? page.locator(`#item-detail [id="${q("plan-" + encodeURIComponent(JSON.stringify([d.item, row.id])))}"] .plan-main a.cardgo`) : page.locator(`#item-detail .refs button.ref.q[data-card="${q(card)}"]`);
@@ -168,7 +170,7 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
         await bp.settle(); asked = true;
       }
     }
-    if (await box.count() !== 1) { v.push(`card-box: card ${card} shows ${await box.count()} times in ${d.item}'s body, not once`); continue; }
+    if (await box.count() !== 1) { v.push(`${placed && !await box.count() ? "card-place" : "card-box"}: card ${card} shows ${await box.count()} times in ${d.item}'s body, not once${placed ? " although its line stands in the head" : ""}`); continue; }
     const m = await page.evaluate(([c, rowId]) => {
       const e = document.getElementById("q-" + c)!, legacy = e.querySelector("details.legacy") as HTMLDetailsElement | null, fold = e.querySelector("details.cardfold") as HTMLDetailsElement | null;
       const parent = e.parentElement!, head = e.closest(".rich"), plain = (n: Element | null) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -195,14 +197,14 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
         if (!!op.recommended !== !!shown?.rec) v.push(`card-box: open card ${card}'s option ${op.key} ${op.recommended ? "is not" : "is"} marked recommended`);
         if (!!op.text !== (shown?.name != null)) v.push(`card-box: open card ${card}'s option ${op.key} ${op.text ? "lost its name" : "shows a name it does not have"}`);
         else if (op.text && !shown!.name!.includes(op.text.slice(0, 6))) v.push(`card-box: open card ${card}'s option ${op.key} does not show its name`);
-        if (!!op.detail !== (shown?.detail != null)) v.push(`card-box: open card ${card}'s option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
-        else if (op.detail && !shown!.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-box: open card ${card}'s option ${op.key} does not show its detail`);
+        if (!!op.detail !== (shown?.detail != null)) v.push(`card-option-detail: open card ${card}'s option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
+        else if (op.detail && !shown!.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-option-detail: open card ${card}'s option ${op.key} does not show its detail`);
       }
       if (!m.send) v.push(`card-box: open card ${card} has no 发送 button`);
       if (m.pick !== null) v.push(`card-box: open card ${card} shows a pick`);
       if (m.closedClass || m.fold) v.push(`card-box: open card ${card} is drawn as a closed one`);
-      if (confText && !(m.conf ?? "").includes("把握：" + confText)) v.push(`card-box: open card ${card} does not show its confidence "${confText}", it says "${m.conf}"`);
-      if (!confText && m.conf) v.push(`card-box: open card ${card} has no confidence but shows one`);
+      if (confText && !(m.conf ?? "").includes("把握：" + confText)) v.push(`card-confidence: open card ${card} does not show its confidence "${confText}", it says "${m.conf}"`);
+      if (!confText && m.conf) v.push(`card-confidence: open card ${card} has no confidence but shows one`);
     } else {
       if (m.options.length) v.push(`card-box: ${d.status} card ${card} still shows ${m.options.length} option buttons`);
       if (m.send) v.push(`card-box: ${d.status} card ${card} still has a 发送 button`);
@@ -240,11 +242,11 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
           if (!!op.recommended !== shown.rec) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.recommended ? "is not" : "is"} marked recommended`);
           if (shown.chosen !== (op.key === d.choice)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${shown.chosen ? "is" : "is not"} marked chosen`);
           if (!!op.text !== (shown.name != null)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.text ? "lost its name" : "shows a name it does not have"}`);
-          if (!!op.detail !== (shown.detail != null)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
-          else if (op.detail && !shown.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} does not show its detail`);
+          if (!!op.detail !== (shown.detail != null)) v.push(`card-option-detail: ${d.status} card ${card}'s listed option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
+          else if (op.detail && !shown.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-option-detail: ${d.status} card ${card}'s listed option ${op.key} does not show its detail`);
         }
-        if (confText && !(body.conf ?? "").includes("把握：" + confText)) v.push(`card-box: ${d.status} card ${card} does not show its confidence under its line`);
-        if (!confText && body.conf) v.push(`card-box: ${d.status} card ${card} has no confidence but shows one`);
+        if (confText && !(body.conf ?? "").includes("把握：" + confText)) v.push(`card-confidence: ${d.status} card ${card} does not show its confidence under its line`);
+        if (!confText && body.conf) v.push(`card-confidence: ${d.status} card ${card} has no confidence but shows one`);
         // The ruling of a card ruled in words is on its line; one with a choice shows it under the line.
         if (d.ruling && !words && !(body.ruling ?? "").includes(first(d.ruling).slice(0, 6))) v.push(`card-box: ${d.status} card ${card} does not show its ruling under its line`);
         if (words && body.ruling) v.push(`card-box: card ${card}, ruled in words, shows its ruling again under its line`);
@@ -257,7 +259,7 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
       if (!m.legacy) v.push(`card-box: card ${card} lost its old background`);
       else {
         if (m.legacy.label !== "原卡的背景") v.push(`card-box: card ${card}'s old background is titled "${m.legacy.label}", not "原卡的背景"`);
-        if (fresh && !asked && m.legacy.open !== (d.status === "open")) v.push(`card-legacy: card ${card}'s old background is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
+        if (fresh && !asked && m.legacy.open !== (d.status === "open")) v.push(`${d.status === "open" ? "card-legacy-open" : "card-legacy"}: card ${card}'s old background is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
         const marker = first(d.legacy.background).slice(0, 6);
         if (!m.legacy.open && !await attempt(v, `card-box legacy ${card}`, async () => { await box.locator("details.legacy > summary").click(); await bp.settle(); })) continue;
         const shown = await box.locator("details.legacy").textContent() ?? "";
