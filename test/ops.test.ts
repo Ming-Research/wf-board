@@ -966,7 +966,7 @@ test("Architect writes any project's items, cards and note replies under its own
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
-test("only Architect from session 架构师 creates items, cancels or reopens them, changes a title, pauses or resumes, and changes the tag vocabulary", async t => {
+test("only Architect from session 架构师 creates items, cancels or reopens them, changes a title, moves them to another project, pauses or resumes, and changes the tag vocabulary", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass", priority: "P1" });
   const before = store.snapshot(), count = (await store.log()).length, rev = before.items.a!.rev;
@@ -984,6 +984,7 @@ test("only Architect from session 架构师 creates items, cancels or reopens th
     [() => op.setTag({ ...who, ...tag }), only("change the tag vocabulary")],
     [() => op.renameTag({ ...who, name: tag.name, to: "改名" }), only("change the tag vocabulary")],
     [() => op.removeTag({ ...who, name: tag.name }), only("change the tag vocabulary")],
+    [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), only("move an item to another project")],
     [() => op.createProject({ ...who, name: "New", after: "Firn" }), /^after: only Architect with session 架构师 may reorder projects/],
     [() => op.updateProject({ ...who, name: "总管", repo: "Org/Changed" }), /^project 总管: only that project or Architect with session 架构师 may update its repo$/],
   );
@@ -991,6 +992,7 @@ test("only Architect from session 架构师 creates items, cancels or reopens th
   for (const who of [{ author: architect }, { author: architect, session: "engineer" }]) cases.push(
     [() => op.setStatus({ ...who, id: "own-item", status: "cancelled", log: "Drop" }), only("cancel or reopen an item")],
     [() => op.updateItem({ ...who, id: "own-item", rev: before.items["own-item"]!.rev, title: "Renamed" }), only("change an item's title")],
+    [() => op.moveItemProject({ ...who, id: "own-item", project: "Firn" }), only("move an item to another project")],
   );
   for (const [call, message] of cases) {
     await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
@@ -1118,6 +1120,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     removeTag: () => op.removeTag({ author: retired, name: "健全性" }),
     setPause: () => op.setPause({ author: retired, id: "a", paused: true, reason: "Wait" }),
     moveItem: () => op.moveItem({ author: retired, id: "a", owner: "other" }),
+    moveItemProject: () => op.moveItemProject({ author: retired, id: "a", project: "Firn" }),
     clearAsk: () => op.clearAsk({ author: retired, id: "a", log: "Settled" }),
     writeCard: () => op.writeCard({ author: retired, key: "new-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }),
     ruleCard: () => op.ruleCard({ author: retired, key: "choice", choice: "A", ruling: "Approved" }),

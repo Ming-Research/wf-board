@@ -32,6 +32,8 @@ export interface Ops {
   removeTag(a: { author: string; session?: string; name: string; replace?: string }): Promise<Result>;
   setPause(a: { author: string; session?: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
   moveItem(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
+  /** Moves an item and everything it owns to another project; an owner left behind keeps a shared row. */
+  moveItemProject(a: { author: string; session?: string; id: string; project: string; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
   ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling: string }): Promise<Result>;
@@ -642,6 +644,55 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (a.priority) { priorityAllowed(next, a.id); const doc = docOf(s, puts, a.id); putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority })); }
       }
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
+    }),
+    moveItemProject: a => run(a, (s, at) => {
+      onlyArchitect(a, "move an item to another project");
+      const root = ownedItem(s, a.id, a), from = root.group;
+      requireProject(s, a.project);
+      if (a.project === from) throw new OpError(`project: ${a.id} is already in ${a.project}`);
+      const r = rulesOf(s);
+      // The item and everything it owns, at any depth and in any state: ownership stays within one project, so they move together.
+      const moved = new Set([a.id]);
+      for (const id of moved) for (const child of r.children(id)) if (Object.hasOwn(s.items, child)) moved.add(child);
+      const ids = [...moved], puts: Put[] = [];
+      for (const id of ids) {
+        // A stored cross-project owned row would only be carried along; the board's own check names it.
+        const crossed = r.checks(id).find(check => check.text === "跨项目拥有");
+        if (crossed) throw new OpError(`item ${id}: owned by ${crossed.target!.id} of project ${r.groupOf(crossed.target!.id)} but belongs to project ${r.groupOf(id)} (跨项目拥有); fix that with set_plan first`);
+        const it = ownedItem(s, id, a);
+        try { checkedTags(s, a.project, it.tags, false); }
+        catch (error) { throw error instanceof OpError ? new OpError(`item ${id}: ${error.message}`) : error; }
+        puts.push(itemPut(id, { ...it, group: a.project, updated: at, log: [...it.log, entry(a.author, at, `换项目：从 ${from} 换到 ${a.project}${id === a.id ? "" : `（随「${root.title}」）`}`)] }));
+      }
+      // An owner left behind cannot keep owning across projects: its owned rows to moved items become shared rows, in place.
+      const left = new Map<string, string[]>();
+      for (const id of ids) for (const d of r.dependents(id)) if (d.own && !moved.has(d.id)) left.set(d.id, [...left.get(d.id) ?? [], id]);
+      for (const [owner, targets] of left) {
+        const doc = ownedItem(s, owner, a, "owner");
+        putDoc(puts, itemPut(owner, { ...doc, updated: at,
+          plan: doc.plan.map(row => "item" in row && row.own && targets.includes(row.item) ? { ...row, own: false } : row),
+          log: [...doc.log, entry(a.author, at, `${targets.map(id => `「${s.items[id]!.title}」`).join("")}换到了项目 ${a.project}；计划不再拥有，改成依赖`)] }));
+      }
+      // The board's own check says which items the move leaves with an open waiter in their project and no owner there: the
+      // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
+      const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
+      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.checks(id).some(check => check.text.startsWith("同项目有条目在等它"));
+      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
+      const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
+      const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
+      const fix = (id: string): string => {
+        const waiting = waiters(id);
+        return id === a.id
+          ? `${waiting.join(", ")} in ${a.project} wait on ${id} through shared rows, so ${id} would arrive owned by no item. This call cannot name a new owner for ${id}: have ${a.project} drop those rows with set_plan first, move ${id}, then let the item that needs it own it with an owned row (or leave the dependency out)`
+          : `${waiting.join(", ")} will wait on ${id} through a shared row while no item of ${a.project} owns ${id}. Have an item of ${a.project} own ${id} first, or drop the row to ${id} from ${waiting.length === 1 ? "that item's" : "their"} plan with set_plan first`;
+      };
+      if (stranded.length) throw new OpError(`project: 同项目有条目在等它，却没有条目拥有它: ${stranded.map(fix).join("; ")}`);
+      if (a.priority !== undefined) {
+        priorityAllowed(next, a.id);
+        const doc = docOf(s, puts, a.id);
+        putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority, log: root.priority && root.priority !== a.priority ? [...doc.log, entry(a.author, at, `优先级：${root.priority} 改为 ${a.priority}`)] : doc.log }));
+      } else if (after.isOpenWork(a.id) && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project} with no stored priority; give priority P0 (urgent), P1 (soon) or P2 (later)`);
+      return { id: a.id, kind: "item", puts, moved: ids, message: `move_item_project ${a.id} ${a.project}` };
     }),
     clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };

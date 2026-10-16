@@ -195,7 +195,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 40, "post_notice is gone, journal_entry is new"); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 41, "post_notice is gone, journal_entry and move_item_project are new"); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]], ["triage_request", ["parent", "parent_why"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
@@ -286,6 +286,28 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const moved = await client.callTool({ name: "move_item", arguments: { author, id: "a", owner: "other", after: [] } }); assert.equal(moved.isError, undefined, text(moved));
   const cancelled = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "cancelled", log: "Superseded" } }); assert.equal(cancelled.isError, undefined, text(cancelled));
   const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
+});
+
+test("MCP moves an item and what it owns to another project, and only Architect with session 架构师 may", async t => {
+  const { client, text, store } = await connected(t);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
+  assert.deepEqual([...tool.inputSchema.required!].sort(), ["author", "id", "project"]);
+  assert.match(tool.description!, /^Only author Architect with session 架构师 may use it\./);
+  const before = store.snapshot();
+  // The item's own project, another project, Architect without the session and Architect from another session all get the same refusal.
+  for (const who of [{ author }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }]) {
+    const refused = await client.callTool({ name: "move_item_project", arguments: { ...who, id: "area", project: "Firn" } });
+    assert.equal(refused.isError, true); assert.match(text(refused), /author: only Architect with session 架构师 may move an item to another project/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  const moved = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Firn" } });
+  assert.equal(moved.isError, undefined, text(moved));
+  assert.match(text(moved), /^move_item_project area Firn · rev \d+ · commit [0-9a-f]{40}\narea · .*Firn › area/);
+  assert.deepEqual(["area", "a", "b"].map(id => store.snapshot().items[id]!.group), ["Firn", "Firn", "Firn"]);
+  const back = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Whitefoot" } });
+  assert.equal(back.isError, undefined, text(back));
+  assert.deepEqual(["area", "a", "b"].map(id => store.snapshot().items[id]!.group), ["Whitefoot", "Whitefoot", "Whitefoot"]);
 });
 
 test("MCP request filing stores reason only in the log and triage attaches the receiving owner", async t => {
