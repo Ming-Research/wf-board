@@ -28,6 +28,7 @@ jobs:
       - if: steps.browsers.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
       - run: node --version && nproc && cat /proc/cpuinfo | grep -m1 'model name'
       - name: quiet board, folded tree
         run: node test/e2e/perf-n.measure.ts --label quiet --variants head,noagents --reps 3
@@ -65,6 +66,7 @@ jobs:
       - if: steps.browsers.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
       - name: fewer unread steps
         run: node test/e2e/perf-n.measure.ts --label unread100 --extra 100 --reps 2 --no-profile --presses 30
       - name: more unread steps
@@ -99,6 +101,7 @@ jobs:
       - if: steps.browsers.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
       - name: the page at past commits, on the present server
         run: >
           node test/e2e/perf-n.measure.ts --label history --reps 2 --no-profile --presses 25 --variants head
