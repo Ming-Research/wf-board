@@ -146,7 +146,7 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
 const retiredFields = { item: ["short", "agent", "request"], project: ["agents"] } as const;
 function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+  return Object.fromEntries(Object.entries(value).filter(([key]) => ![...keys, "unlisted"].includes(key)));
 }
 function withoutRetiredFields(path: string, doc: unknown): unknown {
   if (path.startsWith("items/")) return without(doc, retiredFields.item);
