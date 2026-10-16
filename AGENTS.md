@@ -45,16 +45,17 @@ matches what the artifact board offered.
   headless Chromium) and the click invariants.
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
-  of the live board's size; CI runs it on this tree and on the commit the
-  branch started from, as a step that never fails the run.
+  of the live board's size; the `bench` workflow runs it by hand
+  (`workflow_dispatch`) on this tree and on a base commit, as a step that
+  never fails the run.
 
 ## Checks
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. CI runs all three on
-  every push.
+  every pull request push and on every main-line merge.
 - `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it on every push. It needs a Playwright browser and is
+  CI's `e2e` job runs it on every pull request push and main-line merge. It needs a Playwright browser and is
   never run on the owner's Mac.
 - Three test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
