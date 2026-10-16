@@ -21,6 +21,46 @@ export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | und
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
 }
 
+/**
+ * The text of an item's 改动 section, where the board reads which PRs the item is about (docs/design.md, Watching GitHub).
+ * It starts at a `## 改动` heading, or at a line that is `**改动**` with or without a colon after it (text after the colon
+ * belongs to the section). It ends at the next heading (after a `##` heading, one of its level or above, so `###`
+ * subsections stay inside), at the next line that is a bold section name alone, or at a line that starts a 参考 section.
+ */
+export function changesSection(head: string | undefined): string {
+  const out: string[] = [];
+  // 0: outside the section; 2: inside a `##` section; 7: inside a bold one, which any heading ends.
+  let level = 0;
+  for (const line of (head ?? "").split("\n")) {
+    if (level === 0) {
+      const bold = /^\*\*改动\*\*(?:[：:]\s*(.*)|\s*)$/.exec(line);
+      if (/^##\s+改动\s*$/.test(line)) level = 2;
+      else if (bold) { level = 7; if (bold[1]) out.push(bold[1]); }
+      continue;
+    }
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1]!.length <= level) break;
+    if (/^\*\*[^*\n]+\*\*[：:]?\s*$/.test(line) || /^(?:#{1,6}\s+|\*\*)?参考[：:]/.test(line)) break;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+/** The word that makes a plan step a merge row, together with a PR it names (src/query.ts mergeRowPulls). */
+export const MERGE_WORD = "合入";
+/** A plan step that may be a merge row: not done, not dropped, not an acceptance step, and it says 合入. */
+export function isOpenMergeStep(row: PlanRow): row is PlanStep {
+  return "text" in row && !row.accept && (row.state === "todo" || row.state === "doing") && row.text.includes(MERGE_WORD);
+}
+/** Of the PRs a merge row names, those that count: the ones the item's 改动 section names as well. A line that waits for another PR to merge names it too, and that PR is not its own. */
+export function countedPulls(inRow: readonly string[], inChanges: readonly string[]): string[] {
+  const changes = new Set(inChanges);
+  return inRow.filter(key => changes.has(key));
+}
+/** A merge row is done when PRs count for it and GitHub reports every one of them merged. */
+export function mergeRowDone(counted: readonly string[], merged: ReadonlySet<string>): boolean {
+  return counted.length > 0 && counted.every(key => merged.has(key));
+}
+
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
 export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
