@@ -254,7 +254,7 @@ test("the event stream and the MCP transport are logged with their time and neve
     await sleep(50);
     controller.abort();
     await sleep(50);
-    const refused = await fetch(url + "/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const refused = await fetch(url + "/mcp", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: "{}" });
     assert.equal(refused.status, 400);
     await sleep(20);
   });

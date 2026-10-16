@@ -5,11 +5,10 @@ import { join } from "node:path";
 import type { Decision, Note } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
-import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Credentials, Resolved } from "./credentials.ts";
 import { ConflictError } from "./store.ts";
 import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
@@ -29,7 +28,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -37,20 +36,9 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   let closing = false;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
-  const sessions = new Map<string, { transport: StreamableHTTPServerTransport; mcp: McpServer }>();
   const connections = new Set<{ socket: WebSocket; alive: boolean }>();
   const streams = new Set<ServerResponse>();
-  // Headless API sessions often vanish without closing their MCP session; each kept one holds a whole server object, so
-  // the map is bounded: the least recently used session is closed past the limit (its client re-initializes on a 404).
-  const maxSessions = deps.maxMcpSessions ?? 64, maxStreamBytes = deps.maxStreamBytes ?? 4 * 1024 * 1024;
-  function touch(id: string, entry: { transport: StreamableHTTPServerTransport; mcp: McpServer }) {
-    sessions.delete(id); sessions.set(id, entry);
-    while (sessions.size > maxSessions) {
-      const [oldId, old] = sessions.entries().next().value!;
-      sessions.delete(oldId);
-      void old.transport.close().catch(console.error);
-    }
-  }
+  const maxStreamBytes = deps.maxStreamBytes ?? 4 * 1024 * 1024;
   const ws = new WebSocketServer({ noServer: true });
   function security(req: IncomingMessage): boolean {
     const port = req.socket.localPort;
@@ -82,28 +70,22 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     // What the board serves is the list in src/slow-ops.ts, which classes every route for the time limits: a branch below that the list lacks is never reached.
     if (!pageRoute(method ?? "", path)) { json(res, 404, { error: "Unknown route" }); return; }
     if (path === "/mcp" && ["POST", "GET", "DELETE"].includes(method ?? "")) {
-      const id = req.headers["mcp-session-id"];
-      if (typeof id === "string") {
-        const session = sessions.get(id);
-        if (!session) { json(res, 404, { error: "Unknown MCP session" }); return; }
-        touch(id, session);
-        await session.transport.handleRequest(req, res); return;
-      }
-      const input = method === "POST" ? await body(req) : undefined;
-      if (!isInitializeRequest(input)) { json(res, 400, { error: "Initialize an MCP session first" }); return; }
+      // The MCP endpoint keeps no session (docs/design.md, section 4): every request stands alone, so a restart of the board loses
+      // nothing a client holds. It has no stream to open and nothing to close, which is what 405 tells a client.
+      if (method !== "POST") { json(res, 405, { jsonrpc: "2.0", error: { code: -32000, message: "This MCP endpoint keeps no session: POST every request" }, id: null }, { Allow: "POST" }); return; }
+      const input = await body(req);
       const port = req.socket.localPort;
       const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
-      const mcp = deps.createMcp();
+      // Who is writing is told by the credential in the request (src/credentials.ts); a request without one can only read.
+      const credential = deps.credentials?.resolve(req.headers.authorization, store.snapshot());
+      const mcp = deps.createMcp(credential);
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: randomUUID, enableDnsRebindingProtection: true,
+        sessionIdGenerator: undefined, enableJsonResponse: true, enableDnsRebindingProtection: true,
         allowedHosts: hosts, allowedOrigins: hosts.map(h => `http://${h}`),
-        onsessioninitialized: sessionId => { touch(sessionId, { transport, mcp }); },
       });
       await mcp.connect(transport);
-      const onclose = transport.onclose;
-      transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); onclose?.(); void mcp.close().catch(console.error); };
       try { await transport.handleRequest(req, res, input); }
-      finally { if (!transport.sessionId) await mcp.close(); }
+      finally { await mcp.close(); }
       return;
     }
     if (method === "GET") {
@@ -279,15 +261,13 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     closing = true;
     clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
-    // session is not one of them: it answers on its own request, and the session closes when the server has closed.
+    // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
-    for (const { transport } of sessions.values()) transport.closeStandaloneSSEStream();
     ws.close();
     const cut = setTimeout(() => server.closeAllConnections(), deps.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
     return close(error => {
       clearTimeout(cut);
-      for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);
       callback?.(error);
     });
   };
