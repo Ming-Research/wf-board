@@ -153,20 +153,28 @@ An operation has a class, and is slow when it takes more than its class's limit:
 
 `POST /api/read`, the owner's mark-read key, has a limit of its own, 0.3 s, since
 the owner waits on it. The key that jumps to the next unread change sends no
-request, so it has none here. The event stream (`GET /api/events`), the requests
-of the MCP transport (`/mcp`) and the wake socket last as long as their client
-does, and a tool call is timed as its tool: they are logged with their time and
-never held to a limit. A path the board does not serve is logged under one name,
-`<method> (unknown route)`, so the operation names stay a small fixed set.
+request, so it has none here. The event stream (`GET /api/events`) and the
+requests of the MCP transport (`/mcp`) last as long as their client does, and a
+tool call is timed as its tool: they are logged with their time and never held
+to a limit. The wake socket (an upgrade, not a request) is not timed. The log
+line of a request carries its path without the query, and the operation's name
+(what the one-hour rule and the push go by) drops ids: a path the board does not
+serve is counted under one name, `<method> (unknown route)`, and
+`DELETE /api/notes/<id>` under `DELETE /api/notes/:id`, so the names stay a small
+fixed set. The routes the board serves are that one list (`PAGE_ROUTES` in
+`src/slow-ops.ts`, the table above with its streams): the router answers 404 to a
+request that matches no row of it, so a route cannot be served without a class,
+and the classes are never out of step with the routes.
 
 An operation over its limit is logged on a `slow` warning line with a summary of
 its parameters, and told to the architect as a `slow-op` push (section 8): its
 name, its time, its limit and the summary. One operation is told once an hour;
 its later slow calls are only logged, so one slow stretch does not become a string
 of pushes. The hour is counted from the pushes the board keeps, so a restart does
-not tell again. The summary holds no text: numbers and the names of things (an
-id, a project, a kind, a filter) are written out, any other string shows only as
-its length (`head(2100 chars)`), and a list as its count.
+not tell again. The summary holds no body text: numbers and the names of things
+(an id, a project, a kind, a filter, a search query cut at 60 characters) are
+written out, any other string shows only as its length (`head(2100 chars)`), and
+a list as its count.
 
 The 1, 2 and 10 seconds are starting values, not measurements. After a day on the
 live board, the times in the log show which ordinary operations exceed them; each
@@ -1897,7 +1905,7 @@ the forms the server sends:
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
-| `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no text, empty when it has none. A call that is not the first slow one within the hour is only logged |
+| `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |

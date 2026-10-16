@@ -126,7 +126,7 @@ export function createMcpServer({ store, ops, now, wake, slow }: { store: Store;
     const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
-      const timed = slow?.start(`tool ${name}`, toolClass(name, write));
+      const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
       let outcome = "ok";
       try {
         const args = schema.parse(a);

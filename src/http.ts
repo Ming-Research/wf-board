@@ -20,7 +20,7 @@ import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
-import { SlowOps, pageOperation, requestParams } from "./slow-ops.ts";
+import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
 import type { UsageWatch } from "./usage-watch.ts";
 
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
@@ -79,6 +79,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   async function route(req: IncomingMessage, res: ServerResponse) {
     if (!security(req)) { json(res, 403, { error: "Host or Origin refused" }); return; }
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`), path = url.pathname, method = req.method;
+    // What the board serves is the list in src/slow-ops.ts, which classes every route for the time limits: a branch below that the list lacks is never reached.
+    if (!pageRoute(method ?? "", path)) { json(res, 404, { error: "Unknown route" }); return; }
     if (path === "/mcp" && ["POST", "GET", "DELETE"].includes(method ?? "")) {
       const id = req.headers["mcp-session-id"];
       if (typeof id === "string") {
@@ -151,9 +153,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   const server = http.createServer((req, res) => {
     // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
-    const { name, cls } = pageOperation(req.method ?? "", (req.url ?? "/").split("?")[0]!);
-    const timed = slow.start(name, cls);
-    res.on("close", () => timed(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
+    const ended = slow.start(pageOperation(req.method ?? "", pathnameOf(req.url)));
+    res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
     // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
     res.on("finish", () => { if (closing) server.closeIdleConnections(); });
     if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }

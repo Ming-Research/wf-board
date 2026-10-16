@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request as rawRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -12,17 +13,18 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { Wake } from "../src/wake.ts";
-import { OPERATION_LIMITS_MS, SlowOps, TELL_AGAIN_MS, TIME_LIMITS_MS, pageOperation, requestParams, summarize, toolClass } from "../src/slow-ops.ts";
+import { OPERATION_LIMITS_MS, PAGE_ROUTES, SlowOps, TELL_AGAIN_MS, TIME_LIMITS_MS, pageOperation, pageRoute, pathnameOf, requestParams, summarize, toolClass } from "../src/slow-ops.ts";
 import type { OperationClass } from "../src/slow-ops.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z");
-/** Runs `fn` with the service log captured: what it printed on info and on warn. */
-async function logged<T>(fn: () => Promise<T> | T): Promise<{ result: T; info: string[]; warn: string[] }> {
-  const info: string[] = [], warn: string[] = [];
-  const { info: i, warn: w } = console;
+/** Runs `fn` with the service log captured: what it printed on info and on warn, and the errors the server logs for a request it refuses. */
+async function logged<T>(fn: () => Promise<T> | T): Promise<{ result: T; info: string[]; warn: string[]; error: string[] }> {
+  const info: string[] = [], warn: string[] = [], error: string[] = [];
+  const { info: i, warn: w, error: e } = console;
   console.info = (...parts: unknown[]) => { info.push(parts.join(" ")); };
   console.warn = (...parts: unknown[]) => { warn.push(parts.join(" ")); };
-  try { return { result: await fn(), info, warn }; } finally { console.info = i; console.warn = w; }
+  console.error = (...parts: unknown[]) => { error.push(parts.join(" ")); };
+  try { return { result: await fn(), info, warn, error }; } finally { console.info = i; console.warn = w; console.error = e; }
 }
 const slowFrames = (wake: Wake) => wake.since(0).frames.filter(f => f.event === "slow-op");
 /** A SlowOps over a Wake whose clock `time` moves. */
@@ -124,9 +126,9 @@ test("a failing parameter summary does not lose the push", async t => {
 test("start times from the call to the end, in real time", async t => {
   const { wake, slow } = rig({ read: 30 });
   await logged(async () => {
-    const quick = slow.start("tool quick", "read");
+    const quick = slow.start({ name: "tool quick", cls: "read" });
     quick("ok");
-    const slowOne = slow.start("tool slow", "read");
+    const slowOne = slow.start({ name: "tool slow", cls: "read" });
     await sleep(120);
     slowOne("ok", () => "id=a");
   });
@@ -136,15 +138,26 @@ test("start times from the call to the end, in real time", async t => {
   assert.equal(frames[0]!.limitMs, 30);
 });
 
-test("pages are classed by route: reads, history, writes; the streams and the MCP transport have no limit; other paths share one name", () => {
+test("pages are classed by route: reads, history, writes; the streams and the MCP transport have no limit; other paths share one name but keep their path in the log", () => {
   const cls = (method: string, path: string) => pageOperation(method, path);
   for (const path of ["/", "/app.js", "/health", "/api/snapshot"]) assert.deepEqual(cls("GET", path), { name: `GET ${path}`, cls: "read" }, path);
   for (const path of ["/api/unread", "/api/step"]) assert.deepEqual(cls("GET", path), { name: `GET ${path}`, cls: "history" }, path);
   for (const path of ["/api/notes", "/api/draft", "/api/send", "/api/read", "/api/wake"]) assert.deepEqual(cls("POST", path), { name: `POST ${path}`, cls: "write" }, path);
-  assert.deepEqual(cls("DELETE", "/api/notes/qfs61so04uwd3lw1491o"), { name: "DELETE /api/notes/:id", cls: "write" });
+  assert.deepEqual(cls("DELETE", "/api/notes/qfs61so04uwd3lw1491o"), { name: "DELETE /api/notes/:id", label: "DELETE /api/notes/qfs61so04uwd3lw1491o", cls: "write" });
   for (const [method, path] of [["GET", "/api/events"], ["GET", "/mcp"], ["POST", "/mcp"], ["DELETE", "/mcp"]] as const) assert.deepEqual(cls(method, path), { name: `${method} ${path}` }, `${method} ${path}`);
-  assert.deepEqual(cls("GET", "/wp-login.php"), { name: "GET (unknown route)", cls: "read" });
-  assert.deepEqual(cls("GET", "/__proto__"), { name: "GET (unknown route)", cls: "read" });
+  assert.deepEqual(cls("GET", "/wp-login.php"), { name: "GET (unknown route)", label: "GET /wp-login.php", cls: "read" });
+  assert.deepEqual(cls("GET", "/__proto__"), { name: "GET (unknown route)", label: "GET /__proto__", cls: "read" });
+  assert.deepEqual(cls("GET", "/api/notes"), { name: "GET (unknown route)", label: "GET /api/notes", cls: "read" }, "a served path with a method it is not served for");
+  assert.equal(pageRoute("DELETE", "/api/notes"), undefined, "the prefix route is for the notes under it, not the collection");
+  assert.equal(pageRoute("DELETE", "/api/notes/x")?.name, "DELETE /api/notes/:id");
+});
+
+test("a request path is parsed as the router parses it, so a path served is a path classed", () => {
+  assert.equal(pathnameOf("/api/./snapshot?x=1"), "/api/snapshot");
+  assert.equal(pathnameOf("/api/notes/../snapshot"), "/api/snapshot");
+  assert.equal(pathnameOf("http://localhost:7417/health"), "/health");
+  assert.equal(pathnameOf(undefined), "/");
+  assert.equal(pathnameOf("http://[bad"), "/");
 });
 
 test("tools are classed: the history readers by name, writes by their flag, the rest reads", () => {
@@ -249,6 +262,43 @@ test("the event stream and the MCP transport are logged with their time and neve
   assert.deepEqual(slowFrames(wake), []);
 });
 
+test("every route in the list is served, and a path not in it is refused", async t => {
+  const wake = new Wake(), slow = new SlowOps({ wake });
+  const { url } = await slowWrites(t, wake, slow, 0);
+  const served = async (method: string, path: string) => {
+    const controller = new AbortController(), response = await fetch(url + path, { method, signal: controller.signal, ...(method === "POST" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) });
+    // A stream has no end to read: its status is the answer.
+    const text = response.headers.get("content-type")?.startsWith("text/event-stream") ? "" : await response.text();
+    controller.abort();
+    return !(response.status === 404 && text.includes('"Unknown route"'));
+  };
+  await logged(async () => {
+    for (const route of PAGE_ROUTES) {
+      const path = route.prefix ? route.path + "some-note" : route.path;
+      assert.equal(await served(route.method, path), true, `${route.method} ${path} is in the list and must be served`);
+    }
+    assert.equal(await served("GET", "/api/notes"), false, "a path of the list with a method it has no row for");
+    assert.equal(await served("PUT", "/api/read"), false);
+    assert.equal(await served("GET", "/nothing-here"), false);
+  });
+});
+
+test("a request is logged under the path it had, and a path with dot segments is served and timed as the path it is", async t => {
+  const wake = new Wake(), slow = new SlowOps({ wake });
+  const { url, port } = await slowWrites(t, wake, slow, 0);
+  const raw = (path: string) => new Promise<number>((resolve, reject) => { rawRequest({ host: "127.0.0.1", port, path }, res => { res.resume(); res.on("end", () => resolve(res.statusCode!)); }).on("error", reject).end(); });
+  const { info } = await logged(async () => {
+    assert.equal(await raw("/api/./snapshot"), 200);
+    assert.equal((await fetch(url + "/wp-login.php")).status, 404);
+    assert.equal((await fetch(url + "/api/notes/some-note-id", { method: "DELETE" })).status, 404);
+    await sleep(20);
+  });
+  assert.ok(info.some(line => /^GET \/api\/snapshot 200 \d+ ms$/.test(line)), info.join("\n"));
+  assert.ok(info.some(line => /^GET \/wp-login\.php 404 \d+ ms$/.test(line)), "the path an unknown request had, not a name for the lot");
+  assert.ok(info.some(line => /^DELETE \/api\/notes\/some-note-id 404 \d+ ms$/.test(line)));
+  assert.ok(!info.some(line => line.includes("unknown route")), info.join("\n"));
+});
+
 /** The page server over a board whose owner writes take `delay` milliseconds, with the given Wake and SlowOps. */
 async function slowWrites(t: Parameters<typeof board>[0], wake: Wake, slow: SlowOps, delay: number) {
   const fixture = await board(t), { store, op } = fixture, real = ownerOps(store);
@@ -262,7 +312,7 @@ async function slowWrites(t: Parameters<typeof board>[0], wake: Wake, slow: Slow
     const response = await fetch(url + path, data === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
     return { status: response.status, data: await response.json() };
   }
-  return { ...fixture, http, url, api };
+  return { ...fixture, http, url, port: address.port, api };
 }
 
 test("a tool call that runs over its limit is told with the tool's name and a summary of its arguments, without their text", async t => {
@@ -289,18 +339,27 @@ test("a tool call that runs over its limit is told with the tool's name and a su
   assert.ok(info.some(line => /^tool append_log ok \d+ ms$/.test(line)));
 });
 
-test("a tool that fails is timed as an error, and one over its limit is told all the same", async t => {
-  const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { read: 50 } });
+test("a tool that fails is timed as an error; one over its limit is told all the same, one within it is not", async t => {
+  const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 150, read: 5000 } });
   const { store, op } = await board(t);
-  const mcp = createMcpServer({ store, ops: op, wake, slow }), client = new Client({ name: "Slow error test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  // A write that fails after being slow: the id does not exist, and the operation waits first.
+  const slowed = { ...op, appendLog: async (...a: Parameters<typeof op.appendLog>) => { await sleep(300); return op.appendLog(...a); } } as typeof op;
+  const mcp = createMcpServer({ store, ops: slowed, wake, slow }), client = new Client({ name: "Slow error test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await mcp.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await mcp.close(); });
   const { info } = await logged(async () => {
-    const refused = await client.callTool({ name: "context", arguments: { id: "no-such-item" } });
-    assert.equal(refused.isError, true);
+    const quick = await client.callTool({ name: "context", arguments: { id: "no-such-item" } });
+    assert.equal(quick.isError, true);
+    assert.deepEqual(slowFrames(wake), [], "an error within its limit is not told");
+    const slow = await client.callTool({ name: "append_log", arguments: { author, id: "no-such-item", text: "never written" } });
+    assert.equal(slow.isError, true);
   });
   assert.ok(info.some(line => /^tool context error \d+ ms$/.test(line)), info.join("\n"));
-  assert.deepEqual(slowFrames(wake), [], "an error within the limit is not told");
+  assert.ok(info.some(line => /^tool append_log error \d+ ms$/.test(line)));
+  const [frame] = slowFrames(wake);
+  assert.equal(frame!.op, "tool append_log");
+  assert.ok((frame!.ms as number) >= 300);
+  assert.equal(slowFrames(wake).length, 1);
 });
 
 test("the history tools have the history limit, not the read limit", async t => {

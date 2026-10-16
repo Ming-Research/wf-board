@@ -9,21 +9,44 @@ export const OPERATION_LIMITS_MS: Readonly<Record<string, number>> = { "POST /ap
 /** How long after telling the architect of an operation that operation is only logged. */
 export const TELL_AGAIN_MS = 60 * 60_000;
 
-/** The class of a page request, or none for the long-lived ones: the event stream and the MCP transport, whose tool calls
- * are timed by the tool instead. `name` is the operation's identity in the log and in the push; it carries no query and no
- * id, and a path the board does not serve has one name, so it cannot grow without bound. */
-export function pageOperation(method: string, path: string): { name: string; cls?: OperationClass } {
-  const route = `${method} ${path}`, known = PAGE_ROUTES.get(route);
-  if (known !== undefined) return known === null ? { name: route } : { name: route, cls: known };
-  if (method === "DELETE" && path.startsWith("/api/notes/")) return { name: "DELETE /api/notes/:id", cls: "write" };
-  return { name: `${method} (unknown route)`, cls: "read" };
+/** What is timed: `name` is the operation's identity, which the one-hour rule and the push go by; `cls` its class, or none for
+ * an operation held to no limit; `label` what its log line says in place of the name, when that tells more. */
+export interface Operation { name: string; cls?: OperationClass; label?: string }
+
+/** The path of a request URL, parsed as the router parses it, so a path is classed as the one it is served as (`/api/./notes`
+ * is `/api/notes` to both). */
+export function pathnameOf(url: string | undefined): string {
+  try { return new URL(url ?? "/", "http://localhost").pathname; } catch { return "/"; }
 }
-const PAGE_ROUTES = new Map<string, OperationClass | null>([
-  ["GET /", "read"], ["GET /app.js", "read"], ["GET /health", "read"], ["GET /api/snapshot", "read"],
-  ["GET /api/unread", "history"], ["GET /api/step", "history"],
-  ["POST /api/notes", "write"], ["POST /api/draft", "write"], ["POST /api/send", "write"], ["POST /api/read", "write"], ["POST /api/wake", "write"],
-  ["GET /api/events", null], ["GET /mcp", null], ["POST /mcp", null], ["DELETE /mcp", null],
-]);
+
+/** A route the page server serves. `cls` is none for the long-lived ones, the event stream and the MCP transport (a tool call is
+ * timed as its tool). A `prefix` route is every path that starts with `path`, and `name` stands for them all. */
+export interface PageRoute { method: string; path: string; cls: OperationClass | null; prefix?: true; name?: string }
+/** The one list of the routes the board serves, which the router in src/http.ts consults before it serves anything: a request
+ * that matches no row is refused with 404, so a route cannot be served without a class. */
+export const PAGE_ROUTES: readonly PageRoute[] = [
+  { method: "GET", path: "/", cls: "read" }, { method: "GET", path: "/app.js", cls: "read" }, { method: "GET", path: "/health", cls: "read" }, { method: "GET", path: "/api/snapshot", cls: "read" },
+  { method: "GET", path: "/api/unread", cls: "history" }, { method: "GET", path: "/api/step", cls: "history" },
+  { method: "POST", path: "/api/notes", cls: "write" }, { method: "POST", path: "/api/draft", cls: "write" }, { method: "POST", path: "/api/send", cls: "write" },
+  { method: "POST", path: "/api/read", cls: "write" }, { method: "POST", path: "/api/wake", cls: "write" },
+  { method: "DELETE", path: "/api/notes/", prefix: true, name: "DELETE /api/notes/:id", cls: "write" },
+  { method: "GET", path: "/api/events", cls: null }, { method: "GET", path: "/mcp", cls: null }, { method: "POST", path: "/mcp", cls: null }, { method: "DELETE", path: "/mcp", cls: null },
+];
+const EXACT_ROUTES = new Map(PAGE_ROUTES.filter(r => !r.prefix).map(r => [`${r.method} ${r.path}`, r] as const));
+const PREFIX_ROUTES = PAGE_ROUTES.filter(r => r.prefix);
+/** The row a request matches, or none when the board serves no such route. */
+export function pageRoute(method: string, path: string): PageRoute | undefined {
+  return EXACT_ROUTES.get(`${method} ${path}`) ?? PREFIX_ROUTES.find(r => r.method === method && path.startsWith(r.path));
+}
+
+/** The operation a page request is. The name carries no query and no id, and a path the board does not serve has one name,
+ * so the names stay a small fixed set; the log line keeps the path the request had. */
+export function pageOperation(method: string, path: string): Operation {
+  const label = `${method} ${path}`, route = pageRoute(method, path);
+  if (route === undefined) return { name: `${method} (unknown route)`, label, cls: "read" };
+  const name = route.name ?? label;
+  return { name, ...(name === label ? {} : { label }), ...(route.cls === null ? {} : { cls: route.cls }) };
+}
 
 /** The tools that read the board's history, which costs git work; every other tool is a read or, when it changes the board, a write. */
 const HISTORY_TOOLS: ReadonlySet<string> = new Set(["changes", "history", "diff"]);
@@ -59,11 +82,7 @@ export function requestParams(url: string | undefined, contentLength: string | u
   return summarize({ ...query, ...(bytes > 0 ? { bodyBytes: bytes } : {}) });
 }
 
-export interface Timing {
-  /** The operation's identity: the same operation always has the same name. */
-  name: string;
-  /** Its class, or none when it is not held to a limit. */
-  cls?: OperationClass;
+export interface Timing extends Operation {
   /** How long it took, in milliseconds. */
   ms: number;
   /** How it ended: a status code, `ok`, `error` or `closed`. */
@@ -96,14 +115,14 @@ export class SlowOps {
   }
 
   /** Starts timing an operation; the returned function ends it with how it ended and, for the log of a slow one, its parameters. */
-  start(name: string, cls?: OperationClass): (result: string, params?: () => string) => void {
+  start(operation: Operation): (result: string, params?: () => string) => void {
     const from = performance.now();
-    return (result, params) => this.record({ name, cls, ms: performance.now() - from, result, params });
+    return (result, params) => this.record({ ...operation, ms: performance.now() - from, result, params });
   }
 
-  record({ name, cls, ms: exact, result, params }: Timing): void {
+  record({ name, cls, label = name, ms: exact, result, params }: Timing): void {
     const ms = Math.round(exact);
-    console.info(`${name} ${result} ${ms} ms`);
+    console.info(`${label} ${result} ${ms} ms`);
     const limit = OPERATION_LIMITS_MS[name] ?? (cls === undefined ? undefined : this.limits[cls]);
     if (limit === undefined || ms <= limit) return;
     let detail = "";
@@ -116,6 +135,6 @@ export class SlowOps {
       catch (error) { console.error("slow-op push failed", error); }
     }
     const earlier = !tell && last !== undefined ? `; the architect was told ${Math.round((now - last) / 60_000)} min ago` : "";
-    console.warn(`slow ${name}: ${ms} ms, limit ${limit} ms${detail ? ` (${detail})` : ""}${earlier}`);
+    console.warn(`slow ${label}: ${ms} ms, limit ${limit} ms${detail ? ` (${detail})` : ""}${earlier}`);
   }
 }
