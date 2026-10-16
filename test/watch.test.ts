@@ -16,7 +16,8 @@ import { asArchitect, server, wakeSocket } from "./helpers.ts";
 // The shapes below are those of `gh api graphql` with the query from queryText, read from a live answer for a private repository.
 
 const run = (name: string, conclusion: string | null, status = "COMPLETED") => ({ __typename: "CheckRun", name, status, conclusion, detailsUrl: `https://example.invalid/${name}` });
-const rollup = (state: string, ...nodes: unknown[]) => ({ state, contexts: { nodes } });
+// `state` is GitHub's own roll-up, which counts a cancelled run as a failure; it is not what the board reads.
+const rollup = (state: string, ...nodes: unknown[]) => ({ state, contexts: { pageInfo: { hasNextPage: false }, nodes } });
 const answer = (repository: object) => JSON.stringify({ data: { repository } });
 const prNode = (number: number, fields: object = {}, checks: unknown = rollup("SUCCESS", run("test", "SUCCESS"), run("test", "SUCCESS"), run("e2e", "SUCCESS"))) => ({
   number, title: `PR ${number}`, url: `https://github.com/Ming-Research/wf-board/pull/${number}`, isDraft: false, baseRefName: "claude/first-board", headRefOid: `c${number}`, mergeable: "MERGEABLE",
@@ -49,13 +50,58 @@ test("a GitHub answer is read into main line, open PRs and named PRs; a roll-up 
   ], "a PR number that does not exist is left out");
 });
 
-test("a branch that does not exist gives no main line; a roll-up state this code does not know is an error, not green", () => {
+test("a branch that does not exist gives no main line; a bad answer is an error", () => {
   const empty = { main: null, pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } };
   assert.equal(parseResponse("a/b", answer(empty)).main, undefined);
-  assert.throws(() => summarize({ state: "SURPRISE", contexts: { nodes: [] } }), /unknown check state SURPRISE/);
   assert.throws(() => parseResponse("a/b", "<html>"), /not JSON/);
   assert.throws(() => parseResponse("a/b", JSON.stringify({ data: { repository: null }, errors: [{ message: "Could not resolve to a Repository" }] })), /Could not resolve to a Repository/);
   assert.throws(() => parseResponse("a/b", answer({ main: null })), /unexpected shape/);
+});
+
+const checksOf = (state: string, ...nodes: unknown[]) => summarize(rollup(state, ...nodes) as Parameters<typeof summarize>[0]);
+const status = (context: string, state: string) => ({ __typename: "StatusContext", context, state });
+
+test("a cancelled run is neither red nor green, GitHub's roll-up state is not what is read, and no check is not green", () => {
+  // GitHub's roll-up says FAILURE for a run a newer push cancelled; the commit's other checks passed.
+  assert.deepEqual(checksOf("FAILURE", run("test", "SUCCESS"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")), { state: "success", failed: [] }, "the cancelled run was replaced by another of its name");
+  assert.deepEqual(checksOf("FAILURE", run("test", "SUCCESS"), run("test", "CANCELLED")), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")), { state: "failure", failed: ["test"] }, "a failure beside a cancelled run is still red");
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", null, "IN_PROGRESS")), { state: "pending", failed: [] });
+  // A name that only has a cancelled run has not run: pending, so a green neighbour does not make the commit green.
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "SUCCESS")), { state: "pending", failed: [] });
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")), { state: "pending", failed: [] }, "nothing ran yet");
+  // Without any check there is nothing to call green; GitHub reports no roll-up at all.
+  assert.deepEqual(summarize(null), { state: "none", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS"), { state: "none", failed: [] }, "a roll-up that lists no check");
+  // Skipped and neutral runs passed; a status from outside Actions counts; unknown values are not trusted.
+  assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL"), status("ci/x", "SUCCESS")), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), status("ci/x", "PENDING")), { state: "pending", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), run("odd", "SOMETHING_NEW")), { state: "failure", failed: ["odd"] }, "an unknown conclusion is not a pass");
+  assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), run("odd", null, "SOMETHING_NEW")), { state: "pending", failed: [] }, "an unknown status is not finished");
+  assert.deepEqual(checksOf("SUCCESS", run("test", "ACTION_REQUIRED"), run("e2e", "STARTUP_FAILURE")), { state: "failure", failed: ["test", "e2e"] });
+  // More checks than one answer holds: what is missing may fail, so it is not green; a failure seen is still red.
+  const more = (...nodes: unknown[]) => summarize({ contexts: { pageInfo: { hasNextPage: true }, nodes } } as Parameters<typeof summarize>[0]);
+  assert.deepEqual(more(run("test", "SUCCESS")), { state: "pending", failed: [] });
+  assert.deepEqual(more(run("test", "FAILURE")), { state: "failure", failed: ["test"] });
+});
+
+test("an answer for a PR with a cancelled run is read into a ready PR, not a red one; a PR without checks, as GitHub gives a PR with a merge conflict, is not ready", async t => {
+  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
+  const text = (...nodes: object[]) => answer({ main: null, pullRequests: { pageInfo: { hasNextPage: false }, nodes } });
+  const events = (state: RepoState) => decide(s, r, [state]).map(p => [p.event, p.fields.number]);
+  const cancelled = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "SUCCESS"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")))));
+  assert.deepEqual(events(cancelled), [["pr-ready", 23]], "the roll-up says failure, the checks say ready");
+  const red = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "FAILURE"), run("e2e", "CANCELLED")))));
+  assert.deepEqual(events(red), [["pr-red", 23]]);
+  const only = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")))));
+  assert.deepEqual(events(only), [], "cancelled and not yet replaced: neither red nor ready");
+  const none = parseResponse(WB, text(prNode(23, {}, null)));
+  assert.deepEqual(events(none), [], "no check found is not green");
+  // A PR with a merge conflict gets no pull_request run; what is left on its newest commit (a push run, or nothing) is not a ready PR.
+  const conflicting = parseResponse(WB, text(prNode(23, { mergeable: "CONFLICTING" }, rollup("SUCCESS", run("test", "SUCCESS")))));
+  assert.deepEqual(events(conflicting), [], "green checks of a PR that cannot merge");
+  const conflictingNone = parseResponse(WB, text(prNode(23, { mergeable: "CONFLICTING" }, null)));
+  assert.deepEqual(events(conflictingNone), []);
 });
 
 test("the query names the main line by branch or by default, and one alias per PR number", () => {
@@ -92,7 +138,7 @@ test("gh exits with an error when the answer holds a GraphQL error; what it prin
 
 const heads = {
   watch: "**问题**：x\n\n## 改动\n\n### Ming-Research/wf-board#23 Check cards\n\n- `src/rules.ts`: a check\n\n### wf-board#24 Follow-up\n\n## 参考：old\n\nMing-Research/wf-board#99",
-  second: "**问题**：y\n\n## 改动\n\nMing-Research/wf-board#25, https://github.com/Ming-Research/wf-board/pull/26, #27 and wf-board PR #29\n\n- Whitefoot#5, Ming-Research/Whitefoot#6, mbbill/agents_config#2, Ming-Research/Other#1",
+  second: "**问题**：y\n\n## 改动\n\nMing-Research/wf-board#25, https://github.com/Ming-Research/wf-board/pull/26, #27 and wf-board PR #29, Ming-Research/wf-board#32\n\n- Whitefoot#5, Ming-Research/Whitefoot#6, mbbill/agents_config#2, Ming-Research/Other#1",
   gone: "## 改动\n\nMing-Research/wf-board#30",
   bold: "**问题**：z\n\n**改动**：\n\n[wf-board#40](https://github.com/Ming-Research/wf-board/pull/40)：a change\n- x\n\n**参考：表**\n\nwf-board#41",
 };
@@ -155,7 +201,7 @@ test("the watched PRs are those an open item's 改动 section names, however the
   const named = [...watched.values()].map(w => `${w.pr.repo}#${w.pr.number}:${w.items.join("+")}`).sort();
   assert.deepEqual(named, [
     "Ming-Research/Whitefoot#5:second", "Ming-Research/Whitefoot#6:second", "Ming-Research/wf-board#23:watch", "Ming-Research/wf-board#24:watch",
-    "Ming-Research/wf-board#25:second", "Ming-Research/wf-board#26:second", "Ming-Research/wf-board#29:second", "Ming-Research/wf-board#40:bold", "mbbill/agents_config#2:second",
+    "Ming-Research/wf-board#25:second", "Ming-Research/wf-board#26:second", "Ming-Research/wf-board#29:second", "Ming-Research/wf-board#32:second", "Ming-Research/wf-board#40:bold", "mbbill/agents_config#2:second",
   ], "#99 and #41 are outside the section, #27 has no repository, Other is not configured, #30 is on a cancelled item; #40 is in a bold section");
 });
 
@@ -189,7 +235,7 @@ test("a ready PR is told with the open blocking cards of its item and the cards 
     main: { branch: "claude/first-board", commit: "m1", checks: { state: "failure", failed: ["e2e"] } },
     pulls: [
       pull(23), pull(24, { draft: true }), pull(25, { checks: { state: "failure", failed: ["test"] } }), pull(26, { mergeable: "CONFLICTING" }),
-      pull(27), pull(29, { checks: { state: "pending", failed: [] } }), pull(99), pull(100, { checks: { state: "none", failed: [] } }),
+      pull(27), pull(29, { checks: { state: "pending", failed: [] } }), pull(32, { checks: { state: "none", failed: [] } }), pull(99), pull(100),
       pull(31, { draft: true, checks: { state: "failure", failed: ["test"] } }),
     ],
   }), repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", checks: green }, pulls: [pull(5, { base: "main" })] })];

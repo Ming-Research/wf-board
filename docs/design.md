@@ -1599,9 +1599,9 @@ owner's account shares GitHub's quota. The time of the last look is kept in
 out what is left of the interval (no record: it looks at once; a record in the
 future, from a clock that went back, counts as at most one interval). The daemon asks
 `gh api graphql`, signed in as the owner, one question per configured
-repository: the newest commit of the main line with its check roll-up, the open
+repository: the newest commit of the main line with its checks, the open
 pull requests (newest 100) with draft state, base branch, newest commit,
-mergeability and check roll-up, and, by number, the pull requests the open items'
+mergeability and checks, and, by number, the pull requests the open items'
 merge rows name, in any state. A repository that fails, has more open pull
 requests than one look reads, or lacks its configured main line branch is
 reported by `/health` (`github.problems`) and logged once; the other
@@ -1620,16 +1620,31 @@ URL; a text that names a repository no project configures names no pull request
 the board watches. Pull requests named elsewhere (logs, links, other sections)
 are not watched.
 
+**What the checks say.** The board reads the checks on a commit itself, not
+GitHub's roll-up state, which counts a cancelled run as a failure (`summarize` in
+`src/github.ts`). Every check on the commit counts, whatever event started it: a
+repository's real checks may run on push, on pull request or both (Firn-wf,
+Halo-wf, Snowghost-wf and Whitefoot run theirs on push, and their pull request
+runs are mostly skipped gates), and the same set is read in each case. A check
+that failed (failure, timed out, startup failure, action required, an unknown
+conclusion, or a status that failed or errored) makes the commit `failure`,
+whatever else is still running. A cancelled run, which a newer push replaced,
+says nothing as long as another run of its name is there; a name with only
+cancelled runs has not run, so the commit is `pending`. Otherwise an unfinished
+check, or more checks than one answer holds (100), make it `pending`. Otherwise,
+skipped, neutral and successful checks make it `success`. A commit with no check
+to read is `none`, which is not green: GitHub runs no pull request check for a
+pull request with a merge conflict, and a commit nobody has run yet looks the same.
+
 **The three pushes.** All are about non-draft pull requests; a draft's checks
-are the engineer's. `pr-red`: the roll-up state is failure (some check failed,
-whatever else is still running). `pr-ready`: the roll-up state is success, so
-every check passed, and GitHub reports the pull request mergeable (not
-conflicting; still being computed counts as not yet). A pull request without any
-check is never ready. `main-red`: the roll-up of the main line's newest commit is
-failure. A push is made once per key: `main-red` per branch and commit, `pr-red`
-and `pr-ready` per pull request and newest commit. The keys of the events still
-kept are read again at start, so a restart neither repeats a push nor loses one
-(an event the log dropped may be told once more).
+are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say
+success and GitHub reports the pull request mergeable (not conflicting; still
+being computed counts as not yet). A pull request whose checks are pending or
+none, or that cannot merge, is told nothing. `main-red`: the checks of the main
+line's newest commit say failure. A push is made once per key: `main-red` per
+branch and commit, `pr-red` and `pr-ready` per pull request and newest commit.
+The keys of the events still kept are read again at start, so a restart neither
+repeats a push nor loses one (an event the log dropped may be told once more).
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
