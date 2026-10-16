@@ -1,8 +1,7 @@
 # wf-board — agent instructions
 
-The owner-wide rules (`~/.claude/CLAUDE.md`, linked from
-`~/dev/agents_config/AGENTS.md`) apply. This file adds what is specific to
-wf-board.
+The shared rules (`~/dev/wf/AGENTS.md`) apply. This file adds what is
+specific to wf-board.
 
 ## Goal
 
@@ -59,12 +58,17 @@ matches what the artifact board offered.
   browser on a generated board (`test/e2e`). A page bug gets its test in the
   lowest layer that can see it.
 - Run them locally only when small and needed; CI is the record.
+- Every page fix gets a real-browser regression witness
+  (`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
+  reversed.
 
 ## Rules
 
-- Board data lives in `~/dev/wf-board-data` (private remote
-  `Ming-Research/wf-board-data`). Only the daemon writes it; tests use
-  temporary directories.
+- The main line is `claude/first-board`: branch from it and merge into it.
+  `main` holds only the first commit.
+- Board data lives in the directory `WF_BOARD_DATA` names, on the owner's Mac
+  `~/dev/wf/wf-board-data` (private remote `Ming-Research/wf-board-data`).
+  Only the daemon writes it; tests use temporary directories.
 - The daemon binds `127.0.0.1` only.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
@@ -73,3 +77,18 @@ matches what the artifact board offered.
   instructions, which are a short pointer (`src/instructions.ts`, design
   section 6). A change to a tool's behavior or to a board rule changes that
   section in the same change, in agents_config.
+- A change to the page that the owner has not asked for in those words, or
+  one that changes a rule an earlier test guards, goes to the owner on a card
+  before the code changes: the engineer reports it to the architect, naming
+  the rule.
+
+## Deploy
+
+The architect deploys after merging. Fast-forward `~/dev/wf/wf-board` to the
+merged head of `claude/first-board` and run `npm run -s build:web` there (the
+bundle is not in git). When server code changed, restart the daemon
+(`launchctl kickstart -k gui/$(id -u)/org.ming-research.wf-board`; log
+`~/Library/Logs/wf-board.log`) and wait until
+`curl -s http://127.0.0.1:7417/health` answers, which can take more than ten
+seconds. The wake stream and MCP sessions drop during the restart and
+reconnect. Then check the change on the live page.
