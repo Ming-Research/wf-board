@@ -350,10 +350,8 @@ log:
 - **No notices.** The board has no notice documents: the 要你知道 list and
   `post_notice` are gone. A change the owner must act on is a decision card;
   one the owner only should know goes in the architect's journal. Notice files
-  in history still count as content writes. A start that finds a `notices/`
-  directory deletes it in one commit (not a write), but only when every file
-  there is committed, unchanged and a notice the owner has read; otherwise it
-  deletes nothing and logs why.
+  in history still count as content writes. The one commit that deleted them
+  is not a write, and activity skips it.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -1703,17 +1701,6 @@ cite them.
 
 ## 10. Migration
 
-At startup, after schema validation and the clean-worktree check, a temporary
-store migration renames the coordinator project from `跨项目` to `总管` in
-one data commit. It changes the project name, item groups and request authors,
-log authors, note reply authors, glossary term authors and the
-coordinator glossary filename. It compares whole identity fields, preserving
-heads, log prose, notes, titles and any text containing the old name exactly.
-Existing historical commits remain unchanged. A destination project or glossary
-collision is refused before changing any file. Once the old project name is
-absent, reopening is a no-op. Remove this migration after the live board has
-migrated.
-
 1. Convert the export into the file format, keeping every id, in one commit.
    The survey of the export found no broken dependency, cycle, bad timestamp
    or invalid status; the conversion applies these mechanical cleanups:
@@ -1829,10 +1816,10 @@ children.
 to the new snapshot plus a report, in `src/convert-plans.ts`. A dry run on a
 copy of the data (a few seconds of Node, no build) prints the report without
 writing; after the owner approves the report, the daemon applies the same
-function at startup as a store migration, like the 跨项目 → 总管 rename,
-in one commit authored by `总管`, and refuses to start if the data has
-changed since the approved dry run (the dry run records the data commit it
-read). Unread history compares legacy commits directly and converts only
+function at startup as a store migration in one commit authored by `总管`,
+and refuses to start if the data has changed since the approved dry run (the
+dry run records the data commit it read). Unread history compares legacy
+commits directly and converts only
 endpoints spanning the schema change, caching historical documents and
 yielding between commits. A legacy status, parent or dependency edit counts
 as an `other` change on the edited item, rather than normalized plan progress
