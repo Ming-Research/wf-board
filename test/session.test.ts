@@ -78,4 +78,5 @@ test("the server instructions carry a short generic reading guide", async t => {
   assert.ok(guide.length > 0 && guide.split("\n").length <= 12);
   assert.match(guide, /session/);
   assert.doesNotMatch(guide, /Firn|Whitefoot|Halo|Snowghost|\bwf\b/);
+  assert.doesNotMatch(guide, /coordinator|inbox/i, "the reading guide no longer routes through a coordinator or an inbox");
 });

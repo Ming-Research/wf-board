@@ -13,6 +13,7 @@ import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
+import { INSTRUCTIONS } from "../src/instructions.ts";
 import { applyActivityDelta } from "../src/rules.ts";
 
 async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
@@ -382,6 +383,29 @@ test("after a write the check scan rederives only the items the write can reach"
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
   assert.deepEqual(star.frames.filter(f => f.event === "check").map(f => f.item), ["c"]);
+});
+
+test("every wake frame carries the fields the server instructions document for its event, and no other kind is sent", async t => {
+  const { url, store, op, api } = await server(t), star = await wakeSocket(t, url, "*");
+  // The instructions list each frame as `{event:"note", note, target, ...}`; a trailing ? marks an optional field.
+  const documented = new Map<string, { fields: Set<string>; optional: Set<string> }>();
+  for (const [, event, list] of INSTRUCTIONS.matchAll(/\{event:"(\w+)", ([^}]*)\}/g)) {
+    const names = list!.split(", ").map(field => field.replace(/:.*$/, ""));
+    documented.set(event!, { fields: new Set(["event", ...names.map(n => n.replace(/\?$/, ""))]), optional: new Set(names.filter(n => n.endsWith("?")).map(n => n.slice(0, -1))) });
+  }
+  // One write of each kind: a sent note, a blocking card, a new check, a new request.
+  await api("/api/notes", { target: "it:a", kind: "comment", text: "x" }); await api("/api/send", {});
+  await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }], blocks: "合并停着" });
+  await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
+  await op.createRequest({ author, project: "Firn", key: "req", title: "需要的能力", head: "背景", accept: "通过", why: "挡住工作", from: "a" });
+  await star.sync();
+  assert.deepEqual([...documented.keys()].sort(), ["blocking", "check", "note", "request"]);
+  assert.deepEqual([...new Set(star.frames.map(f => f.event))].sort(), [...documented.keys()].sort());
+  for (const frame of star.frames) {
+    const spec = documented.get(frame.event as string)!;
+    for (const key of Object.keys(frame)) assert.ok(spec.fields.has(key), `${frame.event}: undocumented field ${key}`);
+    for (const field of spec.fields) if (!spec.optional.has(field)) assert.ok(field in frame, `${frame.event}: documented field ${field} missing`);
+  }
 });
 
 test("active time alone (one hour) raises one stalled event on the timer, and a restart announces nothing", async t => {

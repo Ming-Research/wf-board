@@ -1017,18 +1017,33 @@ writer, and `brief` gives each work-in-progress row a `lastPush` with the
 same text, so a coordinator sees whether work is being pushed and what a
 closed session left behind. Omitting `session` is allowed for older clients.
 
-### Reading guide
+### Server instructions
 
-The server's instructions end with a short, project-independent reading
-guide (`READING_GUIDE` in `src/mcp.ts`), the single owner of how an agent
-reads the board and how the coordinator allocates sessions from it: start
-with `projects` then `brief`; paused work is not worked on; read work in
-progress, then ready work, owner cards, inbox requests and notes; pass
-`session` on every write; put things in flight (background runs, unpushed
-local work) in plan rows with `waits`; the coordinator gives a session to each
-unpaused project with ready or in-progress work and no recent session push.
-The groupings change with the work and are not stored. Agent guidance such as
-`AGENTS.md` points here instead of repeating it.
+The server's instructions (`src/instructions.ts`) are the single owner of how
+an agent uses the board and writes on it: who writes what, the item lifecycle,
+dependencies, how to write items and cards, plans, acceptance, logs and the
+改动 section, what the board pushes and to whom, the wake stream's protocol, and
+the tool behavior a tool's own description does not carry. They state the
+board rules for agents (the architect's item rules and communication rules);
+a rule the server enforces is defined in `src/model.ts` or `src/rules.ts`.
+`AGENTS.md` and the other agent files point here instead of repeating them.
+A change to a tool's behavior or to a board rule changes the instructions in
+the same commit.
+
+Claude Code cuts a server's instructions at 2048 characters. The text
+therefore begins with `CORE`, which alone tells an agent how to start
+(`projects`, `brief`, `author`, `session`), who writes what, and what it must
+not do (set a status, use the inbox tools); a test keeps it within the limit.
+The wake frames the instructions list for the architect (event kinds and
+their fields) are checked against the frames the server sends.
+
+The text ends with a short, project-independent reading guide
+(`READING_GUIDE`), the single owner of how an agent reads the board: start with
+`projects` then `brief`; paused work is not worked on; read work in progress,
+then ready work, owner cards and notes; pass `session` on every write; put
+things in flight (background runs, unpushed local work) in plan rows with
+`waits`; an engineer reads its own subtree and the architect reads across
+projects.
 
 ### Finding things
 
@@ -1436,12 +1451,10 @@ A newly created request also produces one event:
 change is the event source, so updates and retries do not announce a request
 again. A socket at `/wake?session=*` receives everything; a named socket
 at `/wake?session=<project name>` receives events whose `project` matches
-that name. The coordinator listens to the wildcard stream, finds a project’s
-live session by its working directory, forwards the event to it, and uses
-`followups(minutes)` for notes and inbox requests older than that age. Agents
-need not listen. With no live responsible session, the coordinator asks the
-owner to restart one. The server does not detect session liveness or retry
-messages itself.
+that name. Only the architect listens, on the wildcard stream (the server's
+instructions, Messages, say how); engineers and other agents do not.
+`followups(minutes)` lists notes and inbox requests older than that age. The
+server does not detect session liveness or retry messages itself.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
 Code does not start a turn in an idle session for them. Claude Code's
