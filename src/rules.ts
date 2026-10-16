@@ -1,6 +1,6 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
-import type { Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
 import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
@@ -401,14 +401,15 @@ export function withSorted(list: readonly string[], value: string): string[] {
 /** How one commit changed Snapshot["activity"]: the content write's time (absent for an owner-only commit), the items
  * whose last change moved, and each item whose pause spans changed with its whole new list. `from` is the head before
  * the commit: the delta applies only to the snapshot at that head. */
-export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }> }
+export interface ActivityDelta { from: string; write?: string; items: Record<string, string>; pauses: Record<string, Array<{ start: string; end?: string }>>; sessions: Record<string, { name: string; at: string }>; agents?: Record<string, AgentTouch[]> }
 /** The activity after `delta`, equal to the store's (docs/design.md, live updates); unchanged activity stays the same object. */
 export function applyActivityDelta(activity: Snapshot["activity"], delta: ActivityDelta): Snapshot["activity"] {
-  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length) return activity;
+  if (delta.write === undefined && !Object.keys(delta.items).length && !Object.keys(delta.pauses).length && !Object.keys(delta.sessions ?? {}).length && !Object.keys(delta.agents ?? {}).length) return activity;
   const base = activity ?? { writes: [], items: {} };
   const pauses = base.pauses || Object.keys(delta.pauses).length ? { ...base.pauses, ...delta.pauses } : undefined;
   const sessions = base.sessions || Object.keys(delta.sessions ?? {}).length ? { ...base.sessions, ...delta.sessions } : undefined;
-  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}) };
+  const agents = base.agents || Object.keys(delta.agents ?? {}).length ? { ...base.agents, ...delta.agents } : undefined;
+  return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
 }
 
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,

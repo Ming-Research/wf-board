@@ -15,6 +15,7 @@ import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummar
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
+import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 
 export type DocKind = "item" | "decision" | "note" | "glossary";
@@ -444,7 +445,7 @@ export class Store {
         }
       }
       this.noteActivity(activity, commit.at, touched);
-      if (commit.session) this.noteSessions(activity, commit.at, commit.session, touched);
+      if (commit.session) { this.noteSessions(activity, commit.at, commit.session, touched); this.noteAgent(activity, commit.at, commit.session, touched); }
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
     }
     await this.loadPauses(activity, commits);
@@ -607,6 +608,12 @@ export class Store {
       if (known && Date.parse(at) < Date.parse(known.at)) continue;
       (activity.sessions ??= {})[id] = { name, at };
     }
+  }
+
+  /** The session's last two items (src/agents.ts). Unlike an item's last writer, an earlier time never loses to a later one: writes arrive in history order. */
+  private noteAgent(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
+    const items = [...touched];
+    if (items.length) (activity.agents ??= {})[name] = touchAgent(activity.agents?.[name], items, at);
   }
 
   private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
@@ -774,7 +781,7 @@ export class Store {
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
       // Documents in `changed` are already frozen snapshot documents.
-      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {} } };
+      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -803,10 +810,10 @@ export class Store {
     if (changed.some(c => c.kind !== "owner")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
-      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}) };
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
       const touched = this.changedItems(changed, next);
       this.noteActivity(activity, event.at, touched);
-      if (session) this.noteSessions(activity, event.at, session, touched);
+      if (session) { this.noteSessions(activity, event.at, session, touched); this.noteAgent(activity, event.at, session, touched); }
       this.notePauses(activity, this.state.items, next.items, changed, event.at);
       next.activity = activity;
       const delta = event.activity;
@@ -814,6 +821,7 @@ export class Store {
       for (const [id, at] of Object.entries(activity.items)) if (previous.items[id] !== at) delta.items[id] = at;
       for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
       for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
+      for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) delta.agents[name] = list;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);

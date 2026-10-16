@@ -82,6 +82,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   // Each commit with the snapshot it published, taken when the store announces it.
   const events: Array<{ change: Change; after: Snapshot }> = [];
   store.onChange(change => events.push({ change, after: store.snapshot() }));
+  const initial = store.snapshot();
   // The page's copy of the activity, kept only from event deltas.
   let page = store.snapshot(), pageActivity = page.activity, pageHead = page.head;
   let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0;
@@ -184,6 +185,36 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     }
     handled = events.length;
   }
+  // The agent index (src/agents.ts): each session's two most recently touched distinct items, read off the commits by
+  // scanning back from the newest until two are found, not by advancing a list as the store does.
+  const sessionOf = new Map((await store.log()).map(c => [c.commit, c.session]));
+  const touchedBy = (i: number): string[] => {
+    const here = events[i]!, was = i ? events[i - 1]!.after : initial, items = new Set<string>();
+    for (const doc of here.change.changed) {
+      if (doc.kind === "item") items.add(doc.id);
+      for (const side of [doc.before, doc.after] as Array<Record<string, unknown> | null>) {
+        if (!side) continue;
+        if (doc.kind === "decision") items.add(side.item as string);
+        if (doc.kind === "note" && typeof side.target === "string") {
+          const card = side.target.startsWith("q:") ? (here.after.decisions[side.target.slice(2)] ?? was.decisions[side.target.slice(2)]) : undefined;
+          if (side.target.startsWith("it:")) items.add(side.target.slice(3)); else if (card) items.add(card.item);
+        }
+      }
+    }
+    return [...items].sort();
+  };
+  const expectedAgents: Record<string, Array<{ item: string; at: string }>> = {};
+  for (const session of new Set([...sessionOf.values()].filter((v): v is string => !!v))) {
+    const found: Array<{ item: string; at: string }> = [];
+    for (let i = events.length - 1; i >= 0 && found.length < 2; i--) {
+      if (sessionOf.get(events[i]!.change.commit) !== session) continue;
+      for (const item of touchedBy(i)) if (found.length < 2 && !found.some(f => f.item === item)) found.push({ item, at: events[i]!.change.at });
+    }
+    if (found.length) expectedAgents[session] = found;
+  }
+  assert.deepEqual(store.snapshot().activity?.agents, expectedAgents, "the agent index equals the two latest items each session touched");
+  assert.deepEqual(Object.keys(expectedAgents).sort(), ["session-a", "session-b", "session-c", "架构师"], "every session wrote, the architect's writes under its own name");
+  assert.ok(Object.values(expectedAgents).every(list => list.length === 2), "each kept two items");
   const attributed = Object.keys(store.snapshot().activity?.sessions ?? {}).length;
   assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
   // A daemon restart derives the whole activity, session attribution included, from history alone.
