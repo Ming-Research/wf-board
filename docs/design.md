@@ -1673,19 +1673,22 @@ Halo-wf, Snowghost-wf and Whitefoot run theirs on push, and their pull request
 runs are mostly skipped gates), and the same set is read in each case. A check
 that failed (failure, timed out, startup failure, action required, an unknown
 conclusion, or a status that failed or errored) makes the commit `failure`,
-whatever else is still running. Attempts at one check (the same name in the same
-workflow: a job run again, or the push and the pull request run of one workflow)
-count only by the latest, by start time and, at equal time, the worse one, so a
-red that a rerun replaced says nothing; the same name in two workflows is two
-checks. A cancelled run, which a newer push replaced, says nothing as long as
-another run of its check is there; a check with only cancelled runs has not run,
-so the commit is `pending`. Otherwise an unfinished check, or more checks than one
-answer holds (100), make it `pending`. Otherwise at least one successful check
-makes it `success`; a skipped or neutral check is no failure and no pass, since a
-gate that was skipped ran nothing. A commit with no check to read, or only
-skipped or neutral ones, is `none`, which is not green: GitHub runs no pull
-request check for a pull request with a merge conflict, and a commit nobody has
-run yet looks the same.
+whatever else is still running. Within one round of checks (a check suite: one
+workflow run for one event, and its reruns) the attempts at one check, the same
+name, count only by the latest, by start time and, at equal time, the worse one,
+so a red that a rerun replaced says nothing. Different rounds count each by
+itself: the push round and the pull request round of one workflow are two
+checks, and a red in either is a red, since the pull request round tests the
+branch merged with its target and the push round the branch alone. A cancelled
+run, which a newer push replaced, says nothing as long as another run of its
+check is in the same round; a check with only cancelled runs in its round has
+not run, so the commit is `pending`. Otherwise an unfinished check, or more
+checks than one answer holds (100), make it `pending`. Otherwise at least one
+successful check makes it `success`; a skipped or neutral check is no failure
+and no pass, since a gate that was skipped ran nothing. A commit with no check
+to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
+runs no pull request check for a pull request with a merge conflict, and a
+commit nobody has run yet looks the same.
 
 **The three pushes.** All are about non-draft pull requests; a draft's checks
 are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say

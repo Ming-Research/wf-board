@@ -35,7 +35,7 @@ export interface GithubSource {
 
 /** The newest 100 open PRs and 100 checks per commit; a repository with more is reported as truncated or misses checks. */
 const LIMIT = 100;
-const CHECKS = `statusCheckRollup { contexts(first: ${LIMIT}) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state } } } }`;
+const CHECKS = `statusCheckRollup { contexts(first: ${LIMIT}) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt checkSuite { id } } ... on StatusContext { context state } } } }`;
 
 /** One GraphQL query for a repository: its main line, its open PRs, and the PRs named by number (aliases p<N>, so the numbers go into the text; they are integers). */
 export function queryText(branch: boolean, numbers: readonly number[]): string {
@@ -53,8 +53,8 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
 const Context = z.discriminatedUnion("__typename", [
   z.object({
     __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), startedAt: z.string().nullable(),
-    // Null for a check that no Actions workflow made.
-    checkSuite: z.object({ workflowRun: z.object({ workflow: z.object({ name: z.string() }) }).nullable() }),
+    // The round of checks it belongs to: one workflow run for one event (a push, a pull request), and its reruns.
+    checkSuite: z.object({ id: z.string() }),
   }),
   z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string() }),
 ]);
@@ -90,10 +90,12 @@ const later = (a: CheckRun, b: CheckRun) => {
  * What the checks on a commit say, read from the checks themselves and not from GitHub's roll-up state, which counts a cancelled
  * run as a failure. It reads every check on the commit, whatever event started it: a repository's real checks may run on push,
  * on pull request, or both, and the same set is read in each case.
- * Attempts at one check (the same name in the same workflow: a job run again, or the push and the pull request run of one
- * workflow) count only by the latest; an earlier red that a rerun replaced says nothing. A cancelled run, which a newer push
- * replaced, says nothing as long as another run of its check is there; a check with only cancelled runs has not run, which is
- * pending. Then any failed check makes the commit a failure, whatever else is still running; otherwise any unfinished check, or
+ * Within one round of checks (a check suite: one workflow run for one event, and its reruns) the attempts at one check, the same
+ * name, count only by the latest; an earlier red that a rerun replaced says nothing. Different rounds count each by itself, so
+ * the push round and the pull request round of one workflow (the second tests the branch merged with its target) are two checks,
+ * and a red in either is a red. A cancelled run, which a newer push replaced, says nothing as long as another run of its check
+ * is in the same round; a check with only cancelled runs in a round has not run, which is pending. Then any failed check makes
+ * the commit a failure, whatever else is still running; otherwise any unfinished check, or
  * more checks than one answer holds, make it pending; otherwise it passed if at least one check succeeded. A skipped or neutral
  * check is no failure and no pass (a gate that was skipped ran nothing), so a commit with only those, like one with no check at
  * all, is `none`, which is not green.
@@ -104,7 +106,7 @@ export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
   let passed = 0, pending = rollup.contexts.pageInfo.hasNextPage;
   for (const node of rollup.contexts.nodes) {
     if (node.__typename === "CheckRun") {
-      const key = `${node.checkSuite.workflowRun?.workflow.name ?? ""}/${node.name}`;
+      const key = `${node.checkSuite.id}/${node.name}`;
       if (node.status === "COMPLETED" && node.conclusion === "CANCELLED") { cancelled.add(key); continue; }
       const seen = latest.get(key);
       if (!seen || later(node, seen)) latest.set(key, node);

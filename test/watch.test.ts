@@ -15,9 +15,9 @@ import { asArchitect, server, wakeSocket } from "./helpers.ts";
 // --- GitHub's answer -------------------------------------------------------------------------------------------------------------
 // The shapes below are those of `gh api graphql` with the query from queryText, read from a live answer for a private repository.
 
-// `at` is when the run started (null: not yet); `workflow` the Actions workflow that made it (null: no workflow).
-const run = (name: string, conclusion: string | null, status = "COMPLETED", { at = null, workflow = null }: { at?: string | null; workflow?: string | null } = {}) => ({
-  __typename: "CheckRun", name, status, conclusion, startedAt: at, checkSuite: { workflowRun: workflow === null ? null : { workflow: { name: workflow } } }, detailsUrl: `https://example.invalid/${name}`,
+// `at` is when the run started (null: not yet); `suite` the round of checks it belongs to (one workflow run for one event, and its reruns).
+const run = (name: string, conclusion: string | null, status = "COMPLETED", { at = null, suite = "s1" }: { at?: string | null; suite?: string } = {}) => ({
+  __typename: "CheckRun", name, status, conclusion, startedAt: at, checkSuite: { id: suite }, detailsUrl: `https://example.invalid/${name}`,
 });
 // `state` is GitHub's own roll-up, which counts a cancelled run as a failure; it is not what the board reads.
 const rollup = (state: string, ...nodes: unknown[]) => ({ state, contexts: { pageInfo: { hasNextPage: false }, nodes } });
@@ -74,19 +74,25 @@ test("a cancelled run is neither red nor green, GitHub's roll-up state is not wh
   assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "SUCCESS")), { state: "pending", failed: [] });
   assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")), { state: "pending", failed: [] }, "nothing ran yet");
   // A job run again on the same commit: only its latest attempt counts, in either order in the answer.
-  const first = { at: "2026-10-16T10:00:00Z", workflow: "ci" }, again = { at: "2026-10-16T10:05:00Z", workflow: "ci" };
+  const first = { at: "2026-10-16T10:00:00Z" }, again = { at: "2026-10-16T10:05:00Z" };
   assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", again)), { state: "success", failed: [] }, "red, then run again and green");
   assert.deepEqual(checksOf("FAILURE", run("test", "SUCCESS", "COMPLETED", again), run("test", "FAILURE", "COMPLETED", first)), { state: "success", failed: [] }, "the order of the answer does not matter");
   assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS", "COMPLETED", first), run("test", "FAILURE", "COMPLETED", again)), { state: "failure", failed: ["test"] }, "green, then run again and red");
-  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", null, "QUEUED", { workflow: "ci" })), { state: "pending", failed: [] }, "the rerun is queued, not started");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", null, "QUEUED")), { state: "pending", failed: [] }, "the rerun is queued, not started");
   assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", null, "IN_PROGRESS", again)), { state: "pending", failed: [] }, "the rerun is running");
   assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", again), run("test", null, "IN_PROGRESS", first)), { state: "failure", failed: ["test"] }, "a run that started earlier and still goes on does not hide a later red");
   assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", first)), { state: "failure", failed: ["test"] }, "no telling which is later: the worse one counts");
-  // The same name in two workflows is two checks: one workflow's green does not replace the other's red.
-  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { at: first.at, workflow: "ci" }), run("test", "SUCCESS", "COMPLETED", { at: again.at, workflow: "nightly" })), { state: "failure", failed: ["test"] });
-  // A cancelled run of a check that was run again says nothing; one that is all there is leaves the check pending.
+  // Rounds of checks on one commit (the push round, the pull request round that tests the branch merged with its target) count each by itself: a red in either is a red, whichever started later.
+  const push = { suite: "push" }, pull = { suite: "pull" };
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { ...push, at: first.at }), run("test", "SUCCESS", "COMPLETED", { ...pull, at: again.at })), { state: "failure", failed: ["test"] }, "red in the earlier round, green in the later");
+  assert.deepEqual(checksOf("FAILURE", run("test", "SUCCESS", "COMPLETED", { ...push, at: first.at }), run("test", "FAILURE", "COMPLETED", { ...pull, at: again.at })), { state: "failure", failed: ["test"] }, "green in the earlier round, red in the later");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { ...push, at: first.at }), run("test", "SKIPPED", "COMPLETED", { ...pull, at: again.at }), run("lint", "SUCCESS", "COMPLETED", pull)), { state: "failure", failed: ["test"] }, "a job one round skips does not hide the other round's red");
+  // A rerun in one round replaces only that round's red.
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { ...push, at: first.at }), run("test", "SUCCESS", "COMPLETED", { ...push, at: again.at }), run("test", "SUCCESS", "COMPLETED", pull)), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { ...push, at: first.at }), run("test", "SUCCESS", "COMPLETED", { ...push, at: again.at }), run("test", "FAILURE", "COMPLETED", pull)), { state: "failure", failed: ["test"] });
+  // A cancelled run of a check that was run again in its round says nothing; one that is all there is in its round leaves the check pending.
   assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", again)), { state: "success", failed: [] });
-  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED", "COMPLETED", { at: first.at, workflow: "nightly" }), run("test", "SUCCESS", "COMPLETED", again)), { state: "pending", failed: [] }, "cancelled in another workflow does not count as run in this one");
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED", "COMPLETED", { ...push, at: first.at }), run("test", "SUCCESS", "COMPLETED", { ...pull, at: again.at })), { state: "pending", failed: [] }, "cancelled in one round does not count as run in the other");
   // Without any check there is nothing to call green; GitHub reports no roll-up at all.
   assert.deepEqual(summarize(null), { state: "none", failed: [] });
   assert.deepEqual(checksOf("SUCCESS"), { state: "none", failed: [] }, "a roll-up that lists no check");
