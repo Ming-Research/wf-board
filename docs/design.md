@@ -1673,13 +1673,19 @@ Halo-wf, Snowghost-wf and Whitefoot run theirs on push, and their pull request
 runs are mostly skipped gates), and the same set is read in each case. A check
 that failed (failure, timed out, startup failure, action required, an unknown
 conclusion, or a status that failed or errored) makes the commit `failure`,
-whatever else is still running. A cancelled run, which a newer push replaced,
-says nothing as long as another run of its name is there; a name with only
-cancelled runs has not run, so the commit is `pending`. Otherwise an unfinished
-check, or more checks than one answer holds (100), make it `pending`. Otherwise,
-skipped, neutral and successful checks make it `success`. A commit with no check
-to read is `none`, which is not green: GitHub runs no pull request check for a
-pull request with a merge conflict, and a commit nobody has run yet looks the same.
+whatever else is still running. Attempts at one check (the same name in the same
+workflow: a job run again, or the push and the pull request run of one workflow)
+count only by the latest, by start time and, at equal time, the worse one, so a
+red that a rerun replaced says nothing; the same name in two workflows is two
+checks. A cancelled run, which a newer push replaced, says nothing as long as
+another run of its check is there; a check with only cancelled runs has not run,
+so the commit is `pending`. Otherwise an unfinished check, or more checks than one
+answer holds (100), make it `pending`. Otherwise at least one successful check
+makes it `success`; a skipped or neutral check is no failure and no pass, since a
+gate that was skipped ran nothing. A commit with no check to read, or only
+skipped or neutral ones, is `none`, which is not green: GitHub runs no pull
+request check for a pull request with a merge conflict, and a commit nobody has
+run yet looks the same.
 
 **The three pushes.** All are about non-draft pull requests; a draft's checks
 are the engineer's. `pr-red`: the checks say failure. `pr-ready`: the checks say

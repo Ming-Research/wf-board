@@ -15,7 +15,10 @@ import { asArchitect, server, wakeSocket } from "./helpers.ts";
 // --- GitHub's answer -------------------------------------------------------------------------------------------------------------
 // The shapes below are those of `gh api graphql` with the query from queryText, read from a live answer for a private repository.
 
-const run = (name: string, conclusion: string | null, status = "COMPLETED") => ({ __typename: "CheckRun", name, status, conclusion, detailsUrl: `https://example.invalid/${name}` });
+// `at` is when the run started (null: not yet); `workflow` the Actions workflow that made it (null: no workflow).
+const run = (name: string, conclusion: string | null, status = "COMPLETED", { at = null, workflow = null }: { at?: string | null; workflow?: string | null } = {}) => ({
+  __typename: "CheckRun", name, status, conclusion, startedAt: at, checkSuite: { workflowRun: workflow === null ? null : { workflow: { name: workflow } } }, detailsUrl: `https://example.invalid/${name}`,
+});
 // `state` is GitHub's own roll-up, which counts a cancelled run as a failure; it is not what the board reads.
 const rollup = (state: string, ...nodes: unknown[]) => ({ state, contexts: { pageInfo: { hasNextPage: false }, nodes } });
 const answer = (repository: object) => JSON.stringify({ data: { repository } });
@@ -37,7 +40,7 @@ test("a GitHub answer is read into main line, open PRs and named PRs; a roll-up 
     p22: null,
   });
   const state = parseResponse("Ming-Research/wf-board", text);
-  assert.deepEqual(state.main, { branch: "claude/first-board", commit: "abc", checks: { state: "failure", failed: ["e2e", "ci/legacy"] } }, "a name is listed once, a skipped or passed check not at all");
+  assert.deepEqual(state.main, { branch: "claude/first-board", commit: "abc", checks: { state: "failure", failed: ["ci/legacy", "e2e"] } }, "a name is listed once, a skipped or passed check not at all; statuses before runs");
   assert.equal(state.truncated, true);
   assert.deepEqual(state.pulls.map(p => [p.number, p.draft, p.base, p.commit, p.mergeable, p.checks.state, p.checks.failed]), [
     [1, false, "claude/first-board", "c1", "MERGEABLE", "success", []],
@@ -70,11 +73,29 @@ test("a cancelled run is neither red nor green, GitHub's roll-up state is not wh
   // A name that only has a cancelled run has not run: pending, so a green neighbour does not make the commit green.
   assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "SUCCESS")), { state: "pending", failed: [] });
   assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")), { state: "pending", failed: [] }, "nothing ran yet");
+  // A job run again on the same commit: only its latest attempt counts, in either order in the answer.
+  const first = { at: "2026-10-16T10:00:00Z", workflow: "ci" }, again = { at: "2026-10-16T10:05:00Z", workflow: "ci" };
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", again)), { state: "success", failed: [] }, "red, then run again and green");
+  assert.deepEqual(checksOf("FAILURE", run("test", "SUCCESS", "COMPLETED", again), run("test", "FAILURE", "COMPLETED", first)), { state: "success", failed: [] }, "the order of the answer does not matter");
+  assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS", "COMPLETED", first), run("test", "FAILURE", "COMPLETED", again)), { state: "failure", failed: ["test"] }, "green, then run again and red");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", null, "QUEUED", { workflow: "ci" })), { state: "pending", failed: [] }, "the rerun is queued, not started");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", null, "IN_PROGRESS", again)), { state: "pending", failed: [] }, "the rerun is running");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", again), run("test", null, "IN_PROGRESS", first)), { state: "failure", failed: ["test"] }, "a run that started earlier and still goes on does not hide a later red");
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", first)), { state: "failure", failed: ["test"] }, "no telling which is later: the worse one counts");
+  // The same name in two workflows is two checks: one workflow's green does not replace the other's red.
+  assert.deepEqual(checksOf("FAILURE", run("test", "FAILURE", "COMPLETED", { at: first.at, workflow: "ci" }), run("test", "SUCCESS", "COMPLETED", { at: again.at, workflow: "nightly" })), { state: "failure", failed: ["test"] });
+  // A cancelled run of a check that was run again says nothing; one that is all there is leaves the check pending.
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED", "COMPLETED", first), run("test", "SUCCESS", "COMPLETED", again)), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("FAILURE", run("test", "CANCELLED", "COMPLETED", { at: first.at, workflow: "nightly" }), run("test", "SUCCESS", "COMPLETED", again)), { state: "pending", failed: [] }, "cancelled in another workflow does not count as run in this one");
   // Without any check there is nothing to call green; GitHub reports no roll-up at all.
   assert.deepEqual(summarize(null), { state: "none", failed: [] });
   assert.deepEqual(checksOf("SUCCESS"), { state: "none", failed: [] }, "a roll-up that lists no check");
-  // Skipped and neutral runs passed; a status from outside Actions counts; unknown values are not trusted.
+  // Skipped and neutral runs are no failure and no pass; a status from outside Actions counts; unknown values are not trusted.
   assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL"), status("ci/x", "SUCCESS")), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("test", "SUCCESS")), { state: "success", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL")), { state: "none", failed: [] }, "only gates that ran nothing is not green");
+  assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("test", null, "IN_PROGRESS")), { state: "pending", failed: [] });
+  assert.deepEqual(checksOf("SUCCESS", run("gate", "SKIPPED"), run("test", "FAILURE")), { state: "failure", failed: ["test"] });
   assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), status("ci/x", "PENDING")), { state: "pending", failed: [] });
   assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), run("odd", "SOMETHING_NEW")), { state: "failure", failed: ["odd"] }, "an unknown conclusion is not a pass");
   assert.deepEqual(checksOf("SUCCESS", run("test", "SUCCESS"), run("odd", null, "SOMETHING_NEW")), { state: "pending", failed: [] }, "an unknown status is not finished");
@@ -97,6 +118,8 @@ test("an answer for a PR with a cancelled run is read into a ready PR, not a red
   assert.deepEqual(events(only), [], "cancelled and not yet replaced: neither red nor ready");
   const none = parseResponse(WB, text(prNode(23, {}, null)));
   assert.deepEqual(events(none), [], "no check found is not green");
+  const gates = parseResponse(WB, text(prNode(23, {}, rollup("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL")))));
+  assert.deepEqual(events(gates), [], "only skipped gates (the push checks not there yet) is not green");
   // A PR with a merge conflict gets no pull_request run; what is left on its newest commit (a push run, or nothing) is not a ready PR.
   const conflicting = parseResponse(WB, text(prNode(23, { mergeable: "CONFLICTING" }, rollup("SUCCESS", run("test", "SUCCESS")))));
   assert.deepEqual(events(conflicting), [], "green checks of a PR that cannot merge");

@@ -35,7 +35,7 @@ export interface GithubSource {
 
 /** The newest 100 open PRs and 100 checks per commit; a repository with more is reported as truncated or misses checks. */
 const LIMIT = 100;
-const CHECKS = `statusCheckRollup { contexts(first: ${LIMIT}) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } }`;
+const CHECKS = `statusCheckRollup { contexts(first: ${LIMIT}) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state } } } }`;
 
 /** One GraphQL query for a repository: its main line, its open PRs, and the PRs named by number (aliases p<N>, so the numbers go into the text; they are integers). */
 export function queryText(branch: boolean, numbers: readonly number[]): string {
@@ -51,7 +51,11 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
 }
 
 const Context = z.discriminatedUnion("__typename", [
-  z.object({ __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable() }),
+  z.object({
+    __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), startedAt: z.string().nullable(),
+    // Null for a check that no Actions workflow made.
+    checkSuite: z.object({ workflowRun: z.object({ workflow: z.object({ name: z.string() }) }).nullable() }),
+  }),
   z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string() }),
 ]);
 const Rollup = z.object({ contexts: z.object({ pageInfo: z.object({ hasNextPage: z.boolean() }), nodes: z.array(Context) }) }).nullable();
@@ -72,30 +76,48 @@ const Response = z.object({
 });
 const Named = z.object({ number: z.number(), state: z.enum(["OPEN", "MERGED", "CLOSED"]), mergedAt: z.string().nullable(), url: z.string() });
 
+type CheckRun = Extract<z.infer<typeof Context>, { __typename: "CheckRun" }>;
+const NOT_RUN = new Set(["NEUTRAL", "SKIPPED"]);
+/** 2 failed, 1 unfinished, 0 succeeded or not run: how bad a run is, for runs that cannot be told apart by time. */
+const badness = (run: CheckRun) => run.status !== "COMPLETED" ? 1 : run.conclusion === "SUCCESS" || (run.conclusion !== null && NOT_RUN.has(run.conclusion)) ? 0 : 2;
+/** Whether `a` is the later attempt at the same check: it started later (a run not started yet is the latest), and of equal start the worse one. */
+const later = (a: CheckRun, b: CheckRun) => {
+  const x = a.startedAt ?? "9999", y = b.startedAt ?? "9999";
+  return x !== y ? x > y : badness(a) >= badness(b);
+};
+
 /**
  * What the checks on a commit say, read from the checks themselves and not from GitHub's roll-up state, which counts a cancelled
- * run as a failure. A run that was cancelled (a newer push replaced it) says nothing, as long as another run of that name is
- * there; a name with only cancelled runs has not run, which is pending. Any failed check makes it a failure, whatever else is
- * still running; otherwise any unfinished check, or more checks than one answer holds, make it pending; otherwise it passed if
- * at least one check did, and `none` if there is no check, which is not green.
- * It reads every check on the commit, whatever event started it: a repository's real checks may run on push, on pull request,
- * or both, and the same set is read in each case.
+ * run as a failure. It reads every check on the commit, whatever event started it: a repository's real checks may run on push,
+ * on pull request, or both, and the same set is read in each case.
+ * Attempts at one check (the same name in the same workflow: a job run again, or the push and the pull request run of one
+ * workflow) count only by the latest; an earlier red that a rerun replaced says nothing. A cancelled run, which a newer push
+ * replaced, says nothing as long as another run of its check is there; a check with only cancelled runs has not run, which is
+ * pending. Then any failed check makes the commit a failure, whatever else is still running; otherwise any unfinished check, or
+ * more checks than one answer holds, make it pending; otherwise it passed if at least one check succeeded. A skipped or neutral
+ * check is no failure and no pass (a gate that was skipped ran nothing), so a commit with only those, like one with no check at
+ * all, is `none`, which is not green.
  */
-const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
   if (!rollup) return { state: "none", failed: [] };
-  const failed = new Set<string>(), ran = new Set<string>(), cancelled = new Set<string>();
+  const failed = new Set<string>(), latest = new Map<string, CheckRun>(), cancelled = new Set<string>();
   let passed = 0, pending = rollup.contexts.pageInfo.hasNextPage;
   for (const node of rollup.contexts.nodes) {
     if (node.__typename === "CheckRun") {
-      if (node.status !== "COMPLETED") { pending = true; ran.add(node.name); }
-      else if (node.conclusion === "CANCELLED") cancelled.add(node.name);
-      else { ran.add(node.name); if (node.conclusion !== null && PASSED.has(node.conclusion)) passed++; else failed.add(node.name); }
+      const key = `${node.checkSuite.workflowRun?.workflow.name ?? ""}/${node.name}`;
+      if (node.status === "COMPLETED" && node.conclusion === "CANCELLED") { cancelled.add(key); continue; }
+      const seen = latest.get(key);
+      if (!seen || later(node, seen)) latest.set(key, node);
     } else if (node.state === "SUCCESS") passed++;
     else if (node.state === "FAILURE" || node.state === "ERROR") failed.add(node.context);
     else pending = true;
   }
-  if ([...cancelled].some(name => !ran.has(name))) pending = true;
+  if ([...cancelled].some(key => !latest.has(key))) pending = true;
+  for (const run of latest.values()) {
+    if (badness(run) === 2) failed.add(run.name);
+    else if (badness(run) === 1) pending = true;
+    else if (run.conclusion === "SUCCESS") passed++;
+  }
   return { state: failed.size ? "failure" : pending ? "pending" : passed ? "success" : "none", failed: [...failed] };
 }
 
