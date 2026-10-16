@@ -152,6 +152,19 @@ export const DispatchFinish = z.object({
   note: StepText.optional(),
 }).strict();
 export type DispatchFinish = z.infer<typeof DispatchFinish>;
+/**
+ * What is wrong with the counts a finished dispatch of `role` carries, or undefined when they are right: an engineer
+ * carries `reports` and `kickbacks`, a review carries `rounds`, never the other role's. The one place the rule lives:
+ * the schema below and the write that ends a dispatch both ask it, the write to word the refusal.
+ */
+export function dispatchCountProblem(role: (typeof DISPATCH_ROLES)[number], c: { reports?: number | undefined; kickbacks?: number | undefined; rounds?: number | undefined }): string | undefined {
+  if (role === "工程师") {
+    if (c.reports === undefined || c.kickbacks === undefined) return `${c.reports === undefined ? "reports" : "kickbacks"}: an engineer dispatch ends with reports and kickbacks (how often it stopped to report, how often it was sent back)`;
+    return c.rounds === undefined ? undefined : "rounds: only a review dispatch carries rounds; an engineer carries reports and kickbacks";
+  }
+  if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many times it went back and forth)";
+  return c.reports === undefined && c.kickbacks === undefined ? undefined : `${c.reports === undefined ? "kickbacks" : "reports"}: only an engineer dispatch carries reports and kickbacks; a review carries rounds`;
+}
 export const Dispatch = z.object({
   /** The dispatched session's full id; unique on the board. */
   agentId: Key,
@@ -167,11 +180,8 @@ export const Dispatch = z.object({
   did: StepText.optional(),
   /** Present once the session has ended. */
   finish: DispatchFinish.optional(),
-}).strict().refine(d => {
-  const f = d.finish;
-  if (!f) return true;
-  return d.role === "工程师" ? f.reports !== undefined && f.kickbacks !== undefined && f.rounds === undefined : f.rounds !== undefined && f.reports === undefined && f.kickbacks === undefined;
-}, "A finished engineer carries reports and kickbacks, a finished review carries rounds").refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
+}).strict().refine(d => !d.finish || dispatchCountProblem(d.role, d.finish) === undefined, { message: "A finished dispatch carries the counts of its role", path: ["finish"] })
+  .refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
 export type Dispatch = z.infer<typeof Dispatch>;
 
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
@@ -196,7 +206,7 @@ export const Item = z.object({
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
-  /** Explicit owner/coordinator pause; descendants inherit it through ownership. */
+  /** Explicit owner/architect pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
   /**
    * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
@@ -295,6 +305,22 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
+/** The architect's author name, a configured project like any other. */
+export const ARCHITECT = "Architect";
+/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
+export const ARCHITECT_SESSION = "架构师";
+/**
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
+ * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
+ * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
+ * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ */
+export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
+export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
+export const RETIRED_COORDINATOR = "总管";
+
 /** A glossary's id and file name: the name of the project that keeps it, usable as one file name. */
 export const GlossaryId = z.string().regex(/^[^./\\\0\r\n][^/\\\0\r\n]{0,199}$/);
 
@@ -318,7 +344,7 @@ export type Glossary = z.infer<typeof Glossary>;
 
 export const Board = z.object({
   projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
-  /** The approved tag vocabulary; only 总管 changes it, on the owner's decision card. */
+  /** The approved tag vocabulary; only the architect changes it, on the owner's decision card. */
   tags: z.array(Tag).refine(t => new Set(t.map(t => t.name)).size === t.length, "Tag names must be unique").optional(),
   title: z.string().min(1),
   eyebrow: z.string().optional(),

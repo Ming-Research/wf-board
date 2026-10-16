@@ -11,6 +11,8 @@ import { unreadSteps } from "../src/history.ts";
 import { Store } from "../src/store.ts";
 
 const architect = "Architect";
+/** The architect writes as author Architect from the session 架构师; the journal takes no other writer. */
+const asArchitect = { author: architect, session: "架构师" };
 
 // A synthetic board with the Architect project, its notes item and the process tag the journal records carry.
 // `tagProjects` limits the tag; `notes: false` leaves the notes item out.
@@ -20,7 +22,7 @@ async function journalBoard(t: { after(fn: () => void | Promise<void>): void }, 
   const tag = { name: "协作流程", meaning: "process", ...(options.tagProjects ? { projects: options.tagProjects } : {}) };
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: architect }, { name: "Whitefoot" }], tags: [tag] } });
   const op = ops(store, now);
-  if (options.notes !== false) await op.createItem({ author: architect, key: "architect-notes", title: "架构师笔记", record: true, group: architect, tags: ["协作流程"] });
+  if (options.notes !== false) await op.createItem({ author: architect, session: "架构师", key: "architect-notes", title: "架构师笔记", record: true, group: architect, tags: ["协作流程"] });
   return { store, op };
 }
 
@@ -41,9 +43,9 @@ test("the first entry of a day creates that day's record under the notes item, a
   const { store, op } = await journalBoard(t, () => clock);
   const key = `architect-journal-${localDay(first)}`;
 
-  await op.journalEntry({ author: architect, text: "第一条" });
+  await op.journalEntry({ ...asArchitect, text: "第一条" });
   clock = second;
-  await op.journalEntry({ author: architect, text: "第二条\n跨行保留" });
+  await op.journalEntry({ ...asArchitect, text: "第二条\n跨行保留" });
 
   const it = store.snapshot().items[key]!;
   assert.equal(it.title, `架构师日志 ${localDay(first)}`);
@@ -62,9 +64,9 @@ test("the day follows the local timezone, not UTC: one UTC day can hold two jour
   // 09:30Z is 23:30 on 2026-10-16 there, 10:30Z is 00:30 on 2026-10-17: two local days, one UTC day.
   let clock = "2026-10-16T09:30:00Z";
   const { store, op } = await journalBoard(t, () => clock);
-  await op.journalEntry({ author: architect, text: "第一条" });
+  await op.journalEntry({ ...asArchitect, text: "第一条" });
   clock = "2026-10-16T10:30:00Z";
-  await op.journalEntry({ author: architect, text: "第二条" });
+  await op.journalEntry({ ...asArchitect, text: "第二条" });
 
   const items = store.snapshot().items;
   assert.equal(items["architect-journal-2026-10-16"]!.head, "**23:30** 第一条");
@@ -75,9 +77,9 @@ test("an entry on the next local day opens that day's record", async t => {
   // Exactly a day apart: two local days in every timezone.
   let clock = "2026-10-16T12:00:00Z";
   const { store, op } = await journalBoard(t, () => clock);
-  await op.journalEntry({ author: architect, text: "昨天" });
+  await op.journalEntry({ ...asArchitect, text: "昨天" });
   clock = "2026-10-17T12:00:00Z";
-  await op.journalEntry({ author: architect, text: "今天" });
+  await op.journalEntry({ ...asArchitect, text: "今天" });
 
   const items = store.snapshot().items;
   const yesterday = items[`architect-journal-${localDay("2026-10-16T12:00:00Z")}`]!;
@@ -93,60 +95,69 @@ test("each write marks the record new for the owner: it is among the unread step
   const touches = (steps: Awaited<ReturnType<typeof unreadSteps>>) => steps.some(step => step.docs.some(doc => doc.id === key));
 
   const before = store.snapshot().head;
-  await op.journalEntry({ author: architect, text: "第一条" });
+  await op.journalEntry({ ...asArchitect, text: "第一条" });
   assert.ok(touches(await unreadSteps(store, before)));
 
   const afterFirst = store.snapshot().head;
   clock = "2026-10-16T13:30:00Z";
-  await op.journalEntry({ author: architect, text: "第二条" });
+  await op.journalEntry({ ...asArchitect, text: "第二条" });
   assert.ok(touches(await unreadSteps(store, afterFirst)));
 });
 
-test("only the Architect project writes the journal; another project is refused with the reason", async t => {
+test("only the architect writes the journal; another project is refused with the reason", async t => {
   const { op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
-  await assert.rejects(() => op.journalEntry({ author: "Whitefoot", text: "别人的" }), (error: unknown) => error instanceof OpError && /only the Architect project writes the journal/.test(error.message));
+  await assert.rejects(() => op.journalEntry({ author: "Whitefoot", text: "别人的" }), (error: unknown) => error instanceof OpError && /^author: only Architect with session 架构师 may write the journal under architect-notes$/.test(error.message));
+});
+
+test("the journal is the architect's: Architect without the session 架构师 is refused, and nothing is written", async t => {
+  const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
+  const before = store.snapshot();
+  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }]) {
+    await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && /^author: only Architect with session 架构师 may write the journal under architect-notes$/.test(error.message));
+    assert.deepEqual(store.snapshot(), before);
+  }
 });
 
 test("an entry with only blank text is refused by the nonempty rule", async t => {
   const { op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
-  await assert.rejects(() => op.journalEntry({ author: architect, text: "   " }), (error: unknown) => error instanceof OpError && /input\.text: provide nonempty text after trimming/.test(error.message));
+  await assert.rejects(() => op.journalEntry({ ...asArchitect, text: "   " }), (error: unknown) => error instanceof OpError && /input\.text: provide nonempty text after trimming/.test(error.message));
 });
 
 test("a day's key already used by a non-record item is refused, and the item is left as it was", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const key = `architect-journal-${localDay("2026-10-16T12:00:00Z")}`;
-  await op.createItem({ author: architect, key, owner: "architect-notes", title: "不是记录", accept: "做完", tags: ["协作流程"] });
+  await op.createItem({ author: architect, session: "架构师", key, owner: "architect-notes", title: "不是记录", accept: "做完", tags: ["协作流程"] });
   const before = store.snapshot().items[key]!;
-  await assert.rejects(() => op.journalEntry({ author: architect, text: "一条" }), /journal architect-journal-.*is not a record/);
+  await assert.rejects(() => op.journalEntry({ ...asArchitect, text: "一条" }), /journal architect-journal-.*is not a record/);
   assert.deepEqual(store.snapshot().items[key], before);
 });
 
 test("without the notes item the journal has no owner and the write is refused naming it", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z", { notes: false });
-  await assert.rejects(() => op.journalEntry({ author: architect, text: "一条" }), /owner architect-notes: choose an existing item/);
+  await assert.rejects(() => op.journalEntry({ ...asArchitect, text: "一条" }), /owner architect-notes: choose an existing item/);
   assert.equal(Object.hasOwn(store.snapshot().items, `architect-journal-${localDay("2026-10-16T12:00:00Z")}`), false);
 });
 
 test("a day's first entry refuses when the process tag does not apply to the Architect project", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z", { tagProjects: ["Whitefoot"], notes: false });
-  await op.createItem({ author: architect, key: "architect-notes", title: "架构师笔记", record: true, group: architect });
-  await assert.rejects(() => op.journalEntry({ author: architect, text: "一条" }), /tags 协作流程: applies only to Whitefoot, not Architect/);
+  await op.createItem({ author: architect, session: "架构师", key: "architect-notes", title: "架构师笔记", record: true, group: architect });
+  await assert.rejects(() => op.journalEntry({ ...asArchitect, text: "一条" }), /tags 协作流程: applies only to Whitefoot, not Architect/);
   assert.equal(Object.hasOwn(store.snapshot().items, `architect-journal-${localDay("2026-10-16T12:00:00Z")}`), false);
 });
 
-test("journal_entry over MCP: a call from the Architect project writes the entry, and another project's call returns the refusal as an error", async t => {
+test("journal_entry over MCP: a call from the architect writes the entry, and another project's call returns the refusal as an error", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const server = createMcpServer({ store, ops: op, now: () => "2026-10-16T12:00:00Z" });
   const client = new Client({ name: "Journal test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
 
-  const written = await client.callTool({ name: "journal_entry", arguments: { author: architect, text: "经 MCP 的一条" } });
+  const written = await client.callTool({ name: "journal_entry", arguments: { ...asArchitect, text: "经 MCP 的一条" } });
   assert.equal(written.isError, undefined);
   assert.match(JSON.stringify(written.content), /journal_entry architect-journal-/);
   assert.equal(store.snapshot().items[`architect-journal-${localDay("2026-10-16T12:00:00Z")}`]!.head, `**${localClock("2026-10-16T12:00:00Z")}** 经 MCP 的一条`);
 
   const refused = await client.callTool({ name: "journal_entry", arguments: { author: "Whitefoot", text: "别人的" } });
   assert.equal(refused.isError, true);
-  assert.match(JSON.stringify(refused.content), /only the Architect project writes the journal/);
+  assert.match(JSON.stringify(refused.content), /author: only Architect with session 架构师 may write the journal under architect-notes/);
 });
