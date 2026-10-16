@@ -89,12 +89,51 @@ private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
-every ten minutes. The first push waits because the agents that reconnect after
-a restart catch up on writes in the first seconds, and a push holds the write
-queue for its network round trips (item `push-blocks-writes`). It does not push
+every ten minutes. The first push waits so as not to compete with the start,
+which reads the startup cache and replays the commits after it. It does not push
 on shutdown (see Stopping). Each push writes its duration to the service log. If the server
 is down, agents can still read the files with Grep and Read; nothing is
 hidden in a database.
+
+**Pushing and the write queue.** Writes go through one queue, one task at a time, so
+only one git change is in flight; its tasks are each write and the save of the
+owner's reading state on shutdown. A push is not a task of the queue. It takes the
+head commit as of its start and runs one `git push` of that commit beside the writes,
+over one connection; git itself says whether it sent commits, found the remote
+current, or was refused. Only a refusal is followed by one `fetch`, to tell a remote
+that is ahead of this clone (no error: the next push has nothing to send) from one that
+has diverged (an error). Commits written while a push runs go in the next one. One push
+runs at a time, and a call made while one runs gets its result. A push beside a write
+is safe because it reads objects and changes one remote-tracking reference, and its
+git runs with automatic maintenance off, so it never starts the background repack that
+a write's commit can start (design of the git options: item e2e-git-tmp-flake).
+
+A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
+with the network down, never ends. In the queue, it held every write: in CI with a fake
+ssh, a write made 300 ms into a push waited 3.4 s when each connection took 1.2 s,
+8.8 s when each took 3 s, and did not finish within 20 s when a connection never
+answered. Writes have a 2 s limit (item slow-op-alerts), so the queue must not wait
+for the network.
+
+**The rule: no task of the write queue waits for the network.** Every git command that
+reaches a remote runs through one function, `netGit` (`src/net-git.ts`): the store's push
+and the deploy job's fetch, and nothing else. It starts git in a process group of its own,
+with automatic maintenance off. ssh is git's child and a signal to git alone leaves it
+running, so a command that outlives its cap (five minutes) or whose caller asks it to stop
+is sent SIGTERM as a whole group and, two seconds later, SIGKILL. Five minutes is provisional:
+shorter than the push interval, so a stuck push ends before the next is due, and longer than
+a large catch-up needs (a week offline is about 20 MB, 20 s at 1 MB/s; deduced, the real
+uplink is not measured). It is reopened when the service log shows a push killed by the cap
+while it was still sending. The shutdown asks for the push's end the same way.
+
+**A copy that falls behind is told.** A stuck push no longer slows a write, so its harm
+is a remote copy that is out of date without anyone seeing it. When the copy has lacked
+commits for an hour, the architect gets one `backup-behind` push (section 8) with the
+number of commits left, the time of the last success (null if none since the start) and
+the last failure's reason. The hour counts from the last time the copy was known current:
+a push that sent or found nothing to send, or a round that found nothing to send; after a
+start, from the start, since the state is in memory. A copy that is current again and falls
+behind again is told again.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -120,24 +159,22 @@ The daemon uses well under that:
 3. A request already running, a tool call included, may finish. The connection
    it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
    every connection that is left is closed.
-4. The owner's reading state is committed locally, and the process exits.
+4. A push that is running is ended (below). The owner's reading state is committed locally, and the process exits.
 
-A push needs three round trips to GitHub (`ls-remote`, `fetch`, `push`). On
-2026-10-16, from the owner's Mac to the data repository's remote, six rounds of
-the three git commands in a clone at the remote's head took a median of 1.14 s,
-1.13 s and 1.25 s (the last as `push --dry-run`, so the transfer of new commits
-is not in it), and 3.01 to 4.18 s (median 3.75 s) for the three in a row. That
-leaves no safe margin in the five seconds, and a slow network exceeds it, so
+A push takes 4.1 to 6.6 seconds (Storage), more than the five seconds launchd allows, so
 shutdown does not push. The data is already committed locally, so nothing is
 lost: the remote copy is only a backup, and the first push after the next start
-sends what this run left. A push still running when the signal arrives holds
-the write queue, so the local commit of the reading state waits behind it (item
-`push-blocks-writes`).
+sends what this run left. A push still running when the signal arrives is ended
+at once, its group killed as in Storage, so it neither delays the local commit of
+the reading state nor keeps the process alive.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
-is `src/deploy.ts`. A run fetches the main line, `origin/main`.
+is `src/deploy.ts`. A run fetches the main line, `origin/main`, through `netGit`
+(Storage): a fetch that outlives its cap of five minutes is killed with its ssh and counts
+as a failed try, so a remote that never answers cannot hold the job for good (launchd
+never starts a second run while one is going).
 When the checkout the daemon runs from is behind it, the run moves the checkout
 to its head with a fast-forward, installs the packages if `package-lock.json`
 changed, rebuilds the page bundle and, when a changed path needs it, restarts
@@ -192,7 +229,7 @@ restart.
   edit or commit is someone's, not the job's to move or undo.
 - The pushes reach the architect through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
-  next run. A fetch that still fails after three tries ten seconds apart, and a
+  next run. A fetch that still fails after three tries ten seconds apart (or killed at its cap), and a
   failure of the job itself, are pushed once with `version` null. Each kind of
   standing problem (the fetch, a refusal, a rollback that did not finish, the
   job itself) is remembered separately and forgotten by a run that ends with
@@ -1796,7 +1833,7 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Ten kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eleven kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
@@ -1808,6 +1845,8 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+- a remote copy of the board's data that has stayed behind for an hour
+  (`backup-behind`; section 4, Storage);
 - what the look at the Actions billing finds (Watching Actions usage, below):
   the month's use reaching a level, a day of heavy use, or the included minutes
   all used with a budget of 0 (`actions-usage`);
@@ -1849,6 +1888,7 @@ the forms the server sends:
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
+| `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |

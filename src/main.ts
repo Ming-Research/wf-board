@@ -12,6 +12,7 @@ import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghBilling } from "./billing.ts";
 import { UsageWatch } from "./usage-watch.ts";
+import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
 
 async function main() {
@@ -36,25 +37,19 @@ async function main() {
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, createMcp: () => createMcpServer({ store, ops: op, wake }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
-  // A push with its duration in the log. One takes about 3 to 4 seconds (design section 4, Stopping), during which the store's
-  // write queue is held (item push-blocks-writes).
-  async function push() {
-    const commits = await store.unpushed();
-    if (!commits) return;
-    const started = performance.now(), took = () => `${((performance.now() - started) / 1000).toFixed(1)} s`;
-    try {
-      const sent = await store.push();
-      console.info(`push of ${commits} commits ${sent ? "took" : "found the remote up to date, took"} ${took()}`);
-    } catch (error) { console.error(`push of ${commits} commits failed after ${took()}`); throw error; }
-  }
+  // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
+  // the writes, not in their queue; when the remote copy stays behind for an hour the architect is told (design section 4, Storage).
+  const backup = new BackupPush({ store, wake });
+  const push = () => backup.round();
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();
   let firstPush: ReturnType<typeof setTimeout> | undefined;
   let stopping = false;
-  // Stopping must fit in the 5 seconds launchd allows, and a push takes 3 to 4 seconds alone. So the owner's reading state is
-  // committed locally and nothing is pushed; the first push after the next start sends what this run left.
+  // Stopping must fit in the 5 seconds launchd allows, and a push takes 4 to 7 seconds. So the owner's reading state is committed
+  // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
+  // what this run left.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush);
+    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop();
     server.close(error => {
       void (async () => {
         if (error) throw error;
