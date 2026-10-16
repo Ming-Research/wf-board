@@ -399,6 +399,10 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
   const out = new Set(examined);
   for (const id of examined) for (const r of [before, after]) for (const a of r.ancestors(id)) out.add(a);
   // A doing step's clock also reads the items it names, so a change under a named item (itself or any owner of it) reaches the step's item.
+  for (const id of examined) for (const r of [before, after]) for (const target of [id, ...r.ancestors(id)]) for (const waiter of r.mentionedBy(target)) {
+    out.add(waiter);
+    for (const a of r.ancestors(waiter)) out.add(a);
+  }
   return out;
 }
 /** The items a live change touches directly, or null when it changes what every item reads (the board, the owner's
