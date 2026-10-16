@@ -91,6 +91,9 @@ export interface OrgBooks {
   month: string; /** When the books were started: the first look of the month. */ since: string;
   /** Per repository (lower case) and day: the included minutes the report showed at the last look, and the part counted. */
   entries: Array<{ day: string; repo: string; seen: number; counted: number }>;
+  /** The keys (`usageKey`) of the pushes told this month: kept with the account, which is new each month, so a restart does not
+   * tell them again however long ago they were told. */
+  told: string[];
 }
 
 /** The books after one more look. A new month starts new books. */
@@ -110,7 +113,7 @@ export function advanceBooks(books: OrgBooks | undefined, reading: UsageReading)
     const added = Math.max(0, minutes - before.seen);
     entries.set(key, { day, repo, seen: minutes, counted: before.counted + (reading.visibility[repo] === "public" ? 0 : added) });
   }
-  return { month: reading.month, since: fresh ? reading.at : books.since, entries: [...entries.values()] };
+  return { month: reading.month, since: fresh ? reading.at : books.since, entries: [...entries.values()], told: fresh ? [] : [...books.told] };
 }
 
 /** What the books say at the time of a reading. */

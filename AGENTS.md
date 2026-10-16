@@ -39,6 +39,9 @@ matches what the artifact board offered.
   events kept in a local file, receipts, the no-receipt alert);
   `src/timed-wake.ts`: what the half-hourly wake carries; `src/notify.ts`: the
   owner's notifications on the Mac. The protocol is `docs/design.md`, section 8.
+- `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
+  `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
+  the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.

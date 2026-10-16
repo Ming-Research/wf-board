@@ -245,6 +245,27 @@ test("a look that cannot read the billing says why in the line and tells nothing
   assert.match(personal.line(), /没有可读的组织/);
 });
 
+test("with several organizations the line names each, joined, and one that cannot be read does not hide the other's figures", async t => {
+  const { store } = await board(t), wake = new Wake();
+  // The fixture's second owner is read here as an organization of its own.
+  let failing = false;
+  const { source } = billing((owner, at) => owner === "mbbill" && failing ? new Error("mbbill: usage report: gh: HTTP 403") : reading({ org: owner, at: at.toISOString(), rows: [row(16, "app", owner === "mbbill" ? 7 : 40)] }));
+  const watch = new UsageWatch({ store, wake, billing: source, now: () => Date.parse("2026-10-16T12:00:00Z") });
+  await watch.poll();
+  assert.equal(watch.line(), [
+    "Ming-Research：Actions 本月已用 40 / 3000（从 10-16 起记账），今天 40，预算 0 美元，到上限就拦",
+    "mbbill：Actions 本月已用 7 / 3000（从 10-16 起记账），今天 7，预算 0 美元，到上限就拦",
+  ].join("；"));
+  failing = true;
+  await quiet(() => watch.poll());
+  assert.equal(watch.line(), [
+    "Ming-Research：Actions 本月已用 40 / 3000（从 10-16 起记账），今天 40，预算 0 美元，到上限就拦",
+    "mbbill：Actions 用量读不到：mbbill: usage report: gh: HTTP 403",
+  ].join("；"));
+  assert.deepEqual(watch.status().problems, { mbbill: "mbbill: usage report: gh: HTTP 403" });
+  assert.deepEqual(watch.status().figures.map(f => f.org), [ORG]);
+});
+
 test("start looks at once, then at every interval, and waits out the rest of the interval after a restart; stop ends it", async t => {
   const { store, stateFile } = await board(t);
   const { source, calls } = billing(() => undefined);

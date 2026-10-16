@@ -22,7 +22,7 @@ export interface UsageWatchOptions {
 }
 export interface UsageStatus { polledAt?: string; /** Owners whose last look failed, with why. */ problems: Record<string, string>; figures: UsageFigures[] }
 
-const Books = z.object({ month: z.string(), since: z.string(), entries: z.array(z.object({ day: z.string(), repo: z.string(), seen: z.number(), counted: z.number() })) });
+const Books = z.object({ month: z.string(), since: z.string(), entries: z.array(z.object({ day: z.string(), repo: z.string(), seen: z.number(), counted: z.number() })), told: z.array(z.string()) });
 const State = z.object({ polledAt: z.string().optional(), books: z.record(z.string(), Books).optional() });
 
 type Result = { figures: UsageFigures } | { problem: string };
@@ -44,7 +44,8 @@ export class UsageWatch {
   constructor(o: UsageWatchOptions) {
     this.o = o;
     this.now = o.now ?? Date.now;
-    // What the kept events already told the architect is not told again, so a restart neither repeats nor forgets a push.
+    // What the kept events already told the architect is not told again, so a restart neither repeats nor forgets a push. The
+    // events kept are fewer than a month's, so the account also keeps the keys of the month's pushes (below).
     for (const frame of o.wake.since(0).frames) if (frame.event === "actions-usage") this.announced.add(usageKey(frame as unknown as UsagePushFields));
     // A state file that cannot be read starts the account again from what the first look sees, and says so; it never stops the watch.
     if (o.stateFile) {
@@ -55,7 +56,7 @@ export class UsageWatch {
           const state = State.parse(JSON.parse(text));
           const last = Date.parse(state.polledAt ?? "");
           if (Number.isFinite(last)) this.looked = last;
-          for (const [org, books] of Object.entries(state.books ?? {})) this.books.set(org, books);
+          for (const [org, books] of Object.entries(state.books ?? {})) { this.books.set(org, books); for (const key of books.told) this.announced.add(key); }
         } catch (error) { console.error(`actions usage: state file unreadable (${error instanceof Error ? error.message : String(error)}); the account starts again at the first look`); }
       }
     }
@@ -112,7 +113,7 @@ export class UsageWatch {
       }
       this.looked = at.getTime(); this.polled = true;
       this.persist();
-      const found: UsageFigures[] = [];
+      const found: Array<[string, UsageFigures]> = [];
       for (const owner of owners.values()) {
         try {
           const reading = await this.o.billing.read(owner, at);
@@ -121,7 +122,7 @@ export class UsageWatch {
           if (before?.month !== after.month) console.info(`actions usage ${owner}: the account for ${after.month} starts now, from the repositories' visibility at this look`);
           this.books.set(owner, after); this.persist();
           const figures = usageFigures(after, reading);
-          this.results.set(owner, { figures }); found.push(figures);
+          this.results.set(owner, { figures }); found.push([owner, figures]);
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           // Said once while it lasts: a look every half hour would fill the log with the same line.
@@ -132,10 +133,12 @@ export class UsageWatch {
       }
       for (const owner of [...this.results.keys()]) if (!owners.has(owner.toLowerCase())) this.results.delete(owner);
       if (this.stopped) return;
-      for (const figures of found) {
+      for (const [owner, figures] of found) {
         for (const push of usagePushes(figures, this.announced)) {
           this.o.wake.push("actions-usage", { ...push.fields });
           this.announced.add(push.key);
+          // Recorded at once, so a restart right after does not tell it again.
+          this.books.get(owner)?.told.push(push.key); this.persist();
         }
       }
     } catch (error) { console.error("actions usage watch failed", error); }
