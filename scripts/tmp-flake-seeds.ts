@@ -16,6 +16,8 @@ const MODES: Record<string, Record<string, string>> = {
   off: { "gc.auto": "0", "maintenance.auto": "false" },
   nodetach: { "gc.autoDetach": "false", "maintenance.autoDetach": "false" },
   eager: { "gc.auto": "1" },
+  gcauto0: { "gc.auto": "0" },
+  maintauto0: { "maintenance.auto": "false" },
 };
 const settings = Object.entries(MODES[mode] ?? (() => { throw new Error("mode " + mode); })());
 process.env.GIT_CONFIG_COUNT = String(settings.length);
@@ -38,6 +40,7 @@ function processes(trace: string): Proc[] {
 }
 const BACKGROUND = /(^|\/)(gc|repack|prune|prune-packed|pack-objects|pack-refs|reflog|commit-graph|multi-pack-index|loose-objects|incremental-repack)$/;
 
+if (detail) console.log("puts per batch: " + generateBoard(1).batches.map(b => b.puts.length).join(" "));
 let seeds = 0, failed = 0, enoent = 0, withBackground = 0, withOverlap = 0, packed = 0;
 for (let k = 0; k < Number(runsArg); k++) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-probe-")), trace = join(dir + ".trace");
@@ -61,7 +64,7 @@ for (let k = 0; k < Number(runsArg); k++) {
   if (detail) {
     const t0 = Math.min(...procs.map(p => p.start));
     for (const p of procs.sort((a, b) => a.start - b.start)) if (/(^|\/)(add|commit|maintenance|gc|repack|prune-packed|pack-objects)$/.test(p.hierarchy))
-      console.log(`  +${((p.start - t0) / 1000).toFixed(0).padStart(6)}ms ${((p.end - p.start) / 1000).toFixed(0).padStart(5)}ms ${p.hierarchy.padEnd(34)} ${p.argv.slice(1, 4).join(" ").slice(0, 70)}`);
+      console.log(`  +${((p.start - t0) / 1000).toFixed(0).padStart(6)}ms ${((p.end - p.start) / 1000).toFixed(0).padStart(5)}ms ${p.hierarchy.padEnd(34)} ${p.argv.slice(1).join(" ").slice(0, 150)}`);
   }
   await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); await rm(trace, { force: true });
 }

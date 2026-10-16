@@ -6,7 +6,7 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -15,20 +15,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: Git version and maintenance settings
+      - name: Which setting turns the background work off
         run: |
-          git --version
-          git config --show-origin --get-regexp 'gc|maint' || echo "no gc or maintenance settings"
-          nproc
-      - name: Mechanism, git alone
-        run: bash scripts/tmp-flake-mechanism.sh 20
-      - name: One traced seed, default settings
-        run: node scripts/tmp-flake-seeds.ts default 2 detail
-      - name: Seed loops, three processes at a time
+          node scripts/tmp-flake-seeds.ts default 1 detail | grep -E "puts per batch|maintenance|repack|pack-objects|multi-pack"
+          for mode in off gcauto0 maintauto0 nodetach; do echo "== $mode"; node scripts/tmp-flake-seeds.ts $mode 5 | grep summary; done
+      - name: Commit pattern without Node, with CPU load, 3 processes
         run: |
-          for mode in default off nodetach eager; do
-            for i in 1 2 3; do node scripts/tmp-flake-seeds.ts $mode 10 > "out-$mode-$i.jsonl" & done
-            wait
-            echo "== $mode"; cat out-$mode-*.jsonl | grep summary
-            cat out-$mode-*.jsonl | grep '"err"' | head -5 || true
-          done
+          burners=""; for burner in 1 2 3 4 5 6; do ( while :; do :; done ) & burners="$burners $!"; done
+          run_mode() { # name, then git settings as key=value pairs
+            name=$1; shift; n=$#; export GIT_CONFIG_COUNT=$n; i=0
+            for kv in "$@"; do export "GIT_CONFIG_KEY_$i=${kv%%=*}" "GIT_CONFIG_VALUE_$i=${kv#*=}"; i=$((i+1)); done
+            pids=""; for p in 1 2 3; do bash scripts/tmp-flake-commits.sh 90 > "c-$name-$p.txt" & pids="$pids $!"; done; wait $pids
+            echo "== $name: $(cat c-$name-*.txt | tr '\n' ' ')"
+          }
+          run_mode default
+          run_mode off gc.auto=0 maintenance.auto=false
+          run_mode nodetach gc.autoDetach=false maintenance.autoDetach=false
+          kill $burners
