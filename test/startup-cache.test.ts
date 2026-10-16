@@ -176,6 +176,9 @@ test("a cache that is missing, damaged, of another shape or of another history i
     ["cut off", text.slice(0, text.length / 2), "startup cache malformed"],
     ["not JSON", "not json", "startup cache malformed"],
     ["another version", JSON.stringify({ ...good, version: good.version + 1 }), "startup cache malformed"],
+    // Literal versions: the bump that came with the agent index must not be undone without this failing.
+    ["the file the version before the agent index wrote", JSON.stringify({ ...good, version: 1, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
+    ["version 1 with every field of this version", JSON.stringify({ ...good, version: 1 }), "startup cache malformed"],
     ["an activity field missing", JSON.stringify({ ...good, activity: (({ sessions: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["the agent index missing", JSON.stringify({ ...good, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["an activity field it does not know", JSON.stringify({ ...good, activity: { ...good.activity, touched: {} } }), "startup cache malformed"],
