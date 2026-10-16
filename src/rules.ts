@@ -753,7 +753,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       // Titles of closed items are not revised, so only open items and records are checked.
       const titleLength = [...it.title.replace(/\s/g, "")].length;
-      void titleLength; // TEMPORARY: check removed to watch the title test fail
+      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
       if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
