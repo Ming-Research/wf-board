@@ -448,6 +448,8 @@ log:
   restart correctness. A start that only replayed commits leaves the write to
   the timer; afterwards a commit schedules a write at most every two minutes.
   The daemon writes none at shutdown, which must fit the time launchd gives.
+  Deleting the file forces a scan on the next start. The cache carries what
+  the live updates derived; a scan re-derives it from the commits alone.
   Changing what the cache holds, or how the replay derives it, changes
   `STARTUP_CACHE_VERSION`; the next start is then a scan. Historical pause reads
   extract only project, record, pause and owned-target metadata rather than
