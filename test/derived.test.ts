@@ -112,7 +112,6 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     },
     async () => owner.send({}),
     async s => { const group = pick(["Whitefoot", "Firn"]), ids = itemsOf(s, group).filter(() => rand() < 0.3); if (ids.length) return op.setTagsMany({ author: group, items: ids.map(id => ({ id, tags: [pick(["健全性", "报错信息"])] })) }); },
-    async () => op.postNotice({ author: "Firn", text: "something changed" }),
     async () => op.setTerm({ author: "Firn", term: `词${made++}`, definition: "意思" }),
   ];
   for (let round = 0; round < 140; round++) {

@@ -13,7 +13,7 @@ const card = (key: string, after: string[] = []): PlanRow => ({ id: key, card: k
 const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [...rows, accept(state)];
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}): Snapshot {
   return {
-    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), notices: {}, glossaries: {}, owner: {},
+    board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), glossaries: {}, owner: {},
     items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, background: "why", options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
@@ -468,10 +468,8 @@ test("a parent with only owned progress has no clock, but its own doing step has
   for (const fields of [{ record: true, plan: [] }, { plan: workPlan() }, { plan: workPlan([], "done") }, { status: "cancelled" as const }]) { const next = activeBoard(); Object.assign(next.items.quiet!, fields); assert.equal(hasStalled(next), false); }
 });
 
-test("current notice and note write times count as active windows across projects", () => {
+test("current note write times count as active windows across projects", () => {
   const s = activeBoard(); delete s.activity;
-  for (let i = 0; i < 6; i++) s.notices["n" + i] = { text: "Changed", author: "Second", at: timeAt(i / 2), rev: 1 };
-  assert.equal(hasStalled(s), true); s.notices = {};
   for (let i = 0; i < 6; i++) s.notes["n" + i] = Note.parse({ target: "it:other", kind: "comment", text: "Changed", at: timeAt(i / 2), state: "sent", rev: 1 });
   assert.equal(hasStalled(s), true);
 });

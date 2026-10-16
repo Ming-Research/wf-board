@@ -69,8 +69,8 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
    pushed over server-sent events.
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process.
-3. **The wake stream** at `/wake` (WebSocket), which turns "发给 Claude" into
-   a notification in the waiting session.
+3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
+   session what needs it: owner notes, stalled work and a timed wake.
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -152,9 +152,9 @@ wf-board-data/
   items/<id>.yaml         one file per item
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
-  notices/<id>.yaml       one file per notice (a non-blocking change the owner should know)
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
+  state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -317,7 +317,7 @@ log:
   assignment of work to a session: no document stores a session, and
   `history` and `changes` show the message without the trailer.
   Content commits touching board metadata,
-  items, cards, notes, notices or glossaries count; commits containing only
+  items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
   owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   A live update carries the activity index's change, not the index: the
@@ -340,13 +340,13 @@ log:
   cards without `blocks`), the item included. `write_card` sets `blocks` on
   create or revision; a revision omitting it keeps it and `null` clears it.
   `context` and `brief` show it.
-- **Notices.** A notice is one stored document in `notices/<id>.yaml`:
-  `{text, item?, author, at, read?, rev}`. `text` is one or two sentences with
-  inline markdown and `[[it:key]]` references; `item` names a related item;
-  `read` is the time the owner marked it read. Any project posts one with
-  `post_notice`, for an important change that does not block (a blocking
-  matter goes on a card with `blocks`). Notices are not unread documents: they
-  neither count as 新 nor appear in `changes`.
+- **Notices (retired).** A notice was a non-blocking change posted for the
+  owner's 要你知道 list. The list and `post_notice` are gone: a change the owner
+  must act on is a decision card, and one the owner only should know goes in the
+  architect's journal. At the next start the daemon deleted the ten stored
+  notices in one commit (the owner had read all of them and their content is on
+  the items they point to); git history keeps them. Their files still count as
+  content writes in the history that has them, so active time does not change.
 - A decision file holds its status, item, confidence, time and options in the
   front matter, and background and ruling as body sections. `confidence`
   becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
@@ -1007,14 +1007,16 @@ winning over a number. Writes take
 `author`, the name of the project the session works for, selected from
 `projects` by matching `repo` to its repository's GitHub remote. The
 coordinator writes as `总管`. Several sessions may share a project and
-coordinate among themselves; sessions may be renamed freely. Every write
-tool also takes an optional `session` (1–80 characters, trimmed): the writing
-session's own name as the app's session list shows it, recorded as described
-under the stalled-work rule's activity index. `context` prints
+coordinate among themselves; sessions may be renamed freely. Every tool, reads
+included, takes an optional `session` (1–80 characters, trimmed): the calling
+session's own name as the app's session list shows it. A write records it as
+described under the stalled-work rule's activity index; a call from the
+architect's session (`架构师`) is also a receipt for the wake stream (section 8).
+`context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
 same text, so a coordinator sees whether work is being pushed and what a
-closed session left behind. Omitting `session` is allowed for older clients.
+closed session left behind. Omitting `session` is allowed; a call without it is no receipt.
 
 ### Server instructions
 
@@ -1097,7 +1099,6 @@ item and card writes retain the normal project ownership checks.
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
-| `post_notice(text, item?)` | Posts a notice for the owner's 要你知道 list, for an important change that is not blocking (not routine progress) | Author is a configured project; `item`, if given, exists |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name |
@@ -1185,16 +1186,15 @@ right-side status-colored leaf counts alongside its keyboard actions.
 A card's header tag is a purple 阻塞 (tooltip: its `blocks` text) for a
 blocking card and a red 决策卡 otherwise; an item's ask row carries 阻塞.
 
-The summary groups four concerns into separate rows. The unread row has no visible label.
+The summary groups three concerns into separate rows. The unread row has no visible label.
 Row 1: purple 阻塞 N › (blocking waits, asks included) and red 决策卡 M ›
 (waiting cards without `blocks`), each hidden at 0, followed by the existing
-等你 panel. Row 2: the 要你知道 list, absent when no notice is unread.
-Row 3: blue 新 N ›, a thin vertical divider using the theme's rule color,
+等你 panel. Row 2: blue 新 N ›, a thin vertical divider using the theme's rule color,
 then 进展, 其他 and 评论回复, each hidden at 0 unless selected, then 清除筛选
 (only while a filter is on) and 全部已阅. Controls wrap as width requires.
 The divider is decorative and appears only between 新 and following controls.
 Progress means plan-row and target changes; logs do not count as new.
-Row 4: 全部折叠, 展开第一层, the status legend and the per-project links.
+Row 3: 全部折叠, 展开第一层, the status legend and the per-project links.
 The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
 
 The 等你 panel sits under row 1 and shows only while a blocking wait exists:
@@ -1204,12 +1204,6 @@ then by how long it has waited (card creation time; an ask's item update
 time). A click jumps like the `/` search and remembers the place for Back. A
 line 另有 M 张决策卡不挡工作 follows when M > 0.
 
-The 要你知道 list occupies its own row after the waits and shows the unread notices, newest
-first, with time, author, text and a link to the item; 已读 marks one read
-(`/api/notice-read`, with `{id}` or `{all: true}`; the owner's own marking
-is not news). With none unread the list is absent. Notices take part in the
-event stream like other documents.
-
 There is no sticky path bar. Navigation and visibility checks use the viewport
 top, and jumps leave only the ordinary 8-pixel edge gap without reserving space
 or scroll margins for a bar. The existing send-box top button remains.
@@ -1218,7 +1212,7 @@ A vertical divider resizes the left column with pointer dragging. Its width is s
 localStorage. At desktop widths, the tree retains a minimum width of 300 CSS
 pixels and detail 380. In viewports of 704 CSS pixels or less, both columns
 shrink equally to fit without horizontal page scrolling; header controls and
-project links wrap, and long notice text breaks within its row.
+project links wrap.
 
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
@@ -1410,7 +1404,7 @@ does not make it unread.
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
-sent note produces one `note` wake event (The wake stream, below). Sending
+sent note produces one `note` event on the wake stream (below). Sending
 does not mark a note handled. It stays `sent` until a project agent replies with
 `reply_note` or closes it with `close_note`. Closing stamps the handler and
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
@@ -1431,52 +1425,84 @@ and draft text and shows the error; the committed snapshot stays authoritative.
 
 ### The wake stream
 
-The wake stream is the server's contract for telling a session that
-something needs it. Only the architect listens, on the wildcard stream; how
-it listens, and what it does with an event, is in the architect's rules and
-in `~/dev/wf/AGENTS.md`, section "Board".
+The wake stream is the board's one push channel. It has one listener, the
+architect, who is told only what needs it; every other session reads the board.
+What the architect does with an event, and how it listens, is in the
+architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
+
+**What is pushed.** Three kinds, defined in one table (`WAKE_KINDS` in
+`src/wake.ts`; `push` refuses a kind or field set the table does not list):
+
+- an owner note: a note becomes `sent`, on any project's item or card, so the
+  owner's comments on an engineer's item reach the architect too;
+- stalled work: an open item gains the 无人推进 check. No other check is
+  pushed: the rest are format flags that whoever wrote the item sees;
+- the timed wake, every 30 minutes.
+
+Not pushed: a new request, a blocking card (the owner is told on the Mac, below),
+an item's ask, any other check, draft-PR CI. A later kind is one entry in the
+table and one row below: CI or the main line red, a ready pull request with
+green checks and a pull request on no open item (wf-board item watch-github),
+and a slow board operation (item slow-op-alerts).
 
 **Address.** A client opens a WebSocket to
-`ws://127.0.0.1:<port>/wake?session=<filter>` (the running daemon uses port
-7417). The server answers 404 unless the path is `/wake` and `session` is
-nonempty, and 403 unless the `Host` header is `127.0.0.1:<port>` or
+`ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
+The server answers 404 unless the path is `/wake`, 400 when `after` is not a
+whole number, and 403 unless the `Host` header is `127.0.0.1:<port>` or
 `localhost:<port>` and any `Origin` header equals `http://<host>`; a
-command-line client sends no `Origin`.
+command-line client sends no `Origin`. A `session` parameter, which the earlier
+per-project filter took, is ignored.
 
-**Filter.** `session=*` receives every event. `session=<project name>`
-(URL-encoded) receives only the events whose `project` equals that name; a
-name that is no project receives nothing.
-
-**Frames.** Each event is one text frame holding one JSON object. `event`
-names the kind, and `project` is the project of the item concerned. These are
-all the forms the server sends:
+**Frames.** Each event is one text frame holding one JSON object. `n` is its
+number, 1 for the first event and rising by 1; `at` is its time. These are all
+the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself |
-| `{event:"blocking", kind:"card", key, item, project, text, question}` | A committed change leaves a card open with `blocks` where the card was not open before or had different `blocks`: it is created open, becomes open, or gains or changes `blocks`. `key` is the card, `item` its item, `text` its `blocks`. A card without `blocks`, and an open card whose `blocks` did not change, send nothing |
-| `{event:"blocking", kind:"ask", key, item, project, text}` | An item's legacy `ask` is set or changed. `key` and `item` are the item, `text` is the ask |
-| `{event:"check", item, project, title, label, text}` | An open item gains a check it did not have. `label` is the check's own label, such as 无人推进 or 待重写, and 需核对 when it has none; `text` is the check's explanation |
-| `{event:"request", item, title, project, by}` | An inbox request item is created. `by` is the requesting project. Updates and retries of the commit do not send it again |
+| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
+| `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
+| `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
+| `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
+| `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client reads the board for what it missed |
 
-The store's committed change is the source of the note, blocking and request
-events. Checks are compared as (item, check text) pairs: a pair is sent when
-it is not in the previous set, after each committed change and on a
-one-minute timer (stalled work appears with active time alone). A pair that
-disappears and returns is sent again. The set is seeded at start without
-sending, so a restart announces nothing.
+`connected` and `gap` carry no number and are not events.
 
-**Delivery and reconnect.** Each event goes once to every connected socket
-whose filter matches. Events carry no number and the server keeps none: an
-event produced while no matching socket is connected is lost, and nothing is
-replayed on reconnect. A client that reconnects reads the state instead: sent
-notes with `notes`, open blocking cards and checks with `brief` or
-`overview`, and what changed with `changes`. The server pings every 25
+**Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
+most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
+continue across a restart. A client remembers the `n` of the last event it
+handled and connects with `after=<n>`; the server sends `connected`, then `gap`
+if needed, then every kept event numbered above `n`, then live events, with no
+event missed or sent twice between replay and live. Without `after` the client
+gets live events only. Every connected client gets every event. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
-closes a socket with more than 4 MiB of unsent frames. A client reconnects
-after any close. The server does not detect session liveness or retry
-messages; `followups(minutes)` lists notes and inbox requests older than that
-age.
+closes a socket with more than 4 MiB of unsent frames. A client reconnects after
+any close.
+
+**Receipts.** A call to any MCP tool whose `session` is `架构师` answers every
+event pushed before the call arrived; the call counts when its arguments pass
+the tool's schema, whatever the tool then does. A receipt writes a line to the
+file only when it answers something new. The architect is expected to make such
+a call after handling a wake, which it does anyway by reading or writing the
+board. The timed wake comes every 30 minutes, so an architect that is running
+answers within the hour.
+
+**No receipt.** When the oldest unanswered event is one hour old (the limit is
+an option for tests), the board tells the owner once: 「架构师 1 小时没响应」,
+naming that event. The architect has stopped: its session crashed, waits at a
+permission prompt, or no longer holds the Monitor that carries the stream.
+No more alerts follow until a receipt arrives and a later event goes unanswered
+for an hour. The receipts and the alert state are in the same file, so a restart
+neither repeats an alert nor forgets one.
+
+**The owner's notifications.** A decision card that stops work (open, with
+`blocks`, newly so or with changed `blocks`) tells the owner: the daemon runs
+`osascript` with a fixed script that shows a macOS notification, passing the
+title (`挡事的卡 · <project>`) and message (`<question>（挡住：<blocks>）`) as arguments, not
+spliced into the script, so any text is safe. The daemon is a LaunchAgent in
+the owner's login session, which is what lets it show one; a failed run is tried
+again, up to three times, and then logged. A card without `blocks` tells no one.
+The no-receipt alert uses the same route. macOS attributes the notification to
+Script Editor, which must be allowed to notify in System Settings.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
 Code does not start a turn in an idle session for them. Claude Code's
@@ -1487,7 +1513,9 @@ custom channel loads only when the session is started from the command line
 with `--dangerously-load-development-channels`, which the desktop app's Code
 sessions cannot pass. The wake events are therefore defined independently of
 transport, so a thin stdio channel that relays `/wake` can replace the
-Monitor once channels allow it, without changing the server.
+Monitor once channels allow it, without changing the server. Until then the
+architect runs a small client under Monitor, which lasts 30 minutes at most and
+is started again: the numbers and `after` carry it across the gap.
 
 ## 9. Project responsibility
 
@@ -1592,7 +1620,7 @@ cite them.
 At startup, after schema validation and the clean-worktree check, a temporary
 store migration renames the coordinator project from `跨项目` to `总管` in
 one data commit. It changes the project name, item groups and request authors,
-log authors, note reply authors, notice authors, glossary term authors and the
+log authors, note reply authors, glossary term authors and the
 coordinator glossary filename. It compares whole identity fields, preserving
 heads, log prose, notes, titles and any text containing the old name exactly.
 Existing historical commits remain unchanged. A destination project or glossary
@@ -2022,7 +2050,7 @@ plan, 19 named only by other items' plans, 8 open cards no plan names (one on
 a record), 2 open cards on done items; 754 notes (603 on cards, 201 with
 replies, 23 anchored); 257 heads with code blocks; 28 tags, every item
 tagged. Shapes the real board lacks today but the schema allows and the page
-handles (pending asks, inbox requests, unread notices) are generated too.
+handles (pending asks, inbox requests) are generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
