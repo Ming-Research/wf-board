@@ -15,6 +15,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { applyActivityDelta } from "../src/rules.ts";
+import { Wake } from "../src/wake.ts";
 
 test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   const { store, op, api, url } = await server(t);
@@ -264,4 +265,18 @@ test("the page has no pause endpoint; pausing goes through set_pause only", asyn
   const checkpoint = store.snapshot();
   assert.equal((await api("/api/pause", { id: "area", paused: true, reason: "x" })).status, 404);
   assert.deepEqual(store.snapshot(), checkpoint);
+});
+
+test("an owner notice reaches each open page as an owner event, and a page that connects later gets only what follows it", async t => {
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z") });
+  const { url } = await server(t, { wake });
+  // Told before the page connects: the page must not get it.
+  wake.tell("之前的通知", "不该补发", { kind: "card", key: "choice" });
+  const controller = new AbortController(); t.after(() => controller.abort());
+  const response = await fetch(url + "/api/events", { signal: controller.signal });
+  const reader = response.body!.getReader(); await reader.read();
+  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
+  assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
 });

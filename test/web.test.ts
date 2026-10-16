@@ -82,7 +82,7 @@ interface PageOptions {
   transform?: (code:string) => string;
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
-  now?: () => number; clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
+  now?: () => number; clock?: FakeClock; autoOpen?: boolean; notification?: unknown; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(fixture: PageInput, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const snapshot = nativeFixture(fixture);
@@ -154,12 +154,13 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, structuredClone, console, CSS: { escape: (s: string) => s },
+    ...options.notification === undefined ? {} : { Notification: options.notification },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
-    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
+    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, focus() {}, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
       const input = init?.body ? JSON.parse(init.body) : undefined; calls.push({path,body:input});
       const intercepted = options.response?.(path,input,init ?? {});
@@ -3986,4 +3987,37 @@ test("an open card with two options shows the option check on the card and its i
   assert.ok(!shown("full").includes(warning), "three options show no check");
   assert.match(markup(item(p)), /需核对：决策卡只有 2 个选项/, "the item lists the check under its body");
   assert.deepEqual(rowOf(p).querySelectorAll(".checktag").map(e => e.innerHTML).filter(label => label === "选项不足"), ["选项不足"], "the item row carries the tag");
+});
+
+test("an owner notice from the stream shows one browser notice; its click opens the card it is about; an obsolete stream shows none", async () => {
+  const s = snapshot(), clock = new FakeClock();
+  s.decisions.hard = { item: "child", question: "选哪个？", background: "背景", options: [{ key: "A", text: "是", recommended: true }], status: "open", blocks: "挡住 chrome-notify", updated: at, rev: 1 };
+  const shown: Array<{ title: string; options: { body: string; tag: string }; onclick: (() => void) | null; closed: boolean; close(): void }> = [];
+  class FakeNotification {
+    static permission = "granted";
+    onclick: (() => void) | null = null; closed = false; title: string; options: { body: string; tag: string };
+    constructor(title: string, options: { body: string; tag: string }) { this.title = title; this.options = options; shown.push(this); }
+    close() { this.closed = true; }
+  }
+  const p = await page(s, [], null, undefined, { clock, notification: FakeNotification }); await expand(p);
+  const owner = (notice: unknown) => p.sources.at(-1)!.handlers.get("owner")!({ data: JSON.stringify(notice) });
+  owner({ title: "挡事的卡 · Whitefoot", message: "选哪个？（挡住：挡住 chrome-notify）", target: { kind: "card", key: "hard" } });
+  assert.equal(shown.length, 1, "one notice for one owner event");
+  assert.equal(shown[0]!.title, "挡事的卡 · Whitefoot");
+  assert.equal(shown[0]!.options.tag, "card:hard", "the tag is the card's key, so open tabs share one notice");
+  shown[0]!.onclick!(); await p.flush();
+  assert.equal(shown[0]!.closed, true);
+  assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
+  // A notice about no card or item opens the home view, which selects no card.
+  owner({ title: "架构师一小时没响应", message: "x" });
+  shown[1]!.onclick!(); await p.flush();
+  assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
+  // After a reconnect the old stream's events are ignored; the new one shows its notices.
+  p.sources.at(-1)!.onerror!(); clock.advance(5000); await settle();
+  const obsolete = p.sources[0]!;
+  obsolete.handlers.get("owner")!({ data: JSON.stringify({ title: "旧的", message: "不该弹" }) });
+  assert.equal(shown.length, 2, "an obsolete stream shows nothing");
+  owner({ title: "新的", message: "弹" });
+  assert.equal(shown.length, 3);
+  assert.equal(shown[2]!.options.tag, "新的", "a notice with no target is tagged with its title");
 });
