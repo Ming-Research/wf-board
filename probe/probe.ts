@@ -133,6 +133,9 @@ async function p4() {
 async function p3a() {
   const f = await fixture();
   await sh(f.dir, "config", "gc.auto", "1");
+  // The remote here is a local repository: its receive-pack would start maintenance and show up in the same trace.
+  await sh(f.remote, "config", "receive.autogc", "false");
+  await sh(f.remote, "config", "gc.auto", "0");
   const trace = join(f.base, "trace.json");
   const started = async (label: string, gitArgs: string[]) => {
     await writeFile(trace, "");
@@ -190,8 +193,46 @@ async function p6() {
   server.close();
 }
 
+/** P5b: does killing git end the ssh child when git is started in its own process group and the group is killed? */
+async function p5b() {
+  for (const how of ["group SIGTERM", "group SIGKILL", "execFile timeout (SIGTERM to git only)"] as const) {
+    const f = await fixture();
+    process.env.PROBE_STALL_ON = "receive-pack";
+    const args = ["push", "origin", `${f.store.snapshot().head}:refs/heads/main`];
+    let ended = -1; const t0 = performance.now();
+    let before = 0;
+    if (how === "execFile timeout (SIGTERM to git only)") {
+      const p = exec("git", args, { cwd: f.dir, timeout: 1500 }).catch(() => { ended = ms(t0); });
+      await sleep(1000); before = await strays(); await p;
+    } else {
+      const child = spawn("git", args, { cwd: f.dir, stdio: "ignore", detached: true });
+      const exited = new Promise<void>(r => child.on("exit", () => { ended = ms(t0); r(); }));
+      await sleep(1500); before = await strays();
+      process.kill(-child.pid!, how === "group SIGTERM" ? "SIGTERM" : "SIGKILL");
+      await exited;
+    }
+    await sleep(1000);
+    out(`p5b ${how}`, { straysBefore: before, straysAfter: await strays(), gitEndedAtMs: ended });
+    delete process.env.PROBE_STALL_ON; await killStrays();
+  }
+}
+
+/** P6b: a server that sends the SSH banner and then goes silent (the key exchange never finishes). */
+async function p6b() {
+  const server = createServer(sock => { sock.write("SSH-2.0-OpenSSH_9.6\r\n"); }); await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  for (const opts of [["-o", "ConnectTimeout=5"], ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"], [] as string[]]) {
+    const t0 = performance.now();
+    const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", ...opts, "-p", String(port), "127.0.0.1", "true"], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = ""; child.stderr.on("data", d => { err += d; });
+    const ended = await Promise.race([new Promise<string>(r => child.on("exit", c => r(`exited ${c}`))), sleep(25000).then(() => { child.kill("SIGKILL"); return "still running at 25 s, killed"; })]);
+    out(`p6b ssh ${opts.join(" ") || "(no options)"} to a server that sends the banner and then stalls`, { result: ended, afterMs: ms(t0), stderr: err.trim().split("\n").pop() });
+  }
+  server.close();
+}
+
 const which = process.argv[2];
-const all = { p1, p3a, p3b, p4, p5, p6 } as const;
+const all = { p1, p3a, p3b, p4, p5, p5b, p6, p6b } as const;
 try {
   if (which === "all") for (const [name, fn] of Object.entries(all)) { console.log(`=== ${name}`); await fn(); }
   else await all[which as keyof typeof all]();
