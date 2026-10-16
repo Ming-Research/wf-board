@@ -76,6 +76,7 @@ test("the server instructions are a short, project-independent pointer that tell
   const { client } = await connect(t), instructions = client.getInstructions()!;
   assert.ok(instructions.length > 0 && instructions.length <= 2048);
   assert.match(instructions, /your own session's name as session/);
+  // \bwf\b is not guarded: the pointer itself names ~/dev/wf and wf-board.
   assert.doesNotMatch(instructions, /Firn|Whitefoot|Halo|Snowghost/);
   assert.doesNotMatch(instructions, /coordinator|inbox/i);
 });

@@ -1028,9 +1028,12 @@ pass that project's name as `author` and the session's own name as `session`
 in every write. They state no rule of their own, so each rule has one
 definition.
 
-Why a pointer. Claude Code cuts a server's instructions at 2048 characters,
-so the board's usage rules (several times that long) placed in them would
-reach no agent running there. The owner decided that board usage must stay in
+Why a pointer. Claude Code cuts a server's instructions at 2048 characters
+(measured on 2026-10-16 in Claude Code 2.1.295, desktop app: the live
+server's 3,722-character instructions appeared in a session's system prompt
+cut at character 2048 and marked "[truncated]"), so the board's usage rules
+(several times that long) placed in them would reach no agent running there.
+The owner decided that board usage must stay in
 the agent's context for the whole session. The shared `AGENTS.md` does: every
 session started under `~/dev/wf` loads it and keeps it through compaction.
 A guide tool or resource would add a call the agent must make and would not
@@ -1451,8 +1454,8 @@ all the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question or the item's title |
-| `{event:"blocking", kind:"card", key, item, project, text, question}` | A card is created open with `blocks`, or an open card gains or changes `blocks`. `key` is the card, `item` its item, `text` its `blocks`. A card without `blocks` sends nothing |
+| `{event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself |
+| `{event:"blocking", kind:"card", key, item, project, text, question}` | A committed change leaves a card open with `blocks` where the card was not open before or had different `blocks`: it is created open, becomes open, or gains or changes `blocks`. `key` is the card, `item` its item, `text` its `blocks`. A card without `blocks`, and an open card whose `blocks` did not change, send nothing |
 | `{event:"blocking", kind:"ask", key, item, project, text}` | An item's legacy `ask` is set or changed. `key` and `item` are the item, `text` is the ask |
 | `{event:"check", item, project, title, label, text}` | An open item gains a check it did not have. `label` is the check's own label, such as 无人推进 or 待重写, and 需核对 when it has none; `text` is the check's explanation |
 | `{event:"request", item, title, project, by}` | An inbox request item is created. `by` is the requesting project. Updates and retries of the commit do not send it again |

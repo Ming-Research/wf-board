@@ -1,7 +1,7 @@
 // The server's instructions: a short pointer, never the rules. How to use the board and write on it lives in the
 // shared AGENTS.md (~/dev/wf/AGENTS.md, section "Board"), which every session started under ~/dev/wf loads and keeps
 // through compaction. Claude Code cuts a server's instructions at 2048 characters, so full rules here would reach
-// no agent. docs/design.md (MCP tools, Server instructions) is the owner of this decision.
+// no agent. docs/design.md (MCP tools, Server instructions) is the owner of this decision and gives the measurement.
 
 export const INSTRUCTIONS = [
   `wf-board is the status board all wf projects share.`,

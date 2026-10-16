@@ -390,7 +390,9 @@ test("after a write the check scan rederives only the items the write can reach"
 test("every wake frame has exactly the fields the design doc gives for its form, and the doc lists every form sent", async t => {
   const { url, store, op, api } = await server(t), star = await wakeSocket(t, url, "*");
   const doc = await readFile(join(import.meta.dirname, "../docs/design.md"), "utf8");
-  const section = doc.slice(doc.indexOf("### The wake stream"), doc.indexOf("**Why not MCP push.**"));
+  const start = doc.indexOf("### The wake stream"), end = doc.indexOf("**Why not MCP push.**");
+  assert.ok(start >= 0 && end > start, "docs/design.md must hold the headings '### The wake stream' and then '**Why not MCP push.**'");
+  const section = doc.slice(start, end);
   // A form is `{event:"x", name:"value", field, ...}`: a name:"value" pair is a fixed value that tells forms of one event apart.
   const forms = [...section.matchAll(/`\{event:"(\w+)"([^`]*)\}`/g)].map(([, event, rest]) => {
     const fixed: Record<string, string> = {}, fields = new Set(["event"]);
@@ -400,7 +402,12 @@ test("every wake frame has exactly the fields the design doc gives for its form,
     }
     return { event: event!, fixed, fields, name: event! + Object.values(fixed).map(v => ":" + v).join("") };
   });
-  assert.deepEqual(forms.map(f => f.name).sort(), ["blocking:ask", "blocking:card", "check", "note", "request"]);
+  // The forms src/http.ts can send are its wake({event:"x"[,kind:"y"]…}) call sites. They must be exactly the forms the doc lists, so
+  // a kind added to the server and not to the doc fails here. A reformatted call site that no longer matches also fails here,
+  // which says this scrape needs updating.
+  const source = await readFile(join(import.meta.dirname, "../src/http.ts"), "utf8");
+  const sendable = [...new Set([...source.matchAll(/wake\(\{\s*event:\s*"(\w+)"(?:,\s*kind:\s*"(\w+)")?/g)].map(m => m[1]! + (m[2] ? ":" + m[2] : "")))].sort();
+  assert.deepEqual(sendable, forms.map(f => f.name).sort(), "the forms src/http.ts sends differ from the forms docs/design.md lists");
   // One write of each form: a sent note, a blocking card, an ask, a new check, a new request.
   await api("/api/notes", { target: "it:a", kind: "comment", text: "x" }); await api("/api/send", {});
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }], blocks: "合并停着" });

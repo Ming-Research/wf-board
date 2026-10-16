@@ -112,10 +112,11 @@ code skips this section.
 
 ### Every ten minutes
 
-- Sessions: allocate them as the server's reading guide says (docs/design.md,
-  Server instructions), push each idle session to ready work, and give a project
-  that needs a session and has no live one a blocking card asking the owner
-  to restart it.
+- Sessions: allocate them from the current work in progress: every unpaused
+  project with ready or in-progress work and no recent session push gets a
+  session (the groupings change with the work and are not stored). Push each
+  idle session to ready work, and give a project that needs a session and has
+  no live one a blocking card asking the owner to restart it.
 - `followups`: resend notes and requests still unhandled.
 - Checks the board flags. A stalled item (see Stalled items) gets a blocking
   card under 总管's item that follows sessions.
