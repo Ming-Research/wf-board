@@ -25,6 +25,11 @@ matches what the artifact board offered.
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
   remote, their log lines, ending the push on shutdown, and the push to the
   architect when the remote copy stays behind for an hour.
+- `src/budget.ts`: the budget of one request's reads of the board's history (bytes
+  read, whole old boards rebuilt, the process heap), held in the request's async
+  context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
+  old board, bounded by the heap they are estimated to hold. Design section 4,
+  Request budgets.
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line and the start-up step timings.
@@ -71,6 +76,11 @@ matches what the artifact board offered.
   of the live board's size; the `bench` workflow runs it by hand
   (`workflow_dispatch`) on this tree and on a base commit, as a step that
   never fails the run.
+- `scripts/bench-changes.ts`: the history-query benchmark (time, heap growth and heap
+  peak against the budget's line, for `changes`, the unread list and `diff`, on a
+  synthetic board of the live board's size with a long history); the same workflow
+  runs it on this tree, where a failed check fails the run, and on the base commit,
+  as a report only.
 - `scripts/check-private-content.ts`, with its rules in
   `scripts/private-content-rules.ts`: the CI check that a push or a pull
   request adds nothing private to this public repository (design section

@@ -954,7 +954,8 @@ export class Store {
       await this.git(["reset", "-q", "HEAD", "--", ...paths]);
       for (let i = 0; i < changed.length; i++) {
         const change = changed[i]!;
-        if (change.before === null || (change.kind === "owner" && await this.readAt(paths[i]!, this.state.head) === null)) rmSync(join(this.dir, paths[i]!), { force: true });
+        // Whether the file is in the head is all that is asked: a rollback reads no history for a request, so no budget is charged.
+        if (change.before === null || (change.kind === "owner" && await this.blobs.read(`${this.state.head}:${paths[i]!}`) === null)) rmSync(join(this.dir, paths[i]!), { force: true });
         else await this.git(["restore", "--source=HEAD", "--worktree", "--", paths[i]!]);
       }
       if (txn.planConversionReport) {

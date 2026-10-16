@@ -3,6 +3,8 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -77,6 +79,26 @@ test("a read is charged to its request's budget, a whole old board counts once a
   assert.notEqual(await store.comparisonSnapshot(parent), board1, "one whole old board is kept: the other one replaced it");
   assert.notEqual(await store.comparisonSnapshot(head), board1);
   await assert.rejects(withBudget(new Budget("t", REQUEST_LIMITS, heap(4000, 4000)), () => store.comparisonSnapshot(parent)), raises("heap"));
+});
+
+test("a write that fails after it changed files is rolled back whatever its budget has left, and the caller gets the error that failed it", async t => {
+  quiet(t);
+  const { dir, store: seed } = await board(t);
+  const store = await Store.open(dir);
+  // The owner file is in the head, and the failing write also changes it.
+  store.setOwner({ cursor: seed.snapshot().head });
+  await ops(store).appendLog({ author, id: "a", text: "Commits the owner file" });
+  store.setOwner({ cursor: store.snapshot().head });
+  await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const before = readFileSync(join(dir, "state/owner.yaml"));
+  // A budget with nothing left to read: the rollback checks whether the owner file existed at the head, which must not be charged.
+  const spent: BudgetLimits = { ...REQUEST_LIMITS, bytes: 0, bytesPerCommit: 0 };
+  const failure = await withBudget(new Budget("t", spent), () => ops(store).appendLog({ author, id: "a", text: "Rejected" })).then(() => undefined, (error: unknown) => error);
+  assert.ok(failure instanceof Error && !(failure instanceof BudgetError), `the write failed for its own reason, got ${String(failure)}`);
+  assert.deepEqual(readFileSync(join(dir, "state/owner.yaml")), before, "the owner file is back as it was");
+  const gitOut = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  assert.equal(gitOut("rev-parse", "HEAD").trim(), store.snapshot().head, "the head is where it was");
+  assert.equal(gitOut("diff", "--cached", "--name-only"), "", "nothing stays staged");
 });
 
 test("only the module that keeps the data starts git: no other source file does", () => {

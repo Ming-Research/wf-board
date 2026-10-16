@@ -275,15 +275,23 @@ commits; `scripts/bench-changes.ts`). Three rules follow.
 3. *Three places charge it*, all in `src/store.ts`: reading one historical file
    (`readAt`, charged when git is read and not when the cache answers), rebuilding a whole old
    board (`comparisonSnapshot`) and reading a git command's output
-   (`gitRead`, for `log`, `diff` and `ls-tree`; the commands a write runs are not
-   charged). Each also looks at the heap, which counts the garbage not yet
+   (`gitRead`, for `log`, `diff` and `ls-tree`; the commands a write runs, and the
+   one read its rollback makes of the head, are not charged). Each also looks at the heap, which counts the garbage not yet
    collected and what other requests hold, so the 75% line is the last defense
    against a count that missed something, and the normal queries stay well below it
    (`scripts/bench-changes.ts` prints their peak against the line). With
    `requireBudget` (the daemon sets it), a read of history that runs under no
    budget fails, so a new path that forgets to open one fails the first time it runs;
-   a test checks that no source file but `store.ts` (and the two that run `gh` and
-   the notification command) starts a process that could run git.
+   a test checks that the only source files that start a process are `store.ts`,
+   `net-git.ts` (git against a remote, whose output is never read as history) and
+   the two that run `gh` and the notification command, and that those two do not
+   run git.
+
+   A read that two requests share (a file read or a board rebuild still pending, and the
+   unread list's memo) is charged to the request that started it. If that request's
+   budget stops it, the other request fails with the same error, and its retry is
+   served; this is accepted because two requests reading the same history at once is
+   rare and the failure is only a retry.
 
 The history caches are bounded by the heap they are estimated to hold: parsed
 documents 64 MB (16 bytes of heap per byte of file, as the whole-board figures
