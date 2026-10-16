@@ -187,7 +187,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   }
   // The agent index (src/agents.ts): each session's two most recently touched distinct items, read off the commits by
   // scanning back from the newest until two are found, not by advancing a list as the store does.
-  const sessionOf = new Map((await store.log()).map(c => [c.commit, c.session]));
+  const sessionOf = new Map((await store.log()).map(c => [c.commit, c.session] as const));
   const touchedBy = (i: number): string[] => {
     const here = events[i]!, was = i ? events[i - 1]!.after : initial, items = new Set<string>();
     for (const doc of here.change.changed) {

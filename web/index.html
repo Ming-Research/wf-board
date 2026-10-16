@@ -41,6 +41,7 @@
   --ask-soft: #fdeceb;
   --blockwait: #5b2a9e;
   --blockwait-soft: #f1eafc;
+  --amber: #8a5a00; --amber-soft: #fff0c7;
   --fresh: #2f7de1;
   --fresh-ink: #ffffff;
   --fresh-soft: #e3eefc;
@@ -57,6 +58,7 @@
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
     --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
     --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
+    --amber: #f0c060; --amber-soft: #3a2d0a;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
     color-scheme: dark;
   }
@@ -67,6 +69,7 @@
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
   --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
   --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
+  --amber: #f0c060; --amber-soft: #3a2d0a;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
   color-scheme: dark;
 }
@@ -86,17 +89,17 @@ body.wide .wrap.detail-collapsed { min-width: 0; grid-template-columns: minmax(0
 body.wide #item-detail { min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 26px 8px 64px; }
 body.wide .page-left { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 8px; padding-bottom: 64px; }
 body.wide .page-left > * { flex-shrink: 0; }
-body.wide #areas .item { padding-inline: 4px; }
-body.wide #areas .item-title { font-size: 13px; }
-body.wide #areas .item.line > .item-row .item-title { font-size: 13.5px; }
-body.wide #areas .st, body.wide #areas .prio, body.wide #areas .prio-was, body.wide #areas .counts .st, body.wide #areas .newtag, body.wide #areas .asktag, body.wide #areas .waittag, body.wide #areas .checktag, body.wide #areas .pendtag { font-size: 11px; }
-body.wide #areas .item.selected { background: var(--cur); }
+body.wide :is(#areas, #agents) .item { padding-inline: 4px; }
+body.wide :is(#areas, #agents) .item-title { font-size: 13px; }
+body.wide :is(#areas, #agents) .item.line > .item-row .item-title { font-size: 13.5px; }
+body.wide :is(#areas, #agents) .st, body.wide :is(#areas, #agents) .prio, body.wide :is(#areas, #agents) .prio-was, body.wide :is(#areas, #agents) .counts .st, body.wide :is(#areas, #agents) .newtag, body.wide :is(#areas, #agents) .asktag, body.wide :is(#areas, #agents) .waittag, body.wide :is(#areas, #agents) .checktag, body.wide :is(#areas, #agents) .pendtag { font-size: 11px; }
+body.wide :is(#areas, #agents) .item.selected { background: var(--cur); }
 /* Split tree rows: the arrow and the new-content line are centered on the row, the arrow sits close to the status chip,
    and the status and priority chips are smaller; every status chip keeps the width BLOCK needs. */
-body.wide #areas .tree-row > .caret { width: 10px; margin-right: 3px; align-self: stretch; display: flex; align-items: center; justify-content: center; line-height: 1; }
-body.wide #areas .item.fresh:not(:has(> .body))::before { left: 1px; top: 50%; bottom: auto; height: 13px; transform: translateY(-50%); }
-body.wide #areas .item-head .st { font-size: 10px; padding: 0 4px; min-width: calc(5ch + 8px); line-height: 1.6; }
-body.wide #areas .item-head .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; }
+body.wide :is(#areas, #agents) .tree-row > .caret { width: 10px; margin-right: 3px; align-self: stretch; display: flex; align-items: center; justify-content: center; line-height: 1; }
+body.wide :is(#areas, #agents) .item.fresh:not(:has(> .body))::before { left: 1px; top: 50%; bottom: auto; height: 13px; transform: translateY(-50%); }
+body.wide :is(#areas, #agents) .item-head .st { font-size: 10px; padding: 0 4px; min-width: calc(5ch + 8px); line-height: 1.6; }
+body.wide :is(#areas, #agents) .item-head .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; }
 body.wide button.caret { background: none; border: 0; padding: 0; cursor: pointer; align-self: center; }
 body.wide button.caret:disabled { cursor: default; }
 header.top { padding-block: 26px 14px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--rule); }
@@ -122,6 +125,31 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .waitrow .t { font-weight: 600; }
 .waitdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blockwait); flex: none; }
 .waitmore { font-size: 12px; color: var(--muted); }
+/* The agent list: one row per session, then the two items it touched last. */
+.agents { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.agents-head { margin: 0; font-size: 15px; }
+.agents-toggle { font: inherit; font-weight: 700; background: none; border: 0; padding: 0; color: var(--ink); cursor: pointer; }
+.agents-note { margin: 0; font-size: 12px; color: var(--muted); max-width: 68ch; }
+.agent-list, .agent-items { list-style: none; margin: 0; padding: 0; }
+.agent-list { display: flex; flex-direction: column; gap: 8px; }
+.agent { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.agent-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.agent-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.agent-state { font-size: 12.5px; line-height: 1.6; padding: 0 6px; border-radius: 4px; overflow-wrap: anywhere; }
+.agent-state.working { background: var(--wip-soft); color: var(--wip); font-weight: 600; }
+.agent-state.waiting { background: var(--blockwait-soft); color: var(--blockwait); }
+.agent-state.maybe-stopped, .agent-state.waiting.amber { background: var(--amber-soft); color: var(--amber); }
+.agent-ago, .agitem-time { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.agent-items { display: flex; flex-direction: column; gap: 1px; padding-left: 14px; }
+.agitem { min-width: 0; font-size: 13.5px; }
+.agitem-st { flex: none; }
+.agitem-title { font: inherit; text-align: left; background: none; border: 0; border-radius: 4px; padding: 1px 4px; color: var(--ink); cursor: pointer; min-width: 0; overflow-wrap: anywhere; }
+.agitem-title:hover { background: var(--accent-soft); }
+.agitem-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 7px; min-width: 0; }
+.agitem > .tree { margin-top: 2px; }
+.agitem-caret { font: inherit; width: 10px; padding: 0; background: none; border: 0; color: var(--ink); cursor: pointer; align-self: center; line-height: 1; }
+.agitem-caret:disabled { cursor: default; }
+.agitem-tree { font: inherit; font-size: 12.5px; flex: none; background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
 .sum-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sum-stats .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .sendbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; }
@@ -455,6 +483,8 @@ details.refsec > .refbody p { margin: 0; }
       <nav class="nav" id="nav" aria-label="板块"></nav>
     </div>
   </header>
+
+  <section class="agents" id="agents" aria-label="代理" hidden></section>
 
   <div id="areas"></div>
 

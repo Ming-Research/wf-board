@@ -66,7 +66,7 @@ const NOW = Date.parse("2026-10-16T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 type Plan = Array<{ id: string; text: string; state: string; waits?: string }>;
 const item = (plan: Plan = [], fields: Partial<Item> = {}) => ({ title: "t", group: "p", plan, dispatches: [], ...fields }) as unknown as Item;
-const dispatch = (agent: string, started: string, fields: Partial<Dispatch> = {}) => ({ agentId: `${agent}-${started}`, agent, role: "工程师", level: 2, model: "Sonnet", started, ...fields }) as Dispatch;
+const dispatch = (agent: string, started: string, fields: Partial<Dispatch> = {}) => ({ agentId: `${agent}-${started}`, agent, role: "工程师", level: 2, model: "Sonnet", started, ...fields }) as unknown as Dispatch;
 const snap = (items: Record<string, Item>, agents: Record<string, AgentTouch[]> = {}) => ({ items, activity: { writes: [], items: {}, agents } }) as unknown as Pick<Snapshot, "items" | "activity">;
 const wrote = (...touches: Array<[string, number]>) => touches.map(([item, m]) => ({ item, at: minutesAgo(m) }));
 const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find(r => r.name === name);
@@ -137,7 +137,7 @@ test("two items merge from writes and dispatch records, the later time of an ite
 });
 
 test("a session whose newest dispatch has ended is out until it writes again; a reused name is judged by its newest record", () => {
-  const ended = (agent: string, startedAgo: number, endedAgo: number) => dispatch(agent, minutesAgo(startedAgo), { finish: { ended: minutesAgo(endedAgo), result: "一次通过" } } as Partial<Dispatch>);
+  const ended = (agent: string, startedAgo: number, endedAgo: number) => dispatch(agent, minutesAgo(startedAgo), { finish: { ended: minutesAgo(endedAgo), result: "一次通过" } } as unknown as Partial<Dispatch>);
   const s = snap({
     a: item([], { dispatches: [ended("done", 120, 30)] } as Partial<Item>),
     b: item([], { dispatches: [ended("again", 120, 30)] } as Partial<Item>),

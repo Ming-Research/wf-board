@@ -100,7 +100,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   };
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
   roots.get("nav")!.className = "nav";
   roots.get("summary")!.appendChild(roots.get("nav")!);
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
@@ -4020,4 +4020,173 @@ test("an owner notice from the stream shows one browser notice; its click opens 
   owner({ title: "新的", message: "弹" });
   assert.equal(shown.length, 3);
   assert.equal(shown[2]!.options.tag, "新的", "a notice with no target is tagged with its title");
+});
+
+// --- The agent list --------------------------------------------------------------------------------------------------
+
+const NOW = Date.parse("2026-10-16T12:00:00Z");
+const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+/** The page's fixture with a session list: `eng` touched child and area; `child` has a step in progress. */
+function agentSnapshot(agents: NonNullable<Snapshot["activity"]>["agents"], steps?: PlanStep[]) {
+  const s = snapshot();
+  if (steps) s.items.child!.steps = steps;
+  s.activity = { writes: [], items: {}, agents };
+  return s;
+}
+const agentRowsOf = (p: Awaited<ReturnType<typeof page>>) => p.roots.get("agents")!.querySelectorAll(".agent");
+const agentText = (e: Element) => descendants(e).map(x => x.textContent || x.innerHTML.replace(/<[^>]*>/g, "")).join(" ");
+
+test("agent list: a row per session with its level, state word, how long ago it wrote and its two items", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }, { item: "area", at: minutesAgo(70) }] });
+  s.items.child!.dispatches = [{ agentId: "x1", agent: "eng", role: "工程师", level: 2, model: "Sonnet", started: minutesAgo(90) }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const host = p.roots.get("agents")!;
+  assert.equal(host.hidden, false);
+  assert.equal(host.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 1");
+  const [row] = agentRowsOf(p);
+  assert.ok(row);
+  assert.equal(row!.dataset.agent, "eng");
+  assert.equal(row!.querySelector(".agent-name")!.innerHTML, "eng");
+  assert.equal(row!.querySelector(".diffchip")!.innerHTML, "2 级");
+  assert.equal(row!.querySelector(".agent-state")!.innerHTML, "干活");
+  assert.equal(row!.querySelector(".agent-ago")!.innerHTML, "5 分钟前写过");
+  const cells = row!.querySelectorAll(".agitem");
+  assert.deepEqual(cells.map(c => c.querySelector(".agitem-title")!.innerHTML), ["Child", "Parent"], "newest first");
+  assert.deepEqual(cells.map(c => c.querySelector(".agitem-time")!.innerHTML), ["5 分钟前", "1 小时 10 分钟前"]);
+  assert.ok(cells.every(c => c.id.startsWith("ag-eng--it-")), "cells carry the row's prefix");
+  assert.ok(!descendants(host).some(e => e.id.startsWith("it-")), "no element of the list has an id the tree uses");
+  assert.match(host.querySelector(".agents-note")!.innerHTML, /不是看到的/, "the list says its state is inferred");
+});
+
+test("agent list: waiting shows the step's own text, a long wait is amber, a stale step reads maybe stopped, no step has no word", async () => {
+  const waiting = (waits: string): PlanStep[] => [planStep("work", "Work", "doing", { waits }), planAcceptance()];
+  const word = async (m: number, steps?: PlanStep[], item = "child") => {
+    const p = await page(agentSnapshot({ a: [{ item, at: minutesAgo(m) }] }, steps), [], null, undefined, { now: () => NOW });
+    const state = agentRowsOf(p)[0]!.querySelector(".agent-state");
+    return state ? [state.innerHTML, state.className] : null;
+  };
+  assert.deepEqual(await word(20, waiting("PR 草稿 CI")), ["在等：PR 草稿 CI", "agent-state waiting"]);
+  assert.deepEqual(await word(61, waiting("PR 草稿 CI")), ["在等：PR 草稿 CI", "agent-state waiting amber"]);
+  assert.deepEqual(await word(29), ["干活", "agent-state working"]);
+  assert.deepEqual(await word(31), ["可能停了", "agent-state maybe-stopped"]);
+  assert.equal(await word(5, undefined, "area"), null, "no step in progress on the item: only the time");
+});
+
+test("agent list: a reviewer with a dispatch record and no write is listed by its start, with no state word", async () => {
+  const s = agentSnapshot({});
+  s.items.child!.dispatches = [{ agentId: "r1", agent: "child-review", role: "审查", level: 3, model: "Opus", started: minutesAgo(12) }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const [row] = agentRowsOf(p);
+  assert.equal(row!.dataset.agent, "child-review");
+  assert.equal(row!.querySelector(".diffchip")!.innerHTML, "审查 3 级");
+  assert.equal(row!.querySelector(".agent-state"), null);
+  assert.equal(row!.querySelector(".agent-ago")!.innerHTML, "12 分钟前起");
+  assert.deepEqual(row!.querySelectorAll(".agitem-title").map(t => t.innerHTML), ["Child"]);
+});
+
+test("agent list: the architect's session, sessions out of the window and ended dispatches are not listed; with none the list hides", async () => {
+  const s = agentSnapshot({ "架构师": [{ item: "child", at: minutesAgo(1) }], old: [{ item: "child", at: minutesAgo(400) }], done: [{ item: "child", at: minutesAgo(40) }] });
+  s.items.child!.dispatches = [{ agentId: "d1", agent: "done", role: "工程师", level: 2, model: "Sonnet", started: minutesAgo(100), finish: { ended: minutesAgo(30), result: "一次通过", reports: 0, kickbacks: 0, signals: [], usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0 } }];
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  assert.equal(agentRowsOf(p).length, 0);
+  assert.equal(p.roots.get("agents")!.hidden, true);
+});
+
+test("agent list: 在树中 reveals the item in the tree and remembers the place, and the title selects it", async () => {
+  const p = await page(agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] }), [], null, undefined, { now: () => NOW });
+  const cell = agentRowsOf(p)[0]!.querySelector(".agitem")!;
+  assert.equal(p.all().find(e => e.id === "backbtn")?.hidden ?? true, true);
+  p.roots.get("page-left")!.scrollTop = 120;
+  await cell.querySelector(".agitem-tree")!.click(); await p.flush();
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, false, "the jump is remembered");
+  assert.ok(rowOf(p, "child"), "the tree row for the item exists, parent unfolded");
+  assert.ok(p.all().find(e => e.id === "detail-it-child"), "the item is selected, so its detail shows");
+  assert.ok(!p.roots.get("agents")!.querySelectorAll(".agitem").some(e => e.id.startsWith("it-")), "the list has no element with a tree id");
+  p.roots.get("page-left")!.scrollTop = 900;
+  await p.all().find(e => e.id === "backbtn")!.click(); await p.flush();
+  assert.equal(p.all().find(e => e.id === "backbtn")!.hidden, true, "Back returns");
+  assert.equal(p.scrollY, 120, "Back returns to where the list was scrolled, not to an item below it");
+  // The title selects the other item without moving the page.
+  const area = agentRowsOf(p)[0]!;
+  await area.querySelector(".agitem-title")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "detail-it-child"));
+});
+
+test("agent list: the heading folds the list and the choice is kept", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] }), storage = new Map<string, string>();
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  await p.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await p.flush();
+  assert.equal(agentRowsOf(p).length, 0, "folded");
+  assert.equal(p.roots.get("agents")!.querySelector(".agents-toggle")!.innerHTML, "▸ 代理 1");
+  assert.equal(storage.get("board-agents"), "closed");
+  const again = await page(s, [], null, undefined, { now: () => NOW, storage });
+  assert.equal(agentRowsOf(again).length, 0, "a reload keeps it folded");
+  await again.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await again.flush();
+  assert.equal(agentRowsOf(again).length, 1);
+});
+
+test("agent list: a write by a session shows its row within two seconds, and a minute passing updates the times", async () => {
+  let now = NOW;
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] });
+  const p = await page(s, [], null, undefined, { now: () => now });
+  assert.equal(agentRowsOf(p).length, 1);
+  const began = performance.now();
+  p.emit("b".repeat(40), [{ kind: "item", id: "area", after: { ...s.items.area!, rev: 2 } }], { from: s.head, write: minutesAgo(0), items: {}, pauses: {}, sessions: {}, agents: { newcomer: [{ item: "area", at: minutesAgo(0) }] } });
+  await p.flush();
+  assert.ok(performance.now() - began < 2000, "the row is there well inside the two-second target");
+  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["newcomer", "eng"], "the writer is newest");
+  assert.equal(p.roots.get("agents")!.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 2");
+  now += 3 * 60_000;
+  for (const tick of p.intervals) tick();
+  await p.flush();
+  assert.equal(agentRowsOf(p)[1]!.querySelector(".agent-ago")!.innerHTML, "5 分钟前写过", "the minute timer repaints the time");
+});
+
+test("agent list: a write that changes the list changes it once, and one elsewhere leaves it untouched", async () => {
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] });
+  const p = await page(s, [], null, undefined, { now: () => NOW });
+  const before = agentRowsOf(p)[0]!;
+  p.emit("c".repeat(40), [{ kind: "item", id: "area", after: { ...s.items.area!, rev: 2, updated: at } }]);
+  await p.flush();
+  assert.equal(agentRowsOf(p)[0], before, "the row element is kept when nothing it shows changed");
+});
+
+test("agent list: a cell unfolds its sub-items in place, they unfold further, and the list folds apart from the tree", async () => {
+  const s = agentSnapshot({ eng: [{ item: "area", at: minutesAgo(2) }], other: [{ item: "area", at: minutesAgo(3) }] });
+  s.items.grand = { title: "Grand", parent: "child", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] };
+  const storage = new Map<string, string>();
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const cell = (name: string) => agentRowsOf(p).find(r => r.dataset.agent === name)!.querySelector(".agitem")!;
+  const caret = cell("eng").querySelector(".agitem-caret")!;
+  assert.deepEqual([caret.disabled, caret.innerHTML], [false, "▸"], "an item with sub-items has an arrow");
+  assert.equal(cell("eng").querySelector(".agitem-time") !== null, true);
+  await caret.click(); await p.flush();
+  const sub = p.all().find(e => e.id === "ag-eng--it-child")!;
+  assert.ok(sub, "the sub-item is an item row under the cell, with the row's prefix");
+  assert.ok(sub.classList.contains("item"), "and it is the tree's item row, so it unfolds the same way");
+  assert.equal(cell("eng").querySelector(".agitem-caret")!.innerHTML, "▾");
+  assert.equal(cell("other").querySelectorAll(".item").length, 0, "the same item in another session's row stays folded");
+  await sub.querySelector(".caret")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "ag-eng--it-grand"), "sub-items unfold further");
+  assert.equal(p.all().some(e => e.id === "it-child"), false, "the tree's own area is still folded: no tree row for the sub-item yet");
+  assert.notEqual(rowOf(p, "area").querySelector(".caret")!.attributes["aria-expanded"], "true");
+  // Unfolding the tree's row leaves the list as it was, and both rows exist side by side.
+  await rowOf(p, "area").querySelector(".caret")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "it-child"), "the tree row exists once unfolded there");
+  assert.ok(p.all().find(e => e.id === "ag-eng--it-grand"), "the list kept its folds");
+  assert.deepEqual(p.all().filter(e => e.id === "it-child" || e.id === "ag-eng--it-child").map(e => e.id).sort(), ["ag-eng--it-child", "it-child"]);
+  // A click on the list's row selects the item, and the selection mark shows in the tree only.
+  await sub.querySelector(".item-head")!.click(); await p.flush();
+  assert.ok(p.all().find(e => e.id === "detail-it-child"), "selected: its detail shows");
+  assert.ok(rowOf(p, "child").classList.contains("selected"), "the tree's row is marked");
+  assert.ok(!p.all().find(e => e.id === "ag-eng--it-child")!.classList.contains("selected"), "the list's row is not");
+  // Drawn afresh (the list folded and unfolded), the list's row is still not marked.
+  for (let k = 0; k < 2; k++) { await p.roots.get("agents")!.querySelector(".agents-toggle")!.click(); await p.flush(); }
+  assert.ok(!p.all().find(e => e.id === "ag-eng--it-child")!.classList.contains("selected"), "nor when the list is drawn afresh");
+  // The folds are kept across a reload, and 全部折叠 folds the list too.
+  const again = await page(s, [], null, undefined, { now: () => NOW, storage });
+  assert.ok(again.all().find(e => e.id === "ag-eng--it-grand"), "unfolded cells stay unfolded after a reload");
+  const fold = again.all().find(e => e.tagName === "BUTTON" && e.innerHTML === "全部折叠")!;
+  await fold.click(); await again.flush();
+  assert.equal(again.all().some(e => e.id.startsWith("ag-") && e.classList.contains("item")), false, "全部折叠 folds the list");
 });

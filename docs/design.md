@@ -364,14 +364,21 @@ log:
   trailers in history. This is an observation of who wrote, never an
   assignment of work to a session: no document stores a session, and
   `history` and `changes` show the message without the trailer.
+  The same walk keeps, per session name, the last two distinct items it wrote
+  to, newest first (`activity.agents`, read by the agent list, section 7). A
+  write names the items it touched (an item, its card or a note on either)
+  and puts them first by id, ahead of the entries the session already had,
+  without repeats; so the list does not depend on the order the store met the
+  items in, and a restart gives the list live writes gave.
   Content commits touching board metadata,
   items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
   owner reading cursors or read-ahead marks do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   A live update carries the activity index's change, not the index: the
   commit's content-write time, the items whose last change moved, the
-  whole new span list of each item whose pause spans changed and each item
-  whose last-writing session moved, made against
+  whole new span list of each item whose pause spans changed, each item
+  whose last-writing session moved and each session whose two items changed
+  (its whole new list), made against
   the previous head. The page applies it only to a snapshot at that head; a
   snapshot already at the new head ignores it, and one at another head missed
   or overtook an event and reloads the whole snapshot. MCP recomputes checks
@@ -1550,6 +1557,76 @@ One click opens the complete history and another closes it. Log entries retain
 their existing comment anchors and reference links; manually opening history
 does not make it unread.
 
+### Agent list
+
+Above the projects and below the summary, the page lists the agent sessions that
+wrote to the board lately: one row per session name, then the two items it
+wrote to last. The owner reads it to see which work has someone on it, at which
+level, and whether that someone is working, waiting or has gone quiet.
+
+- **Data.** Only the board's own records: the per-session index of section 5
+  (`activity.agents`) and the dispatch records on items. Nothing reads the
+  machine the board runs on, and no session reports apart from the writes it
+  already makes with its session name. This is what lets the board run on
+  another machine and keep the list; the owner required that. Rejected: asking
+  the host for its session list (`claude agents`) or reading its state files,
+  which is exact but ties the board to the machine; a reporter process beside
+  the sessions or hooks that report, which add a process or a Claude Code format
+  to keep alive; the item's last writer alone (`activity.sessions`), which
+  loses a session's earlier items when another session writes the same item and
+  needs the in-progress row to know whose item it is. The comparison of all
+  six sources, with the timing measurements behind the thresholds below, is in
+  the item 「代理状态显示的调研」 (agents-visible-study).
+- **Who is listed.** A session whose last activity is at most six hours old.
+  Activity is a write with its session name, or the start of a dispatch record
+  naming it (`agent`), whichever is later; a reviewer that only reads has a row
+  from its start. The architect's own session is left out: it wrote 521 of the
+  1158 writes on the day measured and would head the list every time. A name
+  whose newest dispatch record has ended is not listed until it writes again
+  more than a minute after the recorded end (the end may be recorded to the
+  minute); names are reused (one item's study and its implementation are both
+  named after the item), so the newest record decides. A name used by mistake
+  is listed as it is, so whoever wrote it sees it.
+- **A row.** Name; level; state word; how long ago it wrote (「N 分钟前写过」,
+  or 「N 分钟前起」 when the last activity is a dispatch start); its two items.
+  The level is the one in the newest dispatch record naming the session, which
+  is what it was started at (「审查 3 级」 for a review); with no record, the
+  difficulty of the newest of its items that has a step in progress.
+- **State word.** Read from the steps in progress on its two items, never from
+  the host. A step with `waits` text: 「在等：」 and that text, whatever the
+  time (the text is the session's own); amber when it has not written for over
+  an hour, the age at which Claude Code stops an idle session, so the wait may
+  be a stopped one. A step in progress without `waits`: 「干活」 within 30
+  minutes of its last activity, 「可能停了」 after. No step in progress: no
+  word, only the time. A review dispatch gets no word at all: the steps on the
+  item it reviews are the engineer's, and a reviewer reads for minutes without
+  writing, so any word would claim more than the board knows. The 30 minutes
+  come from one afternoon of 13 sessions: of 428 moments a session was working,
+  0.2% were more than 30 minutes after its last write (22% more than 10, 11%
+  more than 15), and the longest gap between two writes of one engineer was 25
+  minutes; waiting for the architect lasted up to 61 minutes. The word is
+  inferred from declarations, so the list says so on its face and every row
+  carries the time since the session wrote.
+- **Reading a row with the tree.** Each item cell has the status chip and
+  number, the title (a click selects the item and shows its detail), the time
+  it was touched, an arrow and 「在树中」. The arrow unfolds the item's
+  sub-items under the cell as item rows, which unfold further like the tree's.
+  The rows of a cell are the tree's item rows drawn under a mount: their
+  element ids start with the row's own prefix instead of `it-`, so every lookup
+  of a tree row by id still finds only the tree's, and the mount keeps its own
+  fold state (`board-agent-open`), so one item folds on its own in the list, in
+  another session's row and in the tree. The selection mark and the current
+  mark show in the tree only. 「在树中」 is the dependency jump: it remembers
+  the place, unfolds the item's ancestors in the tree, scrolls to its row and
+  selects it; 返回 goes back to where the list was scrolled to. It is offered
+  only when the tree draws a row for the item (a done item drawn nowhere has
+  none). The list folds under its heading, and 全部折叠 folds its cells.
+- **Staying current.** A change event carries the lists that moved; the list is
+  repainted with the same frame as the rest of the page, and only when what it
+  shows changed (its inputs are compared). The minute timer that re-derives
+  active time also moves the 「N 分钟前」 texts. The page test measures a
+  session's write to its row's update against the two seconds the item set.
+
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
@@ -2299,6 +2376,13 @@ module and its tests are deleted after the run on the live board.
   activity index, a write's prospective rules, the page's activity deltas)
   equal a from-scratch `rules` scan, and every item whose painted
   presentation changed is among the affected items.
+- The agent list: the per-session index of the last two items, checked in that
+  random sequence against a reverse scan of the commits and rebuilt after a
+  restart; the rows (window, state words, level, dispatch records and ended
+  names) on hand-built snapshots, each boundary on both sides; the page in a
+  fake DOM; and in a real browser the list above the projects, 在树中
+  landing on the tree's row and 返回 coming back, and every tree click still
+  landing with a cell unfolded.
 - CI on GitHub-hosted runners for each pull request push and each main-line
   merge; the write-path benchmark runs by hand, as a workflow that reports and
   never fails the run.
