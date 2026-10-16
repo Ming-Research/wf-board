@@ -4,6 +4,7 @@ import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
+import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
 import type { Snapshot, Item, Decision, Note, Notice, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
@@ -67,6 +68,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const draftKey = (target:string,kind:DraftKind) => target + "|" + kind;
   const drafts: Record<string, string> = {};
   let notesOpen: Record<string, boolean> = {};
+  // Open 参考 sections, keyed by item and section title, so a re-render keeps what the reader opened.
+  let refOpen: Record<string, boolean> = {};
+  try { refOpen = JSON.parse(localStorage.getItem("board-refs") || "{}") || {}; } catch (e) { refOpen = {}; }
+  document.addEventListener("toggle", ev => {
+    const d = ev.target;
+    if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("refsec")) return;
+    refOpen[d.dataset.ref!] = d.open;
+    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}
+  }, true);
   try { notesOpen = JSON.parse(localStorage.getItem("board-notes") || "{}") || {}; } catch (e) { notesOpen = {}; }
   // Closed decisions show under their item only when opened from its chip, or while they carry new replies.
   let ruledOpen: Record<string, boolean> = {};
@@ -143,22 +153,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A **label**: written mid-paragraph after a sentence end starts its own paragraph, so a section label still reads as a subheading.
     return String(src == null ? "" : src).replace(/\r/g, "").replace(/([。；！？.!?])[ \t]*(\*\*[^*\n]{1,16}\*\*[ \t]*[：:])/g, "$1\n\n$2").split("\n");
   }
-  // A 「**参考：」 line opens a section that runs to the next such line or the end of the text, and it is shown folded.
-  function blocks(src: unknown) {
-    const [head = [], ...refs] = refSplit(textLines(src));
-    return plainBlocks(head) + refs.map(refSection).join("");
+  // With a scope (an item's head) its 参考 sections fold shut, each under its title; the scope keeps each one's open state.
+  function blocks(src: unknown, scope?: string) {
+    const lines = textLines(src);
+    if (scope === undefined) return plainBlocks(lines);
+    const [head = [], ...refs] = refSplit(lines), at = scope;
+    return plainBlocks(head) + refs.map(r => refSection(r, at)).join("");
   }
-  function refSplit(lines: string[]): string[][] {
-    const out: string[][] = [[]]; let fenced = false;
-    for (const line of lines) {
-      if (/^\s*```/.test(line)) fenced = !fenced;
-      if (!fenced && /^\*\*参考：/.test(line)) out.push([line]); else out[out.length - 1]!.push(line);
-    }
-    return out;
-  }
-  function refSection(lines: string[]) {
-    const [title = "", ...body] = lines;
-    return '<details class="ref"><summary>' + inline(title) + "</summary>" + plainBlocks(body) + "</details>";
+  function refSection(lines: string[], scope: string) {
+    const [title = "", ...body] = lines, key = scope + "\n" + title;
+    return '<details class="refsec"' + (refOpen[key] ? " open" : "") + ' data-ref="' + esc(key) + '"><summary>' + inline(title) + '</summary><div class="refbody">' + plainBlocks(body) + "</div></details>";
   }
   function plainBlocks(lines: string[]) {
     const out: string[] = [];
@@ -1993,7 +1997,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const targets = targetsSection(it, before); if (targets) body.appendChild(targets);
       const plan = planSection(it, before, terms); if (plan) body.appendChild(plan);
       // Progress first, then the stable head, then the owner's comments on it, then the log.
-      if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it)),terms)));
+      if (headOf(it)) body.appendChild(el("div", "rich", linkTerms(markedBlocks(before?.head ?? (before ? "" : undefined),headOf(it),"it:" + it.id),terms)));
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
       if (ws.length) {
@@ -2621,7 +2625,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     for (const line of text.replace(/\r/g, "").split("\n")) {
       if (/^\s*```/.test(line)) fenced = !fenced;
       // A 参考 section is one block whatever blank lines it holds, so a change marks it as a whole.
-      if (!fenced && /^\*\*参考：/.test(line)) { flush(); inRef = true; }
+      if (!fenced && isRefTitle(line)) { flush(); inRef = true; }
       if (!line.trim() && !fenced && !inRef) flush(); else block.push(line);
     }
     flush(); return out;
@@ -2641,9 +2645,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     return out;
   }
-  function markedBlocks(before: string | undefined, after: string) {
-    if (before === undefined || before === after) return blocks(after);
-    return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value) + '</div>' : blocks(value)).join("");
+  function markedBlocks(before: string | undefined, after: string, scope?: string) {
+    if (before === undefined || before === after) return blocks(after, scope);
+    return orderedChanges(proseBlocks(before),proseBlocks(after)).map(({value,mark}) => mark ? '<div class="' + mark + '">' + blocks(value, scope) + '</div>' : blocks(value, scope)).join("");
   }
   function appendTitle(parent: HTMLElement, title: string, before: string | null | undefined, cls = "", terms?: TermLinks) {
     parent.appendChild(el("span", cls + (before !== undefined && before !== title ? " chg-add" : ""),linkTerms(inline(title),terms)));
