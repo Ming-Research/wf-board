@@ -1097,10 +1097,11 @@ export class Store {
    * newer than `at` and no further, so what it costs follows the time asked for, not the length of the history. Commits are
    * dated by their commit time, which the daemon sets equal to the author time. */
   async commitAt(at: number): Promise<string | undefined> {
-    if (at < 0) return undefined;
-    // Written as a date: git reads a bare "@seconds" as a timestamp only from 1973 on.
-    const until = new Date(Math.floor(at / 1000) * 1000).toISOString().replace(/\.000Z$/, "Z");
-    const output = (await this.gitRead(["log", "--max-count=1", "--format=%H", `--until=${until}`, "HEAD", "--"])).trim();
+    // Git reads "@seconds" as a timestamp only from 1973 on, and a date far in the future not at all (Linux git refuses 2999). No
+    // commit of this board is older than 1973 or newer than 2100, so an `at` outside those years is decided without git.
+    const seconds = Math.floor(at / 1000);
+    if (seconds < 100_000_000) return undefined;
+    const output = (await this.gitRead(["log", "--max-count=1", "--format=%H", `--until=@${Math.min(seconds, 4_102_444_800)}`, "HEAD", "--"])).trim();
     return output || undefined;
   }
 
