@@ -9,17 +9,15 @@ import { brief, context, list } from "../src/query.ts";
 import { unreadSteps, piecesOf } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, at } from "./helpers.ts";
+import { board, author, at, architect, asArchitect } from "./helpers.ts";
 
-const architect = "Architect", coordinator = "总管";
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
-/** The synthetic board with the architect's project added; its fixture items are already rated 2. */
+/** The synthetic board (it has the architect's project); its fixture items are already rated 2. */
 async function withArchitect(t: Parameters<typeof board>[0]) {
   const b = await board(t);
-  await b.op.createProject({ author: coordinator, name: architect });
-  /** A new unrated work item of Whitefoot; create_item takes no difficulty. */
-  const unrated = (key: string, extra: object = {}) => b.op.createItem({ author, key, group: author, priority: "P2", title: `未评级 ${key}`, accept: "通过", ...extra });
+  /** A new unrated work item of Whitefoot: only the architect creates items, and this one gives no difficulty. */
+  const unrated = (key: string, extra: object = {}) => b.op.createItem({ ...asArchitect, key, group: author, priority: "P2", title: `未评级 ${key}`, accept: "通过", ...extra });
   return { ...b, unrated };
 }
 const missing = (b: { store: { snapshot(): Parameters<typeof rules>[0] } }, id: string) => rules(b.store.snapshot()).checks(id).filter(c => c.label === "缺难度");
@@ -36,25 +34,28 @@ test("a record cannot carry a difficulty, in the schema and by conversion to a r
   assert.equal(Item.safeParse({ ...base, difficulty: 2 }).success, false);
   assert.equal(Item.safeParse(base).success, true);
   const { store, op } = await withArchitect(t);
-  await op.setDifficulty({ author: architect, id: "a", difficulty: 3, reason: "评一次" });
+  await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 3, reason: "评一次" });
   await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, record: true });
   const a = store.snapshot().items.a!;
   assert.equal(a.difficulty, undefined, "the record keeps no difficulty");
   assert.match(a.log.at(-1)!.text, /改为记录条目.*原难度：3/, "the conversion says what it dropped");
-  await refuses(op.setDifficulty({ author: architect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
+  await refuses(op.setDifficulty({ ...asArchitect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
 });
 
-test("only the architect sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
+test("only Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
-  for (const who of [author, "Firn", coordinator]) {
-    await refuses(op.setDifficulty({ author: who, id: "a", difficulty: 3, reason: "r" }), /only the architect, writing as Architect/);
-    await refuses(op.setDifficultyMany({ author: who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), /only the architect/);
+  const refusal = /only Architect with session 架构师 may set an item's difficulty/;
+  // A project author, the architect's project from another session or from none, and the retired coordinator are all refused.
+  for (const who of [{ author }, { author: "Firn" }, { author: architect }, { author: architect, session: "另一个会话" }]) {
+    await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
+    await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }
+  await refuses(op.setDifficulty({ author: "总管", id: "a", difficulty: 3, reason: "r" }), /this identity is retired/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
   // The architect's own project is not the items' project: ownership does not apply.
-  await op.setDifficulty({ author: architect, id: "a", difficulty: 4, reason: "Whitefoot 的条目" });
-  await op.setDifficulty({ author: architect, id: "other", difficulty: "architect", reason: "Firn 的条目" });
+  await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 4, reason: "Whitefoot 的条目" });
+  await op.setDifficulty({ ...asArchitect, id: "other", difficulty: "architect", reason: "Firn 的条目" });
   assert.equal(store.snapshot().items.a!.difficulty, 4); assert.equal(store.snapshot().items.other!.difficulty, "architect");
 });
 
@@ -62,26 +63,26 @@ test("each change logs from what to what and why, the first rating from 未评, 
   const { store, op, unrated } = await withArchitect(t);
   await unrated("u");
   const entries = () => store.snapshot().items.u!.log.map(l => l.text).filter(text => text.startsWith("难度"));
-  await op.setDifficulty({ author: architect, session: "架构师", id: "u", difficulty: 2, reason: "改写已定，照做" });
-  await op.setDifficulty({ author: architect, id: "u", difficulty: 3, reason: "涉及并发" });
-  await op.setDifficulty({ author: architect, id: "u", difficulty: "architect", reason: "改由架构师做" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: 2, reason: "改写已定，照做" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: 3, reason: "涉及并发" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: "architect", reason: "改由架构师做" });
   assert.deepEqual(entries(), ["难度：未评 → 2，理由：改写已定，照做", "难度：2 → 3，理由：涉及并发", "难度：3 → 架构师做，理由：改由架构师做"]);
   assert.equal(store.snapshot().items.u!.log.at(-1)!.by, architect, "the log names who wrote");
   const count = (await store.log()).length;
-  const same = await op.setDifficulty({ author: architect, id: "u", difficulty: "architect", reason: "再说一遍" });
+  const same = await op.setDifficulty({ ...asArchitect, id: "u", difficulty: "architect", reason: "再说一遍" });
   assert.equal((await store.log()).length, count, "the same value is a no-op"); assert.equal(entries().length, 3);
   assert.equal(same.rev, store.snapshot().items.u!.rev);
 });
 
 test("set_difficulty refuses a bad value, a missing or blank reason, a record and an unknown item", async t => {
   const { store, op, unrated } = await withArchitect(t);
-  await unrated("u"); await op.createItem({ author, key: "rec", group: author, record: true, title: "记录" });
+  await unrated("u"); await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "记录" });
   const before = store.snapshot();
-  for (const bad of [0, 6, 2.5, "3", "Architect"]) await refuses(op.setDifficulty({ author: architect, id: "u", difficulty: bad as never, reason: "r" }), /give an integer 1–5, or "architect"/);
-  await refuses(op.setDifficulty({ author: architect, id: "u", difficulty: 2 } as never), /reason: say why/);
-  await refuses(op.setDifficulty({ author: architect, id: "u", difficulty: 2, reason: "  " }), /nonempty/);
-  await refuses(op.setDifficulty({ author: architect, id: "rec", difficulty: 2, reason: "r" }), /a record has no difficulty/);
-  await refuses(op.setDifficulty({ author: architect, id: "nope", difficulty: 2, reason: "r" }), /choose an existing item/);
+  for (const bad of [0, 6, 2.5, "3", "Architect"]) await refuses(op.setDifficulty({ ...asArchitect, id: "u", difficulty: bad as never, reason: "r" }), /give an integer 1–5, or "architect"/);
+  await refuses(op.setDifficulty({ ...asArchitect, id: "u", difficulty: 2 } as never), /reason: say why/);
+  await refuses(op.setDifficulty({ ...asArchitect, id: "u", difficulty: 2, reason: "  " }), /nonempty/);
+  await refuses(op.setDifficulty({ ...asArchitect, id: "rec", difficulty: 2, reason: "r" }), /a record has no difficulty/);
+  await refuses(op.setDifficulty({ ...asArchitect, id: "nope", difficulty: 2, reason: "r" }), /choose an existing item/);
   assert.deepEqual(store.snapshot(), before);
 });
 
@@ -89,13 +90,13 @@ test("set_difficulty_many rates many items in one commit with a log entry each, 
   const { store, op, unrated } = await withArchitect(t);
   await unrated("u1"); await unrated("u2"); await unrated("u3");
   const count = (await store.log()).length, before = store.snapshot();
-  await refuses(op.setDifficultyMany({ author: architect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u2", difficulty: 9 as never, reason: "r" }] }), /items\.1 \(u2\): difficulty: give an integer 1–5/);
-  await refuses(op.setDifficultyMany({ author: architect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u2", difficulty: 2 }] }), /items\.1 \(u2\): reason: say why/);
-  await refuses(op.setDifficultyMany({ author: architect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u1", difficulty: 3, reason: "r" }] }), /items\.1\.id u1: name each item once/);
-  await refuses(op.setDifficultyMany({ author: architect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "nope", difficulty: 2, reason: "r" }] }), /items\.1 \(nope\): .*existing item/);
-  await refuses(op.setDifficultyMany({ author: architect, items: [] }), /at least one/);
+  await refuses(op.setDifficultyMany({ ...asArchitect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u2", difficulty: 9 as never, reason: "r" }] }), /items\.1 \(u2\): difficulty: give an integer 1–5/);
+  await refuses(op.setDifficultyMany({ ...asArchitect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u2", difficulty: 2 }] }), /items\.1 \(u2\): reason: say why/);
+  await refuses(op.setDifficultyMany({ ...asArchitect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "u1", difficulty: 3, reason: "r" }] }), /items\.1\.id u1: name each item once/);
+  await refuses(op.setDifficultyMany({ ...asArchitect, items: [{ id: "u1", difficulty: 2, reason: "r" }, { id: "nope", difficulty: 2, reason: "r" }] }), /items\.1 \(nope\): .*existing item/);
+  await refuses(op.setDifficultyMany({ ...asArchitect, items: [] }), /at least one/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
-  const res = await op.setDifficultyMany({ author: architect, reason: "照计划行补评", items: [{ id: "u1", difficulty: 1 }, { id: "u2", difficulty: "architect", reason: "讨论" }, { id: "u3", difficulty: 3 }, { id: "a", difficulty: 2 }] });
+  const res = await op.setDifficultyMany({ ...asArchitect, reason: "照计划行补评", items: [{ id: "u1", difficulty: 1 }, { id: "u2", difficulty: "architect", reason: "讨论" }, { id: "u3", difficulty: 3 }, { id: "a", difficulty: 2 }] });
   assert.equal((await store.log()).length, count + 1, "one commit for every item"); assert.equal(res.rev, undefined);
   const [commit] = await store.log({ limit: 1 });
   assert.deepEqual(commit!.files.sort(), ["items/u1.yaml", "items/u2.yaml", "items/u3.yaml"], "a already had 2, so it writes nothing");
@@ -103,7 +104,7 @@ test("set_difficulty_many rates many items in one commit with a log entry each, 
   assert.equal(last("u1"), "难度：未评 → 1，理由：照计划行补评", "an entry without a reason takes the default");
   assert.equal(last("u2"), "难度：未评 → 架构师做，理由：讨论", "an entry's own reason wins");
   assert.equal(last("u3"), "难度：未评 → 3，理由：照计划行补评");
-  await op.setDifficultyMany({ author: architect, reason: "x", items: [{ id: "u1", difficulty: 1 }] });
+  await op.setDifficultyMany({ ...asArchitect, reason: "x", items: [{ id: "u1", difficulty: 1 }] });
   assert.equal((await store.log()).length, count + 1, "all unchanged writes no commit");
 });
 
@@ -113,9 +114,9 @@ test("缺难度 is raised for open unrated work and clears when it is rated 1–
   assert.equal(missing(b, "u").length, 1);
   assert.match(missing(b, "u")[0]!.text, /set_difficulty/);
   assert.equal(missing(b, "a").length, 0, "a rated item has none");
-  await op.setDifficulty({ author: architect, id: "u", difficulty: 3, reason: "r" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: 3, reason: "r" });
   assert.equal(missing(b, "u").length, 0);
-  await unrated("v"); await op.setDifficulty({ author: architect, id: "v", difficulty: "architect", reason: "讨论" });
+  await unrated("v"); await op.setDifficulty({ ...asArchitect, id: "v", difficulty: "architect", reason: "讨论" });
   assert.equal(missing(b, "v").length, 0, "架构师做 counts as rated");
   // Raising the check never refuses a write: an unrated item is created and edited like any other.
   await unrated("w"); await op.appendLog({ author, id: "w", text: "进展" });
@@ -124,19 +125,19 @@ test("缺难度 is raised for open unrated work and clears when it is rated 1–
 
 test("缺难度 is raised only for work an unpaused root needs, and not for a record, a closed item or an untriaged request", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
-  await op.createItem({ author, key: "rec", group: author, record: true, title: "待选池" });
+  await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
   await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
   await unrated("under", { owner: "backlog", group: undefined, priority: undefined });
   await unrated("done"); await op.setPlan({ author, id: "done", row: { id: "accept", accept: true, text: "通过", state: "done" } });
-  await unrated("gone"); await op.setStatus({ author, id: "gone", status: "cancelled", log: "不要了" });
+  await unrated("gone"); await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "不要了" });
   await op.createRequest({ author, project: "Firn", key: "req", title: "请求", head: "h", accept: "通过", priority: "P1", why: "w" });
   await unrated("own"); await unrated("child", { owner: "own", group: undefined, priority: undefined });
-  await op.setPause({ author: coordinator, id: "own", paused: true, reason: "先放一放" });
+  await op.setPause({ ...asArchitect, id: "own", paused: true, reason: "先放一放" });
   assert.equal(rules(store.snapshot()).statusOf("child"), "paused", "the child is paused by inheritance");
   for (const id of ["rec", "backlog", "under", "done", "gone", "req", "own", "child"]) assert.equal(missing(b, id).length, 0, id);
   assert.equal(rules(store.snapshot()).isNeeded("own"), false);
   // The exemptions end with their cause.
-  await op.setPause({ author: coordinator, id: "own", paused: false });
+  await op.setPause({ ...asArchitect, id: "own", paused: false });
   assert.equal(missing(b, "own").length, 1, "a root that is not started counts, whatever its priority"); assert.equal(missing(b, "child").length, 1);
   await op.triageRequest({ author: "Firn", id: "req", log: "收下" });
   assert.equal(missing(b, "req").length, 1, "a triaged request is work and gets the check");
@@ -145,11 +146,11 @@ test("缺难度 is raised only for work an unpaused root needs, and not for a re
 test("work that only a paused root needs raises no 缺难度, and work a second, unpaused root needs does", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   // The dependency is another project's, so a shared row to it needs no owner.
-  await op.createItem({ author: "Firn", key: "dep", group: "Firn", priority: "P2", title: "别的项目的依赖", accept: "通过" });
+  await op.createItem({ ...asArchitect, key: "dep", group: "Firn", priority: "P2", title: "别的项目的依赖", accept: "通过" });
   await unrated("paused-root"); await unrated("live-root");
   await op.setPlan({ author, id: "paused-root", row: { item: "dep", own: false, after: [] } });
   assert.equal(missing(b, "dep").length, 1, "an unpaused root waits on it");
-  await op.setPause({ author: coordinator, id: "paused-root", paused: true, reason: "先放一放" });
+  await op.setPause({ ...asArchitect, id: "paused-root", paused: true, reason: "先放一放" });
   assert.equal(missing(b, "dep").length, 0, "only a paused root needs it now");
   assert.equal(rules(store.snapshot()).isNeeded("dep"), false);
   await op.setPlan({ author, id: "live-root", row: { item: "dep", own: false, after: [] } });
@@ -159,11 +160,11 @@ test("work that only a paused root needs raises no 缺难度, and work a second,
 
 test("缺难度 follows the whole chain from an unpaused root, two levels down, by owned rows and by shared rows", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
-  const rate = (id: string) => op.setDifficulty({ author: architect, id, difficulty: 2, reason: "评中间一层" });
-  const pause = (id: string, paused: boolean) => op.setPause({ author: coordinator, id, paused, ...(paused ? { reason: "先放一放" } : {}) });
+  const rate = (id: string) => op.setDifficulty({ ...asArchitect, id, difficulty: 2, reason: "评中间一层" });
+  const pause = (id: string, paused: boolean) => op.setPause({ ...asArchitect, id, paused, ...(paused ? { reason: "先放一放" } : {}) });
   // Every item is made as a root, leaf first, and the chain is joined afterwards: the keys and the creation order both run
   // against the chain, so a walk that visits items once in that order would stop after one level.
-  const root = (key: string, group = author) => op.createItem({ author: group, key, group, priority: "P2", title: `链上的 ${key}`, accept: "通过" });
+  const root = (key: string, group = author) => op.createItem({ ...asArchitect, key, group, priority: "P2", title: `链上的 ${key}`, accept: "通过" });
   for (const key of ["x-own-leaf", "y-own-mid", "z-own-root", "x-leaf", "y-mid", "z-top"]) await root(key, key === "y-mid" ? "Firn" : author);
   for (const key of ["z-own-root", "y-own-mid", "z-top", "y-mid"]) await rate(key);
   // Owned chain: root → mid (rated) → leaf (not rated).
@@ -191,34 +192,34 @@ test("a root with no stored priority is still a root: it and the work under it r
   const b = await withArchitect(t); const { store, op } = b;
   // create_item refuses a root without a priority; a root loses its priority by gaining and losing a dependent, so write the document as that leaves it.
   await store.commit({ author: "Fixture", message: "Seed a root without priority", puts: [{ kind: "item", id: "bare", expectRev: null, doc: { title: "没写优先级的根", group: author, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: at } }] });
-  await op.createItem({ author, key: "bare-kid", owner: "bare", title: "底下", accept: "通过" });
+  await op.createItem({ ...asArchitect, key: "bare-kid", owner: "bare", title: "底下", accept: "通过" });
   const r = rules(store.snapshot());
   assert.equal(r.isRoot("bare"), true); assert.equal(r.priorityOf("bare"), "", "it has no priority");
   assert.deepEqual([r.isNeeded("bare"), r.isNeeded("bare-kid")], [true, true]);
   assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [1, 1]);
-  await op.setPause({ author: coordinator, id: "bare", paused: true, reason: "先放一放" });
+  await op.setPause({ ...asArchitect, id: "bare", paused: true, reason: "先放一放" });
   assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [0, 0]);
 });
 
 test("backlog work is needed once a needed item other than its record holds a row for it, and what hangs under it with it", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
-  await op.createItem({ author, key: "rec", group: author, record: true, title: "待选池" });
+  await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
   await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
-  await op.createItem({ author, key: "under", owner: "backlog", title: "待选下面的", accept: "通过" });
+  await op.createItem({ ...asArchitect, key: "under", owner: "backlog", title: "待选下面的", accept: "通过" });
   await unrated("root");
   const needed = () => ["backlog", "under"].map(id => rules(store.snapshot()).isNeeded(id));
   assert.deepEqual(needed(), [false, false], "only its record holds it");
   await op.setPlan({ author, id: "root", row: { item: "backlog", own: false, after: [] } });
   assert.deepEqual(needed(), [true, true], "a root also waits on it, and what hangs under it follows");
   assert.deepEqual([missing(b, "backlog").length, missing(b, "under").length], [1, 1]);
-  await op.setPause({ author: coordinator, id: "root", paused: true, reason: "先放一放" });
+  await op.setPause({ ...asArchitect, id: "root", paused: true, reason: "先放一放" });
   assert.deepEqual(needed(), [false, false], "the root that held it is paused");
 });
 
 test("brief lists as startable only items rated 1–5, and carries the difficulty on its rows", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await unrated("u"); await unrated("one"); await unrated("five"); await unrated("mine");
-  await op.setDifficultyMany({ author: architect, items: [{ id: "one", difficulty: 1, reason: "r" }, { id: "five", difficulty: 5, reason: "r" }, { id: "mine", difficulty: "architect", reason: "讨论" }] });
+  await op.setDifficultyMany({ ...asArchitect, items: [{ id: "one", difficulty: 1, reason: "r" }, { id: "five", difficulty: 5, reason: "r" }, { id: "mine", difficulty: "architect", reason: "讨论" }] });
   const s = store.snapshot(), r = rules(s), todo = brief(s, r, author).todo;
   assert.ok(todo.some(row => row.id === "five" && row.difficulty === 5), "a rated item is listed with its difficulty");
   assert.ok(todo.some(row => row.id === "one" && row.difficulty === 1), "so is the lowest level");
@@ -236,17 +237,17 @@ test("every section of brief carries the difficulty, and only an item a root nee
   const b = await withArchitect(t); const { store, op, unrated } = b;
   // wip: a doing step. paused: an explicit pause. progress: a blocked item and a record cannot carry one.
   await unrated("working"); await op.setPlan({ author, id: "working", row: { id: "go", text: "进行", state: "doing" } });
-  await unrated("held"); await op.setPause({ author: coordinator, id: "held", paused: true, reason: "先放一放" });
+  await unrated("held"); await op.setPause({ ...asArchitect, id: "held", paused: true, reason: "先放一放" });
   await unrated("waits"); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", background: "背景", options: [{ key: "A", text: "甲" }], blocks: "停着" });
   await op.setPlan({ author, id: "waits", row: { card: "wait-card", after: [] } });
   await op.createRequest({ author: "Firn", project: author, key: "inbox-one", title: "收件箱里的", head: "h", accept: "通过", priority: "P1", why: "w" });
   await op.createRequest({ author, project: "Firn", key: "outgoing-one", title: "送出去的", head: "h", accept: "通过", priority: "P1", why: "w" });
   await unrated("todo-one"); await unrated("paused-need"); await unrated("live-need");
-  for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ author: "Firn", key, group: "Firn", priority: "P2", title: key, accept: "通过" });
+  for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ ...asArchitect, key, group: "Firn", priority: "P2", title: key, accept: "通过" });
   await op.setPlan({ author, id: "paused-need", row: { item: "only-paused-needs", own: false, after: [] } });
   await op.setPlan({ author, id: "live-need", row: { item: "needed-by-live", own: false, after: [] } });
-  await op.setPause({ author: coordinator, id: "paused-need", paused: true, reason: "先放一放" });
-  await op.setDifficultyMany({ author: architect, reason: "r", items: ["working", "held", "waits", "inbox-one", "outgoing-one", "todo-one", "only-paused-needs", "needed-by-live"].map(id => ({ id, difficulty: 3 as const })) });
+  await op.setPause({ ...asArchitect, id: "paused-need", paused: true, reason: "先放一放" });
+  await op.setDifficultyMany({ ...asArchitect, reason: "r", items: ["working", "held", "waits", "inbox-one", "outgoing-one", "todo-one", "only-paused-needs", "needed-by-live"].map(id => ({ id, difficulty: 3 as const })) });
   const s = store.snapshot(), r = rules(s), result = brief(s, r, author);
   const has = (rows: Array<{ id: string; difficulty?: unknown }>, id: string) => rows.find(row => row.id === id)?.difficulty;
   assert.equal(has(result.inbox, "inbox-one"), 3, "inbox");
@@ -265,8 +266,8 @@ test("every section of brief carries the difficulty, and only an item a root nee
 test("context and list rows show the difficulty after the tags, and nothing for an unrated item", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await unrated("u");
-  await op.setDifficulty({ author: architect, id: "a", difficulty: 4, reason: "r" });
-  await op.setDifficulty({ author: architect, id: "b", difficulty: "architect", reason: "r" });
+  await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 4, reason: "r" });
+  await op.setDifficulty({ ...asArchitect, id: "b", difficulty: "architect", reason: "r" });
   const s = store.snapshot(), r = rules(s);
   const ctx = (id: string) => context(s, r, id) as unknown as { difficulty?: unknown };
   assert.equal(ctx("a").difficulty, 4); assert.equal(ctx("b").difficulty, "architect"); assert.equal("difficulty" in ctx("u"), false);
@@ -293,16 +294,16 @@ test("MCP: the tools answer with the row, refuse other authors, and the texts sh
   assert.ok(tools.includes("set_difficulty") && tools.includes("set_difficulty_many"));
   assert.match((await call("context", { id: "u" })).text, /check: 缺难度/);
   const refused = await call("set_difficulty", { author, id: "u", difficulty: 3, reason: "r" });
-  assert.equal(refused.error, true); assert.match(refused.text, /only the architect/);
-  assert.equal((await call("set_difficulty", { author: architect, id: "u", difficulty: 7, reason: "r" })).error, true, "the schema refuses 7");
-  const set = await call("set_difficulty", { author: architect, session: "架构师", id: "u", difficulty: 3, reason: "要查并发" });
+  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师/);
+  assert.equal((await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 7, reason: "r" })).error, true, "the schema refuses 7");
+  const set = await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 3, reason: "要查并发" });
   assert.equal(set.error, false); assert.match(set.text, /^set_difficulty u · rev \d+ · commit [0-9a-f]{40}\nu · TODO P2 · 未评级 u · 难度 3 · Whitefoot › u/);
   assert.doesNotMatch((await call("context", { id: "u" })).text, /check: 缺难度/);
   assert.match((await call("context", { id: "u" })).text.split("\n")[0]!, / · 难度 3 · Whitefoot/);
   assert.match((await call("list", { filters: { group: author } })).text, /未评级 u · 难度 3 · Whitefoot/);
-  const arch = await call("set_difficulty", { author: architect, id: "u", difficulty: "architect", reason: "改由架构师做" });
+  const arch = await call("set_difficulty", { ...asArchitect, id: "u", difficulty: "architect", reason: "改由架构师做" });
   assert.match(arch.text, /未评级 u · 架构师做 · Whitefoot/);
-  const many = await call("set_difficulty_many", { author: architect, reason: "补评", items: [{ id: "a", difficulty: 1 }, { id: "b", difficulty: 5, reason: "难" }] });
+  const many = await call("set_difficulty_many", { ...asArchitect, reason: "补评", items: [{ id: "a", difficulty: 1 }, { id: "b", difficulty: 5, reason: "难" }] });
   assert.equal(many.error, false); assert.match(many.text, /^set_difficulty 2 items · commit [0-9a-f]{40}$/);
   assert.deepEqual([store.snapshot().items.a!.difficulty, store.snapshot().items.b!.difficulty], [1, 5]);
   const brief = JSON.parse((await call("brief", { project: author })).text);
@@ -316,20 +317,20 @@ test("a first rating is not unread for the owner, a changed level is, and a log-
   const head = () => store.snapshot().head;
   const steps = async (since: string) => (await unreadSteps(store, since)).filter(step => step.docs.some(d => d.id === "u"));
   let cursor = head();
-  await op.setDifficulty({ author: architect, id: "u", difficulty: 2, reason: "第一次评级" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: 2, reason: "第一次评级" });
   assert.deepEqual(await steps(cursor), [], "none to a level is bookkeeping, not news");
   cursor = head();
   await op.appendLog({ author, id: "u", text: "只改日志" });
   assert.deepEqual(await steps(cursor), [], "a log line is never news");
   cursor = head();
-  await op.setDifficulty({ author: architect, id: "u", difficulty: 4, reason: "改级" });
+  await op.setDifficulty({ ...asArchitect, id: "u", difficulty: 4, reason: "改级" });
   const changed = await steps(cursor);
   assert.equal(changed.length, 1, "changing a level that exists is news");
   assert.equal(changed[0]!.docs[0]!.summary, "difficulty changed"); assert.deepEqual(changed[0]!.docs[0]!.pieces, { progress: 0, reply: 0, other: 1 });
   // Several writes in one stretch: the first rating still is not news, the change after it is.
   await unrated("v"); cursor = head();
-  await op.setDifficulty({ author: architect, id: "v", difficulty: 1, reason: "r" });
-  await op.setDifficulty({ author: architect, id: "v", difficulty: 5, reason: "r" });
+  await op.setDifficulty({ ...asArchitect, id: "v", difficulty: 1, reason: "r" });
+  await op.setDifficulty({ ...asArchitect, id: "v", difficulty: 5, reason: "r" });
   const stretch = (await unreadSteps(store, cursor)).filter(step => step.docs.some(d => d.id === "v"));
   assert.equal(stretch.length, 1); assert.deepEqual(stretch[0]!.commits.length, 1, "only the second write, whose baseline is the rated item");
   // The migration's commit shape: a first rating together with a plan edit counts only the plan edit.
@@ -350,22 +351,22 @@ test("piecesOf leaves a first rating out and keeps every other change of the ite
   assert.deepEqual(pieces(null, { ...base, difficulty: 2 }).other, 1, "a new item is new, rated or not");
 });
 
-test("create_item takes a difficulty from the architect only, logs it as the first rating, and refuses it elsewhere", async t => {
+test("create_item rates the new item, logs it as the first rating, and refuses a bad value, a record and any other writer", async t => {
   const { store, op } = await withArchitect(t);
-  const create = { key: "n1", group: architect, priority: "P2" as const, title: "新条目", accept: "通过" };
-  // The architect creates in its own project today; once it may write any project the same call rates there.
-  await op.createItem({ author: architect, ...create, difficulty: 3 });
+  // Only the architect creates items, in any project, so the same call rates an item of any project.
+  const create = { key: "n1", group: author, priority: "P2" as const, title: "新条目", accept: "通过" };
+  await op.createItem({ ...asArchitect, ...create, difficulty: 3 });
   const n1 = store.snapshot().items.n1!;
   assert.equal(n1.difficulty, 3); assert.deepEqual(n1.log.map(l => l.text), ["难度：未评 → 3，理由：建条目时评"]);
   assert.equal(rules(store.snapshot()).checks("n1").filter(c => c.label === "缺难度").length, 0, "rated at birth, no check");
-  await op.createItem({ author: architect, ...create, key: "n2", difficulty: "architect" });
+  await op.createItem({ ...asArchitect, ...create, key: "n2", difficulty: "architect" });
   assert.equal(store.snapshot().items.n2!.difficulty, "architect");
-  await op.createItem({ author: architect, ...create, key: "n3" });
+  await op.createItem({ ...asArchitect, ...create, key: "n3" });
   assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored");
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), /only the architect/);
-  await refuses(op.createItem({ author: architect, ...create, key: "x2", difficulty: 9 as never }), /give an integer 1–5/);
-  await refuses(op.createItem({ author: architect, key: "x3", group: architect, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
+  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), /only Architect with session 架构师 may create items/);
+  await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never }), /give an integer 1–5/);
+  await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
 });
 
@@ -379,8 +380,8 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   assert.ok("difficulty" in tools.find(x => x.name === "create_item")!.inputSchema.properties!);
   assert.match(tools.find(x => x.name === "brief")!.description!, /next tasks \(only items rated 1–5/);
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
-  const made = await call("create_item", { author: architect, key: "m1", group: architect, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
-  assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Architect/);
+  const made = await call("create_item", { ...asArchitect, key: "m1", group: author, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
+  assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);
   const refused = await call("create_item", { author, key: "m2", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 });
-  assert.equal(refused.error, true); assert.match(refused.text, /only the architect/);
+  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师 may create items/);
 });

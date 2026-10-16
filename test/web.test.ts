@@ -288,7 +288,7 @@ function planRow(p: Awaited<ReturnType<typeof page>>, itemId: string, rowId: str
 }
 const at = "2026-10-11T01:02:03Z";
 function snapshot(): PageFixture {
-  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, items: {
+  return { board: { title: "Synthetic title", projects: [{name:"Project",migrated:true}], eyebrow: "Synthetic eyebrow" }, head: "a".repeat(40), owner: {}, decisions: {}, notes: {}, glossaries: {}, items: {
     area: { title: "Parent", group: "Project", priority: "P1", updated: at, rev: 1, deps: [{id:"child",why:"needs child"}], links: [], log: [] },
     child: { title: "Child", parent: "area", status: "wip", priority: "P1", updated: at, rev: 1, deps: [], links: [], log: [] },
   } };
@@ -2985,7 +2985,7 @@ test("the keyboard help lists the search key", async () => {
   assert.ok(p.document.getElementById("search"), "and its row opens the search");
 });
 
-// Owner waits: blocking (purple) and non-blocking (red), the 等你 panel and the 要你知道 list.
+// Owner waits: blocking (purple) and non-blocking (red), and the 等你 panel.
 function waitSnapshot(): PageFixture {
   const s=snapshot();
   s.items.hot={title:"Hot",group:"Project",priority:"P0",ask:{text:"Hot ask"},updated:"2026-10-02T00:00:00Z",rev:1,deps:[],links:[],log:[]};
@@ -3018,31 +3018,32 @@ test("top controls: 阻塞 steps to the first blocking wait and an empty kind sh
   // The walk follows board order (area before hot), blocking waits first: the first stop is the older card on child.
   assert.ok(q.all().some(e=>e.id === "detail-it-child") && !q.all().some(e=>e.id === "detail-it-hot"),"the first blocking wait is a blocking card on child, which opens in the detail");
 });
-test("top controls: waits, notices, unread navigation and filters, then tools and project links occupy four rows", async () => {
+test("top controls: waits, unread navigation and filters, then tools and project links occupy three rows", async () => {
   const s=waitSnapshot(); s.notes.r={target:"it:child",kind:"comment",text:"c",at,state:"done",reply:"re",repliedAt:at,repliedBy:"Project",rev:1};
-  s.notices.news={text:"A notice",author:"Project",at,rev:1};
   s.items.child!.steps=[{id:"p",text:"Progress",state:"todo"}];
   const docs=[{kind:"item",id:"child",summary:"head changed, plan changed",pieces:{progress:1,reply:0,other:1}},{kind:"note",id:"r",summary:"new reply",pieces:{progress:0,reply:1,other:0}}];
   const p=await page(s,[{id:stepId,commits:[stepId],author:"A",at,docs}]);
   const rows=p.roots.get("summary")!.children;
-  assert.deepEqual(rows.map(r=>r.id),["wait-row","notices","unread-row","tools-row"]);
-  assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","noticepanel","sum-row","sum-row"]);
+  assert.deepEqual(rows.map(r=>r.id),["wait-row","unread-row","tools-row"]);
+  assert.deepEqual(rows.map(r=>r.className),["header-row header-wait","sum-row","sum-row"]);
   assert.ok(!summaryText(p).some(e=>e.innerHTML === "未读"),"the unread row has no visible label");
   assert.deepEqual(rows[0]!.children[0]!.children.map(e=>e.innerHTML),["阻塞 3 ›","决策卡 1 ›"]);
   assert.equal(rows[0]!.children[1]!.id,"wait-panel");
-  assert.deepEqual(rows[2]!.children.map(e=>e.innerHTML),["新 1 ›","","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation and its filters share one flex row, separated by a decorative line");
-  assert.equal(rows[2]!.children[1]!.className,"sum-divider");
-  assert.equal(rows[2]!.children[1]!.getAttribute("aria-hidden"),"true");
-  assert.deepEqual(rows[3]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
-  assert.equal(rows[3]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
+  assert.deepEqual(rows[1]!.children.map(e=>e.innerHTML),["新 1 ›","","进展 1","其他 1","评论回复 1","全部已阅"],"new-content navigation and its filters share one flex row, separated by a decorative line");
+  assert.equal(rows[1]!.children[1]!.className,"sum-divider");
+  assert.equal(rows[1]!.children[1]!.getAttribute("aria-hidden"),"true");
+  assert.deepEqual(rows[2]!.children.slice(0,2).map(e=>e.innerHTML),["全部折叠","展开第一层"]);
+  assert.equal(rows[2]!.children[2]!.className,"sum-stats","the status legend shares the tools row");
   const nav=p.roots.get("nav")!, links=[...nav.children];
-  assert.equal(rows[3]!.children[3],nav,"the existing project navigation shares the tools row");
+  assert.equal(rows[2]!.children[3],nav,"the existing project navigation shares the tools row");
   assert.deepEqual(links.map(e=>e.innerHTML),["Project"]);
-  await p.change("e".repeat(40),[{kind:"notice",id:"news",after:{...s.notices.news!,read:at,rev:2}}]); await p.flush();
+  // Ruling a blocking card changes the waits row and rebuilds the header.
+  s.decisions.old={...s.decisions.old!,status:"ruled",ruling:"A",choice:"A"};
+  await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
   assert.equal(p.document.getElementById("nav"),nav,"rebuilding the header preserves the navigation element");
   assert.equal(nav.parentElement!.id,"tools-row");
-  assert.deepEqual(nav.children,links,"header-only notice changes retain the existing project links");
-  assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"],"no empty notice row remains after the last notice is read");
+  assert.deepEqual(nav.children,links,"a header rebuild retains the existing project links");
+  assert.deepEqual(p.roots.get("summary")!.children.map(r=>r.id),["wait-row","unread-row","tools-row"]);
 });
 test("top controls: a filter with no matching new content keeps its controls without a dangling divider", async () => {
   const docs=[{kind:"item",id:"child",summary:"head changed",pieces:{progress:0,reply:0,other:1}}];
@@ -3093,28 +3094,6 @@ test("等你 panel is gone when the last blocking wait is answered", async () =>
   await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
   assert.ok(!p.all().some(e=>e.id === "wait-panel"));
 });
-test("要你知道 lists unread notices newest first, 已读 hides one through the API, and the section disappears when none is left", async () => {
-  const s=snapshot();
-  s.notices={n1:{text:"旧的 **通知**",author:"总管",at:"2026-10-01T00:00:00Z",rev:1},n2:{text:"新的，见 [[it:child]]",item:"child",author:"Firn",at:"2026-10-03T00:00:00Z",rev:1},n3:{text:"已读的",author:"Firn",at:"2026-10-02T00:00:00Z",read:at,rev:1}};
-  const p=await page(s,[],null,undefined,{response:(path)=> path === "/api/notice-read" ? {ok:true,status:200,json:async()=>({marked:[]})} : undefined});
-  const section=()=>p.all().find(e=>e.id === "notices");
-  assert.equal(section()!.children[0]!.innerHTML,"要你知道 2");
-  const rows=section()!.children.filter(e=>e.className === "notice");
-  assert.equal(rows.length,2); assert.match(markup(rows[0]!),/新的/); assert.match(markup(rows[0]!),/Firn/); assert.match(markup(rows[1]!),/旧的/);
-  assert.ok(!markup(section()!).includes("已读的"));
-  assert.ok(rows[0]!.children.some(e=>e.className.includes("notice-item")),"a notice with an item links to it");
-  const kids=p.roots.get("summary")!.children;
-  assert.ok(kids.includes(section()!) && kids.indexOf(section()!) < kids.findIndex(e=>e.id === "tools-row"),"the notice list is its own summary row, above the tools");
-  await rows[0]!.children.find(e=>e.className.includes("notice-read"))!.click();
-  assert.deepEqual(p.calls.filter(c=>c.path === "/api/notice-read").map(c=>c.body),[{id:"n2"}]);
-  await p.change("f".repeat(40),[{kind:"notice",id:"n2",after:{...s.notices.n2!,read:at,rev:2}}]); await p.flush();
-  assert.equal(section()!.children[0]!.innerHTML,"要你知道 1"); assert.ok(!markup(section()!).includes("新的"));
-  await p.change("g".repeat(40),[{kind:"notice",id:"n1",after:{...s.notices.n1!,read:at,rev:2}}]); await p.flush();
-  assert.equal(section(),undefined,"all read, no section");
-  await p.change("h".repeat(40),[{kind:"notice",id:"n4",after:{text:"又一条",author:"Firn",at,rev:1}}]); await p.flush();
-  assert.match(section()!.children[0]!.innerHTML,/要你知道 1/);
-});
-
 test("等你 panel shortens a long card question at 40 characters", async () => {
   const s=snapshot(), q40="问".repeat(40), q41=q40+"题";
   s.decisions.a40={...card(),question:q40,blocks:"停着甲"}; s.decisions.a41={...card(),question:q41,blocks:"停着乙"};

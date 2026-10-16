@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rules } from "../src/rules.ts";
 import { planDifficultyMigration, applyDifficultyMigration, reportLines } from "../src/migrate-difficulty.ts";
-import { board, author, at } from "./helpers.ts";
+import { board, author, at, asArchitect } from "./helpers.ts";
 
 type Step = { id: string; text: string; state: "todo" | "doing" | "done" | "dropped"; accept?: true };
 const step = (id: string, text: string, state: Step["state"] = "todo"): Step & Record<string, unknown> =>
@@ -107,9 +107,9 @@ test("the report counts what stays unrated, which is what raises 缺难度 after
     bare: { rows: [step("impl", "没写")] },
     paused: { rows: [step("impl", "没写")] },
   });
-  await op.setPause({ author: "总管", id: "paused", paused: true, reason: "先放一放" });
-  await op.createItem({ author, key: "pool", group: author, record: true, title: "待选池" });
-  await op.createItem({ author, key: "pooled", owner: "pool", title: "待选里的", accept: "通过" });
+  await op.setPause({ ...asArchitect, id: "paused", paused: true, reason: "先放一放" });
+  await op.createItem({ ...asArchitect, key: "pool", group: author, record: true, title: "待选池" });
+  await op.createItem({ ...asArchitect, key: "pooled", owner: "pool", title: "待选里的", accept: "通过" });
   const plan = planDifficultyMigration(store.snapshot());
   assert.equal(plan.stillUnrated, 1, "marked is migrated, paused and backlog work is not needed, bare stays");
   const lines = reportLines(plan);

@@ -153,7 +153,7 @@ export const Item = z.object({
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
-  /** Explicit owner/coordinator pause; descendants inherit it through ownership. */
+  /** Explicit owner/architect pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
   /**
    * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
@@ -247,26 +247,27 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
-/** An important non-blocking change the owner should know, written by a session and marked read by the owner. */
-export const Notice = z.object({
-  /** One or two sentences; inline markdown and [[it:key]] references. */
-  text: z.string().min(1),
-  /** The related item. */
-  item: Key.optional(),
-  /** The writing project. */
-  author: z.string().min(1),
-  at: Time,
-  /** When the owner marked it read. */
-  read: Time.optional(),
-  rev: z.number().int().positive(),
-}).strict();
-export type Notice = z.infer<typeof Notice>;
-
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
 }).strict();
 export type Project = z.infer<typeof Project>;
+
+/** The architect's author name, a configured project like any other. */
+export const ARCHITECT = "Architect";
+/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
+export const ARCHITECT_SESSION = "架构师";
+/**
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
+ * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
+ * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
+ * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ */
+export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
+export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
+export const RETIRED_COORDINATOR = "总管";
 
 /** A glossary's id and file name: the name of the project that keeps it, usable as one file name. */
 export const GlossaryId = z.string().regex(/^[^./\\\0\r\n][^/\\\0\r\n]{0,199}$/);
@@ -291,7 +292,7 @@ export type Glossary = z.infer<typeof Glossary>;
 
 export const Board = z.object({
   projects: z.array(Project).default([]).refine(p => new Set(p.map(p => p.name)).size === p.length, "Project names must be unique"),
-  /** The approved tag vocabulary; only 总管 changes it, on the owner's decision card. */
+  /** The approved tag vocabulary; only the architect changes it, on the owner's decision card. */
   tags: z.array(Tag).refine(t => new Set(t.map(t => t.name)).size === t.length, "Tag names must be unique").optional(),
   title: z.string().min(1),
   eyebrow: z.string().optional(),
@@ -318,7 +319,6 @@ export interface Snapshot {
   items: Record<string, Item>;
   decisions: Record<string, Decision>;
   notes: Record<string, Note>;
-  notices: Record<string, Notice>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
   owner: OwnerState;

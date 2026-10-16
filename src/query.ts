@@ -246,7 +246,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
   });
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
-  /** Current work also says which session last wrote to it, so a coordinator sees whether it is being pushed. */
+  /** Current work also says which session last wrote to it, so the architect sees whether it is being pushed. */
   const wipRow = (id: string): Row & { lastPush?: string } => { const last = s.activity?.sessions?.[id]; return { ...workRow(id), ...(last ? { lastPush: pushLine(last) } : {}) }; };
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
@@ -348,7 +348,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   if (headIndex === -1) throw new Error("snapshot head: not found in store history");
   const selected = new Set((await store.log({ since })).map(c => c.commit));
   const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "notice">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;

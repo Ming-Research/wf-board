@@ -59,7 +59,6 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
     if (n.anchor) inc("anchored note");
     if (n.target.startsWith("q:")) inc("note on a card");
   }
-  for (const n of Object.values(s.notices)) inc(n.read ? "read notice" : "unread notice");
   inc("glossary terms", Object.values(s.glossaries).reduce((a, g) => a + g.terms.length, 0));
   inc("project-limited tags", (s.board.tags ?? []).filter(t => t.projects).length);
   return c;
@@ -75,6 +74,6 @@ export const REQUIRED_SHAPES = [
   "purple count over 1", "red count over 1", "card open", "card ruled", "open blocking card", "card named by several plans",
   "card named by a done item's plan", "card named only by other plans", "open card no plan names",
   "open card on a record, no plan names", "open card on a done item", "note comment", "note choice", "note explain",
-  "note approve", "note sent", "note done", "note with reply", "anchored note", "note on a card", "read notice",
-  "unread notice", "glossary terms", "project-limited tags",
+  "note approve", "note sent", "note done", "note with reply", "anchored note", "note on a card",
+  "glossary terms", "project-limited tags",
 ];

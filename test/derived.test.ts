@@ -13,7 +13,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Snapshot } from "../src/model.ts";
-import { board, author, at } from "./helpers.ts";
+import { architect, asArchitect, board, author, at } from "./helpers.ts";
 
 const MINUTE = 60_000;
 /** Deterministic, so a failure replays. */
@@ -32,7 +32,7 @@ async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () =
   // git may still be writing objects when the test ends; retry instead of failing on ENOTEMPTY.
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const projects = ["Whitefoot", "Firn"];
-  const store = await Store.open(dir, { init: true, board: { title: "Derived", projects: [...projects.map(name => ({ name })), { name: "总管" }] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Derived", projects: [...projects.map(name => ({ name })), { name: architect }] } });
   const puts: Put[] = [];
   let time = start;
   const tick = () => iso(time += Math.floor(rand() * 5 * MINUTE));
@@ -67,14 +67,18 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   const rand = random(20261013), start = Date.now() - 24 * 60 * MINUTE;
   const { dir, store, now, advance } = await synthetic(t, rand, start);
   const base = ops(store, advance), owner = ownerOps(store, advance);
+  // Moves to another project come from their own stream and their own clock (the current synthetic time), so they take nothing
+  // from the random sequence or the clock the other actions draw on.
+  const mover = ops(store, () => iso(now())), moveRand = random(20261016);
+  let projectMoves = 0;
   // Most writes name one of three sessions, some none (an older client): the session attribution then has to follow the
   // same incremental and from-history derivations as the activity times.
   const op = new Proxy(base, { get: (target, name) => {
     const fn = target[name as keyof typeof target] as (a: object) => Promise<unknown>;
-    return (a: object) => { const session = [undefined, "session-a", "session-b", "session-c"][Math.floor(rand() * 4)]; return fn.call(target, session ? { ...a, session } : a); };
+    return (a: object) => { const session = [undefined, "session-a", "session-b", "session-c"][Math.floor(rand() * 4)]; return fn.call(target, session ? { session, ...a } : a); };
   } }) as typeof base;
-  await op.setTag({ author: "总管", name: "健全性", meaning: "影响接受或拒绝" });
-  await op.setTag({ author: "总管", name: "报错信息", meaning: "影响诊断措辞" });
+  await op.setTag({ ...asArchitect, name: "健全性", meaning: "影响接受或拒绝" });
+  await op.setTag({ ...asArchitect, name: "报错信息", meaning: "影响诊断措辞" });
   // Each commit with the snapshot it published, taken when the store announces it.
   const events: Array<{ change: Change; after: Snapshot }> = [];
   store.onChange(change => events.push({ change, after: store.snapshot() }));
@@ -90,16 +94,18 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       const id = pick(itemsOf(s)), it = s.items[id]!, steps = it.plan.filter(row => "text" in row && !row.accept);
       if (!steps.length) return;
       const row = pick(steps) as { id: string; text: string }, st = pick(["todo", "doing", "done"] as const);
-      return op.setPlan({ author: it.group, id, row: { id: row.id, text: row.text, state: st } });
+      // Some step texts name another item: a doing step's clock then reads that item's changes too.
+      const text = rand() < 0.4 ? `${row.text} [[it:${pick(itemsOf(s))}]]` : row.text;
+      return op.setPlan({ author: it.group, id, row: { id: row.id, text, state: st } });
     },
     async s => { const id = pick(itemsOf(s)), other = pick(itemsOf(s)); return op.setPlan({ author: s.items[id]!.group, id, row: { item: other, own: false } }); },
     async s => {
       const id = pick(itemsOf(s)), it = s.items[id]!, shared = it.plan.filter(row => "item" in row && !row.own);
       if (shared.length) return op.setPlan({ author: it.group, id, remove: pick(shared).id });
     },
-    async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ author: s.items[owner]!.group, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
+    async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ ...asArchitect, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
-    async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ author: it.group, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
+    async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ ...asArchitect, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
       await op.writeCard({ author: group, key, item: id, question: "Which?", background: "b", options: [{ key: "A", text: "a", recommended: true }, { key: "B", text: "b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
@@ -114,7 +120,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       if (rand() < 0.5) return op.writeCard({ author: group, key, rev: card.rev, item: pick(itemsOf(s, group)), question: card.question, background: card.background, options: card.options });
       return op.ruleCard({ author: group, key, choice: "A", ruling: "A it is" });
     },
-    async s => { const id = pick(itemsOf(s)); return op.setPause({ author: "总管", id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
+    async s => { const id = pick(itemsOf(s)); return op.setPause({ ...asArchitect, id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
     async s => {
       const cards = Object.keys(s.decisions);
       const target = cards.length && rand() < 0.5 ? `q:${pick(cards)}` : `it:${pick(itemsOf(s))}`;
@@ -122,15 +128,21 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     },
     async () => owner.send({}),
     async s => { const group = pick(["Whitefoot", "Firn"]), ids = itemsOf(s, group).filter(() => rand() < 0.3); if (ids.length) return op.setTagsMany({ author: group, items: ids.map(id => ({ id, tags: [pick(["健全性", "报错信息"])] })) }); },
-    async () => op.postNotice({ author: "Firn", text: "something changed" }),
     async () => op.setTerm({ author: "Firn", term: `词${made++}`, definition: "意思" }),
   ];
   // The first rounds pause and resume the two roots that store no priority, whatever the seed draws later: nothing below them
   // changes except whether it is needed, which only 缺难度 on an unrated item shows.
-  const forced = ["W2", "F2"].flatMap(id => [true, false].map(paused => async (s: Snapshot) => op.setPause({ author: "总管", id, paused, ...(paused ? { reason: "wait" } : {}) }) ));
+  const forced = ["W2", "F2"].flatMap(id => [true, false].map(paused => async (s: Snapshot) => op.setPause({ ...asArchitect, id, paused, ...(paused ? { reason: "wait" } : {}) }) ));
   for (let round = 0; round < 140; round++) {
     try { await (forced[round] ?? pick(actions))(store.snapshot()); }
     catch (error) { if (!(error instanceof OpError)) throw error; }
+    if (moveRand() < 0.25) {
+      const s = store.snapshot(), ids = itemsOf(s), id = ids[Math.floor(moveRand() * ids.length)]!, group = s.items[id]!.group;
+      try {
+        await mover.moveItemProject({ ...asArchitect, id, project: group === "Whitefoot" ? "Firn" : "Whitefoot", ...(moveRand() < 0.5 ? { priority: (["P0", "P1", "P2"] as const)[Math.floor(moveRand() * 3)]! } : {}) });
+        projectMoves++;
+      } catch (error) { if (!(error instanceof OpError)) throw error; }
+    }
     for (const { change, after } of events.slice(handled)) {
     const before = previous;
     previous = after;
@@ -176,6 +188,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
   // A daemon restart derives the whole activity, session attribution included, from history alone.
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
+  assert.ok(projectMoves > 2, `the random sequence moved items to another project (${projectMoves})`);
   assert.ok(compared > 60, `enough writes compared (${compared})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
@@ -191,7 +204,7 @@ test("the affected walk reaches work that a root with no priority stops needing,
     { kind: "item", id: "r-leaf", expectRev: null, doc: work("Leaf", "Firn", {}) },
   ] });
   const before = store.snapshot();
-  await op.setPause({ author: "总管", id: "r-root", paused: true, reason: "wait" });
+  await op.setPause({ ...asArchitect, id: "r-root", paused: true, reason: "wait" });
   const after = store.snapshot(), rb = rules(before), ra = rules(after);
   assert.equal(rb.priorityOf("r-leaf"), "", "no priority moves"); assert.equal(ra.isPaused("r-mid"), false, "nothing pauses the middle item");
   assert.equal(rb.checks("r-leaf").some(c => c.label === "缺难度"), true); assert.equal(ra.checks("r-leaf").some(c => c.label === "缺难度"), false);

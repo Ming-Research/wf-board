@@ -6,6 +6,8 @@ import { ops } from "./ops.ts";
 import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
+import { Wake } from "./wake.ts";
+import { macNotify } from "./notify.ts";
 
 async function main() {
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
@@ -13,7 +15,9 @@ async function main() {
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD });
   const op = ops(store);
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
+  // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart; the owner's notifications go through osascript.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, createMcp: () => createMcpServer({ store, ops: op, wake }) });
   async function push() { if (await store.unpushed()) await store.push(); }
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();

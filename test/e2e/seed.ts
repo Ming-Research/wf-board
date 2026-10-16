@@ -11,7 +11,7 @@ export async function seedBoard(dir: string, gen: Generated): Promise<{ store: S
   const commits: string[] = [];
   for (const batch of gen.batches) {
     const s = store.snapshot();
-    const current = (kind: DocKind, id: string) => (kind === "item" ? s.items : kind === "decision" ? s.decisions : kind === "note" ? s.notes : kind === "notice" ? s.notices : s.glossaries)[id] as { rev: number } | undefined;
+    const current = (kind: DocKind, id: string) => (kind === "item" ? s.items : kind === "decision" ? s.decisions : kind === "note" ? s.notes : s.glossaries)[id] as { rev: number } | undefined;
     const { commit } = await store.commit({ author: "Generator", message: batch.message, puts: batch.puts.map(put => ({ ...put, expectRev: current(put.kind, put.id)?.rev ?? null })) });
     commits.push(commit);
   }

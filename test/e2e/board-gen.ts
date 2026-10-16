@@ -1,7 +1,7 @@
 // A seeded generator of a synthetic board with the structural variety of the real one: deep and wide ownership trees,
 // records owning backlog work, shared rows inside and across projects, decision cards named by several plans or by a
 // done item's plan, open cards no plan names (one on a record item), asks, inbox requests, explicit and inherited
-// pauses, comments folded or open with replies and anchors, code blocks, tables, references, glossary terms, notices,
+// pauses, comments folded or open with replies and anchors, code blocks, tables, references, glossary terms,
 // targets, tags, and a history split into read and unread commits. All text comes from the word lists below; no real
 // board text is copied. test/e2e/shapes.ts names the shape categories and test/board-gen.test.ts checks every one is
 // present. The real board's counts, surveyed when this was written, are in docs/design.md section 11.
@@ -277,13 +277,12 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     ...notes.map(n => ({ kind: "note" as const, id: n.id, doc: n.doc })),
     { kind: "glossary", id: p0, doc: { terms: [{ term: "冷启动预算", definition: "进程启动到第一次回复允许花的时间。", updated: tick(), by: p0 }] } },
     { kind: "glossary", id: p1, doc: { terms: [{ term: "回放窗口", definition: "重放日志时一次读入的条数。", updated: tick(), by: p1 }] } },
-    { kind: "notice", id: "notice-old", doc: { text: "主线变红，已修。", item: home.id, author: p0, at: tick(), read: tick() } },
   ] });
   // Read history: progress and rulings the owner has seen.
   const touched = order.filter((_, k) => k % 6 === 1);
   batches.push({ message: "Progress the owner read", puts: touched.map(it => ({ kind: "item" as const, id: it.id, doc: { ...itemDoc(it), log: [...it.log, { at: tick(), by: it.group, text: "已读的进展。" }], updated: tick() } })) });
   const readBefore = batches.length;
-  // Unread history, several commits: progress on plans, new replies, new cards, new items, inbox requests, a notice.
+  // Unread history, several commits: progress on plans, new replies, new cards, new items, inbox requests.
   const progressed = order.filter((x, k) => k % 9 === 4 && !x.record && x.steps.some(s => s.state === "todo" && !s.accept));
   batches.push({ message: "Unread plan progress", puts: progressed.map(it => {
     const doc = itemDoc(it), plan = (doc.plan as Array<Record<string, unknown>>).map(row => row.state === "todo" && !row.accept ? { ...row, state: "doing", since: tick() } : row);
@@ -316,8 +315,6 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     { kind: "item", id: child.id, doc: itemDoc(child) },
     { kind: "item", id: parentOfNew.id, doc: { ...itemDoc(parentOfNew), updated: tick() } },
     ...inbox.map(it => ({ kind: "item" as const, id: it.id, doc: itemDoc(it) })),
-    { kind: "notice", id: "notice-new", doc: { text: "一个测量推翻了原来的方向，见 [[it:" + code.id + "]]。", item: code.id, author: p1, at: tick() } },
-    { kind: "notice", id: "notice-plain", doc: { text: "托管 CI 恢复。", author: p0, at: tick() } },
   ] });
   return {
     board: { title: "合成看板", eyebrow: "状态看板", goal: "合成数据：结构像真实看板，文字全是生成的。", projects: PROJECTS.map(p => ({ name: p.name, ...("repo" in p ? { repo: p.repo } : {}) })), tags: TAGS.map(t => ({ ...t })) },

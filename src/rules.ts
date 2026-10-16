@@ -1,11 +1,11 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
 import type { Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the coordinator may place a project after another. */
-export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
-  if (author !== "总管") throw new Error("after: only the coordinator project 总管 may reorder projects");
+/** Project list order is page order; only the architect may place a project after another. */
+export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
+  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -123,8 +123,9 @@ export interface Rules {
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
   /** Open work an unpaused root needs: an unpaused root that is not an untriaged request, or work such a root waits on
-   * through open, unpaused rows, owned or shared. Backlog work, what hangs under it, paused work and what only a paused
-   * root needs are not needed. A request not yet triaged is not work yet. */
+   * through open, unpaused rows, owned or shared. Backlog work is needed only when a needed item other than its record
+   * also holds a row for it, and what hangs under it only when that work is; paused work and what only a paused root
+   * needs are not needed. A request not yet triaged is not work yet. */
   isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
@@ -147,6 +148,8 @@ export interface Rules {
   checks(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
+  /** Items whose plan step text names this item with [[it:key]], any state. */
+  mentionedBy(id: string): string[];
   stepDays(step: PlanStep): number;
   stepLine(step: PlanStep): string;
   planRows(id: string): DerivedPlanRow[];
@@ -169,6 +172,11 @@ const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
+/** A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.
+ * Keys follow the board's Key pattern. Block text has no other use for double square brackets. */
+export const REFERENCE = /\[\[(it|q):([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
+/** The item keys a text names with [[it:key]]. */
+function mentionsIn(text: string): string[] { return [...text.matchAll(REFERENCE)].filter(m => m[1] === "it").map(m => m[2]!); }
 
 /** A Rules object belongs to one immutable snapshot. Create another after a write.
  * Array/object results are defensive copies; item() returns the snapshot's item.
@@ -177,7 +185,7 @@ const ANSWER = { approve: "同意：", done: "已完成：" };
 export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
-type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** One source of activity times: the times it gives, and the item they reset (none for board-wide writes). */
 interface Contribution { id: string | undefined; times: number[]; target?: string }
 const parsedTimes = (values: ReadonlyArray<string | undefined>): number[] => values.flatMap(at => { const time = at ? Date.parse(at) : NaN; return Number.isFinite(time) ? [time] : []; });
@@ -227,7 +235,7 @@ export class ActivityIndex {
   private readonly all: number[];
   /** Each item's times, ascending. */
   private readonly perItem: Map<string, number[]>;
-  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "x:" notices, "g:" glossaries. */
+  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "g:" glossaries. */
   private readonly sources: Map<string, Contribution>;
   /** Notes by the card they target, re-resolved when that card changes or goes. */
   private readonly cardNotes: Map<string, Set<string>>;
@@ -237,14 +245,14 @@ export class ActivityIndex {
     this.all = all; this.perItem = perItem; this.sources = sources; this.cardNotes = cardNotes; this.seen = seen;
   }
   static build(s: ActivityInput): ActivityIndex {
-    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, activity: { writes: [], items: {} } });
+    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, glossaries: {}, activity: { writes: [], items: {} } });
     return index.advance(s);
   }
   /** Whether this index was made for exactly these documents. */
   reflects(s: ActivityInput): boolean {
     const seen = this.seen;
     return seen.items === s.items && seen.decisions === s.decisions && seen.notes === s.notes && seen.activity === s.activity
-      && seen.notices === s.notices && seen.glossaries === s.glossaries;
+      && seen.glossaries === s.glossaries;
   }
   /** The index of `s`, sharing what did not change. */
   advance(s: ActivityInput): ActivityIndex {
@@ -311,17 +319,13 @@ export class ActivityIndex {
     // A note on a card resets the card's item: a card that moved or went re-resolves its notes.
     for (const key of cards) for (const n of cardNotes.get(key) ?? []) notes.add(n);
     for (const key of notes) replace("n:" + key, note(key, get(s.notes, key)));
-    for (const key of changedKeys(seen.notices, s.notices)) {
-      const notice = get(s.notices, key);
-      replace("x:" + key, notice && { id: undefined, times: parsedTimes([notice.at, notice.read]) });
-    }
     for (const key of changedKeys(seen.glossaries, s.glossaries)) {
       const glossary = get(s.glossaries, key);
       replace("g:" + key, glossary && { id: undefined, times: parsedTimes(glossary.terms.map(term => term.updated)) });
     }
     for (const id of ownItems) if (!perItem.get(id)!.length) perItem.delete(id);
     for (const key of ownCards) if (!cardNotes.get(key)!.size) cardNotes.delete(key);
-    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, notices: s.notices, glossaries: s.glossaries, activity: s.activity });
+    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, glossaries: s.glossaries, activity: s.activity });
   }
   /** The union of active windows up to `now`: what the from-scratch scan in `rules` gives. */
   intervals(now: number): Array<[number, number]> {
@@ -407,6 +411,11 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
   }
   const out = new Set(examined);
   for (const id of examined) for (const r of [before, after]) for (const a of r.ancestors(id)) out.add(a);
+  // A doing step's clock also reads the items it names, so a change under a named item (itself or any owner of it) reaches the step's item.
+  for (const id of examined) for (const r of [before, after]) for (const target of [id, ...r.ancestors(id)]) for (const waiter of r.mentionedBy(target)) {
+    out.add(waiter);
+    for (const a of r.ancestors(waiter)) out.add(a);
+  }
   return out;
 }
 /** The items a live change touches directly, or null when it changes what every item reads (the board, the owner's
@@ -428,7 +437,7 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else if (doc.kind !== "notice") return null;
+    } else return null;
   }
   return seeds;
 }
@@ -459,7 +468,7 @@ export class DerivedCache {
   }
 }
 
-type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
 export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
@@ -482,11 +491,16 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       const children = new Map<string, string[]>();
       const owners = new Map<string, string[]>();
       const notes = new Map<string, Note[]>();
-      const cards = new Map<string, string[]>();
+      const cards = new Map<string, string[]>(), mentioned = new Map<string, string[]>();
       for (const [id, it] of items) {
         const owned = it.plan.filter(row => "item" in row && row.own).map(row => (row as Extract<PlanRow, { item: string }>).item);
         children.set(id, owned);
         for (const target of owned) { const list = owners.get(target) || []; list.push(id); owners.set(target, list); }
+        for (const row of it.plan) if ("text" in row) for (const target of new Set(mentionsIn(row.text))) {
+          const list = mentioned.get(target) || [];
+          if (!list.includes(id)) list.push(id);
+          mentioned.set(target, list);
+        }
       }
       children.set("", [...items.keys()].filter(id => !owners.has(id)).sort(byOrder));
       for (const n of Object.values(s.notes)) {
@@ -498,7 +512,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         list.push(key); cards.set(d.item, list);
       }
       for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
-      return { items, children, owners, notes, cards, decisions: new Map(Object.entries(s.decisions)) };
+      return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
   // Called while building the index too, so it must not call index().
@@ -733,7 +747,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const id = note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item;
         add(note.at, id); add(note.sentAt, id); add(note.repliedAt, id);
       }
-      for (const notice of Object.values(s.notices ?? {})) { add(notice.at); add(notice.read); }
       for (const glossary of Object.values(s.glossaries ?? {})) for (const term of glossary.terms) add(term.updated);
       const intervals: Array<[number, number]> = [];
       for (const at of writes.sort((a, b) => a - b)) {
@@ -744,9 +757,20 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return { intervals, changedAt: (id: string) => changed.get(id) ?? -Infinity };
     });
   }
+  /** The items whose changes count as the progress of this item's doing steps: the item itself, every item it owns that
+   * is in progress, and every item a doing step names, each with the items it owns down every layer. A shared
+   * dependency is another item's work and does not count. */
+  function stallRelated(id: string): string[] {
+    const out = new Set<string>([id]), down = (v: string): void => { if (out.has(v)) return; out.add(v); for (const k of kids(v)) down(k); };
+    for (const { row, state } of planRows(id)) {
+      if ("text" in row) { if (row.state === "doing") for (const target of mentionsIn(row.text)) down(target); }
+      else if ("item" in row && row.own && state === "progress") down(row.item);
+    }
+    return [...out];
+  }
   function stalled(id: string): boolean {
     if (isPaused(id)) return false;
-    const { intervals, changedAt } = activity(), since = changedAt(id);
+    const { intervals, changedAt } = activity(), since = Math.max(...stallRelated(id).map(changedAt));
     if (!Number.isFinite(since)) return false;
     const pauses: Array<[number, number]> = [];
     const recorded = (s.activity?.pauses?.[id] ?? []).map(pause => [Date.parse(pause.start), pause.end ? Date.parse(pause.end) : now] as [number, number])
@@ -809,6 +833,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
+    mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),

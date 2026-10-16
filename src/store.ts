@@ -1,14 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Notice, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
@@ -17,7 +17,7 @@ import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import type { ActivityDelta } from "./rules.ts";
 
-export type DocKind = "item" | "decision" | "note" | "notice" | "glossary";
+export type DocKind = "item" | "decision" | "note" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
@@ -30,15 +30,17 @@ export interface CommitInfo { commit: string; parents: string[]; at: string; aut
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
-type Doc = Item | Decision | Note | Notice | Glossary;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, notice: Notice, glossary: Glossary };
-const collections = { item: "items", decision: "decisions", note: "notes", notice: "notices", glossary: "glossaries" } as const;
+type Doc = Item | Decision | Note | Glossary;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary };
+const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries" } as const;
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
-const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, notice: Key, glossary: GlossaryId };
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
+/** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
+export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
 
 // History grows for the lifetime of the daemon. Retain recent parsed documents,
 // but fewer much larger whole boards; normalization is needed at format
@@ -170,7 +172,7 @@ function frozen<T>(value: T): T {
  * they enter it, and the snapshot and its collections are frozen here. A write
  * builds the next snapshot by copying only the collections it changes. */
 function sealed(state: Snapshot): Snapshot {
-  for (const collection of [state.items, state.decisions, state.notes, state.notices, state.glossaries]) Object.freeze(collection);
+  for (const collection of [state.items, state.decisions, state.notes, state.glossaries]) Object.freeze(collection);
   frozen(state.board); frozen(state.owner);
   if (state.activity) frozen(state.activity);
   return Object.freeze(state);
@@ -293,10 +295,10 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, owner: {}, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
-      for (const sub of ["items", "decisions", "notes", "notices", "state"]) mkdirSync(join(dir, sub), { recursive: true });
+      for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
       atomicWrite(join(dir, "board.yaml"), board);
       await store.git(["add", "--", "board.yaml"]);
       await store.git(["-c", "commit.gpgsign=false", "commit", "--author", "wf-board <wf-board@wf-board.invalid>", "-m", "Initialize board"], "wf-board");
@@ -344,8 +346,8 @@ export class Store {
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "notices" | "glossaries"> = { items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {} };
-    for (const kind of ["item", "decision", "note", "notice", "glossary"] as const) {
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> = { items: {}, decisions: {}, notes: {}, glossaries: {} };
+    for (const kind of ["item", "decision", "note", "glossary"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -379,7 +381,7 @@ export class Store {
     const store = new Store(dir, { board, ...docs, owner, head: "" });
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "notices", "glossaries"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
     store.state = sealed({ ...store.state, head: (await store.git(["rev-parse", "HEAD"])).trim() });
     // Owner state can legitimately be newer than HEAD after a daemon restart.
@@ -387,44 +389,9 @@ export class Store {
     store.committedOwner = persistedOwner === null ? {} : validated(OwnerState, persistedOwner, "state/owner.yaml");
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
-    await store.migrateCoordinator();
     await store.numberExisting();
     await store.loadActivity();
     return store;
-  }
-
-  /** Remove once the live board has migrated from 跨项目 to 总管. */
-  private async migrateCoordinator(): Promise<void> {
-    const oldName = "跨项目", newName = "总管";
-    if (!this.state.board.projects.some(p => p.name === oldName)) return;
-    if (this.state.board.projects.some(p => p.name === newName) || Object.hasOwn(this.state.glossaries, newName)) {
-      throw new Error(`Cannot rename coordinator project ${oldName} to ${newName}: destination project or glossary already exists`);
-    }
-    const rename = (name: string): string => name === oldName ? newName : name;
-    const puts: Put[] = [], deletes: Del[] = [];
-    for (const [id, original] of Object.entries(this.state.items)) {
-      const doc = structuredClone(original);
-      if (doc.group === oldName) doc.group = newName;
-      if (doc.request?.by === oldName) doc.request.by = newName;
-      for (const entry of doc.log) if (entry.by === oldName) entry.by = newName;
-      if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "item", id, doc, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.notes)) {
-      if (original.repliedBy === oldName) puts.push({ kind: "note", id, doc: { ...original, repliedBy: newName }, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.notices)) {
-      if (original.author === oldName) puts.push({ kind: "notice", id, doc: { ...original, author: newName }, expectRev: original.rev });
-    }
-    for (const [id, original] of Object.entries(this.state.glossaries)) {
-      const doc = { ...original, terms: original.terms.map(term => ({ ...term, by: rename(term.by) })) };
-      if (id === oldName) {
-        puts.push({ kind: "glossary", id: newName, doc, expectRev: null });
-        deletes.push({ kind: "glossary", id, expectRev: original.rev });
-      } else if (!isDeepStrictEqual(original, doc)) puts.push({ kind: "glossary", id, doc, expectRev: original.rev });
-    }
-    await this.commit({ author: newName, message: `Rename coordinator project ${oldName} to ${newName}`, board: {
-      ...this.state.board, projects: this.state.board.projects.map(p => p.name === oldName ? { ...p, name: newName } : p),
-    }, puts, deletes });
   }
 
   /** Give every unnumbered item and card a short number, oldest first, in one commit. On a board written before
@@ -446,7 +413,7 @@ export class Store {
     const commits = (await this.log()).reverse();
     for (const commit of commits) {
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE) continue;
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -624,6 +591,7 @@ export class Store {
     }
   }
 
+  /** Notice files (the retired 要你知道 list) still count in the history that has them: it keeps the active time it gave. */
   private contentPath(file: string): boolean {
     return file === "board.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(file);
   }
@@ -894,6 +862,17 @@ export class Store {
     });
   }
 
+  /** The path of a file in the data directory that belongs to the daemon and not to the board (the wake log), with git told to
+   * leave it out, so it is never committed and never makes the working tree look dirty. */
+  async localFile(path: string): Promise<string> {
+    const exclude = (await this.git(["rev-parse", "--git-path", "info/exclude"])).trim(), file = isAbsolute(exclude) ? exclude : join(this.dir, exclude);
+    mkdirSync(dirname(file), { recursive: true });
+    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (!current.split("\n").includes("/" + path)) appendFileSync(file, `${current && !current.endsWith("\n") ? "\n" : ""}/${path}\n`);
+    mkdirSync(dirname(join(this.dir, path)), { recursive: true });
+    return join(this.dir, path);
+  }
+
   onChange(fn: (change: Change) => void): () => void {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
@@ -1076,7 +1055,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");
-  for (const collection of ["items","decisions","notes","notices","glossaries"]) {
+  for (const collection of ["items","decisions","notes","glossaries"]) {
     const files = await readdir(join(dir,collection)).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
     for (const file of files.sort()) {
       const path=`${collection}/${file}`;
@@ -1090,7 +1069,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","notices","glossaries"],{cwd:dir});
+  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
@@ -1105,7 +1084,7 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
   // Records may omit plan in the current schema. A current work plan alongside
   // a retired work shape still indicates an incomplete migration.
   if(legacy&&items.some(([,doc])=>doc&&typeof doc==="object"&&Object.hasOwn(doc,"plan")))throw new Error("Mixed legacy and plan items are refused");
-  const schema=legacy?Legacy: {Board,Item,Decision,Note,Notice,Glossary,OwnerState};
+  const schema=legacy?Legacy: {Board,Item,Decision,Note,Glossary,OwnerState};
   const invalid: InvalidDocument[]=[];
   function load<T>(documentSchema:z.ZodType<T>, value:unknown, path:string):T|undefined {
     try {return validated(documentSchema,value,path);}
@@ -1115,13 +1094,15 @@ function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: bo
   const rawOwner=raw["state/owner.yaml"]??{};
   const hasArchives=!!rawOwner&&typeof rawOwner === "object"&&Object.hasOwn(rawOwner,"archived");
   const owner=legacy||hasArchives?load(Legacy.OwnerState,rawOwner,"state/owner.yaml"):load(OwnerState,rawOwner,"state/owner.yaml");
-  const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},notices:{},glossaries:{}};
+  const documents: Record<string,Record<string,unknown>>={items:{},decisions:{},notes:{},glossaries:{},...(legacy?{notices:{}}:{})};
   for(const [path,doc]of Object.entries(raw)){
-    const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);if(!match)continue;
+    const match=/^(items|decisions|notes|notices|glossaries)\/(.+)\.yaml$/.exec(path);
+    // A board of plans has no notices; those in older commits are left out of the snapshot read from them.
+    if(!match||(match[1]==="notices"&&!legacy))continue;
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load(schema[kind] as z.ZodType<unknown>,doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);
