@@ -1,6 +1,6 @@
 // Write-path performance check for the board daemon. It serves the board item that cuts the daemon's CPU per write
-// (each write cost 0.28–0.4 s of CPU on the live board) and stays as that item's performance check: CI runs it on
-// every push as a non-gating step, on this tree and on the code it started from, so a regression shows as numbers.
+// (each write cost 0.28–0.4 s of CPU on the live board) and stays as that item's performance check: the `bench`
+// workflow runs it by hand as a non-gating step, on this tree and on a base commit, so a regression shows as numbers.
 //
 // It builds a synthetic board like the live one in a temporary directory (by default 1,500 items, 600 cards, 750
 // notes, 12,000 earlier commits each adding a log entry, so the activity index holds about 12,000 write times), starts

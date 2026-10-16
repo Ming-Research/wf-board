@@ -132,8 +132,8 @@ derivation design that replaced this:
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory); CI runs it on every push on this tree and on the code the
-branch started from, without gating.
+peak memory); the `bench` workflow runs it by hand on this tree and on a base
+commit, without gating.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -1258,8 +1258,9 @@ every tool.
 
 The current template is kept. Its data layer, `window.claude.use("db")` and
 `window.claude.use("comments")`, is replaced by a small client that loads a
-snapshot from `/api/snapshot`, applies changes from `/api/events`, and posts
-the owner's notes and reads to `/api/...`. The rules module
+snapshot from `/api/snapshot`, applies changes from `/api/events`, and shows the owner's notices as
+`owner` events on the same stream; it posts the owner's notes and reads to
+`/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
 The page shows two columns while an item is selected. With no selected item,
@@ -1591,7 +1592,7 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   failed (`pr-red`), and one whose checks all passed and which can merge
   (`pr-ready`).
 
-Not pushed: a new request, a blocking card (the owner is told on the Mac, below),
+Not pushed: a new request, a blocking card (the owner is told on the Mac and in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below: a pull request on no open item (wf-board item
 watch-github, its second row) and a slow board operation (item slow-op-alerts).
@@ -1650,14 +1651,31 @@ for an hour. The receipts and the alert state are in the same file, so a restart
 neither repeats an alert nor forgets one.
 
 **The owner's notifications.** A decision card that stops work (open, with
-`blocks`, newly so or with changed `blocks`) tells the owner: the daemon runs
-`osascript` with a fixed script that shows a macOS notification, passing the
-title (`挡事的卡 · <project>`) and message (`<question>（挡住：<blocks>）`) as arguments, not
-spliced into the script, so any text is safe. The daemon is a LaunchAgent in
-the owner's login session, which is what lets it show one; a failed run is tried
-again, up to three times, and then logged. A card without `blocks` tells no one.
-The no-receipt alert uses the same route. macOS attributes the notification to
-Script Editor, which must be allowed to notify in System Settings.
+`blocks`, newly so or with changed `blocks`) tells the owner, and so does the
+no-receipt alert. Each notice goes two ways:
+
+- To every open board page, as an `owner` event on `/api/events`, carrying the
+  title, the message and a target (`{kind: "card" | "item", key}`, or none).
+  The page shows a browser notification (Notification API) when the owner
+  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
+  title when the notice has no target, so open tabs show one notice for the
+  same card or item. A click focuses the page and opens the card or item,
+  or the home view when there is no target. The event is live only: a page that
+  connects later gets nothing from before its connection, and a reconnect does
+  not replay. A closed page gets nothing; Web Push is not used.
+- To the Mac, through `osascript` with a fixed script that shows a macOS
+  notification, passing the title (`挡事的卡 · <project>`) and message
+  (`<question>（挡住：<blocks>）`) as arguments, not spliced into the script, so
+  any text is safe. The daemon is a LaunchAgent in the owner's login session,
+  which is what lets it show one; a failed run is tried again, up to three
+  times, and then logged. Script Editor must be allowed to notify in System
+  Settings. This route goes once the browser route is checked (wf-board item
+  chrome-notify).
+
+A card without `blocks` tells no one. A no-receipt notice's target is the item
+or card of its oldest unanswered event: a `stalled` event's item, or the item or
+card a `note` event is on; a `timed` event names neither, so its notice has no
+target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
 Code does not start a turn in an idle session for them. Claude Code's
@@ -2281,9 +2299,10 @@ module and its tests are deleted after the run on the live board.
   activity index, a write's prospective rules, the page's activity deltas)
   equal a from-scratch `rules` scan, and every item whose painted
   presentation changed is among the affected items.
-- CI on GitHub-hosted runners for every push, with the write-path benchmark
-  as a step that reports and never fails the run.
-- A private-content check on every pull request and every push to `main`
+- CI on GitHub-hosted runners for each pull request push and each main-line
+  merge; the write-path benchmark runs by hand, as a workflow that reports and
+  never fails the run.
+- A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
 ### Three test layers

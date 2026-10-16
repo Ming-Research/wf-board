@@ -18,6 +18,19 @@ export type WakeKind = keyof typeof WAKE_KINDS;
 export const CONTROL_FRAMES = { connected: ["latest"], gap: ["oldest", "latest"] } as const;
 
 export type WakeFrame = { n: number; at: string; event: WakeKind } & Record<string, unknown>;
+
+/** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
+export interface Told { title: string; message: string; target?: { kind: "card" | "item"; key: string } }
+
+/** The card or item a frame is about, for a click to open: a stalled item, or the item or card a note is on. Other frames have none. */
+function targetOf(frame: WakeFrame): Told["target"] {
+  if (frame.event === "stalled" && typeof frame.item === "string") return { kind: "item", key: frame.item };
+  if (frame.event === "note" && typeof frame.target === "string") {
+    if (frame.target.startsWith("it:")) return { kind: "item", key: frame.target.slice(3) };
+    if (frame.target.startsWith("q:")) return { kind: "card", key: frame.target.slice(2) };
+  }
+  return undefined;
+}
 export interface TimedMark { at: string; head: string }
 export interface WakeOptions {
   /** Where events, receipts and alerts are kept so numbers continue across a restart; without it they live in memory only. */
@@ -46,6 +59,7 @@ export class Wake {
   private alerted = false;
   private marked?: TimedMark;
   private listeners = new Set<(frame: WakeFrame) => void>();
+  private tellListeners = new Set<(told: Told) => void>();
 
   constructor(options: WakeOptions = {}) {
     this.file = options.file;
@@ -158,12 +172,23 @@ export class Wake {
     this.alerted = true;
     this.append({ alert: true, at: this.iso() });
     const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`);
+    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
-  /** Tell the owner. A failure is logged and never reaches the write that caused it. */
-  tell(title: string, message: string): void {
+  /** Tell the owner, and tell every listener (the open pages). A failure is logged and never reaches the write that caused it. */
+  tell(title: string, message: string, target?: Told["target"]): void {
     try { void Promise.resolve(this.notify(title, message)).catch(error => console.error("notify failed", error)); }
     catch (error) { console.error("notify failed", error); }
+    const told: Told = target ? { title, message, target } : { title, message };
+    for (const listener of this.tellListeners) {
+      try { listener(told); }
+      catch (error) { console.error("owner notice listener failed", error); }
+    }
+  }
+
+  /** Each notice the owner is told from now on. A listener added later gets none of the earlier ones. */
+  onTell(fn: (told: Told) => void): () => void {
+    this.tellListeners.add(fn);
+    return () => { this.tellListeners.delete(fn); };
   }
 }
