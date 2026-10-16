@@ -58,8 +58,8 @@ matches what the artifact board offered.
   the sources directly), `npm run build:web`, `npm test`. CI runs all three on
   every pull request push and on every main-line merge.
 - `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it on every pull request push and main-line merge. It needs a Playwright browser and is
-  never run on the owner's Mac.
+  CI's `e2e` job runs it on every pull request push and main-line merge. It
+  needs a Playwright browser and is never run on the owner's Mac.
 - Three test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
   (`test/web.test.ts`), fast but without CSS or layout; the page in a real
