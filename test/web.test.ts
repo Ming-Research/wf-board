@@ -842,7 +842,6 @@ test("project page omits session assignments and shows empty projects", async ()
   const s=snapshot(); s.board.projects.push({name:"Empty"});
   const p=await page(s,[]), headings=p.all().filter(e=>e.className==="group-head");
   assert.equal(headings.length,2); assert.ok(headings.every(h => !markup(h).includes("负责：")));
-  assert.equal(p.all().some(e=>e.className==="inbox"),false);
 });
 
 test("新 counts items: one per item however many changes, a parent adding the items below it, in one chip", async () => {

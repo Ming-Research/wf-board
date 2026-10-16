@@ -1977,7 +1977,7 @@ discarded.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items in progress with a doing step of their own,
 the next ten items rated 1–5 that an unpaused root needs and whose frontier holds a step that can start, by priority,
-outstanding work requested from other projects, and the project's glossary
+outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
 `{id, title, plan?, targets?}` rows for records and blocked items
@@ -1988,8 +1988,8 @@ targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
 `group` filter. The page counts
 sent notes per project, such as `已发出 3 条：Halo-wf×2 · Firn-wf×1`.
-The owner asks for work through notes and the
-coordinator, so the page files none. Delivery belongs to the coordinator:
+The page creates no work items: the owner asks for work through notes and the
+coordinator. Delivery belongs to the coordinator:
 it finds a project’s live session by its working directory, independently
 of its current session name.
 
