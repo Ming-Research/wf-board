@@ -56,10 +56,10 @@ const WITNESSES: Witness[] = [
   {
     bug: "a card row in a plan did not go to the card in the item's body (feature, card-in-plan)",
     // The click handler keeps its default-prevention and does nothing else: the row stays put.
-    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump(\"q-\" + stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
+    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); if (isPlaced(stored.card)) jump(\"q-\" + stored.card); else toggleCardUnder(stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
     family: "plan-card-row",
-    // The items whose plans hold the witness cards: placed in the head, blocking, ruled on a done item, unplaced, ruled in words.
-    run: async (bp, b) => { const o = await oracle(b.store), w = b.gen.witness; return checkPlanRows(bp, o, [...new Set([w.commentCard, w.multiPlanCard, w.donePlanCard, w.otherPlanCard, w.proseCard].map(c => o.s.decisions[c]!.item))]); },
+    // The items whose plans hold the witness cards: blocking and placed in the head, ruled on a done item, blocking and not placed, converted from the old form.
+    run: async (bp, b) => { const o = await oracle(b.store), w = b.gen.witness; return checkPlanRows(bp, o, [...new Set([w.multiPlanCard, w.donePlanCard, w.rowCard, w.openLegacyCard].map(c => o.s.decisions[c]!.item))]); },
   },
   {
     bug: "code blocks were not set in Monaco: the global code rule overrode the block's font (fixed in 8f3ed75)",
@@ -85,7 +85,7 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
-    bug: "a card's old text (background, confidence, ruling) showed unfolded instead of folded under 原卡的背景、信心和裁定 (feature, card-in-plan)",
+    bug: "a card's old background showed unfolded instead of folded under 原卡的背景 (feature, card-in-plan)",
     // The fold starts open whatever the reader chose before.
     reverts: [{ file: "web/app.ts", edit: "old card text starts unfolded", find: "fold.open = refOpen[key] ?? !closed;", replace: "fold.open = true;" }],
     family: "card-legacy",
@@ -115,9 +115,30 @@ const WITNESSES: Witness[] = [
   {
     bug: "a card showed its question, options or pick wrongly: an open card without its option buttons and 发送, a ruled one without what was chosen (feature, card-in-plan)",
     // A ruled card's pick line is not drawn.
-    reverts: [{ file: "web/app.ts", edit: "a ruled card shows no pick", find: "    } else if (d.status === \"ruled\") {\n      const option", replace: "    } else if (false as boolean) {\n      const option" }],
+    reverts: [{ file: "web/app.ts", edit: "a ruled card shows no pick", find: "else if (d.status === \"ruled\") top.appendChild(el(\"span\", \"pick pickshort\"", replace: "else if (false as boolean) top.appendChild(el(\"span\", \"pick pickshort\"" }],
     family: "card-box",
-    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.otherPlanCard]); },
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.otherPlanCard, w.rowCard]); },
+  },
+  {
+    bug: "a card its item's head does not place was drawn after the head although nobody asked for it, so the 646 old cards filled every item (owner, 2026-10-16)",
+    // Every card with no line in the head and no plan row is drawn after the refs line.
+    reverts: [{ file: "web/app.ts", edit: "a card with no place is always drawn", find: ".filter(key => !placed.has(key) && !hasRow(key) && shownUnder(key))", replace: ".filter(key => !placed.has(key) && !hasRow(key))" }],
+    family: "card-unplaced",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "an open card showed its option names without what each option does, costs and risks (feature, card-in-plan)",
+    // The detail of an option is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "an option shows no detail", find: "const detail = o.detail ? '<div class=\"rich optdetail\">'", replace: "const detail = o.detail && !o.detail ? '<div class=\"rich optdetail\">'" }],
+    family: "card-option-detail",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.openLegacyCard], true); },
+  },
+  {
+    bug: "an open card did not show how sure its writer is of the recommended option (feature, card-in-plan)",
+    // The confidence line of an open card is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "an open card shows no confidence", find: "if (confidence) c.appendChild(confidence);", replace: "" }],
+    family: "card-confidence",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard], true); },
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",

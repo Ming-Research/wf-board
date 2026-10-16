@@ -110,12 +110,27 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
         const first = d.question.split("\n")[0]!.replace(/[*`]/g, "").trim();
         if (!rowText.includes(first.slice(0, 12))) v.push(`plan-card-row: in ${x}'s plan, the row for card ${card} does not show its question`);
         if (d.status === "ruled" && d.choice !== undefined && !rowText.includes("选 " + d.choice)) v.push(`plan-card-row: in ${x}'s plan, the ruled card ${card}'s row does not say what was chosen`);
+        const picked = d.options.find(op => op.key === d.choice);
+        if (picked && !rowText.includes(((picked.text || picked.detail || "").split("\n")[0]!).replace(/[*`]/g, "").trim().slice(0, 4))) v.push(`plan-card-row: in ${x}'s plan, the ruled card ${card}'s row does not name the option chosen`);
+        const placed = placedCards(o.s.items[x]!.head).includes(card), cardEl = page.locator(`#item-detail [id="q-${q(card)}"]`);
+        const shownBefore = await cardEl.count();
         if (!await attempt(v, `plan-card-row ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
         await bp.settle();
         const got = await bp.selected();
         if (got !== x) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} switched the selected item to ${got} instead of going to the card in the body`);
-        else if (!(await bp.currentCards()).includes(card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not make that card the current one in the body`);
-        else if (!await page.evaluate(c => { const e = document.getElementById("q-" + c), pane = document.getElementById("item-detail"); if (!e || !pane) return false; const a = e.getBoundingClientRect(), b = pane.getBoundingClientRect(); return a.bottom > b.top && a.top < b.bottom; }, card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not bring the card into view`);
+        else if (placed) {
+          // A card the head places: the click goes to it in the body.
+          if (!(await bp.currentCards()).includes(card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not make that card the current one in the body`);
+          else if (!await page.evaluate(c => { const e = document.getElementById("q-" + c), pane = document.getElementById("item-detail"); if (!e || !pane) return false; const a = e.getBoundingClientRect(), b = pane.getBoundingClientRect(); return a.bottom > b.top && a.top < b.bottom; }, card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not bring the card into view`);
+        } else {
+          // A card the head does not place: the click draws it under its row, or folds it again once drawn.
+          const after = await cardEl.count();
+          if (after !== (shownBefore ? 0 : 1)) v.push(`plan-card-row: in ${x}'s plan, clicking the row of the unplaced card ${card} ${shownBefore ? "did not fold it" : "did not draw it"}`);
+          else if (!shownBefore && !await page.evaluate(([id, c]) => document.getElementById(id!)?.nextElementSibling?.id === "q-" + c, [el, card])) v.push(`plan-card-row: in ${x}'s plan, the unplaced card ${card} is not drawn directly under its row`);
+          // The second click reverses the first.
+          else if (!await attempt(v, `plan-card-row again ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
+          else { await bp.settle(); if (await cardEl.count() !== shownBefore) v.push(`plan-card-row: in ${x}'s plan, a second click on the row of card ${card} did not undo the first`); }
+        }
       } else if (row === firstStep) {
         if (!await ensure(x)) continue;
         if (!await attempt(v, `plan-step-row ${x}@${row.id}`, () => page.locator(sel + " > .g").click())) continue;
@@ -128,73 +143,128 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
   return v;
 }
 
-/** A decision card in its item's body: shown once with its question, its option names (an open card, the recommended one
- * marked) or, once closed, on one line with its pick (which says so when it was ruled in words, then showing the ruling),
- * the rest under that line; its old text folded (an open card's background starts open), and, when the head holds a
- * line [[q:key]] for it, at that line inside the head; otherwise after the head. With `fresh` the page has not been
- * asked for the card yet, so what starts folded must be folded. */
+/** A decision card in its item's body: shown once with its question, its options (an open card: a button for each with
+ * its name and detail, the recommended one marked) or, once closed, on one line with its pick (which says so when it was
+ * ruled in words, then showing the ruling), everything else under that line; the confidence; its old background folded
+ * (an open card's starts open). A card the head places with a line [[q:key]] stands at that line inside the head. A card
+ * it does not place is not drawn until it is asked for, from its plan row or else from the item's 决策 line, and then
+ * stands under that row, or after the item's reference lines. With `fresh` the page has not been asked for the card yet,
+ * so what starts folded must be folded. */
 export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fresh = false): Promise<string[]> {
   const v: string[] = [], page = bp.page;
   for (const card of cards) {
     const d = o.s.decisions[card]!, item = o.s.items[d.item]!;
     if (await bp.selected() !== d.item) await bp.select(d.item);
+    const placed = placedCards(item.head).includes(card), row = item.plan.find(r => "card" in r && r.card === card);
     const box = page.locator(`#item-detail [id="q-${q(card)}"]`);
+    let asked = false;
+    if (!placed) {
+      if (fresh && await box.count()) v.push(`card-place: card ${card} has no line in the head but is drawn before it was asked for`);
+      if (!await box.count()) {
+        // Ask for it where the page offers it: its plan row, else the item's 决策 line.
+        const entry = row ? page.locator(`#item-detail [id="${q("plan-" + encodeURIComponent(JSON.stringify([d.item, row.id])))}"] .plan-main a.cardgo`) : page.locator(`#item-detail .refs button.ref.q[data-card="${q(card)}"]`);
+        if (!await attempt(v, `card-box ask ${card}`, () => entry.click())) continue;
+        await bp.settle(); asked = true;
+      }
+    }
     if (await box.count() !== 1) { v.push(`card-box: card ${card} shows ${await box.count()} times in ${d.item}'s body, not once`); continue; }
-    const m = await page.evaluate(c => {
+    const m = await page.evaluate(([c, rowId]) => {
       const e = document.getElementById("q-" + c)!, legacy = e.querySelector("details.legacy") as HTMLDetailsElement | null, fold = e.querySelector("details.cardfold") as HTMLDetailsElement | null;
-      const parent = e.parentElement!, head = e.closest(".rich");
-      return { title: e.querySelector("h3")?.textContent ?? "", options: [...e.querySelectorAll("button.optbtn")].map(b => ({ key: (b as HTMLElement).dataset.option, rec: !!b.querySelector(".recchip") })),
+      const parent = e.parentElement!, head = e.closest(".rich"), plain = (n: Element | null) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
+      return { title: e.querySelector("h3")?.textContent ?? "",
+        options: [...e.querySelectorAll("button.optbtn")].map(b => ({ key: (b as HTMLElement).dataset.option, rec: !!b.querySelector(".recchip"), name: b.querySelector(".optname") ? plain(b.querySelector(".optname")) : null, detail: b.querySelector(".optdetail") ? plain(b.querySelector(".optdetail")) : null })),
+        conf: e.querySelector("p.conf")?.textContent ?? null,
         pick: e.querySelector(".pick")?.textContent ?? null, send: !!e.querySelector(".cardsend"), legacy: legacy ? { open: legacy.open, label: legacy.querySelector("summary")?.textContent ?? "", text: legacy.textContent ?? "" } : null,
         fold: fold ? { open: fold.open, line: fold.querySelector("summary")?.textContent ?? "" } : null, closedClass: e.classList.contains("closed"),
-        inHead: !!head && parent.classList.contains("rich"), tags: [...e.querySelectorAll("h3 .waittag, h3 .asktag, h3 .closedtag")].map(t => t.textContent) };
-    }, card);
-    const title = d.question.split("\n")[0]!.replace(/[*`]/g, "").trim();
+        inHead: !!head && parent.classList.contains("rich"),
+        underRow: !!rowId && document.getElementById(rowId)?.nextElementSibling === e,
+        tags: [...e.querySelectorAll("h3 .waittag, h3 .asktag, h3 .closedtag")].map(t => t.textContent) };
+    }, [card, row ? "plan-" + encodeURIComponent(JSON.stringify([d.item, row.id])) : ""] as const);
+    const first = (text: string) => text.split("\n")[0]!.replace(/[*`]/g, "").trim();
+    const title = first(d.question);
     if (!m.title.includes(title.slice(0, 12))) v.push(`card-box: card ${card}'s heading does not show its question`);
     const words = d.status === "ruled" && d.choice === undefined;
+    // A name when the option has one, else the first line of its detail.
+    const label = (op: { text: string; detail?: string }) => (op.text || first(op.detail ?? "")).slice(0, 6);
+    const confText = d.confidence ? (d.confidence.score === undefined ? "" : d.confidence.score + "/5：") + d.confidence.reason.slice(0, 6) : null;
     if (d.status === "open") {
       if (m.options.length !== d.options.length) v.push(`card-box: open card ${card} shows ${m.options.length} options, not ${d.options.length}`);
-      for (const op of d.options) if (!!op.recommended !== !!m.options.find(x => x.key === op.key)?.rec) v.push(`card-box: open card ${card}'s option ${op.key} ${op.recommended ? "is not" : "is"} marked recommended`);
+      for (const op of d.options) {
+        const shown = m.options.find(x => x.key === op.key);
+        if (!!op.recommended !== !!shown?.rec) v.push(`card-box: open card ${card}'s option ${op.key} ${op.recommended ? "is not" : "is"} marked recommended`);
+        if (!!op.text !== (shown?.name != null)) v.push(`card-box: open card ${card}'s option ${op.key} ${op.text ? "lost its name" : "shows a name it does not have"}`);
+        else if (op.text && !shown!.name!.includes(op.text.slice(0, 6))) v.push(`card-box: open card ${card}'s option ${op.key} does not show its name`);
+        if (!!op.detail !== (shown?.detail != null)) v.push(`card-box: open card ${card}'s option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
+        else if (op.detail && !shown!.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-box: open card ${card}'s option ${op.key} does not show its detail`);
+      }
       if (!m.send) v.push(`card-box: open card ${card} has no 发送 button`);
       if (m.pick !== null) v.push(`card-box: open card ${card} shows a pick`);
       if (m.closedClass || m.fold) v.push(`card-box: open card ${card} is drawn as a closed one`);
+      if (confText && !(m.conf ?? "").includes("把握：" + confText)) v.push(`card-box: open card ${card} does not show its confidence "${confText}", it says "${m.conf}"`);
+      if (!confText && m.conf) v.push(`card-box: open card ${card} has no confidence but shows one`);
     } else {
       if (m.options.length) v.push(`card-box: ${d.status} card ${card} still shows ${m.options.length} option buttons`);
       if (m.send) v.push(`card-box: ${d.status} card ${card} still has a 发送 button`);
-      if (d.status === "ruled" && (d.choice !== undefined ? !(m.pick ?? "").includes("选 " + d.choice) : !(m.pick ?? "").includes("文字裁决"))) v.push(`card-box: ruled card ${card} says "${m.pick}", not its pick`);
-      if (words && d.legacy?.ruling && !(m.pick ?? "").includes(d.legacy.ruling.split("\n")[0]!.replace(/[*`]/g, "").slice(0, 6))) v.push(`card-box: card ${card}, ruled in words, does not show its ruling on its line`);
+      if (d.status === "ruled") {
+        const chosen = d.options.find(op => op.key === d.choice);
+        if (d.choice !== undefined ? !(m.pick ?? "").includes("选 " + d.choice) : !(m.pick ?? "").includes("文字裁决")) v.push(`card-box: ruled card ${card} says "${m.pick}", not its pick`);
+        else if (chosen && !(m.pick ?? "").includes(label(chosen))) v.push(`card-box: ruled card ${card}'s line does not name the option chosen`);
+      }
+      if (words && d.ruling && !(m.pick ?? "").includes(first(d.ruling).slice(0, 6))) v.push(`card-box: card ${card}, ruled in words, does not show its ruling on its line`);
       if (d.status === "withdrawn" && !m.tags.includes("已撤回")) v.push(`card-box: withdrawn card ${card} does not say 已撤回`);
       if (!m.closedClass) v.push(`card-box: ${d.status} card ${card} is not drawn as a closed one`);
-      // The line is the card's summary when it has more to show under it: the pick's whole option text or the old text.
-      const more = (d.status === "ruled" && !words) || (d.legacy && (d.legacy.background || d.legacy.confidence || (d.legacy.ruling && !words)));
-      if (!!more !== !!m.fold) v.push(`card-box: ${d.status} card ${card} ${more ? "has more to show but no fold under its line" : "has nothing more but a fold"}`);
-      if (m.fold && !m.fold.line.includes(title.slice(0, 12))) v.push(`card-box: ${d.status} card ${card}'s line does not show its question`);
-      if (m.fold && fresh && m.fold.open) v.push(`card-fold: ${d.status} card ${card} is unfolded by default`);
-      if (m.fold && !m.fold.open) {
-        // Under a closed line nothing is on screen; a click on the line shows it.
-        if (await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows what is under its line while folded`);
-        if (!await attempt(v, `card-box fold ${card}`, async () => { await box.locator("details.cardfold > summary").dispatchEvent("click"); await bp.settle(); })) continue;
-        if (!await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows nothing under its line once the line is clicked`);
+      // A closed card is always one line over a fold that holds the rest.
+      if (!m.fold) v.push(`card-box: ${d.status} card ${card} has no fold under its line`);
+      else {
+        if (!m.fold.line.includes(title.slice(0, 12))) v.push(`card-box: ${d.status} card ${card}'s line does not show its question`);
+        // The page opens a closed card the reader asked for; a placed one nobody asked for stays folded.
+        if (fresh && placed && m.fold.open) v.push(`card-fold: ${d.status} card ${card} is unfolded by default`);
+        if (asked && !m.fold.open) v.push(`card-fold: ${d.status} card ${card} was asked for but stays folded`);
+        if (!m.fold.open) {
+          // Under a closed line nothing is on screen; a click on the line shows it.
+          if (await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows what is under its line while folded`);
+          if (!await attempt(v, `card-box fold ${card}`, async () => { await box.locator("details.cardfold > summary").dispatchEvent("click"); await bp.settle(); })) continue;
+          if (!await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows nothing under its line once the line is clicked`);
+        }
+        // Under the line: every option with its name and detail, the chosen one marked, the confidence, the ruling.
+        const body = await page.evaluate(c => {
+          const e = document.getElementById("q-" + c)!, plain = (n: Element | null) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
+          return { listed: [...e.querySelectorAll(".cardbody ul.optlist > li")].map(li => ({ key: li.querySelector(".lbl")?.textContent ?? "", rec: !!li.querySelector(".recchip"), chosen: !!li.querySelector(".pickchip"), name: li.querySelector(".optname") ? plain(li.querySelector(".optname")) : null, detail: li.querySelector(".optdetail") ? plain(li.querySelector(".optdetail")) : null })),
+            conf: e.querySelector(".cardbody p.conf")?.textContent ?? null, ruling: e.querySelector(".cardbody .ruling")?.textContent ?? null };
+        }, card);
+        if (body.listed.length !== d.options.length) v.push(`card-box: ${d.status} card ${card} lists ${body.listed.length} options under its line, not ${d.options.length}`);
+        for (const op of d.options) {
+          const shown = body.listed.find(x => x.key === op.key + "：");
+          if (!shown) { v.push(`card-box: ${d.status} card ${card} does not list its option ${op.key}`); continue; }
+          if (!!op.recommended !== shown.rec) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.recommended ? "is not" : "is"} marked recommended`);
+          if (shown.chosen !== (op.key === d.choice)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${shown.chosen ? "is" : "is not"} marked chosen`);
+          if (!!op.text !== (shown.name != null)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.text ? "lost its name" : "shows a name it does not have"}`);
+          if (!!op.detail !== (shown.detail != null)) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} ${op.detail ? "lost its detail" : "shows a detail it does not have"}`);
+          else if (op.detail && !shown.detail!.includes(first(op.detail).slice(0, 6))) v.push(`card-box: ${d.status} card ${card}'s listed option ${op.key} does not show its detail`);
+        }
+        if (confText && !(body.conf ?? "").includes("把握：" + confText)) v.push(`card-box: ${d.status} card ${card} does not show its confidence under its line`);
+        if (!confText && body.conf) v.push(`card-box: ${d.status} card ${card} has no confidence but shows one`);
+        // The ruling of a card ruled in words is on its line; one with a choice shows it under the line.
+        if (d.ruling && !words && !(body.ruling ?? "").includes(first(d.ruling).slice(0, 6))) v.push(`card-box: ${d.status} card ${card} does not show its ruling under its line`);
+        if (words && body.ruling) v.push(`card-box: card ${card}, ruled in words, shows its ruling again under its line`);
+        if (!d.ruling && body.ruling) v.push(`card-box: ${d.status} card ${card} has no ruling but shows one`);
       }
     }
-    // The old text: kept as it was; the ruling of a card ruled in words is on its line, so not in the fold again.
-    const kept = [d.legacy?.background ? "背景" : "", d.legacy?.confidence ? "信心" : "", d.legacy?.ruling && !words ? "裁定" : ""].filter(Boolean);
-    if (!kept.length && m.legacy) v.push(`card-box: card ${card} has no old text but shows a folded section`);
-    if (kept.length) {
-      const label = "原卡的" + (kept.length > 1 ? kept.slice(0, -1).join("、") + "和" : "") + kept[kept.length - 1];
-      if (!m.legacy) v.push(`card-box: card ${card} lost its old text`);
+    // The old background, kept as it was and folded; an open card is decided from it, so that starts open.
+    if (!d.legacy?.background && m.legacy) v.push(`card-box: card ${card} has no old background but shows a folded section`);
+    if (d.legacy?.background) {
+      if (!m.legacy) v.push(`card-box: card ${card} lost its old background`);
       else {
-        if (m.legacy.label !== label) v.push(`card-box: card ${card}'s old text is titled "${m.legacy.label}", not "${label}"`);
-        // An open card is decided from its background, so that starts open; a closed card's starts folded.
-        if (fresh && m.legacy.open !== (d.status === "open")) v.push(`card-legacy: card ${card}'s old text is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
-        const marker = (d.legacy!.background ?? d.legacy!.ruling ?? "").split("\n")[0]!.slice(0, 6);
+        if (m.legacy.label !== "原卡的背景") v.push(`card-box: card ${card}'s old background is titled "${m.legacy.label}", not "原卡的背景"`);
+        if (fresh && !asked && m.legacy.open !== (d.status === "open")) v.push(`card-legacy: card ${card}'s old background is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
+        const marker = first(d.legacy.background).slice(0, 6);
         if (!m.legacy.open && !await attempt(v, `card-box legacy ${card}`, async () => { await box.locator("details.legacy > summary").click(); await bp.settle(); })) continue;
         const shown = await box.locator("details.legacy").textContent() ?? "";
-        if (marker && !shown.includes(marker)) v.push(`card-box: card ${card}'s old text does not show "${marker}" once unfolded`);
-        if (words && d.legacy?.ruling && shown.includes(d.legacy.ruling)) v.push(`card-box: card ${card}, ruled in words, shows its ruling again in the old text`);
+        if (marker && !shown.includes(marker)) v.push(`card-box: card ${card}'s old background does not show "${marker}" once unfolded`);
       }
     }
-    const placed = placedCards(item.head).includes(card);
     if (placed !== m.inHead) v.push(`card-place: card ${card} ${placed ? "has its line in the head but shows after it" : "has no line in the head but shows inside it"}`);
+    if (!placed && row && !m.underRow) v.push(`card-place: card ${card} has no line in the head but a row, and is not drawn directly under that row`);
     if (placed) {
       // The card follows the paragraph that precedes its line and comes before the one after it.
       const lines = (item.head ?? "").split("\n"), at = lines.findIndex(l => l.trim() === `[[q:${card}]]`);
@@ -586,9 +656,9 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   const commit = async (message: string, puts: Parameters<Store["commit"]>[0]["puts"]) => { await store.commit({ author: "Burst", message, puts }); commits++; };
   const first = r.areas()[0]!;
   const card = (k: string, blocks?: string) => ({ kind: "decision" as const, id: `burst${round}-${k}`, expectRev: null, doc: { item: first, question: `第 ${round} 轮新问题 ${k}？`, options: [{ key: "A", text: "做" }, { key: "B", text: "不做" }], status: "open", ...(blocks ? { blocks } : {}), at, updated: at } });
-  // The cards join the first item's plan in the same commit, before its acceptance step.
+  // The blocking card joins the first item's plan in the same commit, before its acceptance step; the other has no row.
   const { rev: firstRev, ...firstDoc } = s.items[first]!, cut = firstDoc.plan.findIndex(row => "accept" in row && row.accept);
-  const rows = ["block", "plain"].map(k => ({ id: `burst${round}-${k}`, card: `burst${round}-${k}` }));
+  const rows = [{ id: `burst${round}-block`, card: `burst${round}-block` }];
   await commit("burst: new waits on the first item", [card("block", "合并突发修复"), card("plain"),
     { kind: "item", id: first, expectRev: firstRev, doc: { ...firstDoc, plan: [...firstDoc.plan.slice(0, cut < 0 ? firstDoc.plan.length : cut), ...rows, ...firstDoc.plan.slice(cut < 0 ? firstDoc.plan.length : cut)], updated: at } }]);
   for (let k = 0; k < 4; k++) {

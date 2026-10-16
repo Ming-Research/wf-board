@@ -1697,7 +1697,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) jumpToCard(ev); });
           main.appendChild(go);
-          if (card.status === "ruled" && card.choice !== undefined) main.appendChild(el("span", "cardpick", " · 选 " + esc(card.choice) + (chosen ? "：" + esc(plain(firstLine(chosen.text))) : "")));
+          if (card.status === "ruled" && card.choice !== undefined) main.appendChild(el("span", "cardpick", " · 选 " + esc(card.choice) + (chosen ? "：" + esc(optName(chosen)) : "")));
         } else main.appendChild(ref("card", stored.card, card?.question || stored.card));
       }
       row.insertBefore(main, row.children[1] || null);
@@ -1811,7 +1811,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const talk = d ? notesOf("q:" + q).filter(listed).length : 0;
           const pick = d?.status === "ruled" && d.choice !== undefined ? " · 选 " + d.choice : d?.status === "withdrawn" ? " · 已撤回" : "";
           const b = el("button", "ref q" + (openQ(q) ? " open" : ""), esc(label.length > 24 ? label.slice(0, 24) + "…" : label) + esc(pick) + (talk ? " · 评论 " + talk : ""));
-          b.type = "button";
+          b.type = "button"; b.dataset.card = q;
           b.title = !d ? "" : isPlaced(q) ? "到正文里的这张决策卡" : refOpen[cardUnderKey(q)] ? "收起这张决策卡" : "展开这张决策卡";
           b.addEventListener("click", () => { if (!d) return; if (isPlaced(q)) jump("q-" + q); else toggleCardUnder(q); });
           refs.appendChild(b);
@@ -2062,7 +2062,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return overlay ? overlay.on ? sendingDrafts.has(draftKey("q:"+d.id,"choice")) ? {...overlay,state:"sent" as const} : overlay : undefined : notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done"));
   }
   // An option's name, or the first line of its detail on a card converted from the old form, which has no name.
-  const optName = (o: { text: string; detail?: string }) => plain(o.text || firstLine(o.detail ?? ""));
+  function optName(o: { text: string; detail?: string }) { return plain(o.text || firstLine(o.detail ?? "")); }
   // A card: a bold question, its options (a name and what the option does, costs and risks) and the confidence in the
   // recommended one. An open card offers the options to pick; a closed one is a single line, the pick, with the whole card
   // under the line. The background an old card carried is kept folded.
