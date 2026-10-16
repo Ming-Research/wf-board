@@ -354,6 +354,8 @@ test("a call carrying the architect's session, read or write, is the receipt for
   const refused = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION, unknown: 1 } });
   assert.equal(refused.isError, true);
   assert.equal(wake.receiptedUpTo(), 3, "a call the schema refuses is not a receipt");
+  await client.callTool({ name: "projects", arguments: { session: `  ${ARCHITECT_SESSION}  ` } });
+  assert.equal(wake.receiptedUpTo(), 4, "a session name padded with spaces counts, as it does for the permission rule");
 });
 
 test("every tool takes an optional session, and post_notice is gone", async t => {

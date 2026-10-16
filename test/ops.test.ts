@@ -273,7 +273,7 @@ test("project after rejects every author but Architect, unknown projects and sel
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
     [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), /after: only Architect with session 架构师 may reorder projects/],
     [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /after: only Architect with session 架构师 may reorder projects/],
-    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or Architect may update its repo/],
+    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or Architect with session 架构师 may update its repo/],
     [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), /after: only Architect with session 架构师 may reorder projects/],
     [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), /after: only Architect with session 架构师 may reorder projects/],
     [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), /author 总管: this identity is retired; write as Architect/],
@@ -985,6 +985,7 @@ test("only Architect from session 架构师 creates items, cancels or reopens th
     [() => op.renameTag({ ...who, name: tag.name, to: "改名" }), only("change the tag vocabulary")],
     [() => op.removeTag({ ...who, name: tag.name }), only("change the tag vocabulary")],
     [() => op.createProject({ ...who, name: "New", after: "Firn" }), /^after: only Architect with session 架构师 may reorder projects/],
+    [() => op.updateProject({ ...who, name: "总管", repo: "Org/Changed" }), /^project 总管: only that project or Architect with session 架构师 may update its repo$/],
   );
   // Even the Architect project's own item is out of reach of these operations without the session.
   for (const who of [{ author: architect }, { author: architect, session: "engineer" }]) cases.push(
@@ -1043,6 +1044,9 @@ test("a cancelled item turns into a record only by Architect, so a project canno
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
     assert.equal((await store.log()).length, count);
   }
+  // This gate comes after the ownership check: another project's author hears whose item it is.
+  await assert.rejects(op.updateItem({ author: "Firn", id: "dropped", rev: before.items.dropped!.rev, record: true }), /item dropped belongs to project Whitefoot/);
+  assert.deepEqual(store.snapshot(), before);
   // Work that is not cancelled still becomes a record by its project, and Architect may convert the cancelled one.
   await op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true });
   assert.equal(store.snapshot().items.a!.record, true);
@@ -1066,6 +1070,28 @@ test("Architect's reach across projects keeps the same-project ownership rules",
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
     assert.equal((await store.log()).length, count);
   }
+});
+
+test("Architect without the session cannot resume paused work in its own project either", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createItem({ ...asArchitect, key: "arch-parent", group: architect, title: "Paused release", priority: "P1", accept: "Release passes" });
+  await op.createItem({ ...asArchitect, key: "arch-child", owner: "arch-parent", title: "Paused implementation", accept: "Implementation passes", plan: [{ id: "work", text: "Implementation", state: "doing" }] });
+  await op.createItem({ ...asArchitect, key: "arch-other", group: architect, title: "Active release", priority: "P2", accept: "Active release passes" });
+  await op.createItem({ ...asArchitect, key: "arch-marked", group: architect, title: "Marked work", priority: "P1", accept: "Marked passes" });
+  await op.setPause({ ...asArchitect, id: "arch-parent", paused: true, reason: "Owner chose to wait" });
+  await op.setPause({ ...asArchitect, id: "arch-marked", paused: true, reason: "Owner chose to wait" });
+  const before = store.snapshot(), count = (await store.log()).length;
+  const resume = /only the owner or Architect with session 架构师 can resume/;
+  for (const who of [{ author: architect }, { author: architect, session: "engineer" }]) {
+    // Moving open work out of a paused chain, and converting a paused item to a record (which clears its marker).
+    await assert.rejects(op.moveItem({ ...who, id: "arch-child", owner: "arch-other" }), resume);
+    await assert.rejects(op.updateItem({ ...who, id: "arch-marked", rev: before.items["arch-marked"]!.rev, record: true }), resume);
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+  await op.moveItem({ ...asArchitect, id: "arch-child", owner: "arch-other" });
+  assert.equal(rules(store.snapshot()).statusOf("arch-child"), "wip");
 });
 
 test("every write under the retired author 总管 is refused and changes nothing", async t => {

@@ -249,7 +249,9 @@ export const ARCHITECT_SESSION = "架构师";
  * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
  * project author. The session name is not authenticated: this stops misuse, not impersonation.
  */
-export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && who.session?.trim() === ARCHITECT_SESSION;
+export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
+export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 
