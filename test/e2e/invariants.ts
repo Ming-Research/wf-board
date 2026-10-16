@@ -511,18 +511,23 @@ export async function checkSharedSection(bp: BoardPage, b: BoardServer): Promise
   // (the write refuses one that would close a cycle).
   const root = r.areas().find(id => drawn.has(id) && live(id) && !r.dependents(id).some(w => group(w.id) !== group(id)));
   if (!root) return [...v, "witness setup: the board draws no open root that no other project depends on"];
-  const base = await bp.changes();
+  // The first commit after the board is seeded also carries the owner's pending read cursor, and the page answers an owner
+  // change by repainting everything, which would put the root in its place even without the group repaint under test. An
+  // unrelated write takes that commit first (found by tracing the repaint scopes in CI).
+  const base = await bp.changes(), idle = Object.keys(s.items).sort().filter(id => live(id)).at(-1)!;
+  await ops(b.store).appendLog({ author: group(idle), id: idle, text: "A write unrelated to the root, so the next change repaints only what it changes." });
+  await bp.waitChanges(base + 1);
   let waiter: string | undefined;
   for (const id of Object.keys(s.items).sort().filter(id => id !== root && group(id) !== group(root) && live(id))) {
     try { await ops(b.store).setPlan({ author: group(id), id, row: { item: root, own: false } }); waiter = id; break; } catch { /* closes a cycle or is refused: try the next item */ }
   }
   if (!waiter) return [...v, "witness setup: no item of another project takes a shared row to the root"];
-  await bp.waitChanges(base + 1);
+  await bp.waitChanges(base + 2);
   let now = b.store.snapshot();
   if (!rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: the shared row did not make the other project's item depend on the root");
   v.push(...await sectionViolations(bp, rules(now), now.items));
   await ops(b.store).setPlan({ author: group(waiter), id: waiter, remove: root });
-  await bp.waitChanges(base + 2);
+  await bp.waitChanges(base + 3);
   now = b.store.snapshot();
   if (rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: removing the shared row left the dependency");
   v.push(...await sectionViolations(bp, rules(now), now.items));
