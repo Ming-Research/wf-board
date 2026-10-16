@@ -26,17 +26,22 @@ async function main() {
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();
   let stopping = false;
+  // Stopping must fit in the 5 seconds launchd allows, and a push (ls-remote, fetch, push) alone takes longer than that. So the
+  // owner's reading state is committed locally and nothing is pushed; the next start pushes what this run left.
   function shutdown() {
     if (stopping) return; stopping = true; clearInterval(timer);
     server.close(error => {
       void (async () => {
         if (error) throw error;
-        await store.flushOwner("owner"); await push();
+        await store.flushOwner("owner");
       })().catch(error => { console.error(error); process.exitCode = 1; });
     });
   }
   process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
   server.on("error", error => { console.error(error); process.exitCode = 1; clearInterval(timer); });
-  server.listen(port, "127.0.0.1", () => console.info(`wf-board http://127.0.0.1:${port}`));
+  server.listen(port, "127.0.0.1", () => {
+    console.info(`wf-board http://127.0.0.1:${port}`);
+    void push().catch(console.error);
+  });
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
