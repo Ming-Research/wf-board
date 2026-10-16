@@ -921,6 +921,7 @@ test("ordinary coordinator tools refuse cross-project writes without changing me
     () => op.updateItem({ author: "总管", id: "a", rev: before.items.a!.rev, title: "Changed title" }),
     () => op.setStatus({ author: "总管", id: "a", status: "cancelled", log: "Not needed" }),
     () => op.moveItem({ author: "总管", id: "a", owner: "other" }),
+    () => op.moveItemProject({ author: "总管", id: "a", project: "Firn" }),
     () => op.ruleCard({ author: "总管", key: "choice", choice: "A", ruling: "Approved" }),
   ];
   for (const call of calls) {

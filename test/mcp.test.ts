@@ -192,7 +192,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 40); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 41); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]], ["triage_request", ["parent", "parent_why"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
@@ -283,6 +283,19 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const moved = await client.callTool({ name: "move_item", arguments: { author, id: "a", owner: "other", after: [] } }); assert.equal(moved.isError, undefined, text(moved));
   const cancelled = await client.callTool({ name: "set_status", arguments: { author, id: "new", status: "cancelled", log: "Superseded" } }); assert.equal(cancelled.isError, undefined, text(cancelled));
   const reopened = await client.callTool({ name: "set_status", arguments: { author, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
+});
+
+test("MCP moves an item and what it owns to another project, and only its own project may", async t => {
+  const { client, text, store } = await connected(t);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
+  assert.deepEqual([...tool.inputSchema.required!].sort(), ["author", "id", "project"]);
+  const moved = await client.callTool({ name: "move_item_project", arguments: { author, id: "area", project: "Firn" } });
+  assert.equal(moved.isError, undefined, text(moved));
+  assert.match(text(moved), /^move_item_project area Firn · rev \d+ · commit [0-9a-f]{40}\narea · .*Firn › area/);
+  assert.deepEqual(["area", "a", "b"].map(id => store.snapshot().items[id]!.group), ["Firn", "Firn", "Firn"]);
+  const again = await client.callTool({ name: "move_item_project", arguments: { author, id: "area", project: "Whitefoot" } });
+  assert.equal(again.isError, true); assert.match(text(again), /item area belongs to project Firn; file a request into Firn/);
 });
 
 test("MCP request filing stores reason only in the log and triage attaches the receiving owner", async t => {

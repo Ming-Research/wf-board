@@ -73,7 +73,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const itemsOf = (s: Snapshot, group?: string) => Object.keys(s.items).filter(id => !group || s.items[id]!.group === group);
-  let made = 0;
+  let made = 0, projectMoves = 0;
   const actions: Array<(s: Snapshot) => Promise<unknown>> = [
     async s => { const id = pick(itemsOf(s)); return op.appendLog({ author: s.items[id]!.group, id, text: "progress" }); },
     async s => {
@@ -89,6 +89,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     },
     async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ author: s.items[owner]!.group, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
+    async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, project = pick(["Whitefoot", "Firn"].filter(p => p !== group)); const moved = await op.moveItemProject({ author: group, id, project, ...(rand() < 0.5 ? { priority: pick(["P0", "P1", "P2"] as const) } : {}) }); projectMoves++; return moved; },
     async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ author: it.group, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
@@ -163,6 +164,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.ok(attributed > 10, `enough items attributed to a session (${attributed})`);
   // A daemon restart derives the whole activity, session attribution included, from history alone.
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
+  assert.ok(projectMoves > 0, "the random sequence moved an item to another project at least once");
   assert.ok(compared > 60, `enough writes compared (${compared})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
