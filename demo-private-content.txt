@@ -1,0 +1,3 @@
+fake address 192.168.0.99
+fake home /Users/fakename/dev
+fake token ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
