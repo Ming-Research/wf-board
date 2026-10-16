@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import { request, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,7 +14,6 @@ import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { INSTRUCTIONS } from "../src/instructions.ts";
 import { applyActivityDelta } from "../src/rules.ts";
 
 async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
@@ -385,27 +385,51 @@ test("after a write the check scan rederives only the items the write can reach"
   assert.deepEqual(star.frames.filter(f => f.event === "check").map(f => f.item), ["c"]);
 });
 
-test("every wake frame carries the fields the server instructions document for its event, and no other kind is sent", async t => {
+// docs/design.md (section 8, The wake stream) is the contract; the test reads the frame table from it, so the doc and the
+// server cannot drift apart, and keeps no second copy of the field lists.
+test("every wake frame has exactly the fields the design doc gives for its form, and the doc lists every form sent", async t => {
   const { url, store, op, api } = await server(t), star = await wakeSocket(t, url, "*");
-  // The instructions list each frame as `{event:"note", note, target, ...}`; a trailing ? marks an optional field.
-  const documented = new Map<string, { fields: Set<string>; optional: Set<string> }>();
-  for (const [, event, list] of INSTRUCTIONS.matchAll(/\{event:"(\w+)", ([^}]*)\}/g)) {
-    const names = list!.split(", ").map(field => field.replace(/:.*$/, ""));
-    documented.set(event!, { fields: new Set(["event", ...names.map(n => n.replace(/\?$/, ""))]), optional: new Set(names.filter(n => n.endsWith("?")).map(n => n.slice(0, -1))) });
-  }
-  // One write of each kind: a sent note, a blocking card, a new check, a new request.
+  const doc = await readFile(join(import.meta.dirname, "../docs/design.md"), "utf8");
+  const section = doc.slice(doc.indexOf("### The wake stream"), doc.indexOf("**Why not MCP push.**"));
+  // A form is `{event:"x", name:"value", field, ...}`: a name:"value" pair is a fixed value that tells forms of one event apart.
+  const forms = [...section.matchAll(/`\{event:"(\w+)"([^`]*)\}`/g)].map(([, event, rest]) => {
+    const fixed: Record<string, string> = {}, fields = new Set(["event"]);
+    for (const part of rest!.split(", ").filter(Boolean)) {
+      const pair = /^(\w+):"(\w+)"$/.exec(part);
+      if (pair) { fixed[pair[1]!] = pair[2]!; fields.add(pair[1]!); } else fields.add(part);
+    }
+    return { event: event!, fixed, fields, name: event! + Object.values(fixed).map(v => ":" + v).join("") };
+  });
+  assert.deepEqual(forms.map(f => f.name).sort(), ["blocking:ask", "blocking:card", "check", "note", "request"]);
+  // One write of each form: a sent note, a blocking card, an ask, a new check, a new request.
   await api("/api/notes", { target: "it:a", kind: "comment", text: "x" }); await api("/api/send", {});
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }], blocks: "合并停着" });
+  const other = store.snapshot().items.other!;
+  await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await op.createRequest({ author, project: "Firn", key: "req", title: "需要的能力", head: "背景", accept: "通过", why: "挡住工作", from: "a" });
   await star.sync();
-  assert.deepEqual([...documented.keys()].sort(), ["blocking", "check", "note", "request"]);
-  assert.deepEqual([...new Set(star.frames.map(f => f.event))].sort(), [...documented.keys()].sort());
+  const seen = new Set<string>();
   for (const frame of star.frames) {
-    const spec = documented.get(frame.event as string)!;
-    for (const key of Object.keys(frame)) assert.ok(spec.fields.has(key), `${frame.event}: undocumented field ${key}`);
-    for (const field of spec.fields) if (!spec.optional.has(field)) assert.ok(field in frame, `${frame.event}: documented field ${field} missing`);
+    const form = forms.find(f => f.event === frame.event && Object.entries(f.fixed).every(([name, value]) => frame[name] === value));
+    assert.ok(form, `a frame the doc does not list: ${JSON.stringify(frame)}`);
+    assert.deepEqual(Object.keys(frame).sort(), [...form.fields].sort(), `${form.name}: the frame's fields differ from the doc's`);
+    seen.add(form.name);
   }
+  assert.deepEqual([...seen].sort(), forms.map(f => f.name).sort(), "the test produced every form the doc lists");
+  // The address: no session filter is a 404, as the doc says (a foreign Origin is a 403, tested above).
+  const missing = new WebSocket(url.replace("http:", "ws:") + "/wake");
+  missing.on("error", () => {}); t.after(() => missing.terminate());
+  const [, response] = await once(missing, "unexpected-response");
+  assert.equal(response.statusCode, 404); response.resume();
+});
+
+test("a wake event produced while no socket is connected is lost: a later socket is told nothing of it", async t => {
+  const { url, api } = await server(t);
+  await api("/api/notes", { target: "it:a", kind: "comment", text: "sent while away" }); await api("/api/send", {});
+  const late = await wakeSocket(t, url, "*");
+  await late.sync();
+  assert.deepEqual(late.frames, [], "nothing is replayed on connect");
 });
 
 test("active time alone (one hour) raises one stalled event on the timer, and a restart announces nothing", async t => {
