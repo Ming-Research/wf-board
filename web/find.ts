@@ -1,6 +1,7 @@
 // Finding items and decision cards by title, and the reference tokens a comment holds, as plain functions so tests can
 // check them without a page. The "/" search and the "#" popup in a comment share findTargets.
 import { numRef } from "../src/model.ts";
+import { REFERENCE as REF } from "../src/rules.ts";
 
 /** An item or a decision card the owner can search for or refer to. */
 export interface Target {
@@ -22,10 +23,6 @@ export function findTargets<T extends Pick<Target, "title" | "num">>(targets: re
   const exact = targets.filter(t => t.num === num);
   return [...exact, ...titled.filter(t => !exact.includes(t))];
 }
-
-// A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.
-// Keys follow the board's Key pattern. Block text has no other use for double square brackets.
-const REF = /\[\[(it|q):([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\]/g;
 
 export function refToken(kind: Target["kind"], key: string): string { return "[[" + (kind === "item" ? "it" : "q") + ":" + key + "]]"; }
 
