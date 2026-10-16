@@ -74,10 +74,10 @@ test("clicking a notice closes it, focuses the page and opens its card or item",
   assert.deepEqual(opened[1], { kind: "item", key: "a" });
 });
 
-test("a notice with no target opens nothing when clicked", () => {
+test("a notice with no target opens the home view when clicked", () => {
   const { env, shown, opened, focused } = page("granted");
   showNotice({ title: "t", message: "m" }, env);
   shown[0]!.instance.onclick!();
   assert.equal(focused(), 1);
-  assert.deepEqual(opened, []);
+  assert.deepEqual(opened, [undefined]);
 });

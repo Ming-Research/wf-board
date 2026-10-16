@@ -2711,7 +2711,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const noticeEnv: NoticeEnv = {
     Notification: typeof Notification === "undefined" ? undefined : Notification as unknown as NoticeEnv["Notification"],
     focus: () => window.focus(),
-    open: target => target.kind === "card" ? followCard(target.key) : follow(target.key),
+    open: target => target ? jumpTo(target.kind, target.key) : clearSelectedItem(),
   };
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
     document.addEventListener("click", () => { void Notification.requestPermission().catch(() => {}); }, { once: true });

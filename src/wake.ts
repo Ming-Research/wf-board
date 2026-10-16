@@ -18,6 +18,16 @@ export type WakeFrame = { n: number; at: string; event: WakeKind } & Record<stri
 
 /** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
 export interface Told { title: string; message: string; target?: { kind: "card" | "item"; key: string } }
+
+/** The card or item a frame is about, for a click to open: a stalled item, or the item or card a note is on. Other frames have none. */
+function targetOf(frame: WakeFrame): Told["target"] {
+  if (frame.event === "stalled" && typeof frame.item === "string") return { kind: "item", key: frame.item };
+  if (frame.event === "note" && typeof frame.target === "string") {
+    if (frame.target.startsWith("it:")) return { kind: "item", key: frame.target.slice(3) };
+    if (frame.target.startsWith("q:")) return { kind: "card", key: frame.target.slice(2) };
+  }
+  return undefined;
+}
 export interface TimedMark { at: string; head: string }
 export interface WakeOptions {
   /** Where events, receipts and alerts are kept so numbers continue across a restart; without it they live in memory only. */
@@ -159,7 +169,7 @@ export class Wake {
     this.alerted = true;
     this.append({ alert: true, at: this.iso() });
     const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, typeof oldest.item === "string" ? { kind: "item", key: oldest.item } : undefined);
+    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
   /** Tell the owner, and tell every listener (the open pages). A failure is logged and never reaches the write that caused it. */

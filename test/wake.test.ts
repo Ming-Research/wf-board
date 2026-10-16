@@ -397,12 +397,15 @@ test("with no receipt for the limit the server's timer tells the owner once, and
 test("a card that stops work tells the owner once; a card without blocks, a revision that keeps blocks and a ruled card do not", async t => {
   const told: Array<[string, string]> = [];
   const wake = new Wake({ notify: (title, message) => { told.push([title, message]); } });
+  const targets: unknown[] = [];
+  wake.onTell(notice => targets.push(notice.target));
   const { op } = await server(t, { wake });
   const card = { author, key: "gate", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }] };
   await op.writeCard(card);
   assert.deepEqual(told, [], "a card without blocks tells no one");
   await op.writeCard({ ...card, key: "hard", blocks: "#398 合并停着" });
   assert.deepEqual(told, [["挡事的卡 · Whitefoot", "合并吗？（挡住：#398 合并停着）"]]);
+  assert.deepEqual(targets, [{ kind: "card", key: "hard" }], "the notice opens the card that stopped work");
   await op.writeCard({ ...card, key: "hard", rev: 1, blocks: "#398 合并停着", question: "改写" });
   assert.equal(told.length, 1, "revising without changing blocks says nothing new");
   await op.writeCard({ ...card, key: "gate", rev: 1, blocks: "现在停了" });
@@ -490,4 +493,26 @@ test("a told notice goes to the server's notify and to each listener with its ca
   wake.tell("之后", "没人听");
   assert.deepEqual(notified, ["挡事的卡 · Whitefoot", "架构师一小时没响应", "之后"], "the script notice still goes out for every tell");
   assert.deepEqual(told, [JSON.stringify({ title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } })]);
+});
+
+test("a no-receipt notice opens the item or card its oldest unanswered event is about, and none when that event has no target", () => {
+  let clock = T0;
+  const targets: unknown[] = [];
+  const wake = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  wake.onTell(notice => targets.push(notice.target));
+  wake.push("note", { note: "n1", target: "q:choice", kind: "comment", title: "问题", project: "Whitefoot" });
+  clock += 60_000; wake.checkReceipts();
+  assert.deepEqual(targets, [{ kind: "card", key: "choice" }]);
+  const second = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const seconds: unknown[] = [];
+  second.onTell(notice => seconds.push(notice.target));
+  second.push("stalled", { item: "a", project: "Whitefoot", title: "中文检查", text: "无人推进" });
+  clock += 60_000; second.checkReceipts();
+  assert.deepEqual(seconds, [{ kind: "item", key: "a" }]);
+  const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const none: unknown[] = [];
+  third.onTell(notice => none.push(notice.target));
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok" });
+  clock += 60_000; third.checkReceipts();
+  assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
 });
