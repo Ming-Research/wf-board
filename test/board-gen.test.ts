@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateBoard } from "./e2e/board-gen.ts";
@@ -33,4 +33,30 @@ for (const seed of [1, 2]) test(`generated board ${seed}: valid documents, every
   const docs = new Set(steps.flatMap(step => step.docs.map(d => d.kind + ":" + d.id)));
   assert.ok(docs.size >= 10 && docs.size <= 80, "a walkable number of unread documents: " + docs.size);
   assert.ok([...docs].some(d => d.startsWith("note:")) && [...docs].some(d => d.startsWith("decision:")) && [...docs].some(d => d.startsWith("item:")));
+});
+
+// Item e2e-git-tmp-flake: git's automatic maintenance, left in the background, repacked while the next git add ran.
+// Every git commit gets maintenance (gc.auto=1); git's trace2 log shows whether a git add starts during a maintenance run.
+test("seeding: automatic maintenance ends before the next git add starts", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-gen-"));
+  const traceDir = await mkdtemp(join(tmpdir(), "wf-board-trace-"));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => rm(traceDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const trace = join(traceDir, "trace2.jsonl");
+  const env = { GIT_TRACE2_EVENT: trace, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "gc.auto", GIT_CONFIG_VALUE_0: "1" };
+  const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+  await seedBoard(dir, generateBoard(1));
+  // Each line is one trace2 event: start events carry argv, exit events end the process with the same sid.
+  type Event = { event: string; sid: string; t_abs: number; argv?: string[] };
+  const events = (await readFile(trace, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line) as Event);
+  const exitAt = (sid: string, from: number) => events.find(e => e.event === "exit" && e.sid === sid && e.t_abs >= from)?.t_abs ?? Infinity;
+  const maintenance = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack"))
+    .map(e => ({ from: e.t_abs, to: exitAt(e.sid, e.t_abs) }));
+  const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.t_abs);
+  assert.ok(maintenance.length > 0, "automatic maintenance ran: " + maintenance.length);
+  assert.ok(adds.length > 0, "git add ran: " + adds.length);
+  const overlaps = adds.filter(a => maintenance.some(m => a >= m.from && a < m.to));
+  assert.equal(overlaps.length, 0, "no git add starts during a maintenance run");
 });

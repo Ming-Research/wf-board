@@ -41,6 +41,9 @@ const collections = { item: "items", decision: "decisions", note: "notes", gloss
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
+/** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
+ * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
+const FOREGROUND_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
@@ -306,7 +309,7 @@ export class Store {
 
   private async git(args: string[], author?: string): Promise<string> {
     const slug = author?.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-    const result = await run("git", args, {
+    const result = await run("git", [...FOREGROUND_MAINTENANCE, ...args], {
       cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
         ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
@@ -1188,9 +1191,9 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
+  const dirty=await run("git",[...FOREGROUND_MAINTENANCE,"status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
-  loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
+  loaded.snapshot.head=(await run("git",[...FOREGROUND_MAINTENANCE,"rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
 /** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
