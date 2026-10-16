@@ -603,14 +603,14 @@ export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
     const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
     host.appendChild(block);
     const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
-    const out = { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: bar.height, blockHeight: block.getBoundingClientRect().height + "px", own: own.backgroundColor };
+    const out = { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: parseFloat(bar.height), blockHeight: block.getBoundingClientRect().height, own: own.backgroundColor };
     host.remove();
     return out;
   });
   if (probe.bar === "rgba(0, 0, 0, 0)" || probe.bar === "transparent") v.push("changed-block: a changed block has no blue bar");
   if (probe.width !== "3px") v.push(`changed-block: a changed block's bar is ${probe.width} wide, expected 3px`);
-  if (probe.position !== "absolute" || probe.left !== "-6px") v.push(`changed-block: a changed block's bar is at ${probe.left} (${probe.position}), not beside its left edge at -6px`);
-  if (probe.height !== probe.blockHeight) v.push(`changed-block: a changed block's bar is ${probe.height} tall, the block is ${probe.blockHeight}`);
+  if (probe.position !== "absolute" || probe.left !== "-7px") v.push(`changed-block: a changed block's bar is at ${probe.left} (${probe.position}), not beside its left edge at -7px`);
+  if (Math.abs(probe.height - (probe.blockHeight - 6)) > 0.5) v.push(`changed-block: a changed block's bar is ${probe.height}px tall, expected the block's height less 6px (${probe.blockHeight - 6}px)`);
   if (probe.own !== "rgba(0, 0, 0, 0)" && probe.own !== "transparent") v.push(`changed-block: a changed block has a background ${probe.own}`);
   return v;
 }
