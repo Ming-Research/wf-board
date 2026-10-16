@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { setTimeout } from "node:timers/promises";
 import { parse } from "yaml";
 import { Item } from "../src/model.ts";
-import { Store, ConflictError, ValidationError, type ChangedDoc, type CommitInfo } from "../src/store.ts";
+import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc, type CommitInfo } from "../src/store.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -601,7 +601,6 @@ test("startup renames coordinator identity once without changing free text", asy
     put("request", { ...item(prose, prose), group: "Other", request: { by: "跨项目", at }, log: [{ at, by: "跨项目", text: prose }] }),
     { kind: "decision", id: "card", expectRev: null, doc: { item: "area", question: prose, background: prose, options: [{ key: "A", text: prose }], status: "ruled", ruling: prose, updated: at } },
     { kind: "note", id: "reply", expectRev: null, doc: { target: "q:card", kind: "comment", text: prose, reply: prose, repliedBy: "跨项目", repliedAt: at, at, state: "done" } },
-    { kind: "notice", id: "news", expectRev: null, doc: { text: prose, author: "跨项目", at } },
     { kind: "glossary", id: "跨项目", expectRev: null, doc: { terms: [{ term: "跨项目依赖", definition: prose, by: "跨项目", updated: at }] } },
     { kind: "glossary", id: "Other", expectRev: null, doc: { terms: [{ term: "跨项目", definition: prose, by: "跨项目", updated: at }] } },
   ] });
@@ -617,8 +616,6 @@ test("startup renames coordinator identity once without changing free text", asy
   expected.items.request!.rev++;
   expected.notes.reply!.repliedBy = "总管";
   expected.notes.reply!.rev++;
-  expected.notices.news!.author = "总管";
-  expected.notices.news!.rev++;
   expected.glossaries["总管"] = expected.glossaries["跨项目"]!;
   delete expected.glossaries["跨项目"];
   expected.glossaries["总管"]!.terms[0]!.by = "总管";
@@ -1097,5 +1094,45 @@ test("startup numbers documents written before numbers existed once, oldest firs
   assert.equal(s.activity!.writes.length, (await reopened.log()).length - 1, "every commit but the numbering counts as board activity");
   const head = await git(dir, "rev-parse", "HEAD");
   await Store.open(dir);
+  assert.equal(await git(dir, "rev-parse", "HEAD"), head);
+});
+
+test("localFile gives a path in the data directory that git leaves out, once, and never commits it", async t => {
+  const { dir, store } = await setup(t);
+  const path = await store.localFile("state/wake.jsonl");
+  assert.equal(path, join(dir, "state/wake.jsonl"));
+  assert.equal(await store.localFile("state/wake.jsonl"), path);
+  await writeFile(path, '{"latest":1}\n');
+  assert.equal(await git(dir, "status", "--porcelain"), "", "the file does not make the working tree look dirty");
+  assert.equal(await git(dir, "check-ignore", "state/wake.jsonl"), "state/wake.jsonl");
+  assert.equal((await readFile(join(dir, ".git/info/exclude"), "utf8")).split("\n").filter(l => l === "/state/wake.jsonl").length, 1, "listed once, however often it is asked for");
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  assert.ok(!(await git(dir, "ls-files")).includes("wake.jsonl"));
+  assert.equal((await Store.open(dir)).snapshot().head, store.snapshot().head, "a reopened store accepts the file beside a clean board");
+});
+
+test("the notices of the retired 要你知道 list are deleted once, in one commit that history and active time ignore", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  await mkdir(join(dir, "notices"));
+  for (const id of ["one", "two"]) await writeFile(join(dir, `notices/${id}.yaml`), `text: 通知 ${id}\nauthor: Whitefoot\nat: ${at}\nread: ${at}\nrev: 1\n`);
+  await git(dir, "add", "notices"); await git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "post_notice one");
+  const before = store.snapshot().items;
+  const reopened = await Store.open(dir), head = await git(dir, "rev-parse", "HEAD");
+  assert.equal(await git(dir, "log", "-1", "--format=%s"), RETIRE_NOTICES_MESSAGE);
+  assert.equal(await git(dir, "log", "-1", "--format=%an"), "wf-board");
+  assert.equal(await git(dir, "show", "--name-status", "--format=", "HEAD"), "D\tnotices/one.yaml\nD\tnotices/two.yaml", "only the notices go");
+  assert.equal(await git(dir, "status", "--porcelain"), "");
+  await assert.rejects(readFile(join(dir, "notices/one.yaml")), /ENOENT/);
+  assert.match(await git(dir, "log", "--format=%s", "--", "notices/one.yaml"), /post_notice one/, "history keeps them");
+  const snapshot = reopened.snapshot();
+  assert.equal(snapshot.head, head);
+  assert.ok(!("notices" in snapshot), "the board has no notices any more");
+  assert.deepEqual(snapshot.items, before);
+  // Active time: the notice commit still counts as a write, the deletion does not.
+  const contentCommits = Number(await git(dir, "rev-list", "--count", "HEAD~1", "--", "board.yaml", "items", "decisions", "notes", "notices", "glossaries"));
+  assert.equal(snapshot.activity!.writes.length, contentCommits);
+  // A second start finds nothing to do.
+  assert.equal((await Store.open(dir)).snapshot().head, head);
   assert.equal(await git(dir, "rev-parse", "HEAD"), head);
 });

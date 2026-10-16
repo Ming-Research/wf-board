@@ -104,7 +104,7 @@ header.top { padding-block: 26px 14px; display: flex; flex-direction: column; ga
 h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 0; text-wrap: balance; font-weight: 700; }
 .goal { margin: 0; max-width: 68ch; }
 .meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
-/* Four concerns: owner waits, unread notices, unread navigation and filters, then tools, legend and project links. */
+/* Three concerns: owner waits, unread navigation and filters, then tools, legend and project links. */
 .summary, .header-wait { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sum-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .sum-divider { flex: none; width: 1px; height: 1em; background: var(--rule); }
@@ -115,17 +115,13 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .sbtn.s-new { background: var(--fresh); border-color: var(--fresh); color: var(--fresh-ink); font-weight: 600; }
 .sbtn.s-read { border-color: var(--fresh); color: var(--fresh); }
 .sbtn.s-plain:hover, .sbtn.s-read:hover { border-color: var(--accent); color: var(--accent); }
-.waitpanel, .noticepanel { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+.waitpanel { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
 .waitpanel { background: var(--blockwait-soft); border-color: var(--blockwait); max-height: 40vh; overflow-y: auto; }
 .waitrow { font: inherit; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; text-align: left; background: none; border: 0; color: var(--ink); cursor: pointer; padding: 2px 0; }
 .waitrow .where { color: var(--muted); font-size: 12px; }
 .waitrow .t { font-weight: 600; }
 .waitdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blockwait); flex: none; }
 .waitmore { font-size: 12px; color: var(--muted); }
-.notice-head { font-weight: 600; }
-.notice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
-.notice .where { color: var(--muted); font-size: 12px; }
-.notice-text { flex: 1 1 12em; min-width: 0; }
 .sum-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sum-stats .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .sendbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; }
@@ -399,8 +395,8 @@ details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; displa
 @media (max-width: 704px) {
   body.wide .wrap { min-width: 0; grid-template-columns: minmax(0, 1fr) 8px minmax(0, 1fr); }
   body.wide .page-left, body.wide #item-detail { overflow-x: hidden; }
-  .header-wait, .noticepanel { overflow-wrap: anywhere; }
-  .waitrow, .notice > * { min-width: 0; max-width: 100%; }
+  .header-wait { overflow-wrap: anywhere; }
+  .waitrow { min-width: 0; max-width: 100%; }
   .summary .sbtn { max-width: 100%; white-space: normal; }
   .summary .readconfirm { min-width: 0; flex-wrap: wrap; }
 }
