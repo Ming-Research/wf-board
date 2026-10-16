@@ -322,7 +322,11 @@ restart.
 - A restart is skipped only when every changed path is in `NO_RESTART`
   (`src/deploy.ts`, the one place the list is defined): the daemon loads `src/`
   and the packages at its start and reads nothing else of the checkout but the
-  page files, which it reads from disk on each request. Any other path restarts.
+  page files, which it reads from disk on each request. The root's README.md,
+  LICENSE and AGENTS.md (exact paths) and the `.github/` directory are read by
+  no code the daemon runs, so they need no restart either. A path that only
+  starts with one of those names, such as `LICENSE.ts`, restarts. Any other
+  path restarts.
   A daemon that is down at the deploy is restarted whatever changed, since a
   deploy leaves the board up.
 - Pages open in the owner's browser are replaced after the deploy, and the job
