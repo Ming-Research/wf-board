@@ -550,7 +550,7 @@ export class Store {
     const activity = this.state.activity ?? { writes: [], items: {} };
     const items = Object.entries(this.state.items).flatMap(([id, it]): Array<[string, CachedPauseItem]> => {
       const projected = pauseProjection(it, id, it.updated);
-      return projected ? [[id, { group: projected.group, record: projected.record, plan: projected.plan as CachedPauseItem["plan"], updated: projected.updated, ...(projected.paused ? { paused: projected.paused } : {}) }]] : [];
+      return projected ? [[id, { group: projected.group, record: projected.record === true, plan: projected.plan as CachedPauseItem["plan"], updated: projected.updated, ...(projected.paused ? { paused: projected.paused } : {}) }]] : [];
     });
     return {
       version: STARTUP_CACHE_VERSION, head: this.state.head,

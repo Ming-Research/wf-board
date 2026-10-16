@@ -11,7 +11,7 @@ type Activity = NonNullable<Snapshot["activity"]>;
 /** Every field of the activity index, each required (an absent optional field is null). Declared against the index's
  * own type, so a field added to the index fails to compile here until the cache stores it, and a cache that lacks a
  * field, or has one this code does not know, is refused instead of read with an empty field. */
-const CachedActivity: z.ZodType<{ [K in keyof Activity]-?: Activity[K] | null }> = z.object({
+const CachedActivity: z.ZodType<{ [K in keyof Activity]-?: undefined extends Activity[K] ? Exclude<Activity[K], undefined> | null : Activity[K] }> = z.object({
   writes: z.array(z.string()),
   items: z.record(z.string(), z.string()),
   pauses: z.record(z.string(), z.array(z.object({ start: z.string(), end: z.string().optional() }).strict())).nullable(),
