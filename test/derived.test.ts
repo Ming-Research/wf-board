@@ -81,7 +81,9 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       const id = pick(itemsOf(s)), it = s.items[id]!, steps = it.plan.filter(row => "text" in row && !row.accept);
       if (!steps.length) return;
       const row = pick(steps) as { id: string; text: string }, st = pick(["todo", "doing", "done"] as const);
-      return op.setPlan({ author: it.group, id, row: { id: row.id, text: row.text, state: st } });
+      // Some step texts name another item: a doing step's clock then reads that item's changes too.
+      const text = rand() < 0.4 ? `${row.text} [[it:${pick(itemsOf(s))}]]` : row.text;
+      return op.setPlan({ author: it.group, id, row: { id: row.id, text, state: st } });
     },
     async s => { const id = pick(itemsOf(s)), other = pick(itemsOf(s)); return op.setPlan({ author: s.items[id]!.group, id, row: { item: other, own: false } }); },
     async s => {

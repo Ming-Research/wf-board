@@ -123,8 +123,10 @@ derivation design that replaced this:
   rederive only the items the write can reach (`affectedItems` in
   `src/rules.ts`): the written items, cards and notes, then along plan edges
   while an item's derived summary changes, plus every reached item's
-  ancestors. A change of elapsed time alone is left to the minute timers,
-  which rescan and repaint everything as before.
+  ancestors, and the items whose doing steps name a reached item or one of its
+  ancestors (their stalled clock reads it, see the stalled-work rule). A
+  change of elapsed time alone is left to the minute timers, which rescan and
+  repaint everything as before.
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
@@ -276,13 +278,17 @@ log:
   [Item plans](#item-plans).
 - **Stalled work.** A work item in progress that has at least one `doing`
   step of its own is flagged after at least one hour of active time without
-  a change to itself: `进行中但 1 小时（活跃时间）没有动静`. An item that is in
-  progress only through an owned item has no own clock; that item carries the
-  flag. Each board content write starts a
+  a change to the clock's items: `进行中但 1 小时（活跃时间）没有动静`. The
+  clock's items are the item itself, each owned item in progress, and each
+  item a doing step names with `[[it:key]]`, with every item each of those
+  owns down every layer. A shared dependency is another item's work and does
+  not count. An item whose progress comes only from owned items has no clock
+  of its own; the owned item with the doing step carries the flag. Each board
+  content write starts a
   30-minute active interval; overlapping intervals count only once, and the
-  measure clips their union to the item's last change through the current
-  time. When no one writes, all clocks stop after the last interval ends.
-  Item revisions, log entries, cards and notes on the item reset its last
+  measure clips their union to the clock items' latest change through the
+  current time. When no one writes, all clocks stop after the last interval ends.
+  Item revisions, log entries, cards and notes on a clock item reset its last
   change. Records and items in other statuses are never flagged.
   Effective pauses suppress the flag and freeze the clock: the union of
   historical pause intervals is excluded from active time, including inherited
