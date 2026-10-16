@@ -29,7 +29,7 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
   const families: Array<[string, (o: Oracle) => Promise<string[]>]> = [
     ["tree rows select their item", o => checkTreeRows(bp, o)],
     ["plan rows: items go there, cards go to the card in the body or open under their row, steps select", o => checkPlanRows(bp, o, planItems(o))],
-    ["decision cards show question, option names and details, confidence or a one-line pick, folded old background, and sit where the head puts them or are drawn when asked for", o => checkCardBox(bp, o, cardSample(o))],
+    ["decision cards show question, option names and details, confidence or a one-line pick, folded old background, and sit where the head puts them or follow it with a note", o => checkCardBox(bp, o, cardSample(o))],
     ["dependent rows go to their item and Back returns", o => checkDependents(bp, o, depItems(o))],
     ["purple and red numbers count and reach their own waits", o => checkBadges(bp, o)],
     ["header wait numbers and the wait panel", o => checkWaitPanel(bp, o)],

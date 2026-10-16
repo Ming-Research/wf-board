@@ -1250,13 +1250,12 @@ where the design reaches it.
   not place. A placement is a convention of the head's text, not a stored field,
   so a rewritten head can move it with no card write; a revision of the head
   that drops a decision drops its card (`withdraw_card`).
-- **Cards with no place.** A card the head does not place is not drawn in the
-  body. The page draws it when asked for, and remembers that like a 参考
-  section: from its plan row when it has one (the card opens directly under the
-  row), else from its button in the item's 决策 line (the card opens after the
-  reference lines). Going to the card by any other way, such as search, the
-  new-content walk or a wait number, asks for it too. A card the head places is
-  never drawn twice; its row and its 决策 button go to its line in the head.
+- **Cards with no place.** A card the head does not place (a new card written
+  without its line, which raises 卡没标位置) is still drawn once in the body,
+  after the head, under a line saying it has no place there and how to give it
+  one. Every card is drawn once, in the body: its plan row, its 决策 button and
+  any link go to that card, wherever it stands, and nothing expands under a
+  row. A closed card is one folded line wherever it stands.
 - **Ruling.** The owner's pick on the page is recorded by the board itself:
   sending a choice note sets `status: ruled`, `choice` and `ruledAt` (the send
   time) on the open card in the same commit, so no session has to rule it
@@ -2719,15 +2718,14 @@ server's unread history:
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
   names its question (and the pick once ruled) and goes to that card in the
-  body when the head places it, else draws it under the row (a second click
-  folds it again), keeping the selected item; a step row selects the step and
-  keeps the item;
-- each card shows once in its item's body with its question, its option names
-  and details (the recommended one marked) and its confidence or, once closed,
-  one line with its pick and the rest folded under it, its old background
-  folded (open on an open card), and at the line of the head that places it; a
-  card the head does not place is not drawn until it is asked for from its row
-  or its 决策 button;
+  body, never drawing it under the row, keeping the selected item; a step row
+  selects the step and keeps the item;
+- each card shows once in its item's body with its question once, its option
+  names and details (the recommended one marked) and its confidence or, once
+  closed, one line with its pick and the rest folded under it, its old
+  background folded (open on an open card), and at the line of the head that
+  places it; a card the head does not place follows the head under a line that
+  says so;
 - each 被依赖 row goes to its dependent and 返回 comes back;
 - the purple and red numbers after a title equal the blocking and other waits
   in the item's owned subtree, and clicking a number as often as it says

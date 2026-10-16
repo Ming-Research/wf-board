@@ -113,26 +113,19 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
         if (d.status === "ruled" && d.choice !== undefined && !rowText.includes("选 " + d.choice)) v.push(`plan-card-row: in ${x}'s plan, the ruled card ${card}'s row does not say what was chosen`);
         const picked = d.options.find(op => op.key === d.choice);
         if (picked && !rowText.includes(((picked.text || picked.detail || "").split("\n")[0]!).replace(/[*`]/g, "").trim().slice(0, 4))) v.push(`plan-card-row: in ${x}'s plan, the ruled card ${card}'s row does not name the option chosen`);
-        const placed = placedCards(o.s.items[x]!.head).includes(card), cardEl = page.locator(`#item-detail [id="q-${q(card)}"]`);
-        const shownBefore = await cardEl.count();
+        const cardEl = page.locator(`#item-detail [id="q-${q(card)}"]`);
         const goWidth = await page.locator(sel + " .plan-main a").first().evaluate(a => a.getBoundingClientRect().width);
         if (goWidth < 20) { v.push(`plan-card-row: in ${x}'s plan, the question of card ${card} is squeezed to ${Math.round(goWidth)} px by the rest of its row`); continue; }
         if (!await attempt(v, `plan-card-row ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
         await bp.settle();
         const got = await bp.selected();
         if (got !== x) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} switched the selected item to ${got} instead of going to the card in the body`);
-        else if (placed) {
-          // A card the head places: the click goes to it in the body.
-          if (!(await bp.currentCards()).includes(card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not make that card the current one in the body`);
+        else {
+          // The click goes to the card in the body, placed or not; it is drawn once and not under the row.
+          if (await cardEl.count() !== 1) v.push(`plan-card-row: in ${x}'s plan, card ${card} is drawn ${await cardEl.count()} times in the body, not once`);
+          else if (!(await bp.currentCards()).includes(card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not make that card the current one in the body`);
           else if (!await page.evaluate(c => { const e = document.getElementById("q-" + c), pane = document.getElementById("item-detail"); if (!e || !pane) return false; const a = e.getBoundingClientRect(), b = pane.getBoundingClientRect(); return a.bottom > b.top && a.top < b.bottom; }, card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not bring the card into view`);
-        } else {
-          // A card the head does not place: the click draws it under its row, or folds it again once drawn.
-          const after = await cardEl.count();
-          if (after !== (shownBefore ? 0 : 1)) v.push(`plan-card-row: in ${x}'s plan, clicking the row of the unplaced card ${card} ${shownBefore ? "did not fold it" : "did not draw it"}`);
-          else if (!shownBefore && !await page.evaluate(([id, c]) => document.getElementById(id!)?.nextElementSibling?.id === "q-" + c, [el, card])) v.push(`plan-card-row: in ${x}'s plan, the unplaced card ${card} is not drawn directly under its row`);
-          // The second click reverses the first.
-          else if (!await attempt(v, `plan-card-row again ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
-          else { await bp.settle(); if (await cardEl.count() !== shownBefore) v.push(`plan-card-row: in ${x}'s plan, a second click on the row of card ${card} did not undo the first`); }
+          else if (await page.evaluate(([id, c]) => document.getElementById(id!)?.nextElementSibling?.id === "q-" + c, [el, card])) v.push(`plan-card-row: in ${x}'s plan, the card ${card} is drawn under its row as well as in the body`);
         }
       } else if (row === firstStep) {
         if (!await ensure(x)) continue;
@@ -146,32 +139,21 @@ export async function checkPlanRows(bp: BoardPage, o: Oracle, items: string[]): 
   return v;
 }
 
-/** A decision card in its item's body: shown once with its question, its options (an open card: a button for each with
- * its name and detail, the recommended one marked) or, once closed, on one line with its pick (which says so when it was
- * ruled in words, then showing the ruling), everything else under that line; the confidence; its old background folded
- * (an open card's starts open). A card the head places with a line [[q:key]] stands at that line inside the head. A card
- * it does not place is not drawn until it is asked for, from its plan row or else from the item's 决策 line, and then
- * stands under that row, or after the item's reference lines. With `fresh` the page has not been asked for the card yet,
- * so what starts folded must be folded. */
+/** A decision card in its item's body: drawn once, with its question once, its options (an open card: a button for each
+ * with its name and detail, the recommended one marked) or, once closed, on one line with its pick (which says so when it
+ * was ruled in words, then showing the ruling), everything else under that line; the confidence; its old background
+ * folded (an open card's starts open). A card the head places with a line [[q:key]] stands at that line inside the head.
+ * A card it does not place follows the head, after a line saying it has no place there. Nothing starts open for a card
+ * nobody went to, so with `fresh` (the page has not been sent to the card yet) what starts folded must be folded. */
 export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fresh = false): Promise<string[]> {
   const v: string[] = [], page = bp.page;
   for (const card of cards) {
     const d = o.s.decisions[card]!, item = o.s.items[d.item]!;
     if (await bp.selected() !== d.item) await bp.select(d.item);
-    const placed = placedCards(item.head).includes(card), row = item.plan.find(r => "card" in r && r.card === card);
+    const placed = placedCards(item.head).includes(card);
     const box = page.locator(`#item-detail [id="q-${q(card)}"]`);
-    let asked = false;
-    if (!placed) {
-      if (fresh && await box.count()) v.push(`card-unplaced: card ${card} has no line in the head but is drawn before it was asked for`);
-      if (!await box.count()) {
-        // Ask for it where the page offers it: its plan row, else the item's 决策 line.
-        const entry = row ? page.locator(`#item-detail [id="${q("plan-" + encodeURIComponent(JSON.stringify([d.item, row.id])))}"] .plan-main a.cardgo`) : page.locator(`#item-detail .refs button.ref.q[data-card="${q(card)}"]`);
-        if (!await attempt(v, `card-box ask ${card}`, () => entry.click())) continue;
-        await bp.settle(); asked = true;
-      }
-    }
-    if (await box.count() !== 1) { v.push(`${placed && !await box.count() ? "card-place" : "card-box"}: card ${card} shows ${await box.count()} times in ${d.item}'s body, not once${placed ? " although its line stands in the head" : ""}`); continue; }
-    const m = await page.evaluate(([c, rowId]) => {
+    if (await box.count() !== 1) { v.push(`${placed ? "card-place" : "card-unplaced"}: card ${card} shows ${await box.count()} times in ${d.item}'s body, not once${placed ? " although its line stands in the head" : " although it is drawn after the head when its line is missing"}`); continue; }
+    const m = await page.evaluate(c => {
       const e = document.getElementById("q-" + c)!, legacy = e.querySelector("details.legacy") as HTMLDetailsElement | null, fold = e.querySelector("details.cardfold") as HTMLDetailsElement | null;
       const parent = e.parentElement!, head = e.closest(".rich"), plain = (n: Element | null) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
       return { title: e.querySelector("h3")?.textContent ?? "",
@@ -180,12 +162,16 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
         pick: e.querySelector(".pick")?.textContent ?? null, send: !!e.querySelector(".cardsend"), legacy: legacy ? { open: legacy.open, label: legacy.querySelector("summary")?.textContent ?? "", text: legacy.textContent ?? "" } : null,
         fold: fold ? { open: fold.open, line: fold.querySelector("summary")?.textContent ?? "" } : null, closedClass: e.classList.contains("closed"),
         inHead: !!head && parent.classList.contains("rich"),
-        underRow: !!rowId && document.getElementById(rowId)?.nextElementSibling === e,
+        note: e.previousElementSibling?.classList.contains("unplacednote") ? plain(e.previousElementSibling) : null,
+        afterHead: !!parent.querySelector(":scope > .rich") && !!(parent.querySelector(":scope > .rich")!.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING),
+        headings: e.querySelectorAll("h3").length, inPlan: !!e.closest(".plan"),
         tags: [...e.querySelectorAll("h3 .waittag, h3 .asktag, h3 .closedtag")].map(t => t.textContent) };
-    }, [card, row ? "plan-" + encodeURIComponent(JSON.stringify([d.item, row.id])) : ""] as const);
+    }, card);
     const first = (text: string) => text.split("\n")[0]!.replace(/[*`]/g, "").trim();
     const title = first(d.question);
     if (!m.title.includes(title.slice(0, 12))) v.push(`card-box: card ${card}'s heading does not show its question`);
+    // The question is shown once: one heading in the card, and the card is not a second copy inside a plan.
+    if (m.headings !== 1 || m.inPlan) v.push(`card-question: card ${card} shows its question ${m.inPlan ? "inside the plan, as well as in the body" : m.headings + " times in its box"}, not once`);
     const words = d.status === "ruled" && d.choice === undefined;
     // A name when the option has one, else the first line of its detail.
     const label = (op: { text: string; detail?: string }) => (op.text || first(op.detail ?? "")).slice(0, 6);
@@ -220,9 +206,8 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
       if (!m.fold) v.push(`card-box: ${d.status} card ${card} has no fold under its line`);
       else {
         if (!m.fold.line.includes(title.slice(0, 12))) v.push(`card-box: ${d.status} card ${card}'s line does not show its question`);
-        // The page opens a closed card the reader asked for; a placed one nobody asked for stays folded.
-        if (fresh && placed && m.fold.open) v.push(`card-fold: ${d.status} card ${card} is unfolded by default`);
-        if (asked && !m.fold.open) v.push(`card-fold: ${d.status} card ${card} was asked for but stays folded`);
+        // Nobody went to the card yet, so a closed card is one folded line.
+        if (fresh && m.fold.open) v.push(`card-fold: ${d.status} card ${card} is unfolded by default`);
         if (!m.fold.open) {
           // Under a closed line nothing is on screen; a click on the line shows it.
           if (await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows what is under its line while folded`);
@@ -259,7 +244,7 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
       if (!m.legacy) v.push(`card-box: card ${card} lost its old background`);
       else {
         if (m.legacy.label !== "原卡的背景") v.push(`card-box: card ${card}'s old background is titled "${m.legacy.label}", not "原卡的背景"`);
-        if (fresh && !asked && m.legacy.open !== (d.status === "open")) v.push(`${d.status === "open" ? "card-legacy-open" : "card-legacy"}: card ${card}'s old background is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
+        if (fresh && m.legacy.open !== (d.status === "open")) v.push(`${d.status === "open" ? "card-legacy-open" : "card-legacy"}: card ${card}'s old background is ${m.legacy.open ? "unfolded" : "folded"} by default, ${d.status === "open" ? "an open card's starts open" : "a closed card's starts folded"}`);
         const marker = first(d.legacy.background).slice(0, 6);
         if (!m.legacy.open && !await attempt(v, `card-box legacy ${card}`, async () => { await box.locator("details.legacy > summary").click(); await bp.settle(); })) continue;
         const shown = await box.locator("details.legacy").textContent() ?? "";
@@ -267,7 +252,10 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
       }
     }
     if (placed !== m.inHead) v.push(`card-place: card ${card} ${placed ? "has its line in the head but shows after it" : "has no line in the head but shows inside it"}`);
-    if (!placed && row && !m.underRow) v.push(`card-place: card ${card} has no line in the head but a row, and is not drawn directly under that row`);
+    if (!placed) {
+      if (!m.note || !m.note.includes("没标位置") || !m.note.includes(`[[q:${card}]]`)) v.push(`card-unplaced: card ${card} has no line in the head but no line before it says so, it has "${m.note}"`);
+      if (!m.afterHead && item.head) v.push(`card-unplaced: card ${card} has no line in the head but does not follow the head`);
+    } else if (m.note) v.push(`card-place: card ${card} has its line in the head but a line before it says it has no place`);
     if (placed) {
       // The card follows the paragraph that precedes its line and comes before the one after it.
       const lines = (item.head ?? "").split("\n"), at = lines.findIndex(l => l.trim() === `[[q:${card}]]`);

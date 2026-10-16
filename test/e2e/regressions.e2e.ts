@@ -58,7 +58,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "a card row in a plan did not go to the card in the item's body (feature, card-in-plan)",
     // The click handler keeps its default-prevention and does nothing else: the row stays put.
-    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); if (isPlaced(stored.card)) jump(\"q-\" + stored.card); else toggleCardUnder(stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
+    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump(\"q-\" + stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
     family: "plan-card-row",
     // The items whose plans hold the witness cards: blocking and placed in the head, ruled on a done item, blocking and not placed, converted from the old form.
     run: async (bp, b) => { const o = await oracle(b.store), w = b.gen.witness; return checkPlanRows(bp, o, [...new Set([w.multiPlanCard, w.donePlanCard, w.rowCard, w.openLegacyCard].map(c => o.s.decisions[c]!.item))]); },
@@ -122,11 +122,25 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.otherPlanCard, w.rowCard]); },
   },
   {
-    bug: "a card its item's head does not place was drawn after the head although nobody asked for it, so the 646 old cards filled every item (owner, 2026-10-16)",
-    // Every card with no line in the head and no plan row is drawn after the refs line.
-    reverts: [{ file: "web/app.ts", edit: "a card with no place is always drawn", find: ".filter(key => !placed.has(key) && !hasRow(key) && shownUnder(key))", replace: ".filter(key => !placed.has(key) && !hasRow(key))" }],
+    bug: "a card its item's head does not place was not drawn at all, so a card written without its line vanished from the page (architect, 2026-10-16)",
+    // Only the cards the head places are drawn.
+    reverts: [{ file: "web/app.ts", edit: "a card with no place is not drawn", find: "cardOrder(it.id).filter(key => !placed.has(key)).forEach(key => {", replace: "cardOrder(it.id).filter(key => false).forEach(key => {" }],
     family: "card-unplaced",
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "a card its item's head does not place was drawn without the line that tells the writer it has no place (architect, 2026-10-16)",
+    // The line before the card is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "a card with no place has no note", find: "body.appendChild(el(\"div\", \"unplacednote\", \"这张卡在正文里没标位置：补上一行 <code>[[q:\" + esc(key) + \"]]</code>，或者撤回它。\"));", replace: "" }],
+    family: "card-unplaced",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "a card showed its question twice, once in its heading and again in a second heading (owner, 2026-10-14)",
+    // The heading is added twice.
+    reverts: [{ file: "web/app.ts", edit: "a card draws its heading twice", find: "top.appendChild(h);", replace: "top.appendChild(h); top.appendChild(h.cloneNode(true));" }],
+    family: "card-question",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard]); },
   },
   {
     bug: "an open card showed its option names without what each option does, costs and risks (feature, card-in-plan)",

@@ -94,22 +94,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return [...placed, ...own.filter(key => !placed.includes(key))];
     });
   }
-  // A card its item's head places is drawn at that line. Any other card is drawn on request: under its row in the item's
-  // plan when it has one, else under the 决策 line; the request is remembered like an open 参考 section.
-  const cardUnderKey = (id: string) => "card-row\n" + id;
-  function isPlaced(id: string) { const d = snapshot.decisions[id]; return !!d && placedCards(snapshot.items[d.item]?.head).includes(id); }
-  function hasRow(id: string) { const d = snapshot.decisions[id]; return !!d && !!snapshot.items[d.item]?.plan.some(row => "card" in row && row.card === id); }
-  function shownUnder(id: string) { return !isPlaced(id) && !!refOpen[cardUnderKey(id)]; }
-  // Make the card visible where the reader asked for it: a closed card opens, a card with no place in the head is drawn.
+  // Every card is drawn once, in its item's body: at the line of the head that places it, else after the head with a
+  // line saying it has no place there. Plan rows, the 决策 buttons and links all go to that one card.
+  // Going to a closed card opens it.
   function revealCard(id: string) {
-    const d = snapshot.decisions[id]; if (!d) return;
-    if (d.status !== "open") rememberRef("card-open\n" + id, true);
-    if (!isPlaced(id)) rememberRef(cardUnderKey(id), true);
-  }
-  // A click asks for the card, or folds it again once shown; asking goes to the card like a click on a card in the head.
-  function toggleCardUnder(id: string) {
-    if (shownUnder(id)) { rememberRef(cardUnderKey(id), false); renderDetail(new Set(["card:" + id])); }
-    else jump("q-" + id);
+    const d = snapshot.decisions[id]; if (d && d.status !== "open") rememberRef("card-open\n" + id, true);
   }
   function planRowId(item: string, row: string) { return "plan-" + encodeURIComponent(JSON.stringify([item, row])); }
   let manual: Record<string, boolean> = {};
@@ -535,7 +524,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       openPath(it.id);
       selectItem(it.id);
     }
-    // Going to a card itself shows it: a closed card opens, and a card with no place in the head is drawn.
+    // Going to a card itself shows it: a closed card opens.
     if (target.card && target.id === "q-"+target.card) revealCard(target.card);
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
@@ -1816,8 +1805,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           // One line: the question's first line, and what was chosen once ruled. A click goes to the card in the body.
           const chosen = card.options.find(o => o.key === card.choice);
           const go = el("a", "plan-link cardgo", esc(plain(firstLine(card.question)) || stored.card)); go.href = "#";
-          go.title = isPlaced(stored.card) ? "到正文里的这张决策卡" : "在这一行下面展开这张决策卡";
-          const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); if (isPlaced(stored.card)) jump("q-" + stored.card); else toggleCardUnder(stored.card); };
+          go.title = "到正文里的这张决策卡";
+          const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump("q-" + stored.card); };
           go.addEventListener("click", jumpToCard);
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) jumpToCard(ev); });
@@ -1828,12 +1817,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       row.insertBefore(main, row.children[1] || null);
       return row;
     };
-    // A card its head does not place is drawn under its row once the reader asked for it.
-    const appendRow = (outer: HTMLElement, value: typeof rows[number]) => {
-      outer.appendChild(renderRow(value));
-      const key = "card" in value.row ? value.row.card : undefined, d = key === undefined ? undefined : index().decById.get(key);
-      if (d && d.item === it.id && shownUnder(d.id)) outer.appendChild(decisionCard(d));
-    };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
       const group=groups.get(i), end=group?.end ?? i+1;
@@ -1841,10 +1824,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     const renderUnit = (unit: typeof units[number]) => {
       const group = groups.get(unit.start);
-      if (!group) { appendRow(box, rows[unit.start]!); return; }
+      if (!group) { box.appendChild(renderRow(rows[unit.start]!)); return; }
       const bracket = el("div", "plan-group"); bracket.setAttribute("role", "group"); bracket.setAttribute("aria-label", "可同时进行");
       bracket.appendChild(el("div", "plan-group-label", "可同时进行"));
-      rows.slice(unit.start,unit.end).forEach(row => appendRow(bracket, row)); box.appendChild(bracket);
+      rows.slice(unit.start,unit.end).forEach(row => bracket.appendChild(renderRow(row))); box.appendChild(bracket);
     };
     units.forEach(renderUnit);
     return box;
@@ -1937,8 +1920,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const pick = d?.status === "ruled" && d.choice !== undefined ? " · 选 " + d.choice : d?.status === "withdrawn" ? " · 已撤回" : "";
           const b = el("button", "ref q" + (openQ(q) ? " open" : ""), esc(label.length > 24 ? label.slice(0, 24) + "…" : label) + esc(pick) + (talk ? " · 评论 " + talk : ""));
           b.type = "button"; b.dataset.card = q;
-          b.title = !d ? "" : isPlaced(q) ? "到正文里的这张决策卡" : refOpen[cardUnderKey(q)] ? "收起这张决策卡" : "展开这张决策卡";
-          b.addEventListener("click", () => { if (!d) return; if (isPlaced(q)) jump("q-" + q); else toggleCardUnder(q); });
+          b.title = d ? "到正文里的这张决策卡" : "";
+          b.addEventListener("click", () => { if (d) jump("q-" + q); });
           refs.appendChild(b);
         });
       }
@@ -2097,6 +2080,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         }
         body.appendChild(head);
       }
+      // A card the head does not place (a new card written without its line) follows the head, each with a line saying so.
+      cardOrder(it.id).filter(key => !placed.has(key)).forEach(key => {
+        const d = index().decById.get(key); if (!d) return;
+        body.appendChild(el("div", "unplacednote", "这张卡在正文里没标位置：补上一行 <code>[[q:" + esc(key) + "]]</code>，或者撤回它。"));
+        body.appendChild(decisionCard(d));
+      });
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
       if (ws.length) {
@@ -2113,8 +2102,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         body.appendChild(cb);
       }
       const refs=refsRow(it,before); if (refs) body.appendChild(refs);
-      // A card with no place in the head and no row in the plan is drawn here once the reader asked for it.
-      cardOrder(it.id).filter(key => !placed.has(key) && !hasRow(key) && shownUnder(key)).forEach(key => { const d = index().decById.get(key); if (d) body.appendChild(decisionCard(d)); });
       box.appendChild(body);
 
     }
@@ -2360,7 +2347,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // the card is new to it.
   function reconcileCard(id:string) {
     const d=index().decById.get(id), old=get("q-"+id);
-    if (!d || !bodyShown(d.item)) { old?.remove(); return; }
+    if (!d || !bodyShown(d.item)) { if (old?.previousElementSibling?.classList.contains("unplacednote")) old.previousElementSibling.remove(); old?.remove(); return; }
     if (old) old.replaceWith(decisionCard(d)); else renderDetail(new Set(["detail"]));
   }
   function patchRefs(id:string) {
