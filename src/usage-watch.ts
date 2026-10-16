@@ -4,8 +4,8 @@ import { z } from "zod";
 import type { Store } from "./store.ts";
 import type { Wake } from "./wake.ts";
 import type { BillingSource } from "./billing.ts";
-import { advanceBooks, usageFigures, usageKey, usageLine, usagePushes } from "./rules.ts";
-import type { OrgBooks, UsageFigures, UsagePushFields } from "./rules.ts";
+import { advanceBooks, usageFigures, usageLine, usagePushes } from "./rules.ts";
+import type { OrgBooks, UsageFigures } from "./rules.ts";
 
 /** What the board does with the organization's Actions billing (docs/design.md, Watching Actions usage): it keeps its own account
  * of the month's included minutes used, says so in a line of the timed wake, and tells the architect when the month's use first
@@ -44,20 +44,19 @@ export class UsageWatch {
   constructor(o: UsageWatchOptions) {
     this.o = o;
     this.now = o.now ?? Date.now;
-    // What the kept events already told the architect is not told again, so a restart neither repeats nor forgets a push. The
-    // events kept are fewer than a month's, so the account also keeps the keys of the month's pushes (below).
-    for (const frame of o.wake.since(0).frames) if (frame.event === "actions-usage") this.announced.add(usageKey(frame as unknown as UsagePushFields));
-    // A state file that cannot be read starts the account again from what the first look sees, and says so; it never stops the watch.
+    // The pushes told this month are kept in the state file with the account, not read from the wake events, which are kept for
+    // days and not for a month. A state file that cannot be read starts the account again from what the first look sees, so a push
+    // may be told a second time; it is said in the log and never stops the watch.
     if (o.stateFile) {
       let text: string | undefined;
-      try { text = readFileSync(o.stateFile, "utf8"); } catch { console.info("actions usage: no state file; the account starts at the first look"); }
+      try { text = readFileSync(o.stateFile, "utf8"); } catch { console.info("actions usage: no state file; the account and the told pushes start at the first look"); }
       if (text !== undefined) {
         try {
           const state = State.parse(JSON.parse(text));
           const last = Date.parse(state.polledAt ?? "");
           if (Number.isFinite(last)) this.looked = last;
           for (const [org, books] of Object.entries(state.books ?? {})) { this.books.set(org, books); for (const key of books.told) this.announced.add(key); }
-        } catch (error) { console.error(`actions usage: state file unreadable (${error instanceof Error ? error.message : String(error)}); the account starts again at the first look`); }
+        } catch (error) { console.error(`actions usage: state file unreadable (${error instanceof Error ? error.message : String(error)}); the account and the told pushes start again at the first look`); }
       }
     }
   }

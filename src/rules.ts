@@ -69,8 +69,13 @@ export const ACTIONS_INCLUDED_MINUTES = 3000;
 export const USAGE_LEVELS: readonly number[] = [50, 75, 90];
 /** More counted minutes than this in one UTC day is told, once for that day. */
 export const USAGE_DAY_LIMIT = 300;
-/** How many included minutes one minute of a runner uses (GitHub's multipliers), by the usage report's sku, lower case. A sku not
- * listed, a larger runner say, is billed from its first minute and uses none of the included minutes. */
+/** How many included minutes one minute of a runner uses, by the usage report's sku, lower case. The names are those of the
+ * organization's own report, read on 2026-10-16: it holds "Actions Linux", "Actions Windows" and "Actions macOS 3-core" rows. GitHub's
+ * page on how Actions is billed (docs.github.com/en/billing/concepts/product-billing/github-actions, "baseline minute costs")
+ * names the same runners and prices them per minute: Linux 2-core $0.006, Windows 2-core $0.010, macOS 3-core or 4-core $0.062.
+ * It states no multipliers. The 2 and 10 are those of GitHub's earlier billing pages, close to the price ratios (1.7 and 10.3);
+ * provisional, as no private repository here runs Windows or macOS: check the line against the billing page when one does.
+ * A sku not listed is not guessed at: the account leaves it out and `unknownSkus` names it. */
 const USAGE_MULTIPLIER: ReadonlyMap<string, number> = new Map([["actions linux", 1], ["actions windows", 2], ["actions macos 3-core", 10]]);
 const multiplierOf = (sku: string): number | undefined => USAGE_MULTIPLIER.get(sku.toLowerCase());
 
@@ -94,6 +99,14 @@ export interface OrgBooks {
   /** The keys (`usageKey`) of the pushes told this month: kept with the account, which is new each month, so a restart does not
    * tell them again however long ago they were told. */
   told: string[];
+}
+
+/** The skus of the Actions minutes in a reading that the account does not know, in repositories that are not public: they may use
+ * some of the included minutes, and the account leaves them out. */
+export function unknownSkus(reading: Pick<UsageReading, "rows" | "visibility">): string[] {
+  const out = new Set<string>();
+  for (const row of reading.rows) if (multiplierOf(row.sku) === undefined && reading.visibility[row.repo.toLowerCase()] !== "public") out.add(row.sku);
+  return [...out].sort();
 }
 
 /** The books after one more look. A new month starts new books. */
@@ -121,17 +134,19 @@ export interface UsageFigures {
   org: string; month: string; /** The UTC day of the reading. */ day: string; since: string;
   /** The included minutes used this month and this day. */ used: number; today: number; included: number;
   budget: { amount: number; stop: boolean } | null;
+  /** The skus the account does not know (`unknownSkus`). */
+  unknown: string[];
 }
-export function usageFigures(books: OrgBooks, reading: Pick<UsageReading, "org" | "at" | "budget">): UsageFigures {
+export function usageFigures(books: OrgBooks, reading: Pick<UsageReading, "org" | "at" | "budget" | "rows" | "visibility">): UsageFigures {
   const day = reading.at.slice(0, 10);
   const used = books.entries.reduce((sum, e) => sum + e.counted, 0), today = books.entries.reduce((sum, e) => sum + (e.day === day ? e.counted : 0), 0);
-  return { org: reading.org, month: books.month, day, since: books.since, used: Math.round(used), today: Math.round(today), included: ACTIONS_INCLUDED_MINUTES, budget: reading.budget ?? null };
+  return { org: reading.org, month: books.month, day, since: books.since, used: Math.round(used), today: Math.round(today), included: ACTIONS_INCLUDED_MINUTES, budget: reading.budget ?? null, unknown: unknownSkus(reading) };
 }
 
 const budgetText = (budget: UsageFigures["budget"]): string => !budget ? "未设" : `${budget.amount} 美元${budget.stop ? "，到上限就拦" : ""}`;
-/** The line the timed wake carries. `several`: more than one organization is read, so each line names its own. */
+/** The line the timed wake carries, with the skus the account does not know when there are any. `several`: more than one organization is read, so each line names its own. */
 export function usageLine(f: UsageFigures, several = false): string {
-  return `${several ? `${f.org}：` : ""}Actions 本月已用 ${f.used} / ${f.included}（从 ${f.since.slice(5, 10)} 起记账），今天 ${f.today}，预算 ${budgetText(f.budget)}`;
+  return `${several ? `${f.org}：` : ""}Actions 本月已用 ${f.used} / ${f.included}（从 ${f.since.slice(5, 10)} 起记账），今天 ${f.today}，预算 ${budgetText(f.budget)}${f.unknown.length ? `；有不认识的计费项：${f.unknown.join("、")}` : ""}`;
 }
 
 export type UsageReason = "month" | "day" | "cap";

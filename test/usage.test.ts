@@ -8,7 +8,7 @@ import { Wake } from "../src/wake.ts";
 import { UsageWatch } from "../src/usage-watch.ts";
 import { ghBilling, parseBudgets, parseUsage, parseVisibility } from "../src/billing.ts";
 import type { BillingSource } from "../src/billing.ts";
-import { advanceBooks, usageFigures, usageLine, usagePushes } from "../src/rules.ts";
+import { advanceBooks, unknownSkus, usageFigures, usageLine, usagePushes } from "../src/rules.ts";
 import type { OrgBooks, UsageFigures, UsageReading, UsageRow } from "../src/rules.ts";
 import { server, wakeSocket } from "./helpers.ts";
 
@@ -55,10 +55,11 @@ test("Windows and macOS minutes use more of the included minutes, larger runners
 });
 
 test("a new month starts new books", () => {
-  const october = advanceBooks(undefined, reading({ rows: [row(5, "app", 400)] }));
+  const october = { ...advanceBooks(undefined, reading({ rows: [row(5, "app", 400)] })), told: ["a push of October"] };
   assert.equal(used(october), 400);
+  assert.deepEqual(advanceBooks(october, reading({ rows: [row(5, "app", 410)] })).told, ["a push of October"], "within the month the told pushes stay");
   const november = advanceBooks(october, reading({ month: "2026-11", at: "2026-11-01T00:30:00.000Z", rows: [{ date: "2026-11-01T00:10:00Z", repo: "app", sku: "Actions Linux", minutes: 3 }] }));
-  assert.deepEqual([november.month, november.since, used(november)], ["2026-11", "2026-11-01T00:30:00.000Z", 3]);
+  assert.deepEqual([november.month, november.since, used(november), november.told], ["2026-11", "2026-11-01T00:30:00.000Z", 3, []]);
 });
 
 test("the figures are the month's counted minutes and today's, and the line says them with the budget and where the books start", () => {
@@ -72,7 +73,7 @@ test("the figures are the month's counted minutes and today's, and the line says
 
 // --- What is told --------------------------------------------------------------------------------------------------------------------
 
-const figures = (fields: Partial<UsageFigures> = {}): UsageFigures => ({ org: ORG, month: "2026-10", day: "2026-10-16", since: "2026-10-01T00:00:00.000Z", used: 0, today: 0, included: 3000, budget: { amount: 0, stop: true }, ...fields });
+const figures = (fields: Partial<UsageFigures> = {}): UsageFigures => ({ org: ORG, month: "2026-10", day: "2026-10-16", since: "2026-10-01T00:00:00.000Z", used: 0, today: 0, included: 3000, budget: { amount: 0, stop: true }, unknown: [], ...fields });
 /** The pushes now, which are then told: their keys join `announced` as the watch does. */
 function teller() {
   const announced = new Set<string>();
@@ -203,6 +204,10 @@ test("a restart neither tells a push again nor starts the account over, and the 
   assert.equal(again.status().figures[0]!.used, 1500, "the 50 new minutes were spent while public");
   assert.equal(again.status().figures[0]!.since, "2026-10-16T12:00:00.000Z");
   assert.deepEqual(usageFrames(wake), [["month", 50, 1500]]);
+  // The wake log keeps days of events, not a month: with every event gone the told pushes are still in the state file.
+  const emptied = new Wake();
+  await new UsageWatch({ store, wake: emptied, billing: flipped.source, now, stateFile }).poll();
+  assert.deepEqual(usageFrames(emptied), [], "50% of the month was told before the events were dropped");
 });
 
 test("a state file that is lost or unreadable starts the account again from the visibility of the first look, and says so", async t => {
@@ -220,6 +225,19 @@ test("a state file that is lost or unreadable starts the account again from the 
   const shaped = await quiet(async () => new UsageWatch({ store, wake, billing: source, now, stateFile }));
   assert.ok(shaped.said.some(line => /state file unreadable/.test(line)), "a file of the wrong shape is unreadable too");
   assert.equal(shaped.result.nextDelayMs(), 0, "and costs one early look");
+});
+
+test("an Actions sku the account does not know is named in the line when a repository that is not public has it; the rest is counted as usual and nothing is pushed for it", async t => {
+  const { store } = await board(t), wake = new Wake();
+  const rows = [row(16, "app", 10), row(16, "app", 99, "Actions Linux 4-core"), row(16, "lib", 5, "Actions Windows ARM"), row(16, "site", 1, "Actions Linux 1-core")];
+  const { source } = billing((owner, at) => owner === "mbbill" ? undefined : reading({ at: at.toISOString(), rows }));
+  const watch = new UsageWatch({ store, wake, billing: source, now: () => Date.parse("2026-10-16T12:00:00Z") });
+  await watch.poll();
+  assert.equal(watch.line(), "Actions 本月已用 10 / 3000（从 10-16 起记账），今天 10，预算 0 美元，到上限就拦；有不认识的计费项：Actions Linux 1-core、Actions Linux 4-core");
+  assert.deepEqual(watch.status().figures[0]!.unknown, ["Actions Linux 1-core", "Actions Linux 4-core"], "lib is public: its Windows ARM minutes use no included minutes");
+  assert.deepEqual(wake.since(0).frames, []);
+  assert.deepEqual(unknownSkus(reading({ rows })), ["Actions Linux 1-core", "Actions Linux 4-core"]);
+  assert.deepEqual(unknownSkus(reading({ rows: [row(16, "app", 10), row(16, "app", 10, "actions MACOS 3-core")] })), [], "known skus are matched without regard to case");
 });
 
 test("a look that cannot read the billing says why in the line and tells nothing; the next good look clears it; the timed wake line never throws", async t => {

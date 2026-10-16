@@ -243,7 +243,7 @@ wf-board-data/
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
   state/github-watch.json   the time of the last look at GitHub (same)
-  state/actions-usage.json  the time of the last look at the Actions billing and the month's account (same)
+  state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -2012,8 +2012,15 @@ minutes). Only private repositories use the included minutes. The board
 therefore adds up, at each look, what a repository's minutes of a day grew by
 since the last look, and counts the growth only if the repository is not public
 at that look; an unknown repository counts. Minutes are included minutes: a
-Windows minute is 2 and a macOS minute is 10 (GitHub's multipliers); a larger runner
-or storage uses none. A report revised downwards adds nothing. The account starts
+Windows minute is 2 and a macOS minute is 10. The runner names are those of the
+organization's own report ("Actions Linux", "Actions Windows", "Actions macOS 3-core");
+GitHub's billing page names the same runners but states no multipliers, only per-minute
+prices (Linux $0.006, Windows $0.010, macOS $0.062), so the 2 and 10, taken from GitHub's
+earlier pages and near the price ratios 1.7 and 10.3, are provisional until a private
+repository runs Windows or macOS and the line can be checked against the billing page.
+Storage uses no minutes. An Actions minutes row with a name not in that list (a larger or
+arm runner, say) in a repository that is not public is not guessed at: it is left out of
+the account and named in the line. A report revised downwards adds nothing. The account starts
 at the first look of a month (and when the state file is lost or unreadable, which is
 logged), from the visibility of that look, so it covers the month only from
 when the board began keeping it: minutes spent before a repository was made public
@@ -2021,8 +2028,10 @@ and before the first look are not in it. The line says since when it counts.
 A new month starts a new account.
 
 **What is told.** Once per month and level, once per day and once per month for
-the cap, the keys being read again from the kept events at start like the other
-watches' pushes. Levels: the highest of 50%, 75% and 90% of the 3000 included
+the cap. The keys of the pushes told this month are kept in the account, in the state file,
+and start again with each month's account: the wake events are kept for days (1000 events or
+2 MiB, and the timed wake alone is 48 a day), so a month's levels cannot be read back from
+them. Without the state file the pushes are told again once. Levels: the highest of 50%, 75% and 90% of the 3000 included
 minutes that the month's use has reached and no level at or above it is told yet, so a
 first look at 88% is one push (75%), not two. Day: more than 300 counted minutes
 on the UTC day of the look (10% of the included minutes). Cap: the month's use
@@ -2032,7 +2041,8 @@ not set to stop); no budget set is not a budget of 0 and tells nothing.
 
 **The line.** `Actions 本月已用 N / 3000（从 MM-DD 起记账），今天 M，预算 X` in each
 timed wake, `X` being `0 美元，到上限就拦`, an amount, or `未设`; with several organizations each
-line starts with its organization. When the billing cannot be read it is
+line starts with its organization, and `；有不认识的计费项：<names>` follows when the
+account met a runner name it does not know. When the billing cannot be read it is
 `Actions 用量读不到：<reason>`; before the first look `Actions 用量还没读到`.
 
 ## 9. Project responsibility
