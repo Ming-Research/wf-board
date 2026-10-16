@@ -6,6 +6,8 @@ import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
 import * as q from "./query.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
+import { ARCHITECT_SESSION } from "./wake.ts";
+import type { Wake } from "./wake.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -88,7 +90,7 @@ function formatGraph(graph: ReturnType<typeof q.graph>): string {
 }
 
 const author = z.string().describe("the name of the project you work for (from `projects`)");
-const session = z.string().trim().min(1).max(80).describe("Your own session's name as the app's session list shows it. Recorded with the write so the board can say who last wrote to an item; it assigns nothing. Pass it on every write.").optional();
+const session = z.string().trim().min(1).max(80).describe("Your own session's name as the app's session list shows it. Pass it on every call. A write records it, so the board can say who last wrote to an item; it assigns nothing.").optional();
 const id = Key.describe("Exact item id or card key found with search or list.");
 /** Lookups also take a short number, "#812" or "812"; an exact key wins over a number. */
 const ref = Key.or(z.string().regex(/^#[1-9]\d{0,14}$/)).describe("Exact item id or card key found with search or list, or the item's or card's short number such as #812.");
@@ -103,7 +105,7 @@ const statuses = z.array(Status).describe("Include items with these derived stat
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; now?: () => string }): McpServer {
+export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: Ops; now?: () => string; wake?: Wake }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -112,9 +114,16 @@ export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; n
     return { snapshot, rules: store.derived.rules(snapshot, now ? Date.parse(now()) : Date.now()) };
   }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
-    const schema: z.ZodObject = z.object(shape).strict();
+    // Every tool takes the session, reads too: a call from the architect's session is the receipt for what the board pushed it
+    // (docs/design.md, The wake stream), counted from the calls it makes anyway.
+    const full = "session" in shape ? shape : { ...shape, session };
+    const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
-      try { return { content: [{ type: "text" as const, text: await fn(z.object(shape).strict().parse(a)) }] }; }
+      try {
+        const args = schema.parse(a);
+        if (args.session === ARCHITECT_SESSION) wake?.receipt();
+        return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
+      }
       catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
     });
   }
@@ -205,9 +214,8 @@ export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; n
   register("clear_ask", "Remove a legacy ask after the project has replaced it with a decision card or settled it; log the outcome in the same commit.", { author, session, id, log: text("Which decision card replaced the legacy ask or what settled it, and why it can be removed.") }, a => result(ops.clearAsk(a)), true);
   register("write_card", "Create a decision card, or revise an open card using its rev from context. State the evidence and options; recommend at most one.", {
     author, session, key: Key.describe("Unused new decision key, or an existing open card key with rev."), rev: z.number().int().positive().describe("Required to revise an open card; omit only for creation.").optional(), item: Key.describe("Existing item this decision belongs to."), question: text("The choice the owner needs to settle."), background: text("Problem, evidence and context the choice turns on."), options: z.array(Option).describe("Options with unique key, text (action, costs and risks), and optional recommended boolean."), confidence: z.object({ score: z.number().int().min(1).max(5).describe("Confidence from 1 (judgment) to 5 (settled by evidence).").optional(), reason: text("Evidence for confidence and what could overturn it.") }).strict().describe("Confidence and its grounds.").optional(),
-    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card; leave it out when sessions proceed on the recommendation. A card with blocks is blocking: the page shows it purple and the coordinator is woken. When revising, text sets it, null clears it, omitted keeps it."),
+    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card; leave it out when sessions proceed on the recommendation. A card with blocks is blocking: the page shows it purple and the owner is told on the Mac. When revising, text sets it, null clears it, omitted keeps it."),
   }, a => result(ops.writeCard(a)), true);
-  register("post_notice", "Tell the owner an important change that is not blocking, on the page's 要你知道 list: one or two sentences, inline markdown and [[it:key]] item references allowed. Use it only for a change the owner should know; a matter that blocks work goes on a decision card with blocks instead, and routine progress stays current with set_plan. Any project may post.", { author, session, text: text("One or two sentences saying what changed and what it means for the owner."), item: Key.describe("Optional related item key.").optional() }, a => result(ops.postNotice(a)), true);
   register("rule_card", "Record the owner's ruling on an open decision card. A choice must name one of its option keys; a prose ruling may omit choice. Rulings may complete paused work; the retained pause marker stays unchanged, and author ownership checks apply.", { author, session, key: Key.describe("Existing open decision card key."), choice: text("Chosen option key, if the owner selected an option.").optional(), ruling: text("Owner's ruling and its reasons.") }, a => result(ops.ruleCard(a)), true);
   register("reply_note", "Answer an owner's note and mark it done. The server stamps repliedAt and records your project as repliedBy.", { author, session, id: text("Existing owner note id found with notes or context."), reply: text("Answer to the owner's note."), replace: z.boolean().describe("Explicitly replace an existing reply; otherwise an already answered note is refused.").optional() }, a => result(ops.replyNote(a)), true);
   register("create_project", "Configure a new project with its optional repository; accepts any author string when appending last. Only 总管 may supply after to place it immediately after an existing project in page order. Creation and placement are one commit.", { author, session, name: text("New unique project name, used by area group fields."), repo: text("Optional repository identifier, e.g. Ming-Research/Halo-wf.").optional(), after: text("Existing project name this new project should immediately follow; only 总管. Omit to append last.").optional() }, a => result(ops.createProject(a)), true);
