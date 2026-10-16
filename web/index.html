@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- GET / fills in the version of this page (src/page-version.ts), which the page compares with the one the event stream announces. -->
+<meta id="page-version" name="page-version" content="__PAGE_VERSION__">
 <title>进度板</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -80,7 +82,7 @@ body { background: var(--bg); color: var(--ink); font-family: var(--font-body); 
 /* The body is a fixed-height frame: the document never scrolls. The list (.page-left) and the selected item's detail
    scroll independently; without a selection the list fills the frame. */
 body.wide { margin: 0; padding-inline: 8px; padding-block: 0; height: 100dvh; display: flex; flex-direction: column; overflow-y: hidden; }
-body.wide #server-banner { flex: none; }
+body.wide #server-banner, body.wide #update-banner { flex: none; }
 body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px; margin: 0; display: grid; grid-template-columns: var(--tree-width, 300px) 8px minmax(380px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 0; }
 body.wide .wrap.detail-collapsed { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 
@@ -469,10 +471,12 @@ details.refsec > .refbody p { margin: 0; }
 .search-list { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
 .refopt.sel, .searchrow.sel { background: var(--accent-soft); }
 #server-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--ask-soft); color: var(--ask); }
+#update-banner { position: sticky; top: 0; z-index: 50; padding: 10px; background: var(--accent-soft); color: var(--accent); }
 </style>
 
 <body class="wide">
 <div id="server-banner" role="alert" hidden></div>
+<div id="update-banner" role="status" hidden></div>
 <div id="hint" role="status" hidden></div>
 <div class="wrap detail-collapsed">
   <div class="page-left" id="page-left">

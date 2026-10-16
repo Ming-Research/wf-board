@@ -227,7 +227,7 @@ export function tagVocabulary(s: Snapshot, project?: string) {
   return boardTags(s.board).filter(t => project === undefined || tagApplies(t, project)).map(t => ({ name: t.name, meaning: t.meaning, ...(t.projects ? { projects: t.projects } : {}) }));
 }
 const tagsOf = (doc: { tags?: string[] }) => doc.tags?.length ? { tags: doc.tags } : {};
-/** Absent for unrated work and for records, which the 缺难度 check and the item's kind already say. */
+/** Absent for unrated work and for records; the 缺难度 check says when a rating is the one thing missing. */
 function difficultyOf(doc: { difficulty?: Difficulty } | undefined): { difficulty?: Difficulty } { return doc?.difficulty === undefined ? {} : { difficulty: doc.difficulty }; }
 const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {

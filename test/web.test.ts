@@ -6,6 +6,7 @@ import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { rules } from "../src/rules.ts";
 import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Status, Project } from "../src/model.ts";
+import { RECHECK_MS, STUCK, WAITING } from "../web/update.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM and modeled geometry. No browser or listener
 // is needed: the harness checks controls, frame scheduling and synthetic layout/scrolling.
@@ -82,6 +83,7 @@ interface PageOptions {
   transform?: (code:string) => string;
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
+  version?: string; session?: Map<string,string>;
   now?: () => number; clock?: FakeClock; autoOpen?: boolean; notification?: unknown; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(fixture: PageInput, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
@@ -100,7 +102,11 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   };
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "update-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  // The page's own version, which the server fills into the page's text; a page opened without one does not know it.
+  if (options.version !== undefined) { const meta = new Element("meta"); meta.id = "page-version"; meta.attributes.content = options.version; roots.set("page-version", meta); }
+  const session = options.session ?? new Map<string,string>();
+  let reloads = 0;
   roots.get("nav")!.className = "nav";
   roots.get("summary")!.appendChild(roots.get("nav")!);
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
@@ -155,6 +161,8 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, structuredClone, console, CSS: { escape: (s: string) => s },
     ...options.notification === undefined ? {} : { Notification: options.notification },
+    sessionStorage: { getItem: (key:string) => session.get(key) ?? null, setItem(key:string,value:string) { session.set(key,value); }, removeItem(key:string) { session.delete(key); } },
+    location: { reload() { reloads++; } },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
@@ -223,7 +231,10 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     return doc.kind === "item" ? {...doc, after: nativeDocument(doc.after, doc.id)} : doc;
   }),...(activity === undefined ? {} : {activity})}) });
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
-  return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage,
+  // The page's stream announces the version of the page the server serves now (src/http.ts).
+  const announce = (version: string) => sources.at(-1)!.handlers.get("page")!({ data: JSON.stringify({ version }) });
+  return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage, session, announce,
+    get reloads() { return reloads; },
     // Every scroll either pane was asked to make.
     get scrollCount() { return scrolls.length + detailScrolls.length; },
     // Where the list is scrolled: the left pane. `windowScrollY` is the window, which the page never scrolls.
@@ -2815,8 +2826,8 @@ function linked(): PageFixture {
 }
 const classes = (e: Element) => e.className.split(" ");
 const rowTitle = (e: Element) => e.innerHTML.match(/class="t">([^<]*)</)![1]!;
-async function composer(snap: PageInput = linked()) {
-  const p = await page(snap, [], null, undefined, { response: path => path === "/api/notes" ? reply({ id: "saved" }) : undefined });
+async function composer(snap: PageInput = linked(), extra: PageOptions = {}) {
+  const p = await page(snap, [], null, undefined, { response: path => path === "/api/notes" ? reply({ id: "saved" }) : undefined, ...extra });
   await expand(p); p.key("c"); await p.flush();
   const ta = p.all().find(e => e.id === "ed-it_child")!;
   const type = async (text: string) => { ta.value = text; ta.setSelectionRange(text.length, text.length); await ta.handlers.get("input")![0]!({}); };
@@ -4224,4 +4235,125 @@ test("agent list: an unfolded sub-item row repaints at once when what it shows c
   p.emit("d".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, tags: ["看板"], rev: 2 } }]);
   await p.flush();
   assert.ok(sub().querySelector(".tagchip"), "the new tag shows in the list's row with the change");
+});
+
+// The page replaces itself when the server announces another version of it (docs/design.md, section 7, Updating the page).
+const updateLine = (p: Awaited<ReturnType<typeof page>>) => { const line = p.roots.get("update-banner")!; return line.hidden || !line.textContent ? null : line.textContent; };
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+test("a page told another version reloads itself, and the next page scrolls both panes back to where they were", async () => {
+  const session = new Map<string, string>();
+  const first = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session });
+  first.roots.get("page-left")!.scrollTop = 420; first.roots.get("item-detail")!.scrollTop = 130;
+  first.announce("b2");
+  assert.equal(first.reloads, 1);
+  assert.equal(updateLine(first), null, "a page that is not writing reloads without a banner");
+  assert.deepEqual([JSON.parse(session.get("board-scroll")!).list, JSON.parse(session.get("board-scroll")!).detail], [420, 130]);
+  const second = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session });
+  assert.equal(second.scrollY, 420);
+  assert.equal(second.roots.get("item-detail")!.scrollTop, 130);
+  assert.equal(session.has("board-scroll"), false, "the position is used once");
+  // A position left by a reload long ago is not this page's to restore.
+  session.set("board-scroll", JSON.stringify({ list: 420, detail: 130, at: Date.now() - 60_000 }));
+  const later = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session });
+  assert.equal(later.scrollY, 0);
+});
+
+test("a page told its own version stays, and a page that does not know its version ignores the announcement", async () => {
+  const same = await page(nativeSnapshot(), [], null, undefined, { version: "a1" });
+  same.announce("a1");
+  assert.equal(same.reloads, 0);
+  assert.equal(updateLine(same), null);
+  for (const version of [undefined, ""]) {
+    const unknown = await page(nativeSnapshot(), [], null, undefined, version === undefined ? {} : { version });
+    unknown.announce("b2");
+    assert.equal(unknown.reloads, 0, `a page served with version ${JSON.stringify(version)}`);
+  }
+});
+
+test("while a comment box is open the page shows the banner and waits; once the comment is saved it reloads, and the comment is kept", async () => {
+  const { p, ta, type } = await composer(linked(), { version: "a1" });
+  p.announce("b2");
+  assert.equal(p.reloads, 0);
+  assert.equal(updateLine(p), WAITING);
+  await type("写到一半的评论");
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 0, "the box is still open");
+  p.key("Enter", ta); await settle();
+  assert.deepEqual(noteCalls(p).map(c => c.body), [{ target: "it:child", text: "写到一半的评论", kind: "comment" }], "the comment was saved on the server before the page went");
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 1);
+});
+
+test("a comment typed and not saved holds the reload after the box is closed with Esc, until it is saved", async () => {
+  const { p, ta, type } = await composer(linked(), { version: "a1" });
+  await type("还没存的话");
+  p.key("Escape", ta); await p.flush();
+  assert.ok(!p.all().some(e => e.id === "ed-it_child"), "Esc closed the box and kept the text");
+  p.announce("b2");
+  assert.equal(updateLine(p), WAITING);
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 0);
+  p.key("c"); await p.flush();
+  const again = p.all().find(e => e.id === "ed-it_child")!;
+  assert.equal(again.value, "还没存的话");
+  p.key("Enter", again); await settle();
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 1);
+});
+
+test("a box opened and closed with nothing typed does not hold the reload", async () => {
+  const { p, ta } = await composer(linked(), { version: "a1" });
+  p.key("Escape", ta); await p.flush();
+  p.announce("b2");
+  assert.equal(p.reloads, 1);
+});
+
+test("a send in flight holds the reload until the server has answered it", async () => {
+  const s = snapshot(); s.notes.n = { target: "it:child", kind: "comment", text: "draft", at, state: "draft", rev: 1 };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const p = await page(s, [], null, undefined, { version: "a1", response: path => path === "/api/send" ? gate.then(() => reply({ sent: [{ project: "Halo-wf" }] })) : undefined });
+  const clicked = p.roots.get("send-all")!.click();
+  await settle();
+  p.announce("b2");
+  assert.equal(p.reloads, 0);
+  assert.equal(updateLine(p), WAITING);
+  release(); await clicked; await settle();
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 1);
+});
+
+test("a reload that left the page on another version is not repeated at once: the banner says to reload by hand", async () => {
+  const session = new Map<string, string>([["board-reload", JSON.stringify({ version: "b2", at: Date.now() - 1000 })]]);
+  const p = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session });
+  p.announce("b2");
+  assert.equal(p.reloads, 0);
+  assert.equal(updateLine(p), STUCK);
+});
+
+test("a draft being saved holds the reload too, though nothing is typed or sent", async () => {
+  const held = deferred<FakeResponse>();
+  const p = await page(snapshot(), [], null, undefined, { version: "a1", response: path => path === "/api/draft" ? held.promise : undefined });
+  await expand(p); p.key("e"); await settle();
+  assert.equal(p.calls.filter(c => c.path === "/api/draft").length, 1, "the explain request is on its way");
+  p.announce("b2");
+  assert.equal(p.reloads, 0);
+  held.resolve(reply({ note: { id: "explain-draft", doc: { target: "it:child", kind: "explain", text: "请求：详细解释", at, state: "draft", rev: 1 } }, deleted: [], commit: "e".repeat(40) }));
+  await p.flush();
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 1);
+});
+
+test("a saved draft being edited holds the reload until the edit is saved", async () => {
+  const s = snapshot(); s.notes.d = { target: "it:child", kind: "comment", text: "Original", at, state: "draft", rev: 1 };
+  const p = await page(s, [], null, undefined, { version: "a1", notesOpen: { "it:child": true } }); await expand(p);
+  await noteButton(p, "d", "编辑")!.click();
+  p.announce("b2");
+  assert.equal(updateLine(p), WAITING);
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 0);
+  typeDraftEdit(p, "d", "Edited"); await noteButton(p, "d", "保存")!.click(); await p.flush();
+  await sleep(RECHECK_MS + 200);
+  assert.equal(p.reloads, 1);
 });

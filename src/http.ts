@@ -24,6 +24,7 @@ import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./
 import type { UsageWatch } from "./usage-watch.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
+import { pageVersion, stampPage } from "./page-version.ts";
 
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
@@ -65,6 +66,36 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   function json(res: ServerResponse, status: number, data: unknown, headers: http.OutgoingHttpHeaders = {}) {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
     res.end(JSON.stringify(data));
+  }
+  // The page files are read from disk on each request, so a rebuilt page needs no restart (design section 4, Deploying).
+  const pageFile = (name: string) => readFile(join(deps.webDir, name));
+  /** The page as it is on disk now: index.html, and the version its two files make. The version is undefined while the bundle is
+   * missing (a build under way), which leaves the page without one: it does not reload itself. */
+  async function currentPage(): Promise<{ html: Buffer; version: string | undefined }> {
+    const html = await pageFile("index.html");
+    try { return { html, version: pageVersion(html, await pageFile("dist/app.js")) }; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { html, version: undefined }; throw error; }
+  }
+  // The version the open pages were last told: by a deploy that ended, or when the first page connected. A deploy that ends tells them
+  // again only when the version differs (design section 4, Deploying).
+  let announced: string | undefined;
+  const pageEvent = (version: string) => "event: page\ndata: " + JSON.stringify({ version }) + "\n\n";
+  // The reads run one after another, in the order asked: a page that connects is told what was on disk when it joined, and no
+  // announcement made after that read passes it.
+  let reading: Promise<unknown> = Promise.resolve();
+  /** Reads the page now and returns its version, or undefined. `announce`: tell every open page when it differs from the last told;
+   * a page that connects only reads, and the pages already open wait for the deploy that ends. */
+  function readPage(announce: boolean): Promise<string | undefined> {
+    const run = reading.then(async () => {
+      let version: string | undefined;
+      try { version = (await currentPage()).version; } catch (error) { console.error(error); return undefined; }
+      if (version === undefined) return undefined;
+      if (announce && version !== announced) { announced = version; writeStreams(pageEvent(version)); }
+      else announced ??= version;
+      return version;
+    });
+    reading = run;
+    return run;
   }
   async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
     let data = "";
@@ -111,15 +142,21 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       return;
     }
     if (method === "GET") {
-      if (path === "/" || path === "/app.js") {
-        const data = await readFile(join(deps.webDir, path === "/" ? "index.html" : "dist/app.js"));
-        res.writeHead(200, { "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(data); return;
+      if (path === "/") {
+        // The page learns which version it is from the mark in its own text; the event stream later says which version is current.
+        const { html, version } = await currentPage();
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" }); res.end(stampPage(html.toString("utf8"), version)); return;
+      }
+      if (path === "/app.js") {
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(await pageFile("dist/app.js")); return;
       }
       if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }
       if (path === "/api/events") {
+        // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
+        const version = await readPage(false);
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        res.write(": connected\n\n"); streams.add(res);
+        res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version))); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
       }
       if (path === "/api/unread") { const { head, owner: { cursor, readMarks } } = store.snapshot(); json(res, 200, { cursor, steps: await unreadSteps(store, cursor, readMarks, head) }); return; }
@@ -201,6 +238,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
+  // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages are told if it did.
+  const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void readPage(true); });
   const unsubscribe = wake.onPush(frame => {
     const data = JSON.stringify(frame);
     for (const connection of connections) if (connection.socket.bufferedAmount > maxStreamBytes) connection.socket.terminate();
@@ -282,7 +321,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeDeploys(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // session is not one of them: it answers on its own request, and the session closes when the server has closed.
     for (const stream of streams) stream.end();
