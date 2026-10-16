@@ -39,9 +39,25 @@ const ARROW_OLD = `    const all = stops();
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
   {
-    bug: "changed body blocks lost their mark once the green background was removed (fixed in this change)",
+    bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
     // The blue bar rule that marks a changed body block; removing it leaves the block with no mark at all.
-    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before { content: \"\"; position: absolute; left: -6px; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks' blue bar lost its place beside the block (fixed in head-change-bar)",
+    // Without absolute placement the bar falls into the block's flow, where it has no height and no place at the left.
+    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: "position: absolute; left: -6px; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "width: 3px; border-radius: 2px; background: var(--fresh); }" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks took a background colour (fixed in head-change-bar)",
+    // A background on the changed block itself is the green mark the owner removed.
+    reverts: [{ file: "web/index.html", edit: "a background on changed blocks", find: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }", replace: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; background: #e3f2e6; }" }],
     family: "changed-block",
     storage: b => openAll(b),
     run: async bp => checkChangedBlocks(bp),

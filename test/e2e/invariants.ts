@@ -593,9 +593,9 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   return commits;
 }
 
-/** A changed body block carries a blue bar on its left and no background of its own. The page holds no changed block
- * to look at, so a probe block is added in a rich text at the end of the page and taken out again. The bar rule is not
- * scoped to an item, so the probe tests the same rule an item's text gets. */
+/** A changed body block carries a blue bar on its left, as tall as the block, and no background of its own. The page
+ * holds no changed block to look at, so a probe block is added in a rich text at the end of the page and taken out
+ * again. The bar rule is not scoped to an item, so the probe tests the same rule an item's text gets. */
 export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
   const v: string[] = [];
   const probe = await bp.page.evaluate(() => {
@@ -603,13 +603,14 @@ export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
     const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
     host.appendChild(block);
     const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
-    const out = { bar: bar.backgroundColor, width: bar.width, own: own.backgroundColor };
+    const out = { bar: bar.backgroundColor, width: bar.width, position: bar.position, left: bar.left, height: bar.height, blockHeight: block.getBoundingClientRect().height + "px", own: own.backgroundColor };
     host.remove();
     return out;
   });
-  if (!probe) { v.push("changed-block: the page has no item text to add a changed block to"); return v; }
   if (probe.bar === "rgba(0, 0, 0, 0)" || probe.bar === "transparent") v.push("changed-block: a changed block has no blue bar");
   if (probe.width !== "3px") v.push(`changed-block: a changed block's bar is ${probe.width} wide, expected 3px`);
+  if (probe.position !== "absolute" || probe.left !== "-6px") v.push(`changed-block: a changed block's bar is at ${probe.left} (${probe.position}), not beside its left edge at -6px`);
+  if (probe.height !== probe.blockHeight) v.push(`changed-block: a changed block's bar is ${probe.height} tall, the block is ${probe.blockHeight}`);
   if (probe.own !== "rgba(0, 0, 0, 0)" && probe.own !== "transparent") v.push(`changed-block: a changed block has a background ${probe.own}`);
   return v;
 }
