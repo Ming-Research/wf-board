@@ -684,8 +684,9 @@ log:
   line or the end of the text, fenced code excepted) is one block, whatever
   blank lines it holds. An item's head shows each one folded under its title;
   the sections a reader opened stay open across re-renders, kept in this
-  browser only. Added or changed blocks carry no colour of their own (the item's blue
-  line says it holds something new, and `n` lands on the first of them);
+  browser only. Added or changed blocks, a card's changed question included, carry a
+  blue line on their left, like the one beside an item's headline, and no colour of
+  their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed

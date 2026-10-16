@@ -1097,11 +1097,11 @@ function cssContract(html:string) {
   const rules=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
   const has=(sel:string,decl:RegExp) => rules.some(r=>r[1]!.split(",").map(v=>v.trim()).includes(sel)&&decl.test(r[2]!));
   // The owner never asked for a green background on new or changed text and does not want it: .chg-add only marks
-  // where n lands and carries no colour.
-  assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
+  // where n lands and carries no colour; its ::before is the blue bar.
+  assert.ok(!/--chg-add/.test(html) && !rules.some(r=>r[1]!.split(",").some(v=>/\.chg-add\b/.test(v)&&!/::before$/.test(v.trim()))&&/background|color/.test(r[2]!)),"no green mark on added or changed text");
   // The owner does not want removed content shown, struck through in red or otherwise.
   assert.ok(!/chg-del|title-was/.test(html),"no red deleted-text styling");
-  for (const sel of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
+  for (const sel of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh",".rich > .chg-add",".card h3 > .chg-add"]) assert.ok(has(sel+"::before",/background:\s*var\(--fresh\)/) && has(sel,/position:\s*relative/),sel+" has blue bar CSS");
   // A bar drawn as a shadow or border bends with rounded corners; the bar is one drawn line on every box.
   assert.ok(!rules.some(r=>/(?:box-shadow|border-left):[^;]*var\(--fresh\)/.test(r[2]!)),"no blue bar drawn as a shadow or border");
   for (const sel of [".waittag",".sbtn.s-block"]) assert.ok(has(sel,/background:\s*var\(--blockwait\)/),sel+" is the filled purple chip");
@@ -1121,7 +1121,7 @@ test("CSS contract detects removed theme tokens mark declarations and blue selec
   await t.test("red deleted text comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-del { text-decoration: line-through; }\n</style>"))); });
   await t.test("green mark comes back",()=> { assert.throws(()=>cssContract(html.replace("</style>",".chg-add { background: #e3f2e6; }\n</style>"))); });
   await t.test("selectable rows",()=> { assert.throws(()=>cssContract(html.replace(/(?<!-)user-select: text;/,""))); });
-  for (const selector of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh"]) await t.test(selector,()=> {
+  for (const selector of [".item.fresh",".card.fresh",".plan-row.newbar",".deprow.fresh",".note.newbar",".note .reply.newbar",".notes-toggle.newbar",".refs .fresh",".rich > .chg-add",".card h3 > .chg-add"]) await t.test(selector,()=> {
     assert.ok(html.includes(selector)); assert.throws(()=>cssContract(html.replaceAll(selector, ".removed-selector")));
   });
 });
@@ -1177,7 +1177,8 @@ test("added rich blocks retain vertical spacing without extra visual styling", a
   const html=(await readFile("web/index.html","utf8")).replace(/\/\*[\s\S]*?\*\//g,"");
   const rule=[...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(r=>r[1]!.trim() === ".rich > .chg-add");
   assert.ok(rule,"changed rich blocks have their own layout rule");
-  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
+  // position: relative is only the containing block of the blue bar; no colour, border or background is added.
+  assert.deepEqual(rule[2]!.split(";").map(v=>v.trim()).filter(Boolean),["position: relative","display: flex","flex-direction: column","gap: 6px"],"restore only the lost layout and spacing");
 });
 test("page and read-cursor documentation agree on short detail lines and number-only chips", async t => {
   const doc=await readFile("docs/design.md","utf8");
