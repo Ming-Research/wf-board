@@ -1,11 +1,11 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
 import type { Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the coordinator may place a project after another. */
-export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
-  if (author !== "总管") throw new Error("after: only the coordinator project 总管 may reorder projects");
+/** Project list order is page order; only the architect may place a project after another. */
+export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
+  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -100,6 +100,9 @@ export const CHECK_LABEL = "需核对";
 export const STALLED_LABEL = "无人推进";
 /** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
 export const WAITS_TEXT_LABEL = "在等文字";
+/** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
+export const CARD_MIN_OPTIONS = 3;
+export const OPTIONS_LABEL = "选项不足";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
@@ -140,6 +143,8 @@ export interface Rules {
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
+  /** The checks of one open decision card (too few options); the item of the card lists them too. */
+  cardChecks(key: string): Check[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
   /** A waiting card that names the work stopped until the owner rules (its `blocks`). */
@@ -780,6 +785,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return total + Math.max(0, end - from) - paused;
     }, 0) >= STALLED_AFTER_MS;
   }
+  function cardChecks(key: string): Check[] {
+    return cached("cardChecks", key, () => {
+      const d = index().decisions.get(key);
+      if (!d || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
+      return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
+    });
+  }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
@@ -802,6 +814,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
+      for (const card of cardsOf(id)) for (const check of cardChecks(card)) out.push({ ...check, target: { kind: "card", id: card } });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
       // Titles of closed items are not revised, so only open items and records are checked.
       const titleLength = [...it.title.replace(/\s/g, "")].length;
@@ -839,7 +852,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    cardsOf: id => cardsOf(id).slice(), cardChecks: key => cardChecks(key).map(c => ({ ...c })), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
     checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),

@@ -14,11 +14,15 @@ import type { Wake } from "../src/wake.ts";
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";
+/** The architect's author name and session: together the only writer that creates, cancels or retitles items and does what the board reserves for the architect. */
+export const architect = "Architect";
+export const architectSession = "架构师";
+export const asArchitect = { author: architect, session: architectSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
   const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [

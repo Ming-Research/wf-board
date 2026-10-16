@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rules } from "../src/rules.ts";
 import * as q from "../src/query.ts";
-import { board, at, later, author } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect } from "./helpers.ts";
 import type { PlanStepInput } from "../src/model.ts";
 const acceptance = (text = "验收通过"): PlanStepInput => ({ id: "accept", accept: true, text, state: "todo" });
 
@@ -41,8 +41,8 @@ test("search finds target goal, target value, current value and distinctive comp
 
 test("context exposes the owner chain, compact plan, shared waiters, cards, replies, links and bounded logs", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "child-low", owner: "a", title: "Low", accept: "Low accepted" });
-  await op.createItem({ author, key: "child-high", owner: "a", title: "High", accept: "High accepted" });
+  await op.createItem({ ...asArchitect, key: "child-low", owner: "a", title: "Low", accept: "Low accepted" });
+  await op.createItem({ ...asArchitect, key: "child-high", owner: "a", title: "High", accept: "High accepted" });
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
   assert.ok("plan" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
@@ -134,8 +134,8 @@ test("changes summarizes net fields over commits, groups areas, and history/diff
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   await op.updateItem({ author, id: "a", rev: 2, head: "New stable context", reason: "Scope clarified" });
   await op.replyNote({ author, id: "note-1", reply: "Resolved" });
-  await op.createItem({ author: "Firn", key: "new", owner: "other", title: "New witness", accept: "Witness accepted" });
-  await op.ruleCard({ author, key: "choice", choice: "A", ruling: "Owner picked A" });
+  await op.createItem({ ...asArchitect, key: "new", owner: "other", title: "New witness", accept: "Witness accepted" });
+  await op.ruleCard({ author, key: "choice", choice: "A" });
   const s = store.snapshot(), changes = await q.changes(store, s, baseline);
   const whitefoot = changes.find(g => g.areaId === "area")!;
   const item = whitefoot.documents.find(d => d.id === "a")!;
@@ -181,7 +181,7 @@ test("changes recovers no owner for a live root, so it rebuilds no earlier whole
 
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
-  await op.createItem({ author, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
+  await op.createItem({ ...asArchitect, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
   await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", options: [{ text: "A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
@@ -270,8 +270,8 @@ test("brief queues own work and frontier steps, folds resolved rows and projects
   await op.createRequest({author,project:"Firn",key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",why:"Need feature",from:"a"});
   await op.setPlan({author,id:"a",row:{id:"doing",text:"Own current work",state:"doing",after:[]}});
   await op.setPlan({author,id:"area",row:{id:"own",text:"Parent current work",state:"doing",after:[]}});
-  await op.createItem({author,key:"backlog",title:"Backlog",group:author,record:true});
-  await op.createItem({author,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
+  await op.createItem({...asArchitect,key:"backlog",title:"Backlog",group:author,record:true});
+  await op.createItem({...asArchitect,key:"parked",title:"Parked",owner:"backlog",accept:"Parked accepted"});
   await op.setPlan({author,id:"parked",row:{id:"future",text:"Future work",state:"todo"}});
   const s=store.snapshot(),r=rules(s),brief=q.brief(s,r,author);
   assert.deepEqual(brief.inbox.map(x=>({id:x.id,by:x.by,why:x.why})),[{id:"incoming",by:"Firn",why:"Need help"}]);
@@ -342,7 +342,7 @@ test("project identity read shapes omit agents and outgoing requests use request
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "record", group: author, title: "Queue", priority: "P1", record: true });
+  await op.createItem({ ...asArchitect, key: "record", group: author, title: "Queue", priority: "P1", record: true });
   const s = structuredClone(store.snapshot()), now = Date.parse("2026-10-11T06:00:00Z");
   s.items.a!.plan.unshift({id:"doing",text:"Own work",state:"doing",since:at}); s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
   s.activity = { writes: Array.from({length: 7}, (_, i) => new Date(now - i * 30 * 60 * 1000).toISOString()), items: {} };
@@ -437,12 +437,14 @@ test("context and brief retain multiple acceptance rows before delivery with ord
 
 test("brief progress retains records and blocked work without repeating queues or adding closed/todo backlog", async t => {
   const {store,op}=await board(t);
-  await op.createItem({author,key:"record",title:"Reference",group:author,record:true});
-  await op.createItem({author,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
+  await op.createItem({...asArchitect,key:"record",title:"Reference",group:author,record:true});
+  await op.createItem({...asArchitect,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
   await op.setPlan({author,id:"closed",row:{...acceptance("Closed accepted"),state:"done"}});
   const s=structuredClone(store.snapshot()); delete s.items.a!.ask;
   s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {id:"ruled",card:"ruled",after:[]}, {id:"choice",card:"choice",after:[]}, {...acceptance(),id:"accept"}];
   s.items.a!.plan=[{id:"ready",text:"Ready work",state:"todo"}, {...acceptance(),id:"accept"}];
+  // Three options, so the card raises no 选项不足 check that would list its item under checks instead.
+  s.decisions.choice!.options=[...s.decisions.choice!.options,{key:"C",text:"第三个做法"}];
   const brief=q.brief(s,rules(s),author);
   assert.ok(brief.todo.some(row=>row.id==="a"));
   assert.ok(brief.progress.some(row=>row.id==="record"));
@@ -466,10 +468,10 @@ test("context and brief retain compact target lines beside plans", async t => {
 
 test("default lists omit done and cancelled items, while explicit status filters and plan rows retain them", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ author, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
+  await op.createItem({ ...asArchitect, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
   await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
-  await op.createItem({ author, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
-  await op.setStatus({ author, id: "cancelled-result", status: "cancelled", log: "Superseded" });
+  await op.createItem({ ...asArchitect, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
+  await op.setStatus({ ...asArchitect, id: "cancelled-result", status: "cancelled", log: "Superseded" });
   const s = store.snapshot(), r = rules(s);
   const visible = q.list(s, r).map(item => item.id);
   assert.ok(!visible.includes("done-result")); assert.ok(!visible.includes("cancelled-result"));
@@ -488,7 +490,7 @@ test("paused items have explicit list, overview and project counts and are absen
   const { store, op } = await board(t);
   await op.clearAsk({ author, id: "a", log: "Owner approval complete" });
   await op.setPlan({ author, id: "a", row: { id: "doing", text: "Implementation", state: "doing" } });
-  await op.setPause({ author: "总管", id: "area", paused: true, reason: "After the next release" });
+  await op.setPause({ ...asArchitect, id: "area", paused: true, reason: "After the next release" });
   const s = store.snapshot(), r = rules(s);
   assert.deepEqual(q.list(s, r, { group: author, status: ["paused"] }).map(row => row.id).sort(), ["a", "area", "b"]);
   assert.deepEqual(q.list(s, r, { group: author, status: ["wip", "todo", "blocked"] }), []);

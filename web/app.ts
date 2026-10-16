@@ -2057,6 +2057,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (pc) h.appendChild(pc);
     top.appendChild(h);
     c.appendChild(top);
+    derived.cardChecks(d.id).forEach(k => c.appendChild(el("div", "checks", "需核对：" + esc(k.text))));
     const chosen = choiceOf(d);
     if (d.status === "open") {
       const ol = el("ul", "opts");

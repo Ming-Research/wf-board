@@ -246,7 +246,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     ...(s.items[id]?.targets?.length ? { targets: s.items[id]!.targets!.map(targetLine) } : {}),
   });
   const workRow = (id: string): Row => ({ ...row(s,r,"item",id), ...progressLines(id) });
-  /** Current work also says which session last wrote to it, so a coordinator sees whether it is being pushed. */
+  /** Current work also says which session last wrote to it, so the architect sees whether it is being pushed. */
   const wipRow = (id: string): Row & { lastPush?: string } => { const last = s.activity?.sessions?.[id]; return { ...workRow(id), ...(last ? { lastPush: pushLine(last) } : {}) }; };
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),

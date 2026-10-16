@@ -41,7 +41,7 @@ const MINUTE = 60_000, iso = (ms: number) => new Date(ms).toISOString().replace(
 
 /** The synthetic board: every file of the first commit, and each later commit's one changed item file. */
 function board() {
-  const projects = ["Whitefoot", "Firn", "Halo", "Snowghost", "kit", "总管"], perProject = Math.ceil(ITEMS / projects.length);
+  const projects = ["Whitefoot", "Firn", "Halo", "Snowghost", "kit", "Architect"], perProject = Math.ceil(ITEMS / projects.length);
   const start = Date.now() - (HISTORY + 60) * 3 * MINUTE, at = iso(start);
   const ids: string[] = [], group = new Map<string, string>(), rows = new Map<string, unknown[]>();
   for (const [p, name] of projects.entries()) for (let j = 0; j < perProject && ids.length < ITEMS; j++) {

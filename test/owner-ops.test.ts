@@ -514,7 +514,7 @@ test("sending a pick closes its card in the same commit with the chosen option a
   assert.deepEqual(after.decisions.choice!.options, before.decisions.choice!.options, "the options stay as written");
   assert.equal(after.notes[pick.id]!.sentAt, sentAt);
   assert.equal(rules(after).cardWaiting("choice"), false, "the card no longer waits");
-  assert.equal(rules(after).planRows("a").find(row => row.row.id === "choice")!.state, "resolved", "its plan row is done");
+  assert.equal(rules(after).planRows("b").find(row => row.row.id === "choice")!.state, "resolved", "its plan row is done");
 });
 
 test("a pick on a card that is no longer open is still sent and leaves the card as it was", async t => {

@@ -711,3 +711,28 @@ test("the presentation of an item changes when a card row's pick changes", () =>
   const second = presentationSignature(rules(s), s.decisions, "a");
   assert.equal(new Set([open, first, second]).size, 3);
 });
+
+test("open decision cards with fewer than three options get a check on the card and on their item", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    two: { item: "owner", options },
+    three: { item: "owner", options: [...options, { key: "C", text: "Later" }] },
+    ruled: { item: "owner", options, status: "ruled", choice: "A" },
+  });
+  const r = rules(s), [card] = r.cardChecks("two");
+  assert.deepEqual(r.cardChecks("three"), [], "three options are enough");
+  assert.deepEqual(r.cardChecks("ruled"), [], "a ruled card is not checked");
+  assert.equal(card?.label, "选项不足");
+  assert.deepEqual(r.checks("owner").filter(c => c.label === "选项不足"), [{ ...card, target: { kind: "card", id: "two" } }]);
+});
+
+test("the option check covers one-option cards and stops once the owner has chosen", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    one: { item: "owner", options: [{ key: "A", text: "Do" }] },
+    // Sending the owner's pick rules the card in the same commit, so an answered card is ruled, not open.
+    chosen: { item: "owner", options, status: "ruled", choice: "A" },
+  });
+  assert.equal(rules(s).cardChecks("one")[0]?.label, "选项不足", "a one-option card is checked");
+  assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has answered is not checked");
+});
