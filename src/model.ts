@@ -120,6 +120,73 @@ export const tagApplies = (tag: Tag, project: string): boolean => tag.projects =
 /** Whether an item of this project must carry a tag: once the vocabulary holds a tag it may use. */
 export const tagsRequired = (tags: readonly Tag[] | undefined, project: string): boolean => (tags ?? []).some(tag => tagApplies(tag, project));
 
+/**
+ * One dispatch: an agent session the architect started on an item, recorded in the columns of the dispatch format the
+ * architect keeps (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
+ * accepted for them.
+ */
+export const DISPATCH_ROLES = ["工程师", "审查"] as const;
+export const DISPATCH_RESULTS = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+export const DISPATCH_SIGNALS = ["验收没过", "架构师打回", "做法被否", "长时间没进展", "换模型"] as const;
+const Count = z.number().int().nonnegative();
+/** US dollars with at most three decimals, so any sum of costs is exact in thousandths (see `milliDollars`). */
+export const Cost = z.number().nonnegative().refine(c => Math.abs(c * 1000 - Math.round(c * 1000)) < 1e-6, "Give at most three decimals");
+export const milliDollars = (cost: number): number => Math.round(cost * 1000);
+export const DispatchUsage = z.object({ input: Count, cacheWrite: Count, cacheRead: Count, output: Count }).strict();
+export type DispatchUsage = z.infer<typeof DispatchUsage>;
+export const DispatchSignal = z.object({ kind: z.enum(DISPATCH_SIGNALS), note: StepText.optional() }).strict();
+export type DispatchSignal = z.infer<typeof DispatchSignal>;
+export const DispatchFinish = z.object({
+  ended: Time,
+  result: z.enum(DISPATCH_RESULTS),
+  /** An engineer's reports and kickbacks; a review's rounds. Which of them a finished dispatch carries follows its role. */
+  reports: Count.optional(),
+  kickbacks: Count.optional(),
+  rounds: Count.optional(),
+  /** Minutes spent waiting for the owner, the 14900K or a dependency. */
+  waited: Count.optional(),
+  /** No signal is an empty list. */
+  signals: z.array(DispatchSignal).refine(list => new Set(list.map(s => s.kind)).size === list.length, "Name each signal once"),
+  usage: DispatchUsage,
+  cost: Cost,
+  note: StepText.optional(),
+}).strict();
+export type DispatchFinish = z.infer<typeof DispatchFinish>;
+/**
+ * What is wrong with the counts a finished dispatch of `role` carries, or undefined when they are right: an engineer
+ * carries `reports` and `kickbacks`, a review carries `rounds`, never the other role's. The one place the rule lives:
+ * the schema below and the write that ends a dispatch both ask it, the write to word the refusal.
+ */
+export function dispatchCountProblem(role: (typeof DISPATCH_ROLES)[number], c: { reports?: number | undefined; kickbacks?: number | undefined; rounds?: number | undefined }): string | undefined {
+  if (role === "工程师") {
+    if (c.reports === undefined || c.kickbacks === undefined) return `${c.reports === undefined ? "reports" : "kickbacks"}: an engineer dispatch ends with reports and kickbacks (how often it stopped to report, how often it was sent back)`;
+    return c.rounds === undefined ? undefined : "rounds: only a review dispatch carries rounds; an engineer carries reports and kickbacks";
+  }
+  if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many review rounds it took: the first review and each re-review count one)";
+  return c.reports === undefined && c.kickbacks === undefined ? undefined : `${c.reports === undefined ? "kickbacks" : "reports"}: only an engineer dispatch carries reports and kickbacks; a review carries rounds`;
+}
+export const Dispatch = z.object({
+  /** The dispatched session's full id; unique on the board. */
+  agentId: Key,
+  /** The dispatched session's name. */
+  agent: StepText,
+  role: z.enum(DISPATCH_ROLES),
+  level: z.number().int().min(1).max(5),
+  model: StepText,
+  effort: StepText.optional(),
+  worktree: StepText.optional(),
+  started: Time,
+  /** Which rows of the item the session did, in one line. */
+  did: StepText.optional(),
+  /** Present once the session has ended. */
+  finish: DispatchFinish.optional(),
+}).strict().superRefine((d, ctx) => {
+  // A record edited by hand that breaks the rule is refused with the rule's own words.
+  const problem = d.finish && dispatchCountProblem(d.role, d.finish);
+  if (problem) ctx.addIssue(problem);
+}).refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
+export type Dispatch = z.infer<typeof Dispatch>;
+
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
@@ -162,6 +229,8 @@ export const Item = z.object({
   /** One line of key numbers. */
   data: z.string().min(1).optional(),
   links: z.array(Link).default([]),
+  /** The agent sessions started on this item, oldest first; like the log, historical detail the owner is never told is new. */
+  dispatches: z.array(Dispatch).refine(list => new Set(list.map(d => d.agentId)).size === list.length, "Dispatch agentIds must be unique").optional(),
   ask: Ask.optional(),
   created: Time.optional(),
   updated: Time,

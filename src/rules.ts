@@ -61,8 +61,8 @@ export function mergeRowDone(counted: readonly string[], merged: ReadonlySet<str
   return counted.length > 0 && counted.every(key => merged.has(key));
 }
 
-/** The one rule that log entries never count as owner-unread: owner-facing item comparisons drop the log first. */
-export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { log: _log, ...rest } = doc as T & { log?: unknown }; return rest; }
+/** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
+export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
 
