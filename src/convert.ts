@@ -299,12 +299,11 @@ export function convertExport(exportJson: unknown): Converted {
   return { board, asRead, current, owner, orphans, report: Array.from(counts, ([action, info]) => `${action}: ${info.count} (examples: ${[...info.examples].join(", ")})`) };
 }
 
-/** The importer reads the shape cards had before they joined the plans; the store takes the current one, so the long
- * texts go to `legacy` and a card the old board closed in any way is ruled. */
+/** The importer reads the shape cards had before they joined the plans; the store takes the current one: the option text
+ * becomes the option's detail, the background goes to `legacy`, and a card the old board closed in any way is ruled. */
 function storedCard(card: Decision): unknown {
-  const { background, confidence, ruling, order: _order, status, ...rest } = card;
-  const legacy = { ...(background === undefined ? {} : { background }), ...(confidence === undefined ? {} : { confidence }), ...(ruling === undefined ? {} : { ruling }) };
-  return { ...rest, status: status === "open" ? "open" : "ruled", ...(Object.keys(legacy).length ? { legacy } : {}) };
+  const { background, order: _order, status, options, ...rest } = card;
+  return { ...rest, options: options.map(({ text: detail, ...option }) => ({ ...option, text: "", detail })), status: status === "open" ? "open" : "ruled", ...(background === undefined ? {} : { legacy: { background } }) };
 }
 
 export async function importExport(store: Store, exportJson: unknown, options: { at?: string } = {}): Promise<{ asReadCommit: string; currentCommit: string }> {

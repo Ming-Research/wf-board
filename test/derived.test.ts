@@ -100,14 +100,14 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async s => {
       // The card's row joins its item's plan in the same commit; the item then waits for it while it is open.
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
-      return op.writeCard({ author: group, key, item: id, question: "Which?", options: [{ text: "a", recommended: true }, { text: "b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
+      return op.writeCard({ author: group, key, item: id, question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
     },
     async s => {
       const open = Object.entries(s.decisions).filter(([, d]) => d.status === "open");
       if (!open.length) return;
       const [key, card] = pick(open), group = s.items[card.item]!.group, action = rand();
       // A revision keeps the card's item and row; a ruling or a withdrawal resolves the row.
-      if (action < 0.4) return op.writeCard({ author: group, key, rev: card.rev, item: card.item, question: "Which now?", options: card.options.map(({ key: _key, ...option }) => option) });
+      if (action < 0.4) return op.writeCard({ author: group, key, rev: card.rev, item: card.item, question: "Which now?", options: card.options.map(o => ({ text: o.text, detail: o.detail ?? "detail", ...(o.recommended ? { recommended: true } : {}) })) });
       if (action < 0.8) return op.ruleCard({ author: group, key, choice: "A" });
       return op.withdrawCard({ author: group, key, log: "not needed" });
     },

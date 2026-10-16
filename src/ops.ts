@@ -4,7 +4,7 @@ import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, 
 import type { PlanRow, ItemTarget, Link, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, OPTION_MAX_CHARS } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS } from "./rules.ts";
 import { describeChanges } from "./query.ts";
 import { normalizeTime, startLogLine, finishLogLine } from "./dispatch.ts";
 
@@ -41,9 +41,9 @@ export interface Ops {
   moveItemProject(a: { author: string; session?: string; id: string; project: string; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   /** Creates a card and its row in the item's plan in one commit, or revises an open card's question, options and blocks. */
-  writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; recommended?: boolean }>; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
+  writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
   /** Records the pick the owner made outside the page; a pick made on the page is recorded when the owner sends it. */
-  ruleCard(a: { author: string; session?: string; key: string; choice: string }): Promise<Result>;
+  ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling?: string }): Promise<Result>;
   /** Closes an open card nobody needs any more, with the reason in its item's log. */
   withdrawCard(a: { author: string; session?: string; key: string; log: string }): Promise<Result>;
   replyNote(a: { author: string; session?: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
@@ -763,38 +763,45 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     writeCard: a => run(a, async (s, at) => {
       const item = ownedItem(s, a.item, a, "item");
-      if (/[\r\n]/.test(a.question)) throw new OpError("question: write the question on one line; the grounds belong in the item's head");
-      if (!a.options.length) throw new OpError("options: give at least one option name; fix and call again");
-      const given = parse(z.array(z.object({ text: z.string().min(1), recommended: z.boolean().optional() }).strict()).max(26), a.options);
+      if (/[\r\n]/.test(a.question)) throw new OpError("question: write the question on one line; the grounds belong in the options and the item's head");
+      if (!a.options.length) throw new OpError("options: give at least one option; fix and call again");
+      const given = parse(z.array(z.object({ text: z.string().min(1), detail: z.string().min(1), recommended: z.boolean().optional() }).strict()).max(26), a.options);
       given.forEach((o, i) => {
-        if (/[\r\n]/.test(o.text) || [...o.text.replace(/\s/g, "")].length > OPTION_MAX_CHARS) throw new OpError(`options.${i}.text: an option is a name of at most ${OPTION_MAX_CHARS} characters (spaces not counted) on one line; put what it does and why in the item's head`);
+        if (/[\r\n]/.test(o.text) || [...o.text.replace(/\s/g, "")].length > OPTION_MAX_CHARS) throw new OpError(`options.${i}.text: an option's name is a short phrase of at most ${OPTION_MAX_CHARS} characters (spaces not counted) on one line; what it does, its cost and risks, and why it is or is not recommended go in options.${i}.detail`);
       });
       if (given.filter(o => o.recommended).length > 1) throw new OpError("options.recommended: recommend at most one option");
       // Keys follow the order: A, B, C…
-      const options = given.map((o, i) => ({ key: String.fromCharCode(65 + i), text: o.text, ...(o.recommended ? { recommended: true } : {}) }));
+      const options = given.map((o, i) => ({ key: String.fromCharCode(65 + i), text: o.text, detail: o.detail, ...(o.recommended ? { recommended: true } : {}) }));
       let previous: Decision | undefined;
       if (a.rev !== undefined) {
-        if (a.before !== undefined || a.after !== undefined) throw new OpError("before: a card's row is placed when the card is created; a revision keeps it");
         previous = requireCard(s, a.key);
         ownedItem(s, previous.item, a);
         if (previous.item !== a.item) throw new OpError(`item: card ${a.key} belongs to ${previous.item} and cannot change item`);
         await revision("decision", a.key, a.rev, previous);
         if (previous.status !== "open") throw new OpError("status: only an open card can be revised; create a new card");
       } else newKey(s, a.key);
+      if (a.confidence === undefined && !previous?.confidence) throw new OpError("confidence: say how sure you are of the recommended option (a score of 1 to 5 and the reason, with what would overturn it)");
       // blocks: text sets it, null clears it, omitted keeps the revised card's.
       const merged: Record<string, unknown> = { ...previous, item: a.item, question: a.question, options, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 };
+      if (a.confidence !== undefined) merged.confidence = a.confidence;
       if (a.blocks === null) delete merged.blocks; else if (a.blocks !== undefined) merged.blocks = a.blocks;
       const doc = parse(Decision, merged);
+      const blocking = doc.blocks !== undefined, was = previous?.blocks !== undefined;
+      // Only a card that blocks is a row of its item's plan: the work goes on without any other card.
+      if (!blocking && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: only a card with blocks has a row in the plan; the work goes on without a card that does not block");
+      if (blocking && was && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: a card's row is placed when it starts to block; a revision keeps it");
       const puts: Put[] = [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }];
-      if (!previous) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after), updated: at }));
+      if (blocking && !was) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after), updated: at }));
+      if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts };
     }, a.rev !== undefined),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
       ownedItem(s, card.item, a);
       if (card.status !== "open") throw new OpError("status: only an open card can be ruled");
-      if (!card.options.some(o => o.key === a.choice)) throw new OpError(`choice: use one of this card's option keys (${card.options.map(o => o.key).join(", ")})`);
-      const doc = parse(Decision, { ...card, status: "ruled", choice: a.choice, ruledAt: at, updated: at });
+      if (a.choice === undefined && a.ruling === undefined) throw new OpError("choice: give the option the owner chose, or the owner's words in ruling when they chose none");
+      if (a.choice !== undefined && !card.options.some(o => o.key === a.choice)) throw new OpError(`choice: use one of this card's option keys (${card.options.map(o => o.key).join(", ")}), or omit choice for a ruling in words`);
+      const doc = parse(Decision, { ...card, status: "ruled", ...(a.choice === undefined ? {} : { choice: a.choice }), ...(a.ruling === undefined ? {} : { ruling: a.ruling }), ruledAt: at, updated: at });
       return { id: a.key, kind: "decision", message: `rule_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: card.rev }] };
     }),
     withdrawCard: a => run(a, (s, at) => {

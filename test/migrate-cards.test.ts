@@ -31,9 +31,10 @@ function old(): CardMigrationInput {
         { id: "x1", card: "x1" },
         { id: "s3", text: "Three", state: "todo" },
         { id: "s4", text: "Four", state: "todo", after: ["x1", "s2"] },
+        { id: "c6", card: "c6" },
         { id: "accept", accept: true, text: "Checked", state: "todo" },
       ] }),
-      z: item({ num: 3, title: "Holds the foreign card" }),
+      z: item({ num: 3, title: "Holds the foreign card", head: "Intro\n\n**参考：R**\n\nreference text" }),
     },
     decisions: {
       // has its row; keeps it
@@ -48,6 +49,8 @@ function old(): CardMigrationInput {
       c5: card(8, { status: "open", choice: undefined, ruling: undefined, ruledAt: undefined, blocks: "The other work stops" }),
       // belongs to z, ruled; item a waits on it in its plan
       x1: card(9, { item: "z", choice: "B", ruling: undefined }),
+      // open and does not block, but has a row: the row goes
+      c6: card(10, { status: "open", choice: undefined, ruling: undefined, ruledAt: undefined }),
     },
     notes: {
       n1: { target: "q:c5", kind: "choice", choice: "B", text: "B", at, state: "sent", sentAt: sent, rev: 1 },
@@ -57,16 +60,17 @@ function old(): CardMigrationInput {
 }
 const withoutUndefined = (input: CardMigrationInput): CardMigrationInput => JSON.parse(JSON.stringify(input));
 
-test("each old card becomes a bare question with option names, old text kept in legacy", () => {
+test("each old card becomes a question whose options keep the old text as their detail; confidence and ruling stay, the background goes to legacy", () => {
   const { decisions, report } = migrateCards(withoutUndefined(old()), now);
   assert.deepEqual(report.errors, []);
-  assert.deepEqual(decisions.c1, { num: 4, item: "a", question: "Which?", options: [{ key: "A", text: "First", recommended: true }, { key: "B", text: "Second" }], status: "ruled", choice: "A", ruledAt: t1, at, updated: at, rev: 1,
-    legacy: { background: "Old background", confidence: { score: 4, reason: "Measured" }, ruling: "Old ruling" } });
+  assert.deepEqual(decisions.c1, { num: 4, item: "a", question: "Which?", options: [{ key: "A", text: "", detail: "First", recommended: true }, { key: "B", text: "", detail: "Second" }], status: "ruled", choice: "A", ruledAt: t1, at, updated: at, rev: 1,
+    confidence: { score: 4, reason: "Measured" }, ruling: "Old ruling", legacy: { background: "Old background" } });
   assert.equal(decisions.c2!.choice, undefined, "a card ruled in words stays ruled without a choice");
-  assert.equal((decisions.c2!.legacy as { ruling: string }).ruling, "Decided in chat");
-  for (const doc of Object.values(decisions)) assert.deepEqual(Object.keys(doc).filter(k => ["background", "confidence", "ruling", "order"].includes(k)), []);
-  assert.equal(report.cardsOpen + report.cardsRuled, 6);
+  assert.equal(decisions.c2!.ruling, "Decided in chat");
+  for (const doc of Object.values(decisions)) assert.deepEqual(Object.keys(doc).filter(k => ["background", "order"].includes(k)), []);
+  assert.equal(report.cardsOpen + report.cardsRuled, 7);
   assert.equal(report.ruledWithoutChoice, 1);
+  assert.equal(report.legacyKept, 7);
   for (const [key, doc] of Object.entries(decisions)) assert.ok(Decision.safeParse(doc).success, `${key} passes the current schema`);
 });
 
@@ -80,7 +84,7 @@ test("an open card the owner already answered closes with that pick and the send
   assert.equal(decisions.c4!.status, "open", "a comment on an open card does not rule it");
 });
 
-test("cards without a row get one: ruled at the end in the order they were written, open before the acceptance step", () => {
+test("only a card that blocks has a row: an open one without gets it before the acceptance step, an open one that does not block loses it, closed ones get none", () => {
   const { items, report } = migrateCards(withoutUndefined(old()), now);
   assert.deepEqual(report.errors, []);
   assert.deepEqual(items.a!.plan, [
@@ -90,20 +94,30 @@ test("cards without a row get one: ruled at the end in the order they were writt
     // the row after the dropped foreign row was ready because that row was resolved; it stays ready
     { id: "s3", text: "Three", state: "todo", after: [] },
     { id: "s4", text: "Four", state: "todo", after: ["s2"] },
-    // an open card is a step the acceptance step also waits for
+    // an open blocking card is a step the acceptance step also waits for; the acceptance step waits no more for c6
     { id: "c4", card: "c4", after: [] },
     { id: "accept", accept: true, text: "Checked", state: "todo", after: ["s4", "c4"] },
-    { id: "c5", card: "c5" },
-    { id: "c3", card: "c3" },
-    { id: "c2", card: "c2" },
   ]);
   assert.deepEqual(report.openCardsPlaced, ["c4"]);
-  assert.equal(report.rowsAppended, 4, "c5, c3, c2 in a; x1 in z, its own item");
+  assert.deepEqual(report.openRowsRemoved, ["c6"]);
   assert.equal(report.foreignRowsDropped, 1);
   assert.equal(report.afterListsEdited, 1);
   assert.equal(report.successorsReleased, 1);
-  assert.deepEqual((items.z!.plan as unknown[]).at(-1), { id: "x1", card: "x1" });
+  assert.equal((items.z!.plan as unknown[]).length, 1, "x1 is ruled and gets no row in its own item's plan");
   assert.equal(items.r, undefined, "an item with nothing to change is not written");
+});
+
+test("the cards a head does not place get a section at its end, before the 参考 sections, in the order they were written; placed ones keep their line", () => {
+  const input = withoutUndefined(old());
+  const { items, report } = migrateCards(input, now);
+  assert.equal(items.a!.head, "**以前的决定**\n\n[[q:c1]]\n\n[[q:c4]]\n\n[[q:c5]]\n\n[[q:c6]]\n\n[[q:c3]]\n\n[[q:c2]]");
+  assert.equal(items.z!.head, "Intro\n\n**以前的决定**\n\n[[q:x1]]\n\n**参考：R**\n\nreference text");
+  assert.equal(report.headsExtended, 2); assert.equal(report.cardsPlaced, 7);
+  assert.equal(report.headSample, "**以前的决定**\n\n[[q:c1]]\n\n[[q:c4]]\n\n[[q:c5]]\n\n[[q:c6]]\n\n[[q:c3]]\n\n[[q:c2]]");
+  input.items.a!.head = "Text\n\n[[q:c3]]\n\nAfter";
+  const placed = migrateCards(input, now).items.a!.head as string;
+  assert.ok(placed.startsWith("Text\n\n[[q:c3]]\n\nAfter\n\n**以前的决定**\n\n[[q:c1]]"), "the line c3 has stays where it is");
+  assert.ok(!placed.slice(placed.indexOf("以前的决定")).includes("[[q:c3]]"), "and is not given a second one");
 });
 
 test("a dropped foreign row leaves a log entry naming the card and what was chosen", () => {
@@ -131,8 +145,8 @@ test("it refuses what it cannot place without a decision", () => {
   assert.match(migrateCards(noItem, now).report.errors.join("\n"), /card c1: its item missing does not exist/);
   const odd = withoutUndefined(old()); odd.decisions.c1!.status = "withtree";
   assert.match(migrateCards(odd, now).report.errors.join("\n"), /card c1: status withtree/);
-  const clash = withoutUndefined(old()); (clash.items.a!.plan as Array<Record<string, unknown>>).push({ id: "c2", text: "Taken", state: "todo" });
-  assert.match(migrateCards(clash, now).report.errors.join("\n"), /item a: the plan already has a row with the id c2/);
+  const clash = withoutUndefined(old()); (clash.items.a!.plan as Array<Record<string, unknown>>).push({ id: "c4", text: "Taken", state: "todo" });
+  assert.match(migrateCards(clash, now).report.errors.join("\n"), /item a: the plan already has a row with the id c4/);
 });
 
 test("written through the store in one commit that is not work on the items; the board then opens and the migration refuses to run again", async t => {
@@ -140,7 +154,7 @@ test("written through the store in one commit that is not work on the items; the
   t.after(() => rm(dir, { recursive: true, force: true }));
   const input = withoutUndefined(old());
   await writeFile(join(dir, "board.yaml"), stringify(input.board));
-  await writeFile(join(dir, "numbers.yaml"), stringify({ next: 10 }));
+  await writeFile(join(dir, "numbers.yaml"), stringify({ next: 11 }));
   for (const [collection, docs] of [["items", input.items], ["decisions", input.decisions], ["notes", input.notes]] as const) {
     await mkdir(join(dir, collection));
     for (const [key, doc] of Object.entries(docs)) await writeFile(join(dir, collection, `${key}.yaml`), stringify(doc));
@@ -156,15 +170,15 @@ test("written through the store in one commit that is not work on the items; the
   assert.equal(await git("rev-parse", "HEAD"), head);
   assert.equal(await git("rev-list", "--count", "HEAD"), "2", "one commit");
   assert.equal(await git("log", "-1", "--format=%s"), CARD_MIGRATION_MESSAGE);
-  assert.deepEqual((await git("show", "--name-only", "--format=", "HEAD")).split("\n").sort(), ["decisions/c1.yaml", "decisions/c2.yaml", "decisions/c3.yaml", "decisions/c4.yaml", "decisions/c5.yaml", "decisions/x1.yaml", "items/a.yaml", "items/z.yaml"].sort());
+  assert.deepEqual((await git("show", "--name-only", "--format=", "HEAD")).split("\n").sort(), ["decisions/c1.yaml", "decisions/c2.yaml", "decisions/c3.yaml", "decisions/c4.yaml", "decisions/c5.yaml", "decisions/c6.yaml", "decisions/x1.yaml", "items/a.yaml", "items/z.yaml"].sort());
 
   const store = await Store.open(dir);
   const snapshot = store.snapshot();
   assert.equal(snapshot.decisions.c5!.status, "ruled");
   assert.equal(snapshot.decisions.c1!.num, 4, "numbers stay");
-  assert.equal(snapshot.items.a!.plan.length, 10);
-  assert.equal(snapshot.items.z!.plan.length, 2);
-  assert.equal(parse(await readFile(join(dir, "numbers.yaml"), "utf8")).next, 10);
+  assert.equal(snapshot.items.a!.plan.length, 7);
+  assert.equal(snapshot.items.z!.plan.length, 1);
+  assert.equal(parse(await readFile(join(dir, "numbers.yaml"), "utf8")).next, 11);
   // The owner's unread list does not count the migration.
   assert.deepEqual(await unreadSteps(store, cursor), []);
 

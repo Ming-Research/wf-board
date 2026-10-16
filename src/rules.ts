@@ -72,11 +72,22 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** The plan without a card's row, for a card that does not block. Rows that waited for the row wait for what it waited for. */
+export function withoutCardRow(plan: PlanRow[], key: string): PlanRow[] {
+  const i = plan.findIndex(r => "card" in r && r.card === key);
+  if (i < 0) return plan;
+  const waited = plan[i]!.after ?? (i > 0 ? [plan[i - 1]!.id] : []);
+  return plan.filter((_, n) => n !== i).map((r, n) => {
+    if (r.after?.includes(key)) return { ...r, after: [...new Set([...r.after.filter(x => x !== key), ...waited])] };
+    return r.after === undefined && n === i ? { ...r, after: waited } : r;
+  });
+}
+
 /** A title longer than this many characters (spaces not counted) gets a check. */
 export const TITLE_MAX_CHARS = 20;
-/** An option name longer than this many characters (spaces not counted) is refused when a card is written. */
+/** An option name longer than this many characters (spaces not counted) is refused when a card is written; its detail has no limit. */
 export const OPTION_MAX_CHARS = 20;
-/** An open card its item's head does not place carries this label; a card whose row and item disagree, the next. */
+/** An open card its item's head does not place carries this label; a card and its plan row that disagree, the next. */
 export const CARD_UNPLACED_LABEL = "卡没标位置";
 export const CARD_MISMATCH_LABEL = "卡和计划对不上";
 /** A line holding only [[q:key]] places that card in the head there; the same token inside a sentence is a link. */
@@ -383,7 +394,7 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
 export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {
   const it = r.item(id);
   const label = (kind: string, key: string): unknown[] => {
-    if (kind === "card") { const d = decisions[key]; return [d?.question, d?.status, d?.blocks, d?.choice, d?.options.find(o => o.key === d.choice)?.text]; }
+    if (kind === "card") { const d = decisions[key]; const o = d?.options.find(o => o.key === d.choice); return [d?.question, d?.status, d?.blocks, d?.choice, o?.text, o?.detail]; }
     const owner = r.parentOf(key);
     return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
   };
@@ -802,10 +813,12 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
         else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
       }
-      // A card and its row are one fact stored twice: each card of this item has its row in this plan, and each card row
-      // here names a card of this item. Only a write that bypasses write_card can break that.
+      // A card and its row are one fact stored twice: an open blocking card has its row in its item's plan, an open card
+      // that does not block has none (the work goes on without it), and each card row names a card of this item. A card
+      // that is closed keeps the row it had. Only a write that bypasses write_card can break that.
       const own = cardsOf(id), rowCards = it.plan.flatMap(row => "card" in row ? [row.card] : []);
-      const apart = [...own.filter(key => !rowCards.includes(key)).map(key => `${key} 没有计划行`), ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
+      const apart = [...own.filter(key => cardBlocking(key) && !rowCards.includes(key)).map(key => `${key} 挡事，却没有计划行`), ...own.filter(key => cardWaiting(key) && !cardBlocking(key) && rowCards.includes(key)).map(key => `${key} 不挡事，却有计划行`),
+        ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
       if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
       const placed = placedCards(it.head);
       for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });

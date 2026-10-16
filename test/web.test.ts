@@ -105,6 +105,13 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   roots.get("nav")!.className = "nav";
   roots.get("summary")!.appendChild(roots.get("nav")!);
   const detail=roots.get("item-detail")!, storage=options.storage ?? new Map<string,string>();
+  // The page draws a card its head does not place only on request, which the reader's open sections remember; the tests ask
+  // for every card the fixture has (the fake DOM keeps markup as text, so a card at its place in the head cannot be found).
+  if (openCards) {
+    const asked: Record<string, boolean> = JSON.parse(storage.get("board-refs") || "{}");
+    for (const key of Object.keys(fixture.decisions ?? {})) asked["card-row\n" + key] ??= true;
+    storage.set("board-refs", JSON.stringify(asked));
+  }
   detail.geometry=()=>({top:0,bottom:1000,height:1000,left:1000,width:900});
   // The left list pane scrolls the list; its scroll events arrive after the scroll, as a browser's do.
   const listPane=roots.get("page-left")!;
@@ -248,6 +255,9 @@ type PageFixture = Omit<Snapshot, "items" | "board"> & {
 };
 type PageInput = PageFixture | Snapshot;
 const planRowDomId = (item: string, row: string) => "plan-" + encodeURIComponent(JSON.stringify([item, row]));
+let openCards = true;
+/** Run a test whose cards are not asked for: the page draws a card its head does not place only on request. */
+async function closedCards(run: () => Promise<void>): Promise<void> { openCards = false; try { await run(); } finally { openCards = true; } }
 function nativeFixture(source: PageInput): Snapshot {
   const groupOf = (id: string, seen = new Set<string>()): string => {
     const it = source.items[id] as FixtureItem | undefined; if (!it || seen.has(id)) return ""; seen.add(id);
@@ -496,52 +506,54 @@ test("detail: 参考 text in a card's old background is plain, never a 参考 se
   assert.equal(descendants(card1).filter(e => e.tagName === "DETAILS").length,1,"only the card's own fold, the old background");
 });
 
-test("detail: a closed card is one line with its pick; its old text is under it, folded, and both stay open once the reader opened them", async () => {
+test("detail: a closed card is one line with its pick; the whole card and its old background are under it, folded, and stay open once the reader opened them", async () => {
   const s = snapshot();
-  s.decisions.q = {...card(), status: "ruled", choice: "A", ruledAt: at, legacy: {background: "Old background", confidence: {score: 4, reason: "Measured"}, ruling: "Old ruling"}};
+  s.decisions.q = {...card(), status: "ruled", choice: "A", ruledAt: at, confidence: {score: 4, reason: "Measured"}, ruling: "Owner words", legacy: {background: "Old background"}};
   const folds = async (storage?: Map<string,string>) => {
     const p = await page(s,[],null,undefined,{storage}); await expand(p);
     const details = descendants(p.all().find(e => e.id === "q-q")!).filter(e => e.tagName === "DETAILS");
     return {card: details.find(e => e.className.includes("cardfold"))!, legacy: details.find(e => e.className.includes("legacy"))!, all: details};
   };
   const closed = await folds();
-  assert.equal(closed.all.length,2,"the card's line and its old text");
+  assert.equal(closed.all.length,2,"the card's line and its old background");
   assert.ok(!closed.card.open,"the card is a line by default");
   assert.match(markup(closed.card.querySelector("summary")!), /已裁定.*如何显示？.*选 A<\/span>：保留 YAML/s,"the line says the card is ruled, its question and its pick");
-  assert.ok(!markup(closed.card.querySelector("summary")!).includes("Old"),"the line holds none of the old text");
-  assert.equal(closed.legacy.querySelector("summary")!.innerHTML,"原卡的背景、信心和裁定");
-  assert.ok(!closed.legacy.open,"the old text is folded by default");
-  for (const text of ["Old background","4/5：Measured","Old ruling"]) assert.ok(markup(closed.legacy).includes(text),text);
+  for (const text of ["Old background","Measured","Owner words","渲染正文"]) assert.ok(!markup(closed.card.querySelector("summary")!).includes(text),`the line holds ${text}`);
+  const under = markup(closed.card.children.find(e => e.className === "cardbody")!);
+  for (const text of ["保留 YAML","渲染正文","4/5：Measured","Owner words","Old background"]) assert.ok(under.includes(text),`under the line: ${text}`);
+  assert.equal(markup(closed.legacy.querySelector("summary")!),"原卡的背景");
+  assert.ok(!closed.legacy.open,"the old background is folded by default");
   const kept = await folds(new Map([["board-refs",JSON.stringify({"card-open\nq": true,"card-legacy\nq": true})]]));
   assert.ok(kept.card.open && kept.legacy.open,"what the reader opened stays open");
 });
 
 test("detail: an open card shows its old background unfolded; a card ruled in words shows its ruling on its line", async () => {
   const s = snapshot();
-  s.decisions.q = {...card(), legacy: {background: "Old background", confidence: {score: 2, reason: "Judgment"}}};
-  s.decisions.w = {...card(), question: "Decided in words?", status: "ruled", ruledAt: at, legacy: {background: "Words background", ruling: "Owner ruled **no**"}};
+  s.decisions.q = {...card(), legacy: {background: "Old background"}};
+  s.decisions.w = {...card(), question: "Decided in words?", status: "ruled", ruledAt: at, ruling: "Owner ruled **no**", legacy: {background: "Words background"}};
   const p = await page(s,[]); await expand(p);
   const open = descendants(p.all().find(e => e.id === "q-q")!).filter(e => e.tagName === "DETAILS");
   assert.equal(open.length,1); assert.ok(open[0]!.open,"the background an open card is decided from starts open");
-  assert.equal(open[0]!.querySelector("summary")!.innerHTML,"原卡的背景和信心");
+  assert.equal(markup(open[0]!.querySelector("summary")!),"原卡的背景");
   const words = p.all().find(e => e.id === "q-w")!, line = descendants(words).find(e => e.className.includes("card-line"))!;
   assert.match(markup(line), /文字裁决：Owner ruled <strong>no<\/strong>/,"the ruling is on the card's line");
   assert.ok(!markup(words).includes("见下面"),"nothing points down to the old text");
-  const legacy = descendants(words).filter(e => e.tagName === "DETAILS" && e.className.includes("legacy"));
-  assert.equal(legacy.length,1); assert.equal(legacy[0]!.querySelector("summary")!.innerHTML,"原卡的背景");
-  assert.ok(!markup(legacy[0]!).includes("Owner ruled"),"the ruling is not repeated in the fold");
+  assert.equal(descendants(words).filter(e => e.className.includes("ruling")).length,0,"the ruling is not repeated under the line");
 });
 
-test("detail: a withdrawn card with nothing more to show is only a line, and a ruled one is a line over its pick", async () => {
+test("detail: an open card shows its options with their details and its confidence; a withdrawn card is a line over them", async () => {
   const s = snapshot();
-  s.decisions.q = {...card(), status: "withdrawn"};
-  s.decisions.r = {...card(), question: "Ruled with text", status: "ruled", choice: "B", ruledAt: at};
+  s.decisions.q = {...card(), options: [{key: "A", text: "保留 YAML", detail: "Costs nothing now", recommended: true}, {key: "B", text: "", detail: "Old long option text from before"}], confidence: {reason: "Judgment only"}};
+  s.decisions.r = {...card(), question: "Gone?", status: "withdrawn", ruledAt: at};
   const p = await page(s,[]); await expand(p);
-  const gone = p.all().find(e => e.id === "q-q")!;
-  assert.equal(descendants(gone).filter(e => e.tagName === "DETAILS").length,0,"a withdrawn card with nothing more has no fold");
-  assert.match(markup(gone), /已撤回/);
-  const ruled = descendants(p.all().find(e => e.id === "q-r")!).find(e => e.className.includes("cardfold"))!;
-  assert.ok(!ruled.open); assert.match(markup(ruled.querySelector("summary")!),/选 B<\/span>：渲染正文/);
+  const open = p.all().find(e => e.id === "q-q")!, buttons = descendants(open).filter(e => e.className.includes("optbtn"));
+  assert.deepEqual(buttons.map(e => e.dataset.option),["A","B"]);
+  assert.match(markup(buttons[0]!),/保留 YAML/); assert.match(markup(buttons[0]!),/Costs nothing now/); assert.match(markup(buttons[0]!),/推荐/);
+  assert.match(markup(buttons[1]!),/Old long option text from before/,"an option with no name shows its detail");
+  assert.match(markup(open),/把握：/); assert.match(markup(open),/Judgment only/); assert.ok(!markup(open).includes("undefined/5"),"an unscored confidence reads as its reason alone");
+  const gone = p.all().find(e => e.id === "q-r")!, fold = descendants(gone).find(e => e.className.includes("cardfold"))!;
+  assert.match(markup(fold.querySelector("summary")!),/已撤回/); assert.ok(!fold.open);
+  assert.ok(!descendants(gone).some(e => e.className.includes("pick")),"a withdrawn card has no pick");
 });
 
 // The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
@@ -666,7 +678,7 @@ test("detail: card marks its current question, its closing and a recommendation 
   assert.ok(!markup(c).includes(before.question),"the former question is not rendered");
   assert.ok(!markup(c).includes("Intermediate question"));
   assert.ok(all.some(e => e.className.includes("closedtag") && e.className.includes("chg-add")),"the closing is marked");
-  assert.match(markup(c), /选 B：.*New option/s);
+  assert.match(markup(c), /选 B<\/span>：.*New option/s);
   assert.ok(!all.some(e => e.className.includes("optbtn")),"a ruled card has no option buttons");
   assert.ok(!markup(c).includes("保留 YAML"),"a removed option is not rendered");
 });
@@ -687,8 +699,8 @@ test("detail: new card marks its title only", async () => {
   assert.ok(!markup(c).includes('class="chg-add"'));
 });
 
-test("detail: an unscored confidence in a card's old text reads as its reason alone", async () => {
-  const s = snapshot(); s.decisions.q = {...card(),status:"ruled",choice:"A",legacy:{confidence:{reason:"Unscored evidence"}}};
+test("detail: an unscored confidence on a closed card reads as its reason alone", async () => {
+  const s = snapshot(); s.decisions.q = {...card(),status:"ruled",choice:"A",confidence:{reason:"Unscored evidence"}};
   const p = await page(s,[]); await expand(p);
   const c = p.all().find(e => e.id === "q-q")!;
   assert.match(markup(c), /Unscored evidence/); assert.ok(!markup(c).includes("undefined/5"));
@@ -1620,17 +1632,32 @@ test("card plan rows show waiting and resolved glyphs, link their question, say 
   assert.equal(planRow(p,"child","gone").querySelector(".plan-link")!.innerHTML,"gone");
   assert.equal(item(p).querySelectorAll(".why").length,0,"plan rows have no why field");
 });
-test("a card row goes to the card in the item's body, from the link and from the row, and leaves the selection", async () => {
-  const s=nativeSnapshot(), frames=new Frames(); s.decisions.q={...card(),item:"child"}; s.decisions.r={...card(),question:"已定的问题",item:"child",status:"ruled",choice:"A",ruledAt:at};
-  s.items.child!.plan=planWork([cardRow("q"),cardRow("r")]);
-  const p=await page(s,[],null,undefined,{frames}); await expand(p);
-  const cur=() => p.all().filter(e => e.id.startsWith("q-") && e.className.includes("cur")).map(e => e.id);
-  await planRow(p,"child","q").querySelector(".plan-link")!.click(); await p.flush(); assert.deepEqual(cur(),["q-q"]); assert.ok(detailItem(p,"child"),"the item stays selected");
-  const fold = () => descendants(p.all().find(e => e.id === "q-r")!).find(e => e.className.includes("cardfold"))!;
-  assert.ok(!fold().open,"a ruled card is a line until it is gone to");
-  await planRow(p,"child","r").click(); await p.flush(); assert.deepEqual(cur(),["q-r"],"a click on the row itself also goes to its card");
-  assert.ok(fold().open,"going to a ruled card opens it");
-  assert.ok(p.scrollCount>0,"the landing scrolls the card into view");
+test("a card row asks for a card its head does not place, from the link and from the row, and leaves the selection; a second click folds it", async () => {
+  await closedCards(async () => {
+    const s=nativeSnapshot(), frames=new Frames(); s.decisions.q={...card(),item:"child"}; s.decisions.r={...card(),question:"已定的问题",item:"child",status:"ruled",choice:"A",ruledAt:at};
+    s.items.child!.plan=planWork([cardRow("q"),cardRow("r")]);
+    const p=await page(s,[],null,undefined,{frames}); await expand(p);
+    const cur=() => p.all().filter(e => e.id.startsWith("q-") && e.className.includes("cur")).map(e => e.id);
+    assert.ok(!p.all().some(e => e.id === "q-q" || e.id === "q-r"),"nothing is drawn until a card is asked for");
+    await planRow(p,"child","q").querySelector(".plan-link")!.click(); await p.flush(); assert.deepEqual(cur(),["q-q"]); assert.ok(detailItem(p,"child"),"the item stays selected");
+    const row = planRow(p,"child","q");
+    assert.equal(row.parentElement!.children[row.parentElement!.children.indexOf(row)+1]!.id,"q-q","the card is drawn under its row");
+    await planRow(p,"child","q").click(); await p.flush(); assert.ok(!p.all().some(e => e.id === "q-q"),"a second click folds the card again");
+    const fold = () => descendants(p.all().find(e => e.id === "q-r")!).find(e => e.className.includes("cardfold"))!;
+    await planRow(p,"child","r").click(); await p.flush(); assert.deepEqual(cur(),["q-r"],"a click on the row itself also goes to its card");
+    assert.ok(fold().open,"a ruled card asked for opens");
+    assert.ok(p.scrollCount>0,"the landing scrolls the card into view");
+  });
+});
+test("a card its head places is not drawn under its row or the 决策 line", async () => {
+  await closedCards(async () => {
+    const s=nativeSnapshot(); s.decisions.q={...card(),item:"child"}; s.decisions.r={...card(),question:"另一个问题",item:"child"};
+    s.items.child!.plan=planWork([cardRow("q"),cardRow("r")]); s.items.child!.head="Intro\n\n[[q:q]]";
+    const p=await page(s,[],null,undefined,{storage:new Map([["board-refs",JSON.stringify({"card-row\nq": true,"card-row\nr": true})]])}); await expand(p);
+    assert.ok(!p.all().some(e => e.id === "q-q"),"a placed card is drawn at its line in the head, which the fake DOM keeps as text");
+    assert.ok(p.all().some(e => e.id === "q-r"),"a card the head does not place is drawn as asked");
+    assert.equal(p.all().filter(e => e.id === "q-r").length,1,"once");
+  });
 });
 test("card rulings and item progress refresh plan consumers and transitive priority", async () => {
   const s=nativeSnapshot(), frames=new Frames(); s.decisions.q={...card(),item:"area"};
@@ -1700,8 +1727,10 @@ test("an already expanded body reveals a folded note when jumped to, and shows i
   const p=await page(s,unread("note","n"),null,undefined,{frames,notesOpen:{"it:child":false}}); await expand(p); await p.flush();
   assert.ok(!p.all().some(e=>e.id === "note-n")); p.key("n"); await p.flush(); assert.ok(p.all().some(e=>e.id === "note-n" && e.className.includes("cur")));
   assert.ok(p.all().some(e=>e.id === "q-q"),"a ruled card of the shown item is in its body without being unread");
-  const ref=p.all().find(e=>e.className.startsWith("ref q"))!; await ref.click(); await p.flush();
-  assert.ok(p.all().some(e=>e.id === "q-q" && e.className.includes("cur")),"the reference goes to the card in the body");
+  const ref=() => p.all().find(e=>e.className.startsWith("ref q"))!; await ref().click(); await p.flush();
+  assert.ok(!p.all().some(e=>e.id === "q-q"),"the 决策 button folds a card the head does not place once it is shown");
+  await ref().click(); await p.flush();
+  assert.ok(p.all().some(e=>e.id === "q-q" && e.className.includes("cur")),"and asks for it again, going to it");
 });
 
 test("reopening a completed sibling restores its node and retains unrelated card identity", async () => {
@@ -1750,31 +1779,26 @@ test("a changed card or a reply on it is redrawn in place and its peers are not 
     s.decisions.q={...card(),status:"ruled",choice:"A"}; s.decisions.other=card(); s.decisions.third=card();
     const p=await page(s,[],null,undefined,{frames}); await expand(p); await p.flush();
     const peer=p.all().find(e=>e.id === "q-other")!, third=p.all().find(e=>e.id === "q-third")!, body=item(p).children.find(e=>e.className === "body")!; assert.ok(peer && third);
-    assert.deepEqual(p.all().filter(e=>e.id === "q-q" || e.id === "q-other" || e.id === "q-third").map(e=>e.id),["q-q","q-other","q-third"],"cards without a plan row follow in key order");
+    assert.deepEqual(p.all().filter(e=>e.id === "q-q" || e.id === "q-other" || e.id === "q-third").map(e=>e.id),["q-q","q-other","q-third"],"cards without a plan row follow the 决策 line in key order");
     p.emit("b".repeat(40),[kind === "note" ? {kind,id:"n",after:note} : {kind,id:"q",after:{...s.decisions.q!,question:"Updated question",rev:2}}]); await p.flush();
     assert.ok(p.all().find(e=>e.id === "q-other") === peer); assert.ok(p.all().find(e=>e.id === "q-third") === third);
     assert.match(markup(p.all().find(e=>e.id === "q-q")!),kind === "note" ? /评论 1 条，1 条有回复/ : /Updated question/);
     assert.deepEqual(p.all().filter(e=>e.id === "q-q" || e.id === "q-other" || e.id === "q-third").map(e=>e.id),["q-q","q-other","q-third"],"the order is kept");
-    assert.ok(body.children.findIndex(e=>e.id === "q-q") < body.children.findIndex(e=>e.className === "refs") || !body.children.some(e=>e.className === "refs"),"cards stay before reference rows");
+    assert.ok(body.children.findIndex(e=>e.id === "q-q") > body.children.findIndex(e=>e.className === "refs"),"cards asked for follow the 决策 line");
   });
 });
 
 test("all card jump entry points await baselines before selecting and scrolling", async t => {
   // A card its item holds has no 新 chip of its own (it counts toward the item's), so the chip is no entry point here.
-  for(const path of ["waiting key","previous key","reference","dependency","next button"]) await t.test(path,async()=> {
+  for(const path of ["waiting key","previous key","next button"]) await t.test(path,async()=> {
     const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), other=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
-    if(path === "dependency") s.items.area!.deps.push({card:"q",why:"Needs decision"});
     if(path === "next button") s.items.area!.ask={text:"Parent approval"};
-    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : other.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p,path === "dependency" || path === "next button" ? "area" : "child"); await p.flush();
+    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : other.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p,path === "next button" ? "area" : "child"); await p.flush();
     if(path === "waiting key") p.key("ArrowRight");
     else if(path === "previous key") p.key("ArrowLeft");
-    else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
-    else if(path === "dependency") await planRow(p,"area","q").querySelector(".plan-link")!.click();
     else await button(p,"下一条（2/2）").click();
     await p.flush(); assert.equal(p.scrollCount,0,"no document jump may scroll with an unresolved target baseline");
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
-    // The parent's plan row unfolds the card in the parent, which is unread too: its baseline alone does not release the jump.
-    if(path === "dependency") { other.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.equal(p.scrollCount,0,"the card's own baseline still holds the jump"); }
     hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
     other.resolve({before:s.items.area,after:s.items.area,diff:""});
   });
@@ -1821,12 +1845,12 @@ test("document jump restores an already-open target hidden by filtering or compl
   });
 });
 
-test("a first card added to an item is inserted before checks and references", async () => {
+test("a first card added to an item that is asked for is drawn after the checks and the references", async () => {
   const s=snapshot(), frames=new Frames(); s.items.child!.deps=[{id:"missing",why:"Needs missing item"}];
-  const p=await page(s,[],null,undefined,{frames}); await expand(p); await p.flush(); assert.ok(!p.all().some(e=>e.id === "q-q"));
+  const p=await page(s,[],null,undefined,{frames,storage:new Map([["board-refs",JSON.stringify({"card-row\nq": true})]])}); await expand(p); await p.flush(); assert.ok(!p.all().some(e=>e.id === "q-q"));
   p.emit("b".repeat(40),[{kind:"decision",id:"q",after:{...card(),status:"ruled",choice:"A",ruledAt:at}}]); await p.flush();
   const children=item(p).children.find(e=>e.className === "body")!.children, cardIndex=children.findIndex(e=>e.id === "q-q"); assert.ok(cardIndex>=0);
-  assert.ok(cardIndex < children.findIndex(e=>e.className === "checks")); assert.ok(cardIndex < children.findIndex(e=>e.className === "refs"));
+  assert.ok(cardIndex > children.findIndex(e=>e.className === "checks")); assert.ok(cardIndex > children.findIndex(e=>e.className === "refs"),"a card asked for follows the 决策 line");
 });
 
 test("a card removed from the board leaves its item's body and nothing else changes", async () => {
@@ -1867,7 +1891,7 @@ test("a held unread result and a card added meanwhile share one pass over the af
     s.decisions.q={...card(),status:"ruled",choice:"A"}; s.decisions.peer=card();
     s.notes.n={target:"q:q",kind:"comment",text:"Question",reply:"Reply",at,state:"done",rev:2};
     let hold=false;
-    const p=await page(s,[],()=>baseline.promise,undefined,{frames,response:path=>path === "/api/unread" && hold ? held.promise : undefined}); await expand(p); await p.flush();
+    const p=await page(s,[],()=>baseline.promise,undefined,{frames,storage:new Map([["board-refs",JSON.stringify({"card-row\nadded": true})]]),response:path=>path === "/api/unread" && hold ? held.promise : undefined}); await expand(p); await p.flush();
     const peer=p.all().find(e=>e.id === "q-peer")!; assert.ok(peer);
     hold=true; p.emit("b".repeat(40)); frames.flush(); await settle();
     held.resolve(reply({steps:unread(kind,kind === "note" ? "n" : "q")})); await settle();
@@ -1899,7 +1923,7 @@ test("dependency Back reacquires selects and scrolls its row after an owner rere
 
 test("a card added in the same change as an item-note update does not suppress the update", async () => {
   const s=snapshot(), frames=new Frames(); s.notes.n={target:"it:child",kind:"comment",text:"Original comment",at,state:"sent",rev:1};
-  const p=await page(s,[],null,undefined,{frames,notesOpen:{"it:child":true}}); await expand(p); await p.flush();
+  const p=await page(s,[],null,undefined,{frames,notesOpen:{"it:child":true},storage:new Map([["board-refs",JSON.stringify({"card-row\nadded": true})]])}); await expand(p); await p.flush();
   p.emit("b".repeat(40),[{kind:"note",id:"n",after:{...s.notes.n!,text:"Updated comment",rev:2}},{kind:"decision",id:"added",after:card()}]);
   frames.flush(); await settle();
   assert.deepEqual([...p.renders.at(-1) as Set<string>].sort(),["card:added","item:child","notes:it:child"].sort());
@@ -2020,6 +2044,9 @@ test("m reads every selected document kind even when the fresh filter hides its 
 });
 
 async function dependencyReadContract(transform?: PageOptions["transform"]) {
+  await closedCards(() => dependencyReadContract2(transform));
+}
+async function dependencyReadContract2(transform?: PageOptions["transform"]) {
   const s=snapshot(), later="e".repeat(40); s.decisions.q=card(); s.items.child!.deps=[{card:"q",why:"Needs decision"}];
   const p=await page(s,[...unread("item","area"),...unread("decision","q",later)],null,undefined,{transform});
   p.key("n"); await p.flush(); assert.ok(item(p,"area").className.includes("cur"));

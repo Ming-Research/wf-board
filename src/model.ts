@@ -243,42 +243,53 @@ export const Item = z.object({
   }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none");
 export type Item = z.infer<typeof Item>;
 
-/** One choice on a card: `key` is A, B, C… in order for a card written now, `text` its name (a short phrase). */
+/**
+ * One choice on a card: `key` is A, B, C… in order for a card written now, `text` its name (a short phrase, empty on a
+ * card converted from the old form), `detail` what it does, what it costs and risks, and why it is or is not recommended.
+ */
 export const Option = z.object({
   key: z.string().min(1),
-  text: z.string().min(1),
+  text: z.string(),
+  detail: z.string().min(1).optional(),
   recommended: z.boolean().optional(),
-}).strict();
+}).strict().refine(o => o.text !== "" || o.detail !== undefined, "An option needs a name or a detail");
 export type Option = z.infer<typeof Option>;
 
 /** A card is open until the owner's pick is recorded (ruled) or it is withdrawn. */
 export const DECISION_STATUSES = ["open", "ruled", "withdrawn"] as const;
 
 /**
- * What a card carried before it became a bare question with option names: its background, confidence and ruling,
- * kept word for word on the cards written then. Only the migration writes it; the page shows it folded.
+ * What a card carried before the form it has now: its background, kept word for word on the cards written then. Only
+ * the migration writes it; the page shows it folded. The grounds of a card written now stand in its item's head.
  */
 export const LegacyCard = z.object({
-  background: z.string().min(1).optional(),
-  confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
-  ruling: z.string().min(1).optional(),
+  background: z.string().min(1),
 }).strict();
 export type LegacyCard = z.infer<typeof LegacyCard>;
 
+/** How sure the card's author is of the recommended option: a score of 1 to 5 and the reason (and what would overturn it). */
+export const Confidence = z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict();
+export type Confidence = z.infer<typeof Confidence>;
+
 /**
- * A decision card: one question and its options, a step of its item's plan. Its item is stored here and its row is
- * stored in that item's plan; write_card writes both together and the 卡和计划对不上 check reports them apart.
+ * A decision card: one question, its options with their grounds and the confidence in the recommended one. It stands in
+ * its item's head on a line of its own; a blocking card (with `blocks`) is also a row of that item's plan. Its item is
+ * stored here and its row, when it has one, in that item's plan; write_card writes both together and the 卡和计划对不上
+ * check reports them apart.
  */
 export const Decision = z.object({
   num: Num.optional(),
   item: Key,
   question: z.string().min(1),
   options: z.array(Option).min(1),
+  confidence: Confidence.optional(),
   status: z.enum(DECISION_STATUSES),
   /** One sentence naming the work that stops until the owner rules; present makes the card blocking (src/rules.ts cardBlocking). */
   blocks: z.string().min(1).optional(),
-  /** The chosen option's key. Absent on an open or withdrawn card, and on an old card the owner answered in words. */
+  /** The chosen option's key. Absent on an open or withdrawn card, and on a card the owner answered in words. */
   choice: z.string().min(1).optional(),
+  /** The owner's own words when they ruled in chat, quoted by the session that recorded them. */
+  ruling: z.string().min(1).optional(),
   /** When the card closed: the owner's send time for a pick made on the page, else the time of the call that closed it. */
   ruledAt: Time.optional(),
   legacy: LegacyCard.optional(),

@@ -693,13 +693,16 @@ test("an open card its item's head does not place gets one check; a closed card,
   assert.equal(rules(s).checks("a").filter(c => c.label === CARD_UNPLACED_LABEL).length, 0);
 });
 
-test("a card and its row that disagree get a check on the item: no row, or a row for another item's card", () => {
-  const s = snapshot({ a: { plan: workPlan([card("foreign")]) }, b: {} }, { foreign: { item: "b", status: "ruled" }, rowless: { item: "a", status: "ruled" } });
+test("a card and its row that disagree get a check on the item: a blocking card without a row, a non-blocking open card with one, or a row for another item's card", () => {
+  const s = snapshot({ a: { plan: workPlan([card("foreign"), card("loose")]) }, b: {} }, {
+    foreign: { item: "b", status: "ruled" }, rowless: { item: "a", status: "open", blocks: "The work stops" }, closed: { item: "a", status: "ruled" },
+    loose: { item: "a", status: "open" },
+  });
   const mismatches = (id: string) => rules(s).checks(id).filter(c => c.label === CARD_MISMATCH_LABEL).map(c => c.text);
-  assert.deepEqual(mismatches("a"), ["卡和计划对不上：rowless 没有计划行；foreign 属于条目 b"]);
-  assert.deepEqual(mismatches("b"), ["卡和计划对不上：foreign 没有计划行"]);
+  // A closed card with no row is fine: only a card that blocks has a row.
+  assert.deepEqual(mismatches("a"), ["卡和计划对不上：rowless 挡事，却没有计划行；loose 不挡事，却有计划行；foreign 属于条目 b"]);
+  assert.deepEqual(mismatches("b"), []);
   s.items.a = Item.parse({ ...s.items.a!, plan: workPlan([card("rowless")]) });
-  s.items.b = Item.parse({ ...s.items.b!, plan: workPlan([card("foreign")]) });
   assert.deepEqual([mismatches("a"), mismatches("b")], [[], []]);
 });
 

@@ -90,6 +90,23 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return [...placed, ...own.filter(key => !placed.includes(key))];
     });
   }
+  // A card its item's head places is drawn at that line. Any other card is drawn on request: under its row in the item's
+  // plan when it has one, else under the 决策 line; the request is remembered like an open 参考 section.
+  const cardUnderKey = (id: string) => "card-row\n" + id;
+  function isPlaced(id: string) { const d = snapshot.decisions[id]; return !!d && placedCards(snapshot.items[d.item]?.head).includes(id); }
+  function hasRow(id: string) { const d = snapshot.decisions[id]; return !!d && !!snapshot.items[d.item]?.plan.some(row => "card" in row && row.card === id); }
+  function shownUnder(id: string) { return !isPlaced(id) && !!refOpen[cardUnderKey(id)]; }
+  // Make the card visible where the reader asked for it: a closed card opens, a card with no place in the head is drawn.
+  function revealCard(id: string) {
+    const d = snapshot.decisions[id]; if (!d) return;
+    if (d.status !== "open") rememberRef("card-open\n" + id, true);
+    if (!isPlaced(id)) rememberRef(cardUnderKey(id), true);
+  }
+  // A click asks for the card, or folds it again once shown; asking goes to the card like a click on a card in the head.
+  function toggleCardUnder(id: string) {
+    if (shownUnder(id)) { rememberRef(cardUnderKey(id), false); renderDetail(new Set(["card:" + id])); }
+    else jump("q-" + id);
+  }
   function planRowId(item: string, row: string) { return "plan-" + encodeURIComponent(JSON.stringify([item, row])); }
   let manual: Record<string, boolean> = {};
   try { manual = JSON.parse(localStorage.getItem("board-open") || "{}") || {}; } catch (e) { manual = {}; }
@@ -515,8 +532,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       openPath(it.id);
       selectItem(it.id);
     }
-    // A closed card is one line; going to the card itself opens it.
-    if (target.card && target.id === "q-"+target.card && snapshot.decisions[target.card] && snapshot.decisions[target.card]!.status !== "open") rememberRef("card-open\n"+target.card,true);
+    // Going to a card itself shows it: a closed card opens, and a card with no place in the head is drawn.
+    if (target.card && target.id === "q-"+target.card) revealCard(target.card);
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
     scheduleRender(...(target.card ? ["card:"+target.card] : []),...(comments ? ["notes:"+comments] : []));
@@ -1674,8 +1691,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           // One line: the question's first line, and what was chosen once ruled. A click goes to the card in the body.
           const chosen = card.options.find(o => o.key === card.choice);
           const go = el("a", "plan-link cardgo", esc(plain(firstLine(card.question)) || stored.card)); go.href = "#";
-          go.title = "到正文里的这张决策卡";
-          const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump("q-" + stored.card); };
+          go.title = isPlaced(stored.card) ? "到正文里的这张决策卡" : "在这一行下面展开这张决策卡";
+          const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); if (isPlaced(stored.card)) jump("q-" + stored.card); else toggleCardUnder(stored.card); };
           go.addEventListener("click", jumpToCard);
           row.classList.add("cardrow");
           row.addEventListener("click", ev => { if (!(ev.target as HTMLElement).closest?.("a, button, input, textarea, select, label")) jumpToCard(ev); });
@@ -1686,7 +1703,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       row.insertBefore(main, row.children[1] || null);
       return row;
     };
-    const appendRow = (outer: HTMLElement, value: typeof rows[number]) => { outer.appendChild(renderRow(value)); };
+    // A card its head does not place is drawn under its row once the reader asked for it.
+    const appendRow = (outer: HTMLElement, value: typeof rows[number]) => {
+      outer.appendChild(renderRow(value));
+      const key = "card" in value.row ? value.row.card : undefined, d = key === undefined ? undefined : index().decById.get(key);
+      if (d && d.item === it.id && shownUnder(d.id)) outer.appendChild(decisionCard(d));
+    };
     const units: Array<{start:number;end:number}> = [];
     for (let i=0; i<rows.length;) {
       const group=groups.get(i), end=group?.end ?? i+1;
@@ -1790,8 +1812,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           const pick = d?.status === "ruled" && d.choice !== undefined ? " · 选 " + d.choice : d?.status === "withdrawn" ? " · 已撤回" : "";
           const b = el("button", "ref q" + (openQ(q) ? " open" : ""), esc(label.length > 24 ? label.slice(0, 24) + "…" : label) + esc(pick) + (talk ? " · 评论 " + talk : ""));
           b.type = "button";
-          b.title = d ? (d.status === "open" ? "待你决定" : "到正文里的这张决策卡") : "";
-          b.addEventListener("click", () => { if (d) jump("q-" + q); });
+          b.title = !d ? "" : isPlaced(q) ? "到正文里的这张决策卡" : refOpen[cardUnderKey(q)] ? "收起这张决策卡" : "展开这张决策卡";
+          b.addEventListener("click", () => { if (!d) return; if (isPlaced(q)) jump("q-" + q); else toggleCardUnder(q); });
           refs.appendChild(b);
         });
       }
@@ -1942,7 +1964,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         }
         body.appendChild(head);
       }
-      cardOrder(it.id).filter(key => !placed.has(key)).forEach(key => { const d = index().decById.get(key); if (d) body.appendChild(decisionCard(d)); });
       if (it.data) body.appendChild(el("div", "data", inline(it.data)));
       const ws = derived.dependents(it.id).filter(row => !row.own).map(row => index().byId.get(row.id)).filter((row): row is ViewItem => !!row && !isCancelled(row));
       if (ws.length) {
@@ -1959,6 +1980,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         body.appendChild(cb);
       }
       const refs=refsRow(it,before); if (refs) body.appendChild(refs);
+      // A card with no place in the head and no row in the plan is drawn here once the reader asked for it.
+      cardOrder(it.id).filter(key => !placed.has(key) && !hasRow(key) && shownUnder(key)).forEach(key => { const d = index().decById.get(key); if (d) body.appendChild(decisionCard(d)); });
       box.appendChild(body);
 
     }
@@ -2038,8 +2061,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const overlay = optimistic.get(draftKey("q:"+d.id,"choice"));
     return overlay ? overlay.on ? sendingDrafts.has(draftKey("q:"+d.id,"choice")) ? {...overlay,state:"sent" as const} : overlay : undefined : notesOf("q:" + d.id).find(n => n.kind === "choice" && (n.state === "draft" || n.state === "sent" || n.state === "done"));
   }
-  // A card: a bold question and the option names (an open card), or the pick made (a closed one); the text the card carried
-  // before it became a bare question is kept folded.
+  // An option's name, or the first line of its detail on a card converted from the old form, which has no name.
+  const optName = (o: { text: string; detail?: string }) => plain(o.text || firstLine(o.detail ?? ""));
+  // A card: a bold question, its options (a name and what the option does, costs and risks) and the confidence in the
+  // recommended one. An open card offers the options to pick; a closed one is a single line, the pick, with the whole card
+  // under the line. The background an old card carried is kept folded.
   function decisionCard(d: ViewDecision) {
     const retained=groupReuse?.cards.get(d.id); if (retained && !groupReuse!.dirtyCards.has(d.id)) return retained;
     const before = unreadBefore<Decision>("decision",d.id);
@@ -2048,12 +2074,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     c.hidden = sendingChoice(d.id);
     const terms = itemTerms(d.item);
     const closed = d.status !== "open", words = d.status === "ruled" && d.choice === undefined, legacy = d.legacy;
-    // What the old card kept, by name. A card ruled in words shows its ruling on its own line, so not again here.
-    const kept = legacy ? [...legacy.background ? ["背景"] : [], ...legacy.confidence ? ["信心"] : [], ...legacy.ruling && !words ? ["裁定"] : []] : [];
-    // A closed card is one line, and what more it has opens under that line; one with nothing more stays a line.
-    const folded = closed && (kept.length > 0 || (d.status === "ruled" && !words));
     if (closed) c.classList.add("closed");
-    const top = el(folded ? "summary" : "div", closed ? "card-line" : "card-top");
+    const top = el(closed ? "summary" : "div", closed ? "card-line" : "card-top");
     const h = el("h3");
     if (derived.cardBlocking(d.id)) { const tag = el("span", "waittag", "阻塞"); tag.title = d.blocks || ""; h.appendChild(tag); }
     else if (waitsQ(d)) h.appendChild(el("span", "asktag", "决策卡"));
@@ -2069,15 +2091,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const checks = derived.cardChecks(d.id).map(k => el("div", "checks", "需核对：" + esc(k.text)));
     if (!closed) { c.appendChild(top); checks.forEach(x => c.appendChild(x)); }
     const chosen = choiceOf(d);
-    const more = folded ? el("div", "cardbody") : c;
+    const more = closed ? el("div", "cardbody") : c;
+    const confidence = d.confidence ? el("p", "conf", '<span class="lbl">把握：</span>' + inline((d.confidence.score === undefined ? "" : d.confidence.score + "/5：") + d.confidence.reason)) : null;
     if (d.status === "open") {
       const ol = el("ul", "opts");
       const oldOptions = new Map(before?.options.map(o => [o.key,o]));
       d.options.forEach(o => {
         const li = el("li");
         const sel = chosen?.choice === o.key;
-        const rec = !!o.recommended;
-        const btn = el("button", "optbtn" + (before && oldOptions.get(o.key)?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), (rec ? '<span class="recchip">推荐</span>' : "") + '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="rich">' + linkTerms(markedBlocks(!before ? undefined : oldOptions.get(o.key)?.text || "",o.text),terms) + '</div>');
+        const rec = !!o.recommended, was = oldOptions.get(o.key);
+        const name = o.text ? '<span class="optname">' + linkTerms(markedBlocks(!before ? undefined : was?.text || "",o.text),terms) + "</span>" : "";
+        const detail = o.detail ? '<div class="rich optdetail">' + linkTerms(markedBlocks(!before ? undefined : was?.detail || "",o.detail),terms) + "</div>" : "";
+        const btn = el("button", "optbtn" + (before && was?.recommended !== o.recommended ? " chg-add" : "") + (rec ? " rec" : "") + (sel ? " sel" : ""), '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="optbody">' + (rec ? '<span class="recchip">推荐</span>' : "") + name + detail + "</div>");
         btn.type = "button";
         btn.dataset.option = o.key;
         btn.setAttribute("aria-pressed", String(sel));
@@ -2090,33 +2115,36 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         ol.appendChild(li);
       });
       c.appendChild(ol);
-    } else if (d.status === "ruled") {
+      if (confidence) c.appendChild(confidence);
+    } else {
+      // Closed: the line names the pick (or gives the ruling when the owner answered in words); the options, the confidence
+      // and the ruling are under it.
       const option = d.options.find(o => o.key === d.choice);
       const at = d.ruledAt ? ' <span class="pickat">· ' + esc(day(d.ruledAt)) + "</span>" : "";
-      if (words) top.appendChild(el("span", "pick pickwords", (legacy?.ruling ? "文字裁决：" + inline(legacy.ruling) : "主人用文字裁决") + at));
-      else {
-        // The line names the pick; the whole option text is under it.
-        top.appendChild(el("span", "pick pickshort", '<span class="lbl">选 ' + esc(d.choice) + "</span>" + (option ? "：" + esc(plain(firstLine(option.text))) : "") + at));
-        more.appendChild(el("p", "pick", '<span class="lbl">选 ' + esc(d.choice) + (option ? "：" : "") + "</span>" + (option ? '<span class="rich">' + linkTerms(inline(option.text),terms) + "</span>" : "") + at));
-      }
+      if (words) top.appendChild(el("span", "pick pickwords", (d.ruling ? "文字裁决：" + inline(d.ruling) : "主人用文字裁决") + at));
+      else if (d.status === "ruled") top.appendChild(el("span", "pick pickshort", '<span class="lbl">选 ' + esc(d.choice) + "</span>" + (option ? "：" + esc(optName(option)) : "") + at));
+      const ul = el("ul", "optlist");
+      d.options.forEach(o => ul.appendChild(el("li", (o.key === d.choice ? "sel " : "") + (o.recommended ? "rec" : ""), '<span class="lbl">' + esc(o.key) + "：</span>" + '<div class="optbody">' + (o.recommended ? '<span class="recchip">推荐</span>' : "") + (o.key === d.choice ? '<span class="pickchip">选中</span>' : "")
+        + (o.text ? '<span class="optname">' + linkTerms(inline(o.text),terms) + "</span>" : "") + (o.detail ? '<div class="rich optdetail">' + linkTerms(blocks(o.detail),terms) + "</div>" : "") + "</div>")));
+      more.appendChild(ul);
+      if (confidence) more.appendChild(confidence);
+      if (d.ruling && !words) more.appendChild(el("div", "rich ruling", '<div class="sub">裁定</div>' + linkTerms(blocks(d.ruling),terms)));
     }
-    if (kept.length && legacy) {
+    if (legacy) {
       // An open card's old background is what the reader decides from, so it starts open; a closed card's starts folded.
       const key = "card-legacy\n" + d.id, fold = el("details", "refsec legacy"); fold.dataset.ref = key; fold.open = refOpen[key] ?? !closed;
-      fold.appendChild(el("summary", null, "原卡的" + (kept.length > 1 ? kept.slice(0, -1).join("、") + "和" : "") + kept[kept.length - 1]));
+      fold.appendChild(el("summary", null, "原卡的背景"));
       const body = el("div", "refbody");
-      if (legacy.background) body.appendChild(el("div", "rich", '<div class="sub">背景</div>' + linkTerms(blocks(legacy.background),terms)));
-      if (legacy.confidence) body.appendChild(el("p", null, '<span class="lbl">信心：</span>' + inline((legacy.confidence.score === undefined ? "" : legacy.confidence.score + "/5：") + legacy.confidence.reason)));
-      if (legacy.ruling && !words) body.appendChild(el("div", "rich", '<div class="sub">裁定</div>' + linkTerms(blocks(legacy.ruling),terms)));
+      body.appendChild(el("div", "rich", linkTerms(blocks(legacy.background),terms)));
       fold.appendChild(body);
       more.appendChild(fold);
     }
-    if (folded) {
+    if (closed) {
       const key = "card-open\n" + d.id, fold = el("details", "cardfold"); fold.dataset.ref = key; fold.open = !!refOpen[key];
       fold.appendChild(top); fold.appendChild(more);
       c.appendChild(fold);
-    } else if (closed) c.appendChild(top);
-    if (closed) checks.forEach(x => c.appendChild(x));
+      checks.forEach(x => c.appendChild(x));
+    }
     const nb = noteBlock("q:" + d.id, d.question || "决策");
     if (nb) c.appendChild(nb);
     if (waitsQ(d)) {

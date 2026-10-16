@@ -439,29 +439,37 @@ test("context and graph accept a short number, rows show it, and an exact key wi
   assert.equal(brief.cards.find(c => c.id === "choice")?.num, 5);
 });
 
-test("write_card takes a question and option names, rule_card only a choice, and withdraw_card a reason; context shows the card", async t => {
+test("write_card takes a question, options with their grounds and a confidence, rule_card a choice or the owner's words, and withdraw_card a reason; context shows the card", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   const properties = (name: string) => Object.keys(tools.find(tool => tool.name === name)!.inputSchema.properties!).sort();
-  assert.deepEqual(properties("write_card"), ["after", "author", "before", "blocks", "item", "key", "options", "question", "rev", "session"]);
-  assert.deepEqual(properties("rule_card"), ["author", "choice", "key", "session"]);
+  assert.deepEqual(properties("write_card"), ["after", "author", "before", "blocks", "confidence", "item", "key", "options", "question", "rev", "session"]);
+  assert.deepEqual(properties("rule_card"), ["author", "choice", "key", "ruling", "session"]);
   assert.deepEqual(properties("withdraw_card"), ["author", "key", "log", "session"]);
   const optionProperties = (tools.find(tool => tool.name === "write_card")!.inputSchema.properties!.options as { items: { properties: object } }).items.properties;
-  assert.deepEqual(Object.keys(optionProperties).sort(), ["recommended", "text"], "the board gives the option keys");
-  // The removed arguments are refused, not ignored.
-  for (const [name, extra] of [["write_card", { background: "Why" }], ["write_card", { confidence: { score: 3, reason: "x" } }], ["rule_card", { ruling: "Done" }]] as const) {
-    const args = name === "write_card" ? { author, key: "q1", item: "a", question: "Which?", options: [{ text: "A" }], ...extra } : { author, key: "choice", choice: "A", ...extra };
-    const refused = await client.callTool({ name, arguments: args }); assert.equal(refused.isError, true, `${name} ${JSON.stringify(extra)}`);
+  assert.deepEqual(Object.keys(optionProperties).sort(), ["detail", "recommended", "text"], "the board gives the option keys");
+  const options = [{ text: "First", detail: "Does the first; costs more; recommended because it is measured", recommended: true }, { text: "Second", detail: "Does the second" }, { text: "Third", detail: "Does the third" }];
+  const confidence = { score: 4, reason: "Measured on the old run" };
+  // The removed argument is refused, not ignored; a card without confidence or an option without detail is refused too.
+  for (const extra of [{ background: "Why" }, { confidence: undefined }, { options: [{ text: "A" }] }]) {
+    const refused = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, ...extra } });
+    assert.equal(refused.isError, true, JSON.stringify(extra));
   }
-  const created = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options: [{ text: "First", recommended: true }, { text: "Second" }] } });
+  assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "choice" } })).isError, true, "neither a choice nor words");
+  const created = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, blocks: "The work stops" } });
   assert.equal(created.isError, undefined, text(created));
   const card = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
-  assert.match(card, /^q1 · OPEN · Which\? · rev 1/m); assert.match(card, /^  A \(recommended\): First$/m); assert.match(card, /^  B: Second$/m);
-  assert.doesNotMatch(card, /background|confidence/i);
+  assert.match(card, /^q1 · OPEN · Which\? · rev 1/m); assert.match(card, /^  A \(recommended\): First — Does the first; costs more; recommended because it is measured$/m); assert.match(card, /^  B: Second — Does the second$/m);
+  assert.match(card, /^confidence 4\/5：Measured on the old run$/m); assert.doesNotMatch(card, /legacy|background/i);
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["q1", "accept"]);
-  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "q1", choice: "B" } });
+  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "q1", choice: "B", ruling: "B, as the owner wrote" } });
   assert.equal(ruled.isError, undefined, text(ruled));
-  assert.match(text(await client.callTool({ name: "context", arguments: { id: "q1" } })), /^chosen B: Second · 2026-10-11T02:03:04Z$/m);
+  const closed = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
+  assert.match(closed, /^chosen B: Second · 2026-10-11T02:03:04Z$/m); assert.match(closed, /^ruling: B, as the owner wrote$/m);
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /^q1 · RULED · Which\? · #\d+\nchosen B: Second · /m);
+  // A card the owner settled in words, without choosing an option.
+  await client.callTool({ name: "write_card", arguments: { author, key: "q2", item: "a", question: "Or?", options, confidence } });
+  assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "q2", ruling: "Settled in chat" } })).isError, undefined);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "q2" } })), /^ruling: Settled in chat$/m);
   const withdrawn = await client.callTool({ name: "withdraw_card", arguments: { author, key: "choice", log: "No longer needed" } });
   assert.equal(withdrawn.isError, undefined, text(withdrawn));
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "choice" } })), /^choice · WITHDRAWN · 中文方案？/m);
@@ -471,9 +479,9 @@ test("write_card takes a question and option names, rule_card only a choice, and
 test("a card migrated from the old shape shows its old text as legacy lines in context", async t => {
   const { client, text, store } = await connected(t);
   const card = store.snapshot().decisions.ruled!;
-  await store.commit({ author, message: "Legacy text", puts: [{ kind: "decision", id: "ruled", expectRev: card.rev, doc: { ...card, legacy: { background: "Old background", confidence: { score: 4, reason: "Measured" }, ruling: "Old ruling" } } }] });
+  await store.commit({ author, message: "Legacy text", puts: [{ kind: "decision", id: "ruled", expectRev: card.rev, doc: { ...card, legacy: { background: "Old background" } } }] });
   const context = text(await client.callTool({ name: "context", arguments: { id: "ruled" } }));
-  assert.match(context, /^legacy background: Old background$/m); assert.match(context, /^legacy confidence 4\/5：Measured$/m); assert.match(context, /^legacy ruling: Old ruling$/m);
-  const found = text(await client.callTool({ name: "search", arguments: { query: "Old ruling" } }));
+  assert.match(context, /^legacy background: Old background$/m);
+  const found = text(await client.callTool({ name: "search", arguments: { query: "Old background" } }));
   assert.match(found, /ruled/);
 });

@@ -195,7 +195,7 @@ test("only the kinds in the table are pushed: not a new request, a blocking card
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);
   await op.createRequest({ author: "Firn", project: "Whitefoot", key: "incoming", title: "Visitor request", head: "Please", accept: "Passes", priority: "P0", why: "Need it" });
-  await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", options: [{ text: "是" }], blocks: "合并停着" });
+  await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
   await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
@@ -398,7 +398,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   const told: Array<[string, string]> = [];
   const wake = new Wake({ notify: (title, message) => { told.push([title, message]); } });
   const { op } = await server(t, { wake });
-  const card = { author, key: "gate", item: "a", question: "合并吗？", options: [{ text: "是" }] };
+  const card = { author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] };
   await op.writeCard(card);
   assert.deepEqual(told, [], "a card without blocks tells no one");
   await op.writeCard({ ...card, key: "hard", blocks: "#398 合并停着" });
@@ -455,8 +455,8 @@ test("a blocking card written through the server runs the notification command w
   const fake = await fakeOsascript(await scratch(t));
   const wake = new Wake({ notify: macNotify({ command: fake.command, retryMs: 0 }) });
   const { op } = await server(t, { wake });
-  await op.writeCard({ author, key: "gate", item: "a", question: "合并吗？", options: [{ text: "是" }] });
-  await op.writeCard({ author, key: "hard", item: "a", question: "批准权限吗？", options: [{ text: "是" }], blocks: "发布停着" });
+  await op.writeCard({ author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] });
+  await op.writeCard({ author, key: "hard", item: "a", question: "批准权限吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "批准" }], blocks: "发布停着" });
   const calls = await until(fake.calls, c => c.length > 0, "the notification command");
   assert.deepEqual(calls, [notifyArgs("挡事的卡 · Whitefoot", "批准权限吗？（挡住：发布停着）")], "one run, for the blocking card only");
 });

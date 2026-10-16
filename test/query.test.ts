@@ -9,7 +9,7 @@ const acceptance = (text = "验收通过"): PlanStepInput => ({ id: "accept", ac
 test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks snippets and filters", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
   const hits = q.search(s, r, "中文", { limit: 100 });
-  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:option.A", "card:ruled:legacy.ruling", "item:a:log[6]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
+  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:option.A", "card:ruled:ruling", "item:a:log[6]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
   // One hit per field: log[0] matches twice and reports the second as `more`.
   assert.equal(hits.find(h => h.field === "log[0]")!.more, 1);
   for (const hit of hits) { assert.ok(hit.snippet.includes("«中文»")); assert.equal(hit.area, "解释器工作"); }
@@ -182,7 +182,7 @@ test("changes recovers no owner for a live root, so it rebuilds no earlier whole
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
   await op.createItem({ ...asArchitect, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
-  await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", options: [{ text: "A" }] });
+  await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", blocks: "Waits", confidence: { reason: "Guess" }, options: [{ text: "A", detail: "Does A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
     { kind: "item", id: "temporary", expectRev: 2 }, { kind: "decision", id: "temporary-card", expectRev: 1 }, { kind: "note", id: "temporary-note", expectRev: 1 },

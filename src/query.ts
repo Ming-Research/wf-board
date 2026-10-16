@@ -60,9 +60,8 @@ function fields(s: Snapshot, kind: Kind, id: string): Field[] {
   if (kind === "card") {
     const card = s.decisions[id]!;
     return [{ field: "id", text: id, rank: 0 }, { field: "question", text: card.question, rank: 1 }]
-      .concat(card.options.map(o => ({ field: `option.${o.key}`, text: o.text, rank: 1 })))
-      .concat(["background", "ruling"].map(field => ({ field: `legacy.${field}`, text: card.legacy?.[field as "background" | "ruling"] ?? "", rank: 1 })))
-      .concat([{ field: "legacy.confidence", text: card.legacy?.confidence?.reason ?? "", rank: 1 }]);
+      .concat(card.options.flatMap(o => [{ field: `option.${o.key}`, text: o.text, rank: 1 }, { field: `option.${o.key}.detail`, text: o.detail ?? "", rank: 1 }]))
+      .concat([{ field: "confidence", text: card.confidence?.reason ?? "", rank: 1 }, { field: "ruling", text: card.ruling ?? "", rank: 1 }, { field: "legacy.background", text: card.legacy?.background ?? "", rank: 1 }]);
   }
   const n = s.notes[id]!;
   return [{ field: "text", text: n.text, rank: 3, time: n.sentAt ?? n.at }, { field: "reply", text: n.reply ?? "", rank: 3, time: n.repliedAt ?? n.at }];
@@ -164,6 +163,10 @@ export function planLines(s: Snapshot, r: Rules, id: string, fold = false): stri
   }
   return lines;
 }
+/** An option's name, or the first line of its detail on a card converted from the old form, which has no name. */
+export function optionName(o: { text: string; detail?: string } | undefined): string | undefined {
+  return o === undefined ? undefined : o.text || (o.detail ?? "").split("\n").find(l => l.trim())?.trim();
+}
 export function context(s: Snapshot, r: Rules, ref: string, options: { log?: number | "all" } = {}) {
   const { kind, id } = requireId(s, ref);
   if (kind === "card") {
@@ -181,7 +184,7 @@ export function context(s: Snapshot, r: Rules, ref: string, options: { log?: num
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
       const card = s.decisions[key]!;
-      return card.status === "open" ? { key, ...card } : { key, ...(card.num === undefined ? {} : { num: card.num }), status: card.status, question: card.question, choice: card.choice, choiceText: card.options.find(o => o.key === card.choice)?.text, ruledAt: card.ruledAt };
+      return card.status === "open" ? { key, ...card } : { key, ...(card.num === undefined ? {} : { num: card.num }), status: card.status, question: card.question, choice: card.choice, choiceText: optionName(card.options.find(o => o.key === card.choice)), ruling: card.ruling, ruledAt: card.ruledAt };
     }), notes: relevantNotes(s, [`it:${id}`, ...cardIds.map(c => `q:${c}`)], 5), checks: r.checks(id), links: it.links, prs: references(documentText(s, "item", id), knownRepos(s)) };
 }
 
