@@ -322,6 +322,8 @@ wf-board-data/
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/github-watch.json   the time of the last look at GitHub (same)
+  state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -1840,20 +1842,23 @@ architect, who is told only what needs it; every other session reads the board.
 What the architect does with an event, and how it listens, is in the
 architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Ten kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eleven kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list):
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
-- the timed wake, every 30 minutes;
+- the timed wake, every 30 minutes, with a line of the month's Actions usage;
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
 - a page request or tool call that took longer than its time limit (`slow-op`,
   section 4, Time limits), once per operation per hour;
+- what the look at the Actions billing finds (Watching Actions usage, below):
+  the month's use reaching a level, a day of heavy use, or the included minutes
+  all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below).
@@ -1887,12 +1892,13 @@ the forms the server sends:
 |---|---|
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
+| `{n, at, event:"timed", since, changed, working, architect, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no text, empty when it has none. A call that is not the first slow one within the hour is only logged |
+| `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
@@ -2061,6 +2067,69 @@ removed or already done since the look, or whose counted pull requests are no
 longer all merged, is left as written. A row that also says more (a deployment)
 is marked as a whole, so a merge row says only the merge. A write that fails is
 tried at the next look.
+
+### Watching Actions usage
+
+The organization's GitHub Actions minutes are shared by all its private
+repositories, and nothing else shows how many are used or how fast. The board
+reads the billing itself, keeps an account of the month, and tells the
+architect before the included minutes run out (`src/usage-watch.ts`,
+`src/billing.ts`; the account, the levels and the line are pure functions in
+`src/rules.ts`).
+
+**The look.** Every 30 minutes, kept across restarts like the look at GitHub
+(`state/actions-usage.json`, beside the board, git excludes it). It reads every
+owner of a project's repository: three calls to `gh api` for an organization,
+its repository list with visibility, its usage report for the UTC month
+(minutes per repository, per day and runner type) and its budgets. An owner whose
+repository list is `404` is a personal account and is skipped without a problem:
+its billing needs a `user` token scope, so the minutes of repositories there
+(`agents_config` today) are not counted. Any other failure is a reason kept per
+owner (`/health` `usage.problems`, the timed wake line) and logged once while it
+lasts; the other owners go on, and nothing is told on a failed look.
+
+**The account.** The usage report gives each repository's minutes but not
+whether it was public when they were spent, and public repositories' minutes are in
+it too (discounted to a net of 0, like private ones within the included
+minutes). Only private repositories use the included minutes. The board
+therefore adds up, at each look, what a repository's minutes of a day grew by
+since the last look, and counts the growth only if the repository is not public
+at that look; an unknown repository counts. Minutes are included minutes: a
+Windows minute is 2 and a macOS minute is 10. The runner names are those of the
+organization's own report ("Actions Linux", "Actions Windows", "Actions macOS 3-core");
+GitHub's billing page names the same runners but states no multipliers, only per-minute
+prices (Linux $0.006, Windows $0.010, macOS $0.062). The 2 and 10 come from GitHub's earlier
+billing description, are not on today's page and were not checked against a bill: they are
+provisional. No private repository runs Windows or macOS now, so they change no figure, and
+counting too many is the safer error (an early push, not a missed one). When a private
+repository first runs Windows or macOS, the line is checked against that month's
+included-usage figure on the billing page and the 2 and 10 are replaced by what it shows.
+Storage uses no minutes. An Actions minutes row with a name not in that list (a larger or
+arm runner, say) in a repository that is not public is not guessed at: it is left out of
+the account and named in the line. A report revised downwards adds nothing. The account starts
+at the first look of a month (and when the state file is lost or unreadable, which is
+logged), from the visibility of that look, so it covers the month only from
+when the board began keeping it: minutes spent before a repository was made public
+and before the first look are not in it. The line says since when it counts.
+A new month starts a new account.
+
+**What is told.** Once per month and level, once per day and once per month for
+the cap. The keys of the pushes told this month are kept in the account, in the state file,
+and start again with each month's account: the wake events are kept for days (1000 events or
+2 MiB, and the timed wake alone is 48 a day), so a month's levels cannot be read back from
+them. Without the state file the pushes are told again once. Levels: the highest of 50%, 75% and 90% of the 3000 included
+minutes that the month's use has reached and no level at or above it is told yet, so a
+first look at 88% is one push (75%), not two. Day: more than 300 counted minutes
+on the UTC day of the look (10% of the included minutes). Cap: the month's use
+at or over the included minutes and an Actions budget of exactly 0 (the CI of the
+private repositories is stopped, or billed from the first extra minute when the budget is
+not set to stop); no budget set is not a budget of 0 and tells nothing.
+
+**The line.** `Actions 本月已用 N / 3000（从 MM-DD 起记账），今天 M，预算 X` in each
+timed wake, `X` being `0 美元，到上限就拦`, an amount, or `未设`; with several organizations each
+line starts with its organization, and `；有不认识的计费项：<names>` follows when the
+account met a runner name it does not know. When the billing cannot be read it is
+`Actions 用量读不到：<reason>`; before the first look `Actions 用量还没读到`.
 
 ## 9. Project responsibility
 
