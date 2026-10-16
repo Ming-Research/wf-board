@@ -9,6 +9,7 @@ import { ops } from "../../src/ops.ts";
 import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
+import { checkReload, checkWriting, checkLoop } from "./update.ts";
 import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
@@ -38,7 +39,8 @@ const ARROW_OLD = `    const all = stops();
     if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
     else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
 `;
-interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
+// `copy`: the check rebuilds the page it is served (test/e2e/update.ts), so the current page is served from a copy of the page directory.
+interface Witness { bug: string; reverts: Revert[]; family: string; copy?: true; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
   {
     bug: "saving a comment on a card folded its comment list and hid the 发送 button (fixed in 1ecc074)",
@@ -169,11 +171,35 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "only an item moving under the line repaints its group", find: 'if (previous.shared !== current.shared) scope.add("group:"+current.group);', replace: 'if (!previous.shared && current.shared) scope.add("group:"+current.group);' }], family: "shared-section-under",
     run: async (bp, b) => checkSharedSection(bp, b),
   },
+  {
+    bug: "a page that stayed open through a deploy kept running the old page: the owner saw no new feature until a manual reload (owner, 2026-10-16)",
+    // The page no longer acts on the version the stream announces.
+    reverts: [{ file: "web/app.ts", edit: "the page acts on the announced version", find: "      pageUpdates.announce((JSON.parse((event as MessageEvent).data) as { version: string }).version);\n", replace: "" }], family: "update-reload", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
+    bug: "a page that reloaded for a deploy came back scrolled to the top (owner, 2026-10-16)",
+    // The new page does not scroll the two panes back.
+    reverts: [{ file: "web/app.ts", edit: "the new page scrolls back to where the old one was", find: "listScroller().to(saved.list); detailScroller().to(saved.detail);", replace: "" }], family: "update-scroll", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
+    bug: "a deploy reloaded the page under a comment box the owner was typing in (owner, 2026-10-16)",
+    // The page never counts itself as busy.
+    reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 ||", replace: "busy: () => false ||" }], family: "update-writing", copy: true,
+    run: async (bp, b) => checkWriting(bp, b),
+  },
+  {
+    bug: "a page whose version never matched the announced one reloaded without end (design: a reload toward the same version within a minute is not repeated)",
+    // The page forgets its last reload, so nothing stops a second one.
+    reverts: [{ file: "web/app.ts", edit: "the page remembers the reload it began", find: "lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),", replace: "lastReload: () => undefined," }], family: "update-loop", copy: true,
+    run: async (bp, b) => checkLoop(bp, b),
+  },
 ];
 
 for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout: 10 * 60_000 }, async t => {
   const browser = await launch(t);
-  for (const [page, webDir] of [["current page", undefined], ["page with the fix reversed", await variantWeb(t, w.reverts)]] as const) {
+  for (const [page, webDir] of [["current page", w.copy ? await variantWeb(t, []) : undefined], ["page with the fix reversed", await variantWeb(t, w.reverts)]] as const) {
     const board = await startBoard(t, { webDir });
     const bp = await BoardPage.open(browser, board, w.storage?.(board) ?? openAll(board));
     const all = await w.run(bp, board), hits = all.filter(v => v.startsWith(w.family));
