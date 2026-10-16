@@ -102,7 +102,7 @@ test("cards without a row get one: ruled at the end in the order they were writt
   assert.equal(report.foreignRowsDropped, 1);
   assert.equal(report.afterListsEdited, 1);
   assert.equal(report.successorsReleased, 1);
-  assert.deepEqual(items.z!.plan.at(-1), { id: "x1", card: "x1" });
+  assert.deepEqual((items.z!.plan as unknown[]).at(-1), { id: "x1", card: "x1" });
   assert.equal(items.r, undefined, "an item with nothing to change is not written");
 });
 

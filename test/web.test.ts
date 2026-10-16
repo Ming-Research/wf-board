@@ -13,6 +13,7 @@ import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Sta
 const focused: { current: Element | null } = { current: null };
 class Element {
   tagName: string;
+  open = false;
   id = ""; className = ""; textContent = ""; private html = ""; hidden = false;
   value = "";
   disabled = false; type = ""; title = ""; tabIndex = 0;
@@ -2757,7 +2758,7 @@ test("glossary links: none inside code spans, code blocks or links, and the text
 test("glossary links: each card and each note with its reply is its own text, and a term click opens its definition without choosing the option", async () => {
   const s = glossaries(snapshot());
   s.items.child!.head = "否决线";
-  s.decisions.q = { ...card(), question: "否决线怎么定？", background: "否决线背景", options: [{ key: "A", text: "提高否决线" }, { key: "B", text: "否决" }] };
+  s.decisions.q = { ...card(), question: "否决线怎么定？", options: [{ key: "A", text: "提高否决线" }, { key: "B", text: "否决" }] };
   s.notes.n = { target: "it:child", kind: "comment", text: "否决线是什么？", at, state: "done", reply: "否决线和否决都解释了", repliedAt: at, rev: 1 };
   const p = await page(s, [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
   const cardBox = p.all().find(e => e.id === "q-q")!, note = descendants(item(p)).find(e => e.className.split(" ").includes("note"))!;

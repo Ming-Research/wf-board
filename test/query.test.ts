@@ -61,7 +61,7 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   const open = held.cards.find(card => card.key === "choice")!;
   assert.ok("options" in open); assert.equal(open.question, "中文方案？"); assert.equal(Object.hasOwn(open, "background"), false);
   const ruled = held.cards.find(card => card.key === "ruled")!;
-  assert.equal(ruled.choice, "A"); assert.equal(ruled.choiceText, "Old"); assert.equal("options" in ruled, false, "a closed card is summarized by its pick");
+  assert.equal(ruled.choice, "A"); assert.equal((ruled as { choiceText?: string }).choiceText, "Old"); assert.equal("options" in ruled, false, "a closed card is summarized by its pick");
   assert.equal(held.notes.length, 1); assert.equal(held.notes[0]!.reply, "中文回复");
   assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
