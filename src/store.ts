@@ -467,7 +467,7 @@ export class Store {
     const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
-      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}) }
+      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}) }
       : { writes: [], items: {} };
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
@@ -555,7 +555,7 @@ export class Store {
     });
     return {
       version: STARTUP_CACHE_VERSION, head: this.state.head,
-      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null },
+      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null },
       cardItems: Object.fromEntries(this.cardItems),
       pause: this.pauseStarted ? { items: Object.fromEntries(items) } : null,
     };

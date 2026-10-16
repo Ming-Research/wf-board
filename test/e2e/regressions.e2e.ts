@@ -146,7 +146,11 @@ const WITNESSES: Witness[] = [
       await bp.page.keyboard.press("c");
       await bp.settle();
       const sel = await bp.selected();
-      return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
+      const geo = await bp.page.evaluate(() => {
+        const pane = document.getElementById("page-left")!.getBoundingClientRect(), top = (e: Element | null) => e ? Math.round(e.getBoundingClientRect().top) : null;
+        return { pane: [Math.round(pane.top), Math.round(pane.bottom)], agentsBottom: Math.round(document.getElementById("agents")!.getBoundingClientRect().bottom), firstTree: top(document.querySelector("#areas .item")), listRows: document.querySelectorAll("#agents .item").length, active: document.activeElement?.tagName, detail: !!document.querySelector("#item-detail > .item") };
+      });
+      return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree ${JSON.stringify(geo)}`];
     },
   },
 ];

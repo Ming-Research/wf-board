@@ -132,6 +132,14 @@ test("a cache saved at any point of the history plus the replay after it derives
   assert.equal(expected.sessions!.leaf!.name, "s-c");
   assert.equal(expected.sessions!.child!.name, "s-b", "the note on the child came from s-b, after s-a's pause of it");
   assert.equal(expected.items.other, "2026-10-12T02:09:00.000Z", "deleting the note of the deleted card still reaches the item the card was last on");
+  // The agent index by hand, from each session's commits: the last two items, newest first, ties by item id. s-b's commits
+  // reached root through the card and its note, and other through the card's move; the commit with no session names no one.
+  const touch = (item: string, minute: number) => ({ item, at: stamp(minute, "000") });
+  assert.deepEqual(expected.agents, {
+    "s-a": [touch("root", 8), touch("child", 3)],
+    "s-b": [touch("other", 6), touch("root", 6)],
+    "s-c": [touch("leaf", 11), touch("root", 10)],
+  });
   for (const point of points) {
     await writeFile(await cacheFile(dir), point.text);
     const start = await open(dir);
@@ -148,6 +156,13 @@ test("a cache saved at any point of the history plus the replay after it derives
   const wrong = await open(dir);
   assert.equal(refused(wrong.steps), undefined, "the tampered cache is of the current format, so it is trusted");
   assert.notDeepEqual(wrong.store.snapshot().activity, expected);
+  // The same for the agent index: a session no later commit touches keeps what the cache said.
+  const ghost = JSON.parse(points[1]!.text);
+  ghost.activity.agents.ghost = [{ item: "leaf", at: stamp(1, "000") }];
+  await writeFile(await cacheFile(dir), JSON.stringify(ghost));
+  const stale = await open(dir);
+  assert.equal(refused(stale.steps), undefined);
+  assert.notDeepEqual(stale.store.snapshot().activity!.agents, expected.agents);
 });
 
 test("a cache that is missing, damaged, of another shape or of another history is refused and the scan runs", async t => {
@@ -162,6 +177,7 @@ test("a cache that is missing, damaged, of another shape or of another history i
     ["not JSON", "not json", "startup cache malformed"],
     ["another version", JSON.stringify({ ...good, version: good.version + 1 }), "startup cache malformed"],
     ["an activity field missing", JSON.stringify({ ...good, activity: (({ sessions: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
+    ["the agent index missing", JSON.stringify({ ...good, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["an activity field it does not know", JSON.stringify({ ...good, activity: { ...good.activity, touched: {} } }), "startup cache malformed"],
     ["a top-level field it does not know", JSON.stringify({ ...good, extra: 1 }), "startup cache malformed"],
     ["a commit the repository lacks", JSON.stringify({ ...good, head: "f".repeat(40) }), "startup cache is not of an ancestor of the head"],
