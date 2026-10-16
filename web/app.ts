@@ -2297,7 +2297,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let rulePresentationDirty=true;
   // Items a live update may have changed (rules affectedItems); only these are signed again while nothing asks for all.
   let presentationAffected:Set<string> | null=null;
-  let presentations=new Map<string,{signature:string;shown:boolean;group:string}>();
+  // What the last paint drew for an item: its derived signature, whether the filters show it, its project group and, for a top-level item, whether it sits under 被其他项目依赖.
+  type Presented={signature:string;shown:boolean;group:string;shared:boolean};
+  let presentations=new Map<string,Presented>();
   function frame(fn:FrameRequestCallback) {
     if (typeof requestAnimationFrame !== "function") { setTimeout(() => fn(performance.now()),0); return; }
     let finished=false, raf:number | undefined;
@@ -2320,19 +2322,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!rulePresentationDirty && !presentationAffected) return;
     const all=rulePresentationDirty, only=presentationAffected;
     rulePresentationDirty=false; presentationAffected=null;
-    const next=all ? new Map<string,{signature:string;shown:boolean;group:string}>() : new Map(presentations);
+    const next=all ? new Map<string,Presented>() : new Map(presentations);
     if (!all) for (const id of only!) if (!index().byId.has(id)) next.delete(id);
     for (const it of all ? state.items : [...only!].flatMap(id => index().byId.get(id) ?? [])) signPresentation(it,next,scope);
     presentations=next;
   }
-  function signPresentation(it:ViewItem,next:Map<string,{signature:string;shown:boolean;group:string}>,scope:Set<string>) {
+  function signPresentation(it:ViewItem,next:Map<string,Presented>,scope:Set<string>) {
     const id=it.id;
     const signature=presentationSignature(derived,snapshot.decisions,id);
-    const current={signature,shown:passes(it),group:groupOf(it)}, previous=presentations.get(id);
+    const current={signature,shown:passes(it),group:groupOf(it),shared:!derived.parentOf(id) && neededElsewhere(it)}, previous=presentations.get(id);
     next.set(id,current);
     if (!previous) return;
     if (previous.signature !== signature) scope.add("item:"+id);
     if (previous.shown !== current.shown) { scope.add("group:"+previous.group); scope.add("group:"+current.group); }
+    // A top-level item changes between its project's own roots and the roots other projects depend on: that is the group's layout.
+    if (previous.shared !== current.shared) scope.add("group:"+current.group);
   }
   function scopeForDoc(kind:string,id:string,target?:string):string[] {
     return kind === "item" ? ["item:"+id] : kind === "decision" ? ["card:"+id] : target ? ["notes:"+target] : [];

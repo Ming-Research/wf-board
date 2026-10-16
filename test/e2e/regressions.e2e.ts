@@ -9,7 +9,7 @@ import { ops } from "../../src/ops.ts";
 import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -156,6 +156,12 @@ const WITNESSES: Witness[] = [
       const sel = await bp.selected();
       return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
     },
+  },
+  {
+    bug: "a root another project began to depend on stayed among its project's own roots until the page was reloaded (owner, 2026-10-15)",
+    // Without the comparison, a change between the project's own roots and the roots other projects depend on repaints no group.
+    reverts: [{ file: "web/app.ts", edit: "an item changing section repaints its group", find: '    if (previous.shared !== current.shared) scope.add("group:"+current.group);\n', replace: "" }], family: "shared-section",
+    run: async (bp, b) => checkSharedSection(bp, b),
   },
 ];
 

@@ -825,6 +825,21 @@ test("a project lists its own roots first, then a rule and the roots other proje
   assert.equal(descendants(section("Other")).filter(e=>e.className==="shared-sep").length,0,"a project with none shows no rule");
 });
 
+test("a root another project starts to depend on moves under the rule while the page stays open, and back when the row goes", async () => {
+  const s=snapshot(); s.board.projects.push({name:"Other",migrated:true});
+  const root=(title:string,group:string,priority:"P0"|"P2"):FixtureItem => ({title,group,priority,updated:at,rev:1,deps:[],links:[],log:[],plan:planWork([planStep("work")])});
+  s.items.own=root("Own root","Project","P2"); s.items.needed=root("Needed root","Project","P2"); s.items.user=root("Other root","Other","P0");
+  const p=await page(s,[]);
+  const section=(g:string) => p.all().find(e=>e.className==="group" && e.dataset.group===g)!;
+  const projectTops=() => descendants(section("Project")).filter(e=>e.id.startsWith("it-") || e.className==="shared-sep").map(e=>e.className==="shared-sep" ? "|" : e.id.slice(3)).filter(k=>["area","own","needed","|"].includes(k));
+  const withRows=(rows:PlanRow[],rev:number) => ({...nativeFixture({...s,items:{...s.items,user:{...s.items.user!,plan:planWork(rows)}}}).items.user!,rev});
+  assert.deepEqual(projectTops(),["area","own","needed"],"before: both roots are the project's own");
+  await p.change("b".repeat(40),[{kind:"item",id:"user",after:withRows([sharedRow("needed")],2)}]); await p.flush();
+  assert.deepEqual(projectTops(),["area","own","|","needed"],"the root the other project now waits on sits under the rule, with no reload");
+  await p.change("c".repeat(40),[{kind:"item",id:"user",after:withRows([],3)}]); await p.flush();
+  assert.deepEqual(projectTops(),["area","own","needed"],"after the row goes it is the project's own root again, and the rule is gone");
+});
+
 test("project page follows board project list order on load and live reorder, with new projects last", async () => {
   const s = snapshot();
   s.board.projects = [{ name: "Z first" }, ...s.board.projects, { name: "A last" }];
