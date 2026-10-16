@@ -1,8 +1,15 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WebSocket } from "ws";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
+import { ownerOps } from "../src/owner-ops.ts";
+import { createHttpServer } from "../src/http.ts";
+import { createMcpServer } from "../src/mcp.ts";
+import type { Wake } from "../src/wake.ts";
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
@@ -30,4 +37,33 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
     { kind: "note", id: "note-2", expectRev: null, doc: { target: "q:choice", kind: "explain", text: "解释 #341", at, state: "done", reply: "中文回复", repliedAt: later, repliedBy: author } },
   ] });
   return { dir, store, op: ops(store, () => later) };
+}
+
+/** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; wake?: Wake; timedWakeMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
+  const fixture = await board(t), { store, op } = fixture;
+  extra.prepare?.(fixture);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op, wake: extra.wake }), now: extra.now, checkIntervalMs: extra.checkIntervalMs, maxMcpSessions: extra.maxMcpSessions, wake: extra.wake, timedWakeMs: extra.timedWakeMs });
+  http.listen(0, "127.0.0.1"); await once(http, "listening");
+  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  const address = http.address(); assert.ok(address && typeof address !== "string");
+  const url = `http://127.0.0.1:${address.port}`;
+  async function api(path: string, data?: unknown, method = "POST") {
+    const response = await fetch(url + path, data === undefined ? {} : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    return { status: response.status, data: await response.json() };
+  }
+  return { ...fixture, http, url, api, port: address.port };
+}
+
+/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. */
+export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake" + (after === undefined ? "" : "?after=" + after));
+  t.after(() => socket.terminate());
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  await once(socket, "open");
+  // The server sends its connected frame in the same step as the upgrade; ping/pong is the wire-order barrier after it.
+  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
+  await sync();
+  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
 }

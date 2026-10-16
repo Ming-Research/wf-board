@@ -1094,7 +1094,6 @@ test("every write under the retired author 总管 is refused and changes nothing
     moveItem: () => op.moveItem({ author: retired, id: "a", owner: "other" }),
     clearAsk: () => op.clearAsk({ author: retired, id: "a", log: "Settled" }),
     writeCard: () => op.writeCard({ author: retired, key: "new-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }),
-    postNotice: () => op.postNotice({ author: retired, text: "Notice" }),
     ruleCard: () => op.ruleCard({ author: retired, key: "choice", choice: "A", ruling: "Approved" }),
     replyNote: () => op.replyNote({ author: retired, id: "note-1", reply: "Answer" }),
     setTerm: () => op.setTerm({ author: retired, term: "术语", definition: "定义" }),

@@ -346,7 +346,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   if (headIndex === -1) throw new Error("snapshot head: not found in store history");
   const selected = new Set((await store.log({ since })).map(c => c.commit));
   const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "notice">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;
