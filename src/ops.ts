@@ -4,8 +4,8 @@ import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, 
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter } from "./rules.ts";
-import { describeChanges } from "./query.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, isOpenMergeStep, mergeRowDone } from "./rules.ts";
+import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { normalizeTime, startLogLine, finishLogLine } from "./dispatch.ts";
 
 export class OpError extends Error {}
@@ -13,12 +13,14 @@ export class OpError extends Error {}
 export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }> }
 export interface Ops {
   createProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  updateProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
+  updateProject(a: { author: string; session?: string; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
   createRequest(a: { author: string; session?: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
   triageRequest(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
+  markMerged(a: { author: string; session?: string; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
   /** Records a session the architect started on an item, and logs the start on the item. */
@@ -433,9 +435,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.repo !== undefined && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its repo`);
-      if (a.repo === undefined && a.after === undefined) throw new OpError("repo: provide repo or after");
-      const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }) } : p);
+      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
+      if (a.repo === undefined && a.mainline === undefined && a.after === undefined) throw new OpError("repo: provide repo, mainline or after");
+      // `mainline: null` clears the branch, so the repository's default branch counts again.
+      const { mainline: current, ...rest } = project, mainline = a.mainline === undefined ? current : a.mainline ?? undefined;
+      const changed = { ...rest, ...(a.repo === undefined ? {} : { repo: a.repo }), ...(mainline === undefined ? {} : { mainline }) };
+      const projects = s.board.projects.map(p => p.name === a.name ? changed : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
     }),
     createRequest: a => run(a, (s, at) => {
@@ -507,6 +512,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    markMerged: a => edit(a, "mark_merged", (it, s, at) => {
+      // The row as it is now decides, not the one the watch read before GitHub answered: a row edited, dropped or removed meanwhile stays as written.
+      const row = it.plan.find(r => r.id === a.row);
+      if (!row || !isOpenMergeStep(row) || !mergeRowDone(mergeRowPulls(s, a.id, row).map(prKey), new Set(a.merged.map(prKey)))) return it;
+      const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row;
+      return { ...it, updated: at, plan: it.plan.map(r => r === row ? stampPlanRow({ ...input, state: "done" }, row, at) : r), log: [...it.log, entry(a.author, at, a.log)] };
+    }),
     journalEntry: a => run(a, (s, at) => {
       onlyArchitect(a, `write the journal under ${JOURNAL.notes}`);
       const { day, clock } = localStamp(at);

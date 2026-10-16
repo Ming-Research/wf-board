@@ -472,7 +472,7 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   assert.ok(start >= 0 && end > start, "docs/design.md must hold the headings '### The wake stream' and then '**Why not MCP push.**'");
   const forms = new Map<string, string[]>();
   for (const [, body] of doc.slice(start, end).matchAll(/`\{([^`]*)\}`/g)) {
-    const fields = body!.split(", "), event = fields.map(f => /^event:"(\w+)"$/.exec(f)?.[1]).find(Boolean);
+    const fields = body!.split(", "), event = fields.map(f => /^event:"([\w-]+)"$/.exec(f)?.[1]).find(Boolean);
     if (event) forms.set(event, fields.filter(f => !f.startsWith("event:")).sort());
   }
   const expected = new Map<string, string[]>([
