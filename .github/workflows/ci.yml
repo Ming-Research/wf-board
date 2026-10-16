@@ -2,10 +2,8 @@ name: ci
 on:
   # Each merge to the main line is checked once, by its push run.
   push:
-    branches: [claude/first-board]
+    branches: [main]
   pull_request:
-    # Skip the long-lived pull request into main; stacked pull requests still run.
-    branches-ignore: [main]
 concurrency:
   # A main-line run has a group of its own (its commit), so none is replaced.
   group: ci-${{ github.event.pull_request.number || github.sha }}

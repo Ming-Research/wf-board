@@ -6,7 +6,7 @@ on:
       base:
         description: Commit to compare with (the comparison runs on its merge base with this branch)
         required: true
-        default: origin/claude/first-board
+        default: origin/main
 jobs:
   bench:
     runs-on: ubuntu-latest
