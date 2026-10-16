@@ -87,7 +87,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
@@ -174,6 +174,16 @@ lost: the remote copy is only a backup, and the first push after the next start
 sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
+
+A commit's automatic repack also runs in the foreground (see Storage). On
+2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
+wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
+runs; the same commit with the repack in the background took 25 to 103 ms). The
+study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
+to 1.5 s. Not measured: the first repack of the live repository (4,986 loose
+objects), a repack that merges existing packs, and a repack that overlaps a push.
+After deployment the architect checks the slowest write in the service log
+against three seconds.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in

@@ -43,6 +43,9 @@ const collections = { item: "items", decision: "decisions", note: "notes", gloss
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
+/** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
+ * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
+const FOREGROUND_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
@@ -327,7 +330,7 @@ export class Store {
 
   private async git(args: string[], author?: string): Promise<string> {
     const slug = author?.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-    const result = await run("git", args, {
+    const result = await run("git", [...FOREGROUND_MAINTENANCE, ...args], {
       cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
         ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
