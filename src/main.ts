@@ -27,7 +27,8 @@ async function main() {
   const firstPushMs = Number(process.env.WF_BOARD_FIRST_PUSH_MS ?? 60_000);
   if (!Number.isInteger(firstPushMs) || firstPushMs < 0) throw new Error("WF_BOARD_FIRST_PUSH_MS must be a non-negative integer");
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));
-  const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup });
+  // A read of history that runs under no budget fails (docs/design.md, section 4, Request budgets).
+  const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup, requireBudget: true });
   lap("open store");
   const op = ops(store);
   // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart.

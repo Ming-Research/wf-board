@@ -22,6 +22,8 @@ import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
 import type { UsageWatch } from "./usage-watch.ts";
+import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
+import type { BudgetLimits } from "./budget.ts";
 
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
@@ -29,10 +31,12 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
+  // What one request may read of the history (src/budget.ts); every request gets a budget of its own.
+  const limits = deps.budget ?? REQUEST_LIMITS;
   // Set by `close`: from then on every new request is refused, so no client starts a session in a process that is about to exit.
   let closing = false;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
@@ -158,10 +162,11 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
     res.on("finish", () => { if (closing) server.closeIdleConnections(); });
     if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }
-    void route(req, res).catch(error => {
-      console.error(error);
+    void withBudget(new Budget(`${req.method} ${pathnameOf(req.url) ?? "request"}`, limits), () => route(req, res)).catch(error => {
+      // A budget has said why it stopped the request on the warning log already.
+      if (!(error instanceof BudgetError)) console.error(error);
       if (res.headersSent) { res.destroy(); return; }
-      json(res, error instanceof NotFoundError ? 404 : error instanceof ConflictError ? 409 : error instanceof OpError ? 400 : 500, { error: error instanceof Error ? error.message : String(error) });
+      json(res, error instanceof NotFoundError ? 404 : error instanceof ConflictError ? 409 : error instanceof OpError ? 400 : error instanceof BudgetError ? 413 : 500, { error: error instanceof Error ? error.message : String(error) });
     });
   });
   server.on("upgrade", (req, socket, head) => {
@@ -259,7 +264,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
     timing = true;
     try {
-      const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line());
+      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line()));
       wake.push("timed", { ...fields });
       wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
