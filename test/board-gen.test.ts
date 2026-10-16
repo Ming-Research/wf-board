@@ -48,17 +48,17 @@ test("seeding: automatic maintenance ends before the next git add starts", async
   Object.assign(process.env, env);
   t.after(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
   await seedBoard(dir, generateBoard(1));
-  // Each line is one trace2 event: start events carry argv, exit events end the process with the same sid.
-  type Event = { event: string; sid: string; t_abs: number; argv?: string[] };
+  // Each line is one trace2 event. t_abs counts from each process's own start, so times are compared by the absolute
+  // time field instead: ISO strings of one fixed width, which compare in time order.
+  type Event = { event: string; sid: string; time: string; argv?: string[] };
   const events = (await readFile(trace, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line) as Event);
-  const exitAt = (sid: string, from: number) => events.find(e => e.event === "exit" && e.sid === sid && e.t_abs >= from)?.t_abs ?? Infinity;
+  // A process ends at the exit event of its own sid; one that never exits lasts to the end of the trace.
+  const exitTime = (sid: string, from: string) => events.find(e => e.event === "exit" && e.sid === sid && e.time >= from)?.time ?? "￿";
   const maintenance = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack"))
-    .map(e => ({ from: e.t_abs, to: exitAt(e.sid, e.t_abs) }));
-  const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.t_abs);
+    .map(e => ({ from: e.time, to: exitTime(e.sid, e.time) }));
+  const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.time);
   assert.ok(maintenance.length > 0, "automatic maintenance ran: " + maintenance.length);
   assert.ok(adds.length > 0, "git add ran: " + adds.length);
   const overlaps = adds.filter(a => maintenance.some(m => a >= m.from && a < m.to));
-  // Temporary diagnostics (CI showed overlaps with the fix in place): the process events in trace order.
-  const trail = events.filter(e => /^(start|exit|child_start|child_exit)$/.test(e.event)).slice(0, 150).map(e => JSON.stringify(e)).join("\n");
-  assert.equal(overlaps.length, 0, `no git add starts during a maintenance run; ${overlaps.length} overlaps; maintenance ${JSON.stringify(maintenance)}\n${trail}`);
+  assert.equal(overlaps.length, 0, "no git add starts during a maintenance run");
 });
