@@ -174,7 +174,8 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[]): P
     if (placed) {
       // The card follows the paragraph that precedes its line and comes before the one after it.
       const lines = (item.head ?? "").split("\n"), at = lines.findIndex(l => l.trim() === `[[q:${card}]]`);
-      const before = lines.slice(0, at).filter(l => l.trim() && !/^[`|\-*#]/.test(l.trim())).at(-1)?.replace(/[*`]/g, "").trim().slice(0, 6);
+      // Plain text only: a line with a reference or another card's line shows as a link or a card, not as its source.
+      const before = lines.slice(0, at).filter(l => l.trim() && !/^[`|\-*#>\d]/.test(l.trim()) && !/[\[\]_]/.test(l)).at(-1)?.replace(/[*`]/g, "").trim().slice(0, 6);
       if (before) {
         const ok = await page.evaluate(([c, text]) => { const e = document.getElementById("q-" + c)!, head = e.closest(".rich")!; const all = [...head.querySelectorAll("*")]; const prior = all.filter(x => x.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING && !x.contains(e) && (x.textContent ?? "").includes(text!)); return prior.length > 0; }, [card, before]);
         if (!ok) v.push(`card-place: card ${card} does not come after the text "${before}" that precedes its line in the head`);
@@ -313,7 +314,7 @@ export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
     const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
     if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
   }
-  // The right arrow, with a row selected and the page scrolled to the top, goes to the first waiting card at or below
+  // The right arrow, with a row selected and the list scrolled to the top, goes to the first waiting card at or below
   // that row in the list, not to whatever card is nearest the top of the screen: select the last row holding a waiting
   // card (and no ask) and the card must be its own.
   const waiting = (id: string) => o.r.cardsOf(id).filter(k => o.r.cardWaiting(k)).length > 0;
@@ -321,7 +322,8 @@ export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
   const target = holders.at(-1);
   if (target) {
     await bp.select(target); await blur();
-    await page.evaluate(() => window.scrollTo(0, 0));
+    // The list scrolls in its own pane, not the window; with it at the top the screen's nearest card is the first one.
+    await page.evaluate(() => { window.scrollTo(0, 0); document.getElementById("page-left")?.scrollTo(0, 0); });
     await page.keyboard.press("ArrowRight"); await bp.settle();
     const sel = await bp.selected(), cards = await bp.currentCards();
     if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
