@@ -15,7 +15,7 @@ const home = homedir();
 const escape = (text: string) => text.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]!);
 const template = await readFile(join(repo, "ops/wf-board.plist"), "utf8");
 const values = { NODE: process.env.WF_BOARD_NODE ?? process.execPath, REPO: repo, HOME: home, PATH: process.env.WF_BOARD_PATH ?? process.env.PATH ?? "/usr/bin:/bin", DATA: dataDir(repo) };
-const plist = template.replace(/{{(NODE|REPO|HOME|PATH|DATA)}}/g, (_, key: keyof typeof values) => escape(values[key]));
+const plist = template.replace(/{{(NODE|REPO|HOME|PATH|DATA)}}/g, (_, key: keyof typeof values) => key === "DATA" ? "{{DATA}}" : escape(values[key]));
 const target = join(home, "Library/LaunchAgents/org.ming-research.wf-board.plist");
 await mkdir(dirname(target), { recursive: true });
 await mkdir(join(home, "Library/Logs"), { recursive: true });
