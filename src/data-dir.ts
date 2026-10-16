@@ -1,8 +1,8 @@
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-// The board's data repository sits beside the wf-board checkout: with the repo at
-// ~/dev/wf/wf-board, the data is ~/dev/wf/wf-board-data. Moving the whole ~/dev/wf
-// directory moves both together. WF_BOARD_DATA overrides it.
-export function defaultDataDir(repo: string): string {
-  return join(dirname(repo), "wf-board-data");
+// The board's data repository. WF_BOARD_DATA names it when set (a relative path is resolved
+// against the current directory). Otherwise it sits beside the wf-board checkout: with the repo
+// at ~/dev/wf/wf-board, the data is ~/dev/wf/wf-board-data, so moving ~/dev/wf moves both.
+export function dataDir(repo: string, env: { WF_BOARD_DATA?: string } = process.env): string {
+  return env.WF_BOARD_DATA ? resolve(env.WF_BOARD_DATA) : join(dirname(repo), "wf-board-data");
 }
