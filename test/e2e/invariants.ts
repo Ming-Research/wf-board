@@ -10,7 +10,6 @@ import type { Snapshot } from "../../src/model.ts";
 import type { Store } from "../../src/store.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
 import { prng } from "./board-gen.ts";
-import { isRefTitle } from "../../web/refs.ts";
 
 export interface Oracle {
   s: Snapshot; r: Rules;
@@ -418,13 +417,11 @@ export async function checkCodeFont(bp: BoardPage, o: Oracle): Promise<string[]>
 }
 
 /** A head's 参考 sections, checked on the page: each folds shut under its title, looks like body text, opens to its whole text, and stays open across a re-render. Families: ref-fold-split, ref-fold-look, ref-fold-keep. */
-export async function checkRefFold(bp: BoardPage, b: BoardServer, o: Oracle): Promise<string[]> {
+export async function checkRefFold(bp: BoardPage, b: BoardServer): Promise<string[]> {
   const v: string[] = [], x = b.gen.witness.code;
-  // The expected sections, counted from the stored head by the same title rule the page uses.
-  const titles: string[] = []; let fenced = false;
-  for (const line of (o.s.items[x]!.head ?? "").split("\n")) {
-    if (/^\s*```/.test(line)) fenced = !fenced; else if (!fenced && isRefTitle(line)) titles.push(line.replace(/\*\*/g, ""));
-  }
+  // The expected titles are written out here, not read through the page's own title rule, so a broken rule cannot
+  // make the check expect fewer sections. They are the two sections board-gen.ts writes into the code witness's head.
+  const titles = ["参考：推导", "参考：测量"];
   const shown = () => bp.page.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("#item-detail .rich details[data-ref]")].map(d => ({
     open: d.open, title: d.querySelector("summary")?.textContent ?? "",
     // A closed section hides its body with content-visibility, which checkVisibility sees.
@@ -432,7 +429,7 @@ export async function checkRefFold(bp: BoardPage, b: BoardServer, o: Oracle): Pr
   })));
   await bp.select(x);
   const first = await shown();
-  if (first.length !== titles.length) return [`ref-fold-split: ${x} shows ${first.length} 参考 sections, its head has ${titles.length}`];
+  if (first.length !== titles.length) return [`ref-fold-split: ${x} shows ${first.length} 参考 sections, the board's code item has ${titles.length}`];
   first.forEach((d, i) => {
     if (d.title !== titles[i]) v.push(`ref-fold-split: section ${i + 1} is titled "${d.title}", its head says "${titles[i]}"`);
     if (d.open) v.push(`ref-fold-split: section ${i + 1} opens by default`);

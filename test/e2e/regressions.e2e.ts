@@ -105,17 +105,17 @@ const WITNESSES: Witness[] = [
     bug: "a head's 参考 sections showed their whole text instead of folding shut under their titles (feature, ref-fold)",
     // Without the split, the head is one run of text: a 参考 line is ordinary bold text and nothing folds.
     reverts: [{ file: "web/app.ts", edit: "the head is not split into sections", find: "const [head = [], ...refs] = refSplit(lines), at = scope;", replace: "const [head = [], ...refs] = [lines], at = scope;" }], family: "ref-fold-split",
-    run: async (bp, b) => checkRefFold(bp, b, await oracle(b.store)),
+    run: async (bp, b) => checkRefFold(bp, b),
   },
   {
     bug: "a 参考 section's title and text took the monospace button look of the reference buttons (class collision, ref-fold)",
     reverts: [{ file: "web/app.ts", edit: "sections use the reference buttons' class", find: '<details class="refsec"', replace: '<details class="ref"' }], family: "ref-fold-look",
-    run: async (bp, b) => checkRefFold(bp, b, await oracle(b.store)),
+    run: async (bp, b) => checkRefFold(bp, b),
   },
   {
     bug: "a 参考 section the reader opened folded again after the item re-rendered (ref-fold)",
     reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    refOpen[d.dataset.ref!] = d.open;\n    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}\n', replace: "" }], family: "ref-fold-keep",
-    run: async (bp, b) => checkRefFold(bp, b, await oracle(b.store)),
+    run: async (bp, b) => checkRefFold(bp, b),
   },
 ];
 
