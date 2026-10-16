@@ -1126,6 +1126,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     closeNote: () => op.closeNote({ author: retired, id: "note-1", log: "Handled" }),
     createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass", priority: "P1" }),
     appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),
+    markMerged: () => op.markMerged({ author: retired, id: "a", row: "work", merged: [], log: "Merged" }),
     journalEntry: () => op.journalEntry({ author: retired, text: "Entry" }),
     setPlan: () => op.setPlan({ author: retired, id: "a", row: { id: "work", text: "Work", state: "doing" } }),
     setTargets: () => op.setTargets({ author: retired, id: "a", target: goalNumbers }),
