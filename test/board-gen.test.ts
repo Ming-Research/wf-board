@@ -52,7 +52,7 @@ test("seeding: automatic maintenance ends before the next git add starts", async
   // time field instead: ISO strings of one fixed width, which compare in time order.
   type Event = { event: string; sid: string; time: string; argv?: string[] };
   const events = (await readFile(trace, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line) as Event);
-  // A process ends at the exit event of its own sid; one that never exits lasts to the end of the trace.
+  // A process ends at the exit event of its own sid; one that never exits lasts to the end of the trace (￿ sorts after any time).
   const exitTime = (sid: string, from: string) => events.find(e => e.event === "exit" && e.sid === sid && e.time >= from)?.time ?? "￿";
   const maintenance = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack"))
     .map(e => ({ from: e.time, to: exitTime(e.sid, e.time) }));
