@@ -460,6 +460,40 @@ test("detail: existing fenced code keeps blank lines and contiguous lists and ta
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
 });
 
+test("detail: each 参考 section is a folded details from its line to the next one or the end, other text unchanged", async () => {
+  const s = snapshot(); s.items.child!.head = "Body\n\n**参考：First**\n\nFirst detail\n\n**参考：Second**\n\nSecond detail";
+  const p = await page(s,unread()); await expand(p);
+  assert.match(markup(item(p)), /<p>Body<\/p><details class="refsec" data-ref="[^"]*"><summary><strong>参考：First<\/strong><\/summary><div class="refbody"><p>First detail<\/p><\/div><\/details><details class="refsec" data-ref="[^"]*"><summary><strong>参考：Second<\/strong><\/summary><div class="refbody"><p>Second detail<\/p><\/div><\/details>/);
+});
+
+test("detail: a changed 参考 section is marked as one block, its unchanged title and body included", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"Body\n\n**参考：R**\n\nold detail"};
+  s.items.child!.head = "Body\n\n**参考：R**\n\nnew detail\n\nmore";
+  const p = await page(s,unread(),before); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /<div class="chg-add"><details class="refsec" data-ref="[^"]*"><summary><strong>参考：R<\/strong><\/summary><div class="refbody"><p>new detail<\/p><p>more<\/p><\/div><\/details><\/div>/);
+  assert.ok(!body.includes("old detail"),"the former section text is not shown");
+});
+
+test("detail: a 参考 line inside fenced code, a title-only section and one at the head's start fold as the rule says", async () => {
+  const s = snapshot(), head = "**参考：Start**\n\n```\n**参考：inside code**\n```\n\n**参考：Empty**";
+  s.items.child!.head = head;
+  const p = await page(s,unread()); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Start<\/strong><\/summary><div class="refbody">.*参考：inside code.*<\/div><\/details>/s);
+  assert.match(body, /<details class="refsec"[^>]*><summary><strong>参考：Empty<\/strong><\/summary><div class="refbody"><\/div><\/details>/);
+  assert.equal((body.match(/class="refsec"/g) ?? []).length, 2,"the fenced line opens no section");
+});
+
+test("detail: 参考 text in a card's background is plain, never folded", async () => {
+  const s = snapshot(), c = card();
+  s.decisions.q = {...c, background: "**参考：Not a section**\n\nBody"};
+  const p = await page(s,unread("decision","q")); await expand(p);
+  const card1 = p.all().find(e => e.id === "q-q")!;
+  assert.match(markup(card1), /<strong>参考：Not a section<\/strong>/);
+  assert.ok(!markup(card1).includes('class="refsec"'),"a card's background shows no fold");
+});
+
 // The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
 const codeText = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
 

@@ -85,7 +85,7 @@ today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
 
-**Storage.** The data is a git working tree, `~/dev/wf-board-data`, with the
+**Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
@@ -418,7 +418,11 @@ log:
   content, comparing the document before its first unread step with its current
   state. Blocks are separated by blank lines, except inside fenced code;
   contiguous lists and tables remain whole blocks so rich rendering stays
-  intact. Added or changed blocks carry no colour of their own (the item's blue
+  intact. A 参考 section (a line starting 「**参考：」 through to the next such
+  line or the end of the text, fenced code excepted) is one block, whatever
+  blank lines it holds. An item's head shows each one folded under its title;
+  the sections a reader opened stay open across re-renders, kept in this
+  browser only. Added or changed blocks carry no colour of their own (the item's blue
   line says it holds something new, and `n` lands on the first of them);
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
@@ -495,7 +499,7 @@ is one of four kinds:
 
 | Kind | Stored fields | Meaning |
 |---|---|---|
-| step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were |
+| step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were; `waits` belongs on a doing step, and a todo step carrying it gets the 在等文字 check |
 | owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
 | shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
 | card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
@@ -524,7 +528,8 @@ is one of four kinds:
   Place each where the check happens, normally before merge or release rows.
   Its text is a completion check, with numbers agreeing with the target
   numbers above the plan. Its `after`, `waits`, state and dates follow ordinary
-  step rules. Step state writes do not enforce readiness; acceptance has no
+  step rules; a todo acceptance step with `waits` gets the 在等文字 check.
+  Step state writes do not enforce readiness; acceptance has no
   additional completion guard. An item is done only when every row, including
   every acceptance and delivery row, is resolved.
 - **Dates.** The server stamps step and acceptance dates exactly as it stamped
@@ -572,7 +577,9 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    does not interrupt inheritance from a work ancestor.
 4. `wip` when any row is in progress: a doing step, or an owned item in
    progress. A doing step with `waits` (CI, a run on the 14900K, something not
-   on the board) is still in progress.
+   on the board) is still in progress. A todo step with `waits` is not in
+   progress, and its check (在等文字) asks for the wait to be written as a
+   shared row, a card, the backlog, or a doing step.
 5. `blocked` when nothing is in progress and either every frontier row is
    waiting (a shared item still open, an open card, an owned item that is
    itself blocked or paused) or the item has a pending legacy ask. A paused
@@ -607,10 +614,13 @@ pause. A write by any author but `Architect` that changes an item from effective
 to open, not-paused work is refused, naming its pause source and requiring
 the owner or `Architect` to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
-are closure, not resume: a project's author may complete or cancel paused
-work, keeping its marker. Becoming a record is also not open work, but
-clearing an explicit marker, including an inactive one, still requires the
-owner or `Architect`. Moving work into a paused chain is allowed.
+are closure, not resume: a project's author may complete paused work and
+`Architect` may cancel it (cancelling is reserved for `Architect`), either
+keeping the marker. Becoming a record is also not open work, but clearing an
+explicit marker, including an inactive one, still requires the owner or
+`Architect`. Converting a cancelled item to a record is reserved for
+`Architect` too, since converting it back to work would reopen it without
+`set_status`. Moving work into a paused chain is allowed.
 A project edits only its own items and cards; `Architect` edits any
 project's. That reach lifts only the check that the author is the item's
 project. Ownership still stays inside one project, and removing an open
@@ -740,11 +750,13 @@ checks:
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
+| 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
+| 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
 Effectively paused items retain all form checks, including provisional plans
-and missing acceptance. They receive no stalled check.
+and missing acceptance. They receive no stalled check and no 在等文字 check.
 An owner linked only by its owned row does not raise 暂停冲突: its row
 already waits on the owner and may make the parent blocked. Shared needs
 still raise the check on the paused target.
@@ -1079,13 +1091,17 @@ and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
-`Architect` may write any project's items, cards and note replies; every other
-author only its own project's. Some operations are reserved for `Architect`,
-and every other author is refused before any ownership check: `create_item`,
-`set_status`, `set_pause`, a changed title in `update_item`, the tag
-vocabulary tools, and the page order and other projects' repositories in
-`create_project` and `update_project`. A write under the retired author `总管`
-is refused by every tool.
+In this document `Architect` as a writer means author `Architect` writing from
+the session `架构师` (section 9). `Architect` may write any project's items,
+cards and note replies; every other writer only its own project's. Some
+operations are reserved for `Architect`, and every other writer is refused
+before any ownership check: `create_item`, `set_status`, `set_pause`, a
+changed title in `update_item` and turning a cancelled item into a record
+there, the tag vocabulary tools, and the page order and other projects'
+repositories in `create_project` and `update_project`. `create_request`, which
+files an item into another project's inbox, stays open to every project until
+the inbox is removed. A write under the retired author `总管` is refused by
+every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
@@ -1099,7 +1115,8 @@ is refused by every tool.
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Architect project only; the day's key must not be a non-record item; text nonempty |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only `Architect`; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `Architect`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
@@ -1512,7 +1529,7 @@ boards without `projects` load with an empty list.
 
 At a repository root, a session calls `projects`, picks the project whose
 `repo` matches its repository’s GitHub remote (the architect uses
-`Architect`), uses that project’s name as `author` in every write, then reads
+`Architect`, from the session `架构师`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
 The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
@@ -1533,7 +1550,8 @@ as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
 `author === Architect`; this applies to items, their cards and owner-note
-replies or closures. Only `Architect` creates items, in any project.
+replies or closures. Only `Architect` creates items, in any project
+(`create_request` aside, section 6).
 `set_term` and `delete_term` change only the author's own glossary,
 `Architect`'s included. Moving work requires the source and destination to
 belong to one project, which the author must own unless it is `Architect`,
@@ -1545,13 +1563,19 @@ operations and remain unrestricted. Project names are supplied by trusted
 local callers; identity checks enforce the workflow, rather than
 authenticate against a caller impersonating another project.
 
-The architect's identity is the configured project `Architect`, recognised
-by the author name alone like every other project (`ARCHITECT` in
-`src/model.ts`). Its writes carry that name as commit author and log `by`, so
-history and logs show the architect made the change, not the item's project.
-The operations reserved for it are listed with the tools (section 6); the
-check is `onlyArchitect` in `src/ops.ts`, and project order uses the same
-name in `src/rules.ts`. The coordinator project `总管` stays configured, so
+The architect's identity is author `Architect` writing from the session
+`架构师` (`isArchitect` in `src/model.ts`). Both are needed because
+`Architect` is also the project of the agents_config repository, and an
+engineer who does an Architect item there writes as author `Architect`, as
+every project's engineer writes as its project. Without the session such a
+write is an ordinary project author's: it may write the Architect project's own
+items and nothing reserved. The session name is not authenticated, as no
+project name is; the rule stops misuse, not impersonation. The architect's
+writes carry `Architect` as commit author and log `by`, so history and logs
+show the architect made the change, not the item's project. The operations
+reserved for it are listed with the tools (section 6); the check is
+`onlyArchitect` in `src/ops.ts`, and project order uses the same judgement in
+`src/rules.ts`. The coordinator project `总管` stays configured, so
 its items, glossary and history remain readable, but `run` in `src/ops.ts`,
 the one path every agent write takes, refuses any write under that author
 with a message naming `Architect`. Store migrations commit under `总管`
@@ -1573,8 +1597,8 @@ its project (normally the item collecting the filing project's needs) or
 keeps it a top item. Placement also appends
 `分拣：放到「<owner title>」下` before the supplied log. Moving a
 request under an owner in its project also triages it and logs the placement.
-Declining with `set_status cancelled` clears the marker and records the
-reason. An open inbox request is not an area in listings; completed or
+A receiving project cannot decline a request itself; the architect declines it
+with `set_status cancelled`, which clears the marker and records the reason. An open inbox request is not an area in listings; completed or
 cancelled items are not open requests.
 
 `projects` reports name, repo, top-item counts, open item status counts

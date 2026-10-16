@@ -7,8 +7,10 @@ import { ops } from "../src/ops.ts";
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";
-/** The architect's identity: the only author that creates, cancels or retitles items and changes what the board reserves for it. */
+/** The architect's author name and session: together the only writer that creates, cancels or retitles items and does what the board reserves for the architect. */
 export const architect = "Architect";
+export const architectSession = "架构师";
+export const asArchitect = { author: architect, session: architectSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));

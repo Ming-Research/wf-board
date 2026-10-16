@@ -1,11 +1,11 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
 import type { Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
-export function projectOrderAfter(projects: readonly Project[], name: string, after: string, author: string): Project[] {
-  if (author !== ARCHITECT) throw new Error(`after: only ${ARCHITECT} may reorder projects`);
+export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
+  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -72,10 +72,14 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A title longer than this many characters (spaces not counted) gets a check. */
+export const TITLE_MAX_CHARS = 20;
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
 export const STALLED_LABEL = "无人推进";
+/** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
+export const WAITS_TEXT_LABEL = "在等文字";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
@@ -749,6 +753,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
+      // Titles of closed items are not revised, so only open items and records are checked.
+      const titleLength = [...it.title.replace(/\s/g, "")].length;
+      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
       if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
@@ -761,6 +768,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
+        const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
+        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       }
       return out;

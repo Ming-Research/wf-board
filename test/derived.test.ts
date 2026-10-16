@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
-import { architect } from "./helpers.ts";
+import { architect, asArchitect } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
@@ -62,10 +62,10 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   // same incremental and from-history derivations as the activity times.
   const op = new Proxy(base, { get: (target, name) => {
     const fn = target[name as keyof typeof target] as (a: object) => Promise<unknown>;
-    return (a: object) => { const session = [undefined, "session-a", "session-b", "session-c"][Math.floor(rand() * 4)]; return fn.call(target, session ? { ...a, session } : a); };
+    return (a: object) => { const session = [undefined, "session-a", "session-b", "session-c"][Math.floor(rand() * 4)]; return fn.call(target, session ? { session, ...a } : a); };
   } }) as typeof base;
-  await op.setTag({ author: architect, name: "健全性", meaning: "影响接受或拒绝" });
-  await op.setTag({ author: architect, name: "报错信息", meaning: "影响诊断措辞" });
+  await op.setTag({ ...asArchitect, name: "健全性", meaning: "影响接受或拒绝" });
+  await op.setTag({ ...asArchitect, name: "报错信息", meaning: "影响诊断措辞" });
   // Each commit with the snapshot it published, taken when the store announces it.
   const events: Array<{ change: Change; after: Snapshot }> = [];
   store.onChange(change => events.push({ change, after: store.snapshot() }));
@@ -88,9 +88,9 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       const id = pick(itemsOf(s)), it = s.items[id]!, shared = it.plan.filter(row => "item" in row && !row.own);
       if (shared.length) return op.setPlan({ author: it.group, id, remove: pick(shared).id });
     },
-    async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ author: architect, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
+    async s => { const owner = pick(itemsOf(s)), key = `n${made++}`; return op.createItem({ ...asArchitect, key, owner, title: `New ${key}`, accept: "passes", plan: [{ id: "w", text: "work", state: pick(["todo", "doing"] as const) }], tags: ["健全性"] }); },
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
-    async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ author: architect, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
+    async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ ...asArchitect, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
       await op.writeCard({ author: group, key, item: id, question: "Which?", background: "b", options: [{ key: "A", text: "a", recommended: true }, { key: "B", text: "b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
@@ -105,7 +105,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       if (rand() < 0.5) return op.writeCard({ author: group, key, rev: card.rev, item: pick(itemsOf(s, group)), question: card.question, background: card.background, options: card.options });
       return op.ruleCard({ author: group, key, choice: "A", ruling: "A it is" });
     },
-    async s => { const id = pick(itemsOf(s)); return op.setPause({ author: architect, id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
+    async s => { const id = pick(itemsOf(s)); return op.setPause({ ...asArchitect, id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
     async s => {
       const cards = Object.keys(s.decisions);
       const target = cards.length && rand() < 0.5 ? `q:${pick(cards)}` : `it:${pick(itemsOf(s))}`;
