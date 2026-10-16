@@ -338,7 +338,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
 
 // A root with a missing shared row carries exactly this check in the plan model.
 const BLOCKED_TEXT = "依赖的条目不存在：missing";
-const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
+const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 async function wakeSocket(t: { after(fn: () => void): void }, url: string, session: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + "/wake?session=" + encodeURIComponent(session));
   t.after(() => socket.terminate()); await once(socket, "open");

@@ -120,6 +120,17 @@ export const tagApplies = (tag: Tag, project: string): boolean => tag.projects =
 /** Whether an item of this project must carry a tag: once the vocabulary holds a tag it may use. */
 export const tagsRequired = (tags: readonly Tag[] | undefined, project: string): boolean => (tags ?? []).some(tag => tagApplies(tag, project));
 
+/**
+ * An item's difficulty, which decides the agent that does it: 1–5, or "architect" for an item the architect does itself
+ * (a discussion, a walkthrough, a design), which is rated but never dispatched. Only the architect sets it.
+ */
+export const Difficulty = z.union([z.number().int().min(1).max(5), z.literal("architect")]);
+export type Difficulty = z.infer<typeof Difficulty>;
+/** How agents and the page write a difficulty: 「难度 2」, or 「架构师做」. */
+export const difficultyText = (difficulty: Difficulty): string => difficulty === "architect" ? "架构师做" : `难度 ${difficulty}`;
+/** Whether an item with this difficulty can be handed to an agent: rated 1–5, not the architect's own. */
+export const dispatchable = (difficulty: Difficulty | undefined): boolean => typeof difficulty === "number";
+
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
@@ -149,6 +160,8 @@ export const Item = z.object({
    * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
    */
   tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
+  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists. */
+  difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
   priority: Priority.optional(),
@@ -168,6 +181,7 @@ export const Item = z.object({
   rev: z.number().int().positive(),
 }).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
   .refine(it => !it.record || it.paused === undefined, "A record cannot be paused")
+  .refine(it => !it.record || it.difficulty === undefined, "A record has no difficulty")
   .refine(it => {
     const count = it.plan.filter(row => "accept" in row && row.accept).length;
     return it.record ? count === 0 : count >= 1;

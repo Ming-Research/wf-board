@@ -246,6 +246,9 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   for (const it of roots) it.priority = r.pick(["P0", "P1", "P1", "P2"]);
   for (const it of order) if (it.record) it.priority = undefined;
 
+  // Rated like the real board: most work 1–5, a tenth 「架构师做」, a tenth unrated (which raises 缺难度). Taken from the
+  // item's index, not the random stream, so the rest of the board stays as it was.
+  const difficultyOf = (it: ItemDraft) => it.record || it.index % 10 === 4 ? {} : { difficulty: it.index % 10 === 9 ? "architect" : 1 + it.index % 5 };
   const itemDoc = (it: ItemDraft): Record<string, unknown> => {
     const own = it.children.map(c => ({ id: c, item: c, own: true }));
     const rows: PlanRowDraft[] = [...own, ...it.steps.filter(s => !s.accept), ...it.extra, ...it.steps.filter(s => s.accept)];
@@ -259,7 +262,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     });
     return {
       title: it.title, group: it.group, ...(it.record ? { record: true } : {}), ...(it.priority ? { priority: it.priority } : {}), ...(it.status ? { status: it.status } : {}),
-      ...(it.paused ? { paused: it.paused } : {}), tags: it.tags, head: it.head, log: it.log, plan, ...(it.provisional ? { provisional: true } : {}),
+      ...(it.paused ? { paused: it.paused } : {}), tags: it.tags, ...difficultyOf(it), head: it.head, log: it.log, plan, ...(it.provisional ? { provisional: true } : {}),
       ...(it.targets ? { targets: it.targets } : {}), ...(it.data ? { data: it.data } : {}), links: it.links, ...(it.ask ? { ask: it.ask } : {}),
       ...(it.request ? { request: it.request } : {}), created: at, updated: at, order: it.index,
     };

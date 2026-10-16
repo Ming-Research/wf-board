@@ -357,7 +357,7 @@ export function presentationSignature(r: Rules, decisions: Readonly<Record<strin
   };
   const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
   const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
-  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
     r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
 }
 
@@ -762,6 +762,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
+        // Open work gets a difficulty before it is dispatched. An untriaged request, a backlog item and paused work are
+        // not about to be, so they are not asked for one yet.
+        if (it.difficulty === undefined && isOpenWork(id) && !isRequest(id) && !isBacklog(id) && !isPaused(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
