@@ -9,6 +9,8 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
+import { summarize, toolClass } from "./slow-ops.ts";
+import type { SlowOps } from "./slow-ops.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -109,7 +111,7 @@ const count = (description: string) => z.number().int().nonnegative().describe(d
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: Ops; now?: () => string; wake?: Wake }): McpServer {
+export function createMcpServer({ store, ops, now, wake, slow }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -123,12 +125,16 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     const full = "session" in shape ? shape : { ...shape, session };
     const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
+      // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
+      const timed = slow?.start(`tool ${name}`, toolClass(name, write));
+      let result = "ok";
       try {
         const args = schema.parse(a);
         if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
       }
-      catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      catch (error) { result = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      finally { timed?.(result, () => summarize(a)); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));

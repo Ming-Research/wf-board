@@ -11,6 +11,7 @@ import { macNotify } from "./notify.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
+import { SlowOps } from "./slow-ops.ts";
 
 async function main() {
   // Every line of the service log carries its time, and the start reports how long each step took.
@@ -29,7 +30,9 @@ async function main() {
   const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, createMcp: () => createMcpServer({ store, ops: op, wake }) });
+  // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
+  const slow = new SlowOps({ wake });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, slow, createMcp: () => createMcpServer({ store, ops: op, wake, slow }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // A push with its duration in the log. One takes about 3 to 4 seconds (design section 4, Stopping), during which the store's

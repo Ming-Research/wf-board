@@ -14,6 +14,7 @@ export const WAKE_KINDS = {
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"] },
   "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"] },
   "pr-orphan": { label: "PR 没挂在条目上", fields: ["repo", "number", "project", "title", "url", "draft"] },
+  "slow-op": { label: "操作太慢", fields: ["op", "ms", "limitMs", "params"] },
   deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], external: true },
   deployFailed: { label: "部署失败", fields: ["version", "running", "reason"], external: true },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; external?: true }>;

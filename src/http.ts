@@ -20,6 +20,7 @@ import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
+import { SlowOps, pageOperation, requestParams } from "./slow-ops.ts";
 
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
@@ -27,8 +28,10 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; shutdownGraceMs?: number }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; shutdownGraceMs?: number; slow?: SlowOps }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
+  // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
+  const slow = deps.slow ?? new SlowOps({ now });
   // Set by `close`: from then on every new request is refused, so no client starts a session in a process that is about to exit.
   let closing = false;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
@@ -146,11 +149,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     json(res, 404, { error: "Unknown route" });
   }
   const server = http.createServer((req, res) => {
-    res.on("finish", () => {
-      console.info(`${req.method} ${(req.url ?? "/").split("?")[0]} ${res.statusCode}`);
-      // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
-      if (closing) server.closeIdleConnections();
-    });
+    // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
+    const { name, cls } = pageOperation(req.method ?? "", (req.url ?? "/").split("?")[0]!);
+    const timed = slow.start(name, cls);
+    res.on("close", () => timed(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
+    // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
+    res.on("finish", () => { if (closing) server.closeIdleConnections(); });
     if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }
     void route(req, res).catch(error => {
       console.error(error);
