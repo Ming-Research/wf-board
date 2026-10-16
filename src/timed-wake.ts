@@ -14,6 +14,8 @@ export interface TimedFields {
   changed: Array<ChangedItem | { more: number }>;
   working: Array<WorkingItem | { more: number }>;
   architect: Array<WorkingItem | { more: number }>;
+  /** The Actions usage line (src/usage-watch.ts); empty where no usage watch runs. */
+  actions: string;
 }
 
 function capped<T>(rows: T[]): Array<T | { more: number }> {
@@ -32,9 +34,9 @@ function itemOf(s: Snapshot, file: string): string | undefined {
 }
 
 /** What one timed wake carries: the items changed since the last one (not those only the architect itself wrote, which it
- * already knows), the items being worked on, and every open item of the Architect project, each with its status. `since` is the
- * last timed wake's mark; without one, the daemon's start. */
-export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string): Promise<TimedFields> {
+ * already knows), the items being worked on, and every open item of the Architect project, each with its status, and the Actions
+ * usage line. `since` is the last timed wake's mark; without one, the daemon's start. */
+export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, actions = ""): Promise<TimedFields> {
   const from = since?.at ?? started;
   const commits = await store.log({ since: since?.head ?? from, at: s.head }).catch(() => store.log({ since: from, at: s.head }));
   const writers = new Map<string, Set<string>>();
@@ -59,5 +61,6 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
     changed: capped(changed),
     working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.statusOf(id) === "wip" && doing(id)).map(entry)),
     architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT).map(entry)),
+    actions,
   };
 }

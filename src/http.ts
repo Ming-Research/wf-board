@@ -20,11 +20,12 @@ import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
+import type { UsageWatch } from "./usage-watch.ts";
 
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
@@ -100,7 +101,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const data = await readFile(join(deps.webDir, path === "/" ? "index.html" : "dist/app.js"));
         res.writeHead(200, { "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(data); return;
       }
-      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}) }); return; }
+      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }
       if (path === "/api/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -242,7 +243,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
     timing = true;
     try {
-      const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, now()), last, started);
+      const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line());
       wake.push("timed", { ...fields });
       wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
@@ -253,10 +254,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
+  // The look at the Actions billing (src/usage-watch.ts) runs on its own timer, every half hour.
+  deps.usage?.start();
   // Close long-lived transports before http.close waits for their sockets.
   const close = server.close.bind(server);
   server.close = callback => {
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); off(); unsubscribe(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeTold();
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
     for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);

@@ -10,6 +10,8 @@ import { Wake } from "./wake.ts";
 import { macNotify } from "./notify.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
+import { ghBilling } from "./billing.ts";
+import { UsageWatch } from "./usage-watch.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
 
 async function main() {
@@ -26,7 +28,9 @@ async function main() {
   const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, createMcp: () => createMcpServer({ store, ops: op, wake }) });
+  // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the architect at its levels.
+  const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, createMcp: () => createMcpServer({ store, ops: op, wake }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   async function push() { if (await store.unpushed()) await store.push(); }
