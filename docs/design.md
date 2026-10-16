@@ -399,11 +399,13 @@ log:
   line `难度：<from> → <to>，理由：<reason>` (from 未评 the first time), because
   changing the level changes who does the work. Until the board has an
   identity for the architect, the architect is recognised by writing as the
-  project `Architect`. A change of difficulty is an ordinary change in
-  `changes` and in unread, as a tag change is. Open work with no difficulty
-  raises the 缺难度 check and is not listed as startable (`brief.todo`); a work
-  item rated `architect` raises no check and is not listed either, since the
-  architect schedules its own items itself.
+  project `Architect`; `create_item` takes `difficulty` under the same rule, and
+  logs it as the first rating (reason 建条目时评). `changes` shows every change
+  of difficulty; unread shows a changed level but not a first rating (below).
+  Work an unpaused root needs and that has no difficulty raises the 缺难度
+  check and is not listed as startable (`brief.todo`); a work item rated
+  `architect` raises no check and is not listed either, since the architect
+  schedules its own items itself. Only the architect clears 缺难度.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -465,6 +467,10 @@ log:
   never mark the item new, never enter unread counts or stepping, and never
   receive unread bars, including appended or edited log entries. A log-only
   commit does not extend an unread change or move its comparison baseline.
+  A first rating, an item's `difficulty` going from none to a level, is not
+  unread either, alone or beside another change (which still counts as
+  itself): rating hundreds of items would show each new for one added label.
+  Changing a level that exists is unread.
   A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
@@ -705,6 +711,14 @@ write's result lists the items. So no non-root holds a stored priority, and
 none returns when an item becomes a root again. A closed root shows its own
 stored priority.
 
+An open work item is *needed* when an unpaused root needs it: it is an unpaused
+root, or an unpaused, open item holds an item row (owned or shared) for it and
+is itself needed. An untriaged request is not work yet and is neither a root
+here nor needs anything. So backlog work, what hangs under it, paused work and
+work only a paused root needs are not needed; a root that is not started and
+has no stored priority is. The same walk decides which items 缺难度 asks a
+difficulty for and which items `brief` lists as startable.
+
 Effectively paused work keeps its own stored or derived displayed priority,
 but passes none through its item rows. Only open, not-paused dependents
 contribute priority to their targets. Pausing changes neither ownership nor
@@ -762,7 +776,7 @@ checks:
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (open work with no difficulty; `set_difficulty` fixes it; not raised for a record, a closed item, an untriaged request, backlog work, paused work, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, an untriaged request, backlog work and what hangs under it, paused work, work only a paused root needs, or an item rated `architect`) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1108,7 +1122,7 @@ item and card writes retain the normal project ownership checks.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; owner and children in the author's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` only from author `Architect` (any other author is refused), a valid difficulty, never on a record, and logged as the first rating |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
@@ -1594,7 +1608,7 @@ cancelled items are not open requests.
 (excluding inbox requests), and inbox counts. `brief` supplies inbox reasons,
 sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items in progress with a doing step of their own,
-the next ten items rated 1–5 whose frontier holds a step that can start, by priority,
+the next ten items rated 1–5 that an unpaused root needs and whose frontier holds a step that can start, by priority,
 outstanding work requested from other projects, and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
@@ -2008,10 +2022,12 @@ or doing): when they all name one level, as 「（难度 N）」 with N in 1–5
 「（架构师做）」, it sets the field, removes the marker from every row of the
 item, and logs the rating and the removed markers, all items in one commit.
 Items it will not guess about are listed for a person: unfinished rows naming
-different levels, a wording other than those two (「（难度按设计再评）」), only
-finished rows naming a level, a field that disagrees with the rows. Closed
-items keep their row texts. The report also counts the open work that stays
-unrated and will raise 缺难度. A second run migrates nothing. The CLI, its
+different levels, a wording other than those two (「（难度按设计再评）」, or a noted
+「（架构师做，含走查）」), only finished rows naming a level, a field that
+disagrees with the rows. Closed items keep their row texts. The report also
+lists every row of open work that mentions 难度 or 架构师做 yet matches no rule,
+so a miss shows before `--apply`, and counts the open work that stays unrated
+and will raise 缺难度. A second run migrates nothing. The CLI, its
 module and its tests are deleted after the run on the live board.
 
 ## 11. Testing

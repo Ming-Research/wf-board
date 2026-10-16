@@ -10,8 +10,10 @@ import { difficultyLogText } from "./ops.ts";
 /** Exactly the forms the architect wrote: 「（难度 N）」 with N in 1–5, and 「（架构师做）」, in full-width or ASCII parentheses. */
 const LEVEL = /[（(]难度 ?([1-5])[）)]/g;
 const ARCHITECT = /[（(]架构师做[）)]/g;
-/** Any parenthetical about 难度: what is left after the exact forms are the ones a person must settle. */
-const ANY_LEVEL = /[（(]难度[^）)]*[）)]/g;
+/** Any parenthetical about 难度 or 架构师做 (with a note, say 「（架构师做，含走查）」): what is left after the exact forms are the ones a person must settle. */
+const ANY_LEVEL = /[（(](?:难度|架构师做)[^）)]*[）)]/g;
+/** A row that speaks of a difficulty in some other way. The migration recognises none of these, and lists them. */
+const MENTION = /难度|架构师做/;
 export const MIGRATION_REASON = "迁移：计划行文字里写的难度改存到字段";
 
 export interface MigratedRow { id: string; from: string; to: string }
@@ -22,6 +24,8 @@ export interface MigrationPlan {
   byHand: ByHand[];
   /** Done or cancelled items that still mention a difficulty in a row: left as they are. */
   closed: string[];
+  /** Rows of open work that speak of a difficulty yet match no rule, so the migration would leave them: check these before --apply. */
+  unrecognised: Array<{ id: string; group: string; row: string; text: string }>;
   /** Open work that stays without a difficulty after the migration and will raise 缺难度: the number the rollout meets. */
   stillUnrated: number;
 }
@@ -38,11 +42,13 @@ function marked(row: PlanRow): Marked | undefined {
 }
 
 export function planDifficultyMigration(s: Snapshot): MigrationPlan {
-  const r = rules(s), plan: MigrationPlan = { items: [], byHand: [], closed: [], stillUnrated: 0 };
+  const r = rules(s), plan: MigrationPlan = { items: [], byHand: [], closed: [], unrecognised: [], stillUnrated: 0 };
   const migrating = new Set<string>();
   for (const id of Object.keys(s.items).sort()) {
     const it = s.items[id]!, rows = it.plan.map(marked).filter((m): m is Marked => !!m);
-    if (!rows.length || it.record) continue;
+    if (it.record) continue;
+    if (r.isOpenWork(id)) for (const row of it.plan) if ("text" in row && MENTION.test(row.text) && !marked(row)) plan.unrecognised.push({ id, group: it.group, row: row.id, text: row.text });
+    if (!rows.length) continue;
     if (!r.isOpenWork(id)) { plan.closed.push(id); continue; }
     const hand = (reason: string) => plan.byHand.push({ id, group: it.group, reason, rows: rows.map(m => m.row.text) });
     if (rows.some(m => m.unparsed.length)) { hand(`写法不在迁移认得的两种之内：${rows.flatMap(m => m.unparsed).join("、")}`); continue; }
@@ -59,7 +65,7 @@ export function planDifficultyMigration(s: Snapshot): MigrationPlan {
   }
   for (const id of Object.keys(s.items)) {
     const it = s.items[id]!;
-    if (!it.record && it.difficulty === undefined && !migrating.has(id) && r.isOpenWork(id) && !r.isRequest(id) && !r.isBacklog(id) && !r.isPaused(id)) plan.stillUnrated++;
+    if (!it.record && it.difficulty === undefined && !migrating.has(id) && r.isNeeded(id)) plan.stillUnrated++;
   }
   return plan;
 }
@@ -85,9 +91,10 @@ export async function applyDifficultyMigration(store: Store, plan: MigrationPlan
 
 /** The report the CLI prints. */
 export function reportLines(plan: MigrationPlan): string[] {
-  const lines = [`migrate: ${plan.items.length}, by hand: ${plan.byHand.length}, closed items left alone: ${plan.closed.length}, open work still unrated afterwards (raises 缺难度): ${plan.stillUnrated}`];
+  const lines = [`migrate: ${plan.items.length}, by hand: ${plan.byHand.length}, rows that mention a difficulty but match no rule: ${plan.unrecognised.length}, closed items left alone: ${plan.closed.length}, open work still unrated afterwards (raises 缺难度): ${plan.stillUnrated}`];
   for (const m of plan.items) lines.push(`migrate ${m.id} [${m.group}] ${m.difficulty === "architect" ? "架构师做" : m.difficulty}${m.alreadySet ? " (field already set)" : ""}`, ...m.rows.map(row => `    ${row.id}: ${row.from}  →  ${row.to}`));
   for (const h of plan.byHand) lines.push(`by hand ${h.id} [${h.group}]: ${h.reason}`, ...h.rows.map(text => `    ${text}`));
+  for (const u of plan.unrecognised) lines.push(`unrecognised ${u.id} [${u.group}] ${u.row}: ${u.text}`);
   if (plan.closed.length) lines.push(`closed: ${plan.closed.join(", ")}`);
   return lines;
 }

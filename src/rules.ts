@@ -23,6 +23,14 @@ export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | und
 
 /** The one rule that log entries never count as owner-unread: owner-facing item comparisons drop the log first. */
 export function withoutLog<T extends object>(doc: T): Omit<T, "log"> { const { log: _log, ...rest } = doc as T & { log?: unknown }; return rest; }
+/** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
+ * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
+ * first rating left out of `after`; any other pair comes back as it is. */
+export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
+  const { difficulty: _rated, ...rest } = after;
+  return [before, rest as T];
+}
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
 
@@ -114,6 +122,10 @@ export interface Rules {
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
+  /** Open work an unpaused root needs: an unpaused root that is not an untriaged request, or work such a root waits on
+   * through open, unpaused rows, owned or shared. Backlog work, what hangs under it, paused work and what only a paused
+   * root needs are not needed. A request not yet triaged is not work yet. */
+  isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
@@ -660,6 +672,19 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
+  // The reach of the unpaused roots, by the same walk as the priorities: up from every root along the open, unpaused rows.
+  function neededSet(): Set<string> {
+    return cached("needed", "", () => {
+      const ids = [...index().items.keys()], out = new Set<string>();
+      const eligible = (id: string): boolean => isOpenWork(id) && !isRequest(id) && !isPaused(id);
+      for (const id of ids) if (eligible(id) && isRoot(id)) out.add(id);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const id of ids) if (!out.has(id) && eligible(id) && waiters(id).some(waiter => out.has(waiter))) { out.add(id); changed = true; }
+      }
+      return out;
+    });
+  }
   function cycles(): Set<string> {
     return cached("cycles", "", () => {
       const idx = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>(), out = new Set<string>();
@@ -772,9 +797,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
-        // Open work gets a difficulty before it is dispatched. An untriaged request, a backlog item and paused work are
-        // not about to be, so they are not asked for one yet.
-        if (it.difficulty === undefined && isOpenWork(id) && !isRequest(id) && !isBacklog(id) && !isPaused(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        // Work an unpaused root needs gets a difficulty before it is dispatched. What no such root needs (backlog work,
+        // what hangs under it, paused work, an untriaged request) is not about to be, so it is not asked for one yet.
+        if (it.difficulty === undefined && neededSet().has(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
@@ -787,7 +812,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isRequest, isOpenWork, inbox: project => kids("").filter(id => groupOf(id) === project && isRequest(id)).sort((a,b) => Date.parse(item(a)!.request!.at) - Date.parse(item(b)!.request!.at) || a.localeCompare(b)),
-    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, priorityOf,
+    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

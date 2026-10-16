@@ -17,7 +17,7 @@ export interface Ops {
   createRequest(a: { author: string; session?: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
   triageRequest(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
+  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
@@ -455,6 +455,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     createItem: a => run(a, (s, at) => {
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
+      // The architect may rate the item as it creates it; anyone else's difficulty is refused, as in set_difficulty.
+      let difficulty: Difficulty | undefined;
+      if (a.difficulty !== undefined) {
+        onlyArchitect(a.author);
+        const given = Difficulty.safeParse(a.difficulty);
+        if (!given.success) throw new OpError('difficulty: give an integer 1–5, or "architect" for an item the architect does itself');
+        if (a.record) throw new OpError("difficulty: a record has no difficulty");
+        difficulty = given.data;
+      }
       newKey(s, a.key);
       const owner = a.owner ? ownedItem(s, a.owner, a.author, "owner") : undefined;
       const group = a.group ?? owner?.group;
@@ -470,7 +479,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const id of children) { ownedItem(s, id, a.author, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
-      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rulesOf(s).parentOf(id);

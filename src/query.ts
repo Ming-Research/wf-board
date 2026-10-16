@@ -254,7 +254,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
     wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(wipRow),
-    todo: eligible.filter(id => r.isOpenWork(id) && dispatchable(s.items[id]!.difficulty) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
+    todo: eligible.filter(id => r.isNeeded(id) && dispatchable(s.items[id]!.difficulty) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
     tags: tagVocabulary(s, project),
