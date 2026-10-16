@@ -131,7 +131,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "a card its item's head does not place was drawn without the line that tells the writer it has no place (architect, 2026-10-16)",
     // The line before the card is not drawn.
-    reverts: [{ file: "web/app.ts", edit: "a card with no place has no note", find: "body.appendChild(el(\"div\", \"unplacednote\", \"这张卡在正文里没标位置：补上一行 <code>[[q:\" + esc(key) + \"]]</code>，或者撤回它。\"));", replace: "" }],
+    reverts: [{ file: "web/app.ts", edit: "a card with no place has no note", find: "body.appendChild(el(\"div\", \"unplacednote\", \"这张卡在正文里没标位置：补上一行 <code>[[q:\" + esc(key) + \"]]</code>\" + (d.status === \"open\" ? \"，或者撤回它。\" : \"。\")));", replace: "" }],
     family: "card-unplaced",
     run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
   },
