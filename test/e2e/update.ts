@@ -31,18 +31,24 @@ async function drawn(bp: BoardPage) {
 const versionOf = (bp: BoardPage) => bp.page.evaluate(() => document.getElementById("page-version")?.getAttribute("content") ?? "");
 const scrolls = (bp: BoardPage) => bp.page.evaluate(() => ({ list: document.getElementById("page-left")!.scrollTop, detail: document.getElementById("item-detail")!.scrollTop }));
 
-/** The item with the most text, so that its detail is taller than the pane and scrolls. */
-function longest(b: BoardServer): string {
+/** An item whose detail is taller than the pane by at least 300 px, so that it scrolls: the code witness, whose head is long, then
+ * the items with the most text. Selects it. */
+async function tallItem(bp: BoardPage, b: BoardServer): Promise<string | undefined> {
   const items = b.store.snapshot().items;
-  return Object.keys(items).filter(id => !items[id]!.record).sort((x, y) => JSON.stringify(items[y]).length - JSON.stringify(items[x]).length)[0]!;
+  const byText = Object.keys(items).filter(id => !items[id]!.record).sort((x, y) => JSON.stringify(items[y]).length - JSON.stringify(items[x]).length);
+  for (const id of [b.gen.witness.code, ...byText].slice(0, 12)) {
+    await bp.select(id);
+    if (await bp.page.evaluate(() => { const pane = document.getElementById("item-detail")!; return pane.scrollHeight - pane.clientHeight; }) >= 300) return id;
+  }
+  return undefined;
 }
 
 /** A page open before a deploy that rebuilt the bundle reloads itself, on the new version, with the same item selected, the same
  * rows unfolded and both panes scrolled as far as before. */
 export async function checkReload(bp: BoardPage, b: BoardServer): Promise<string[]> {
   const v: string[] = [];
-  const id = longest(b);
-  await bp.select(id);
+  const id = await tallItem(bp, b);
+  if (!id) return ["witness setup: no item on the generated board has a detail taller than the pane"];
   await bp.page.evaluate(() => { document.getElementById("page-left")!.scrollTop = 600; document.getElementById("item-detail")!.scrollTop = 150; });
   const was = await scrolls(bp), rows = await bp.treeRows(), version = await versionOf(bp);
   if (was.list < 300 || was.detail < 50 || !/^[0-9a-f]{16}$/.test(version)) return [`witness setup: the page is scrolled to ${JSON.stringify(was)} and was served as version "${version}"`];

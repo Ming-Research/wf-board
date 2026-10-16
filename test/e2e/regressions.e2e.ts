@@ -218,7 +218,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "a deploy reloaded the page under a comment box the owner was typing in (owner, 2026-10-16)",
     // The page never counts itself as busy.
-    reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 ||", replace: "busy: () => false ||" }], family: "update-writing", copy: true,
+    reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 || Object.values(drafts).some(text => text.trim() !== \"\") || sending || writesInFlight > 0,", replace: "busy: () => false," }], family: "update-writing", copy: true,
     run: async (bp, b) => checkWriting(bp, b),
   },
   {
