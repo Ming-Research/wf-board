@@ -620,24 +620,18 @@ test("owned rows need deliberate moves; removal names after users and transfers 
   await assert.rejects(op.moveItem({ author, id: "other", owner: "a" }), /依赖成环/);
 });
 
-test("creation adoption, requests and triage use plans and commit all structural effects together", async t => {
+test("creation adoption uses plans and commits all structural effects together", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   await op.createItem({ ...asArchitect, key: "parent", title: "Combined", group: author, accept: "Both accepted", priority: "P0", children: ["a", "b"] });
   const s = store.snapshot(); assert.equal(rules(s).parentOf("a"), "parent"); assert.equal(rules(s).parentOf("b"), "parent");
   assert.deepEqual(s.items.parent!.plan!.map(row => row.id), ["a", "b", "accept"]);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/parent.yaml", "numbers.yaml"], "the issued number's counter enters the creating commit");
-  await op.createRequest({ author, project: "Firn", key: "request", title: "Witness", head: "Minimal program", accept: "Program passes", why: "Required for completion", from: "parent", after: [] });
-  assert.equal(rules(store.snapshot()).priorityOf("request"), "P0");
-  assert.match(store.snapshot().items.request!.log[0]!.text, /Required for completion/);
-  await ops(store).triageRequest({ author: "Firn", id: "request", log: "Accepted" });
-  assert.equal(store.snapshot().items.request!.request, undefined);
 });
 
 test("record-owned backlog work refuses priority even with external dependents, and cancellation refuses open parts", async t => {
   const { store, op } = await board(t);
   await op.createItem({ ...asArchitect, key: "backlog", title: "Backlog", group: author, record: true });
   await op.moveItem({ author, id: "a", owner: "backlog" });
-  await op.createRequest({ author: "Firn", project: author, key: "request", title: "Need", head: "Witness", accept: "Pass", why: "Need", from: "other" });
   await op.setPlan({ author: "Firn", id: "other", row: { item: "a", own: false, after: [] } });
   const r = rules(store.snapshot()); assert.equal(r.isRoot("a"), false); assert.equal(r.priorityOf("a"), "P1");
   await assert.rejects(op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, priority: "P2" }), /record-owned.*cannot store priority.*open shared dependents/);
@@ -805,41 +799,6 @@ test("acceptance naming avoids collisions with valid ordinary rows", async t => 
   assert.deepEqual(store.snapshot().items["record-collision"]!.plan.map(row => row.id), ["accept", "accept-1"]);
 });
 
-test("every ownership attachment triages pending requests atomically and records their placement", async t => {
-  for (const mode of ["plan-row", "plan-rows", "create-plan", "create-children", "move", "triage"] as const) await t.test(mode, async t => {
-    const { store, op, dir } = await board(t);
-    await op.createRequest({ author: "Firn", project: author, key: "incoming", title: "Requested result", head: "Witness", accept: "Witness passes", why: "Other project needs the result", from: "other", after: [] });
-    const request = store.snapshot().items.incoming!;
-    assert.ok(request.request); assert.deepEqual(rules(store.snapshot()).inbox(author), ["incoming"]);
-    const before = (await store.log()).length;
-    let owner = "area";
-    if (mode === "plan-row") await op.setPlan({ author, id: owner, row: { item: "incoming", own: true, after: [] } });
-    else if (mode === "plan-rows") await op.setPlan({ author, id: owner, rows: [
-      { item: "a", own: true, after: [] }, { item: "b", own: true, after: [] }, { item: "incoming", own: true, after: [] },
-      { id: "accept", accept: true, text: "解释器目标通过", state: "todo" },
-    ] });
-    else if (mode === "create-plan" || mode === "create-children") {
-      owner = "new-owner";
-      await op.createItem({ ...asArchitect, key: owner, group: author, title: "Requested work owner", accept: "Owner passes", priority: "P0",
-        ...(mode === "create-plan" ? { plan: [{ item: "incoming", own: true }] } : { children: ["incoming"] }),
-      });
-    } else if (mode === "move") await op.moveItem({ author, id: "incoming", owner });
-    else await op.triageRequest({ author, id: "incoming", owner, log: "Accepted into scheduled work" });
-    const after = store.snapshot(), r = rules(after);
-    assert.equal(after.items.incoming!.request, undefined); assert.deepEqual(r.inbox(author), []); assert.equal(r.parentOf("incoming"), owner);
-    assert.deepEqual(after.items.incoming!.log[0], request.log[0], "filing reason stays intact");
-    assert.ok(after.items.incoming!.log.some(entry => entry.text === `分拣：放到「${after.items[owner]!.title}」的计划`));
-    if (mode === "triage") assert.deepEqual(after.items.incoming!.log.slice(-2).map(entry=>entry.text),[
-      `分拣：放到「${after.items[owner]!.title}」的计划`,"Accepted into scheduled work",
-    ],"placement precedes the supplied triage log");
-    assert.equal((await store.log()).length, before + 1, "attachment and inbox removal share one commit");
-    const files = (await store.log({ limit: 1 }))[0]!.files;
-    assert.ok(files.includes("items/incoming.yaml")); assert.ok(files.includes(`items/${owner}.yaml`));
-    assert.deepEqual((await Store.open(dir)).snapshot(), after);
-    await assert.rejects(op.triageRequest({ author, id: "incoming", log: "Triage again" }), /not an open request/);
-  });
-});
-
 test("Architect pause and resume are atomic, server-stamped and preserve every plan row", async t => {
   const { store, op, dir } = await board(t);
   await op.clearAsk({ author, id: "a", log: "Owner already approved" });
@@ -957,7 +916,7 @@ test("other projects still refuse cross-project writes without changing memory, 
     () => op.closeNote({ author: "Firn", id: "note-1", log: "Handled" }),
   ];
   for (const call of calls) {
-    await assert.rejects(call(), /item a belongs to project Whitefoot; file a request into Whitefoot with create_request instead/);
+    await assert.rejects(call(), /item a belongs to project Whitefoot; report what you need from it to the Architect, who creates work another project needs in the project that delivers it/);
     assert.deepEqual(store.snapshot(), before);
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
     assert.equal(store.snapshot().head, before.head);
@@ -1045,7 +1004,7 @@ test("Architect from another session writes only the Architect project's items, 
   assert.deepEqual(store.snapshot().items["own-item"]!.log.at(-1), { at: later, by: architect, text: "Engineer evidence" });
   const before = store.snapshot(), count = (await store.log()).length;
   for (const who of [engineer, { author: architect }]) {
-    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), /item a belongs to project Whitefoot; file a request into Whitefoot with create_request instead; Architect writes other projects' items only with session 架构师/);
+    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), /item a belongs to project Whitefoot; report what you need from it to the Architect, who creates work another project needs in the project that delivers it; Architect writes other projects' items only with session 架构师/);
     await assert.rejects(op.writeCard({ ...who, key: "foreign-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.replyNote({ ...who, id: "note-1", reply: "Answer" }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.moveItem({ ...who, id: "a", owner: "other" }), /item a belongs to project Whitefoot/);
@@ -1130,8 +1089,6 @@ test("every write under the retired author 总管 is refused and changes nothing
   const calls: Record<keyof Ops, () => Promise<unknown>> = {
     createProject: () => op.createProject({ author: retired, name: "New" }),
     updateProject: () => op.updateProject({ author: retired, name: "Whitefoot", repo: "Org/Changed" }),
-    createRequest: () => op.createRequest({ author: retired, project: "Firn", key: "req", title: "Req", head: "H", accept: "A", priority: "P1", why: "W" }),
-    triageRequest: () => op.triageRequest({ author: retired, id: "a", log: "L" }),
     closeNote: () => op.closeNote({ author: retired, id: "note-1", log: "Handled" }),
     createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass", priority: "P1" }),
     appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),

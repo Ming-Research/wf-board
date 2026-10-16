@@ -379,12 +379,6 @@ test("a title longer than 20 characters, spaces not counted, gets one check", ()
   assert.deepEqual(texts(s, "record"), ["标题超过 20 个字（现在 21 个）"], "records have titles too");
 });
 
-test("inboxes omit records and closed requests and follow request dates", () => {
-  const s = snapshot({ newer: { request: { by: "First", at: T2 } }, older: { request: { by: "First", at: T1 } }, closed: { request: { by: "First", at: T0 }, status: "cancelled" }, record: { request: { by: "First", at: T0 }, record: true }, other: { group: "First" } });
-  const r = rules(s); assert.deepEqual(r.inbox("Default"), ["older", "newer"]); assert.equal(r.isRequest("record"), false); assert.equal(r.isRequest("closed"), false);
-  assert.deepEqual(r.areas(), ["closed", "record", "other"]);
-});
-
 test("derived arrays are defensive copies and snapshot changes require a new rules object", () => {
   const s = snapshot({ a: { plan: workPlan([own("b"), step("next", "todo", { after: [] })]) }, b: {} }), before = structuredClone(s), r = rules(s);
   r.children("a").push("bad"); r.ancestors("b").push("bad"); r.depsOf("a")[0]!.id = "bad"; r.dependents("b")[0]!.id = "bad";

@@ -172,7 +172,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     const affected = affectedItems(rb, ra, seeds);
     const shown = (r: Rules, s: Snapshot) => {
       const ids = Object.keys(s.items), open = new Set(ids.filter(id => r.isOpenWork(id)).flatMap(id => r.ancestors(id)));
-      return (id: string) => JSON.stringify([!/^(done|cancelled)$/.test(r.statusOf(id) ?? "") || open.has(id), r.isRequest(id)]);
+      return (id: string) => JSON.stringify([!/^(done|cancelled)$/.test(r.statusOf(id) ?? "") || open.has(id)]);
     };
     const shownBefore = shown(rb, before), shownAfter = shown(ra, after);
     for (const id of new Set([...Object.keys(before.items), ...Object.keys(after.items)])) {
