@@ -1,9 +1,6 @@
 name: bench
 # Write-path benchmark, run by hand: scripts/bench-writes.ts on this branch and on the commit it started from.
 on:
-  # TEMPORARY (F3, before merge): runs on pushes to this branch; removed in the next commit.
-  push:
-    branches: [ci-minutes]
   workflow_dispatch:
     inputs:
       base:
@@ -26,7 +23,7 @@ jobs:
       - name: Write-path benchmark (non-gating)
         continue-on-error: true
         env:
-          BENCH_BASE: ${{ inputs.base || 'origin/main' }}
+          BENCH_BASE: ${{ inputs.base }}
         run: |
           node scripts/bench-writes.ts --label "this tree"
           base=$(git merge-base HEAD "$BENCH_BASE")
