@@ -71,8 +71,7 @@ matches what the artifact board offered.
 
 ## Rules
 
-- The main line is `claude/first-board`: branch from it and merge into it.
-  `main` holds only the first commit.
+- The main line is `main`: branch from it and merge into it.
 - Board data lives in the directory `WF_BOARD_DATA` names, on the owner's Mac
   `~/dev/wf/wf-board-data` (private remote `Ming-Research/wf-board-data`).
   Only the daemon writes it; tests use temporary directories.
