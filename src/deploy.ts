@@ -4,7 +4,7 @@ import type { Notify } from "./notify.ts";
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html and
  * web/dist/app.js, the bundle the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
  * or not, restarts the daemon. */
-export const NO_RESTART = ["docs/", "test/", "web/"];
+export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
 
 /** A push to the architect, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
