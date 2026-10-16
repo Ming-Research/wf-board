@@ -211,12 +211,14 @@ restart.
   a deploy of docs or tests changes nothing for an open page, and a rebuilt page
   changes it with no restart. `GET /` fills the version into the page's own text
   (the `page-version` meta tag), and `GET /api/events` opens with a `page` event
-  that carries the current version. When a deploy ends, the `deployed` push
-  (`deployFailed` after a rollback) arrives at `POST /api/wake`; the daemon then
-  reads the page files again and, when the version differs from the last one it
-  told, sends a `page` event to every open page. It looks only then, never
-  between the job's merge and its build, where the two files do not agree yet. A
-  page that sees another version than its own reloads (section 7, Updating the
+  that carries the version on disk at that moment, to that stream alone. When a
+  deploy ends, the `deployed` push (`deployFailed` after a rollback) arrives at
+  `POST /api/wake`; the daemon then reads the page files again and, when the
+  version differs from the last one it told, sends a `page` event to every open
+  page. The pages already open are told only then, never between the job's merge
+  and its build, where the two files do not agree yet: a page that connects in
+  that gap is told the version it sees, and is told again when the deploy ends.
+  A page that sees another version than its own reloads (section 7, Updating the
   page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
   the pages that connect afterwards, not the open ones: restarting the daemon
   tells them too, since their streams reconnect.

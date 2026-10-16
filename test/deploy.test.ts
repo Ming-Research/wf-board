@@ -607,7 +607,10 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
   const http = await readFile(join(src, "http.ts"), "utf8");
   // The one read of a file in http.ts is pageFile, and it is asked for the two page files only: the page and its bundle.
   assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, name)"]);
-  assert.deepEqual([...new Set([...http.matchAll(/pageFile\("([^"]*)"\)/g)].map(m => m[1]))].sort(), ["dist/app.js", "index.html"]);
+  const asked = [...http.matchAll(/pageFile\("([^"]*)"\)/g)].map(m => m[1]);
+  assert.deepEqual([...new Set(asked)].sort(), ["dist/app.js", "index.html"]);
+  // Every other mention of pageFile is its definition: a call with a name that is not a literal, or pageFile passed on, would read a file this test cannot see.
+  assert.equal([...http.matchAll(/\bpageFile\b/g)].length, asked.length + 1);
   assert.ok(NO_RESTART.includes("web/"));
 });
 

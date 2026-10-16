@@ -72,20 +72,25 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     try { return { html, version: pageVersion(html, await pageFile("dist/app.js")) }; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { html, version: undefined }; throw error; }
   }
-  // The version the open pages were last told; a page is told again only when it changes (design section 4, Deploying).
+  // The version the open pages were last told: by a deploy that ended, or when the first page connected. A deploy that ends tells them
+  // again only when the version differs (design section 4, Deploying).
   let announced: string | undefined;
   const pageEvent = (version: string) => "event: page\ndata: " + JSON.stringify({ version }) + "\n\n";
-  // Refreshes run one after another, so the version told last is the one read last.
-  let refreshing: Promise<unknown> = Promise.resolve();
-  /** Reads the page now and, when its version differs from the last told, tells every open page. Returns the version, or undefined. */
-  function refreshPage(): Promise<string | undefined> {
-    const run = refreshing.then(async () => {
+  // The reads run one after another, in the order asked: a page that connects is told what was on disk when it joined, and no
+  // announcement made after that read passes it.
+  let reading: Promise<unknown> = Promise.resolve();
+  /** Reads the page now and returns its version, or undefined. `announce`: tell every open page when it differs from the last told;
+   * a page that connects only reads, and the pages already open wait for the deploy that ends. */
+  function readPage(announce: boolean): Promise<string | undefined> {
+    const run = reading.then(async () => {
       let version: string | undefined;
       try { version = (await currentPage()).version; } catch (error) { console.error(error); return undefined; }
-      if (version !== undefined && version !== announced) { announced = version; writeStreams(pageEvent(version)); }
+      if (version === undefined) return undefined;
+      if (announce && version !== announced) { announced = version; writeStreams(pageEvent(version)); }
+      else announced ??= version;
       return version;
     });
-    refreshing = run;
+    reading = run;
     return run;
   }
   async function body(req: IncomingMessage, empty?: unknown): Promise<unknown> {
@@ -144,8 +149,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }
       if (path === "/api/events") {
-        // Read before the headers go out, so joining the stream and the first write happen in one step.
-        const version = await refreshPage();
+        // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
+        const version = await readPage(false);
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
         res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version))); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
@@ -229,7 +234,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
   // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages are told if it did.
-  const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void refreshPage(); });
+  const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void readPage(true); });
   const unsubscribe = wake.onPush(frame => {
     const data = JSON.stringify(frame);
     for (const connection of connections) if (connection.socket.bufferedAmount > maxStreamBytes) connection.socket.terminate();

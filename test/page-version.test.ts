@@ -125,13 +125,18 @@ test("a deploy that changed the page tells every open page, and one that did not
   assert.deepEqual(await first.next(), { event: "page", data: { version: one } });
 });
 
-test("a page that changes with no deploy push is told to the open pages when the next one connects", async t => {
-  const page = await pageDir(t), { url } = await server(t, { webDir: page.dir });
+test("a page that connects is told the version on disk, and the pages already open wait for the deploy that ends", async t => {
+  const page = await pageDir(t), { url, api } = await server(t, { webDir: page.dir });
   const first = await stream(t, url);
-  await first.next();
+  const one = await page.version();
+  assert.deepEqual(await first.next(), { event: "page", data: { version: one } });
+  // The page files change with no deploy push (a build under way, or a deploy by hand): a page that connects reads what is there.
   await page.write(HTML, "console.log('by hand')");
   const second = await stream(t, url);
-  const now = await page.version();
-  assert.deepEqual(await second.next(), { event: "page", data: { version: now } });
-  assert.deepEqual(await first.next(), { event: "page", data: { version: now } });
+  const two = await page.version();
+  assert.deepEqual(await second.next(), { event: "page", data: { version: two } });
+  assert.equal(await first.quiet(), true, "the open page is not told by another page's connecting: the files may not be done changing");
+  // The deploy ends: now every open page is told.
+  assert.equal((await api("/api/wake", deployed)).status, 200);
+  assert.deepEqual(await first.next(), { event: "page", data: { version: two } });
 });

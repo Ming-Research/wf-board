@@ -216,6 +216,12 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkReload(bp, b),
   },
   {
+    bug: "a page that reloaded for a deploy came back with no item selected (owner, 2026-10-16)",
+    // The page no longer keeps the selected item, so the page that follows a reload has none.
+    reverts: [{ file: "web/app.ts", edit: "the selected item is kept across a reload", find: '    try { localStorage.setItem("board-selected", id || ""); } catch {}\n', replace: "" }], family: "update-state", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
     bug: "a deploy reloaded the page under a comment box the owner was typing in (owner, 2026-10-16)",
     // The page never counts itself as busy.
     reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 || Object.values(drafts).some(text => text.trim() !== \"\") || sending || writesInFlight > 0,", replace: "busy: () => false," }], family: "update-writing", copy: true,
