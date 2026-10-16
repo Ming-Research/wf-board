@@ -27,8 +27,9 @@ matches what the artifact board offered.
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
-- `src/mcp.ts`: MCP tools; `src/http.ts`: page, page API, events and wake
-  stream; `src/main.ts`: the daemon.
+- `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
+  where agents learn how to use and write on the board; `src/http.ts`: page,
+  page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
@@ -67,23 +68,7 @@ matches what the artifact board offered.
 - The daemon binds `127.0.0.1` only.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
-
-## Board tools
-
-- Use `set_targets` for each goal's target value, current value and comparison baseline, updating the current value after measuring.
-- Use `set_plan` for ordered steps, owned and shared items, decision cards
-  and at least one acceptance step where the check happens, usually before
-  merge or release rows. Status comes from the plan; `set_status`
-  only cancels or reopens an item. `move_item` changes the item's owner.
-- Only `总管` uses `set_pause` to pause or resume work, at the owner's
-  request in a comment, with a reason when pausing. It preserves every plan row, applies through
-  same-project ownership, and stops priority propagation and stalled clocks.
-- Tag every item with at least one tag from the vocabulary (`tags` lists
-  them with meanings; `set_tags` sets an item's whole list; `set_tags_many`
-  sets many items' lists in one commit, the way to backfill; `create_item`
-  and `create_request` take `tags`). Only `总管` changes the vocabulary
-  (`set_tag`, `rename_tag`, `remove_tag`), and only after the owner approves
-  the change on a decision card; the server checks the author, not the card.
-- Records have no acceptance step and pass no priority. Open work owned by
-  a record stores no priority, but derives the highest priority from open
-  shared dependents, or none without them. Record ownership passes none.
+- Board usage for agents lives only in the server's instructions
+  (`src/instructions.ts`, design section 6), never in this file. A change to a
+  tool's behavior or to a board rule changes them in the same commit; keep
+  their first 2048 characters self-contained, since Claude Code cuts there.

@@ -5,6 +5,7 @@ import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
 import * as q from "./query.ts";
+import { INSTRUCTIONS } from "./instructions.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -102,18 +103,8 @@ const statuses = z.array(Status).describe("Include items with these derived stat
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-/** The generic reading guide appended to the server's instructions; docs/design.md (MCP tools) is its owner. */
-export const READING_GUIDE = [
-  "Reading the board:",
-  "- Start with projects, then brief for each project you work on. Paused roots and items (with their reason) are not worked on. Roots carry priority; every other item derives it.",
-  "- Read, in this order: work in progress (rows with a doing step), work ready to start (the frontier), cards waiting for the owner, inbox requests, notes to answer.",
-  "- Pass session (your own session's name) on every write; context and brief then show which session last pushed each item. It records who wrote, never who owns the work.",
-  "- Anything in flight, such as a background run or unpushed local work, is a plan row with waits, so whoever resumes the work finds it on the board.",
-  "- The coordinator allocates sessions from the current work in progress: every unpaused project with ready or in-progress work and no recent session push gets a session. Groupings change with the work and are not stored.",
-].join("\n");
-
 export function createMcpServer({ store, ops, now }: { store: Store; ops: Ops; now?: () => string }): McpServer {
-  const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: "On starting at a project's repository root, call projects, pick the project whose repo matches your repository's GitHub remote (the coordinator uses 总管), use that project's name as author in every write, then call brief. Only your project's items, cards and replies are yours to change; ask other projects through create_request, with from to record the dependency. Reply to or close every owner note with reply_note or close_note; sent notes and inbox requests remain pending until handled. The coordinator forwards wake-ups and follows up with followups, so an agent need not listen to the wake stream. Find the item with search and read context before writing. Use set_targets for each goal's target, current value and comparison baseline after measuring. Use set_plan for the ordered plan and current progress and append_log for historical detail, which never marks owner unread. Status is derived from the plan; set_status only cancels or reopens a cancelled item. Only 总管 may use set_pause to pause or resume open work without changing its plan; project writes cannot clear an explicit pause or resume effectively paused open work through ownership changes; completion and cancellation remain allowed and keep the pause marker; ownership descendants inherit pause, paused work does not stall or raise its dependencies' priority, and open dependents may flag a pause conflict. Every work plan has at least one acceptance step, placed where the check happens, normally before merge or release rows; several acceptance steps are allowed. Item rows are owned parts or shared needs; rows carry no why. Only one same-project plan may own an item; use move_item to transfer it. Roots store priority. Records pass none; record-owned work derives priority from open shared dependents, or none without them, and cannot store priority. The server stamps times. update_item and revisions of write_card need the rev read from context; redo on a stale revision. record:true items have a head, optional plan without acceptance, targets and log but no status; set_status refuses them. Checks include items with their own doing step quiet for 1 hour of board-active time, the union of 30-minute windows after any board content write. Qualify PR references as Repo#N. Every item and card has a permanent short number, shown as #N at the end of its row; the owner may name one that way, and context and graph accept it, but board text still names things by what they are, never by number. Tag every item with at least one tag from the vocabulary (tags lists them with meanings; set_tags sets an item's whole list); only 总管 changes the vocabulary, after the owner approves the change on a decision card. Explain a word your project coined and keeps using with set_term; the page links each term to its definition, and glossary lists them.\n\n" + READING_GUIDE });
+  const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
     const snapshot = store.snapshot();

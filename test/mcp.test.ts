@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
+import { INSTRUCTIONS, INSTRUCTIONS_CORE } from "../src/instructions.ts";
 import { board, author, later } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
@@ -52,7 +53,8 @@ test("project MCP onboarding, requests, triage, close and coordinator reads use 
   const text=(r:Awaited<ReturnType<typeof client.callTool>>)=>(r.content as Array<{text:string}>).map(c=>c.text).join("\n");
   async function call(name:string,args:Record<string,unknown>={}) {const r=await client.callTool({name,arguments:args});assert.ok(!r.isError,text(r));return text(r);}
   const instructions=client.getInstructions()!;
-  for (const term of ["projects","brief","create_request","close_note","coordinator","need not listen"]) assert.ok(instructions.includes(term),term);
+  for (const term of ["projects","brief","reply_note","close_note","architect","do not use create_request or triage_request","Other agents do not listen to the wake stream"]) assert.ok(instructions.includes(term),term);
+  assert.doesNotMatch(instructions,/coordinator|need not listen|Ask other projects/i);
   const configured=JSON.parse(await call("projects"));assert.equal(Object.hasOwn(configured[0],"agents"),false);assert.equal(configured[0].repo,"Ming-Research/Whitefoot");
   await call("update_project",{author,name:"Whitefoot",repo:"Ming-Research/Whitefoot-next"});
   assert.equal(store.snapshot().board.projects[0]!.repo,"Ming-Research/Whitefoot-next");
@@ -76,7 +78,7 @@ test("MCP onboarding and write schemas use project identities", async t => {
   await server.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await server.close(); });
   const instructions = client.getInstructions()!, tools = (await client.listTools()).tools;
-  await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.match(instructions, /总管/); assert.doesNotMatch(instructions, /claim_project|session-list/); });
+  await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.doesNotMatch(instructions, /总管|claim_project|session-list/); });
   for (const tool of tools.filter(tool => tool.inputSchema.properties?.author)) {
     await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`)"));
   }
@@ -84,6 +86,18 @@ test("MCP onboarding and write schemas use project identities", async t => {
     const filters = tools.find(tool => tool.name === "list")!.inputSchema.properties!.filters as {properties:Record<string,unknown>};
     assert.equal(Object.hasOwn(filters.properties, "agent"), false);
   });
+});
+
+test("the server instructions state the new flow, and their first 2048 characters stand alone", async t => {
+  const { client } = await connected(t), instructions = client.getInstructions()!;
+  assert.equal(instructions, INSTRUCTIONS);
+  // Claude Code cuts a server's instructions at 2048 characters: what comes first must tell an agent how to start and what it may not do.
+  assert.ok(INSTRUCTIONS_CORE.length <= 2048, String(INSTRUCTIONS_CORE.length));
+  assert.ok(instructions.startsWith(INSTRUCTIONS_CORE));
+  for (const term of ["projects", "brief", "author", "session", "架构师", "set_plan", "acceptance step", "SendMessage", "create_request"]) assert.ok(INSTRUCTIONS_CORE.includes(term), term);
+  // One rule from each part of the item rules and the communication rules; each fails if its part is dropped.
+  for (const rule of [/Only the architect creates items/, /Study or direct is decided at creation/, /Test: if the other never finished/, /Title: a short phrase.*at most 20 characters/, /A card holds only the question and the option names/, /Acceptance: a checkable result/, /改动 \(the head's section for the item's PRs\)/, /参考: research reports/, /Only the architect receives pushes/, /SendMessage by session name is only a doorbell/, /ws:\/\/127\.0\.0\.1:7417\/wake\?session=\*/, /runs Monitor on a small script/, /Reading the board:/]) assert.match(instructions, rule);
+  assert.doesNotMatch(instructions, /总管|coordinator/i);
 });
 
 test("set_term, glossary, brief and delete_term work end to end, and an unconfigured author is refused", async t => {
@@ -334,7 +348,8 @@ test("MCP set_pause is coordinator-only and paused status works in list and over
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_pause");
   assert.ok(tool, "the pause operation is available to the coordinator");
   assert.match(tool.description!, /Only author 总管/);
-  assert.match(client.getInstructions()!, /Only 总管 may use set_pause/);
+  // The instructions state the new rule (the architect pauses); the server still checks author 总管 until the architect identity exists.
+  assert.match(client.getInstructions()!, /Only the architect may use set_pause/);
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_pause", arguments: { author, id: "area", paused: true, reason: "Pause" } });
   assert.equal(refused.isError, true); assert.match(text(refused), /only 总管/); assert.deepEqual(store.snapshot(), before);
