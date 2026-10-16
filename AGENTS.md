@@ -75,8 +75,9 @@ matches what the artifact board offered.
 - Board usage for agents lives only in `~/dev/wf/AGENTS.md`, section "Board"
   (from the agents_config repository), never in this file or in the server's
   instructions, which are a short pointer (`src/instructions.ts`, design
-  section 6). A change to a tool's behavior or to a board rule changes that
-  section in the same change, in agents_config.
+  section 6). When a change alters a tool's behavior or a board rule, its
+  engineer writes on the item what that section must say; the observer
+  changes the section after the merge (shared rules, Other rule files).
 - A change to the page that the owner has not asked for in those words, or
   one that changes a rule an earlier test guards, goes to the owner on a card
   before the code changes: the engineer reports it to the architect, naming

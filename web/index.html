@@ -354,6 +354,10 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .plan-row.cardrow .cardtoggle[aria-expanded="false"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
+details.refsec { margin: 8px 0; min-width: 0; }
+details.refsec > summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+details.refsec > .refbody { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 14px; }
+details.refsec > .refbody p { margin: 0; }
 .empty { color: var(--muted); font-size: 14px; margin: 0; }
 .checktag { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 4px; border: 1px dashed var(--wip); color: var(--wip); white-space: nowrap; }
 .checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px; max-width: 78ch; }

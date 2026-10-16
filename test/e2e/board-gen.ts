@@ -216,6 +216,8 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     if (r.chance(0.2)) parts.push("- " + r.pick(STEPS) + "\n- " + r.pick(STEPS));
     if (r.chance(0.1)) { const other = r.pick(order); parts.push("参见 [[it:" + other.id + "]]。"); }
     if (r.chance(0.15)) parts.push("术语：" + (it.group === p0 ? "冷启动预算" : "回放窗口") + "。");
+    // The code witness carries two 参考 sections at the end of its head, the way research reports sit there.
+    if (it === code) parts.push("**参考：推导**\n\n推导的第一段。\n\n推导的第二段。\n\n**参考：测量**\n\n测量的正文。");
     it.head = parts.join("\n\n");
     const nLog = it.index % 13 === 0 ? 25 : r.int(4);
     for (let k = 0; k < nLog; k++) it.log.push({ at: tick(), by: it.group, text: r.pick(STEPS) + "，" + r.pick(["完成", "进行中", "有新发现"]) + "。" });
