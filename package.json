@@ -10,7 +10,6 @@
   "scripts": {
     "start": "node src/main.ts",
     "convert:plans": "node src/convert-plans-cli.ts",
-    "migrate:difficulty": "node src/migrate-difficulty-cli.ts",
     "check": "tsc -p tsconfig.json",
     "test": "node --test 'test/**/*.test.ts'",
     "test:e2e": "npm run build:web && node --test --test-concurrency=2 'test/e2e/*.e2e.ts'",

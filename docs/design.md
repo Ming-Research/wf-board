@@ -2362,24 +2362,6 @@ the board.
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
 
-### Difficulty migration
-
-`npm run migrate:difficulty -- --data DIR [--apply]` moves the temporary
-difficulties that plan rows carried in their text into the field. It runs
-offline, with the daemon stopped or on a copy, and without `--apply` only
-prints the report. For each open work item it reads the rows still to do (todo
-or doing): when they all name one level, as 「（难度 N）」 with N in 1–5 or
-「（架构师做）」, it sets the field, removes the marker from every row of the
-item, and logs the rating and the removed markers, all items in one commit.
-Items it will not guess about are listed for a person: unfinished rows naming
-different levels, a wording other than those two (「（难度按设计再评）」, or a noted
-「（架构师做，含走查）」), only finished rows naming a level, a field that
-disagrees with the rows. Closed items keep their row texts. The report also
-lists every row of open work that mentions 难度 or 架构师做 yet matches no rule,
-so a miss shows before `--apply`, and counts the open work that stays unrated
-and will raise 缺难度. A second run migrates nothing. The CLI, its
-module and its tests are deleted after the run on the live board.
-
 ## 11. Testing
 
 - Unit tests for the rules module, the file format round trip, `rev`

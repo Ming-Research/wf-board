@@ -113,7 +113,7 @@ function onlyArchitect(who: Writer, what: string): void {
 /** A difficulty as the log line writes it: the level, or 「架构师做」. */
 const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : difficulty === "architect" ? "架构师做" : String(difficulty);
 /** The log line for a change of difficulty: from what to what, and why. */
-export const difficultyLogText = (from: Difficulty | undefined, to: Difficulty, reason: string): string => `难度：${levelText(from)} → ${levelText(to)}，理由：${reason}`;
+const difficultyLogText = (from: Difficulty | undefined, to: Difficulty, reason: string): string => `难度：${levelText(from)} → ${levelText(to)}，理由：${reason}`;
 const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
 
 /** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
