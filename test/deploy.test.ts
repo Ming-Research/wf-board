@@ -222,7 +222,7 @@ test("when going back fails too the owner is told on the Mac, and the push says 
   assert.equal(w.notices[0]![0], "看板起不来");
   assert.match(w.notices[0]![1]!, new RegExp(`${bad.slice(0, 7)}.*${r.first.slice(0, 7)}`));
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", bad, null]]);
-  assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, undefined], "nothing is recorded healthy when nothing was");
+  assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, r.first], "the commit the daemon was serving when the run began is the last healthy one");
   // The rollback is unfinished, so the next run tries it again, and does not alarm anyone twice with the same news.
   assert.deepEqual(w.saved.pending, { target: bad, to: r.first, restarted: true });
   assert.equal(await deploy(), "down");
@@ -388,6 +388,22 @@ test("a daemon that answers when the job starts is the last healthy commit, howe
   assert.equal(await deploy(), "rolledBack");
   assert.equal(r.head(), middle, "back on what was serving, not on what the job last saw");
   assert.equal(w.saved.healthy, middle);
+});
+
+test("the commit the daemon is serving is remembered by a run that deploys nothing, for a later failure while the daemon is down", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  // Two hand deploys moved the checkout and the daemon to `middle`; the job's record still says `first`.
+  const middle = r.land({ "src/a.ts": "a" }, "middle");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", middle);
+  w.saved.healthy = r.first;
+  assert.equal(await deploy(), "current");
+  assert.equal(w.saved.healthy, middle);
+  // The daemon then goes down, and the next deploy is bad too.
+  w.daemon.ok = false;
+  r.land({ "src/main.ts": "BROKEN" }, "Break the daemon");
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(r.head(), middle, "it went back to the commit last seen serving, not to the older one in the record");
 });
 
 test("when going back fails but the daemon still answers, the owner is not alarmed and the next run finishes the rollback", async t => {
