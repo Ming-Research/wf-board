@@ -834,14 +834,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   function cardChecks(key: string): Check[] {
     return cached("cardChecks", key, () => {
       const d = index().decisions.get(key);
-      if (!d || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
+      if (!d || statusOf(d.item) === "cancelled" || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
       return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
     });
   }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
-      if (!it) return out;
+      // A cancelled item has no work left, so nobody will act on its checks: it raises none.
+      if (!it || statusOf(id) === "cancelled") return out;
       const st = statusOf(id), parent = parentOf(id), deps = depsOf(id), rows = planRows(id);
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
@@ -866,9 +867,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       }
       if (!it.record) {
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
-        // Acceptance checks ask about work still to finish: a cancelled item has none left to do.
-        if (st !== "cancelled" && acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
-        if (st !== "cancelled" && acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
+        if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
+        if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
