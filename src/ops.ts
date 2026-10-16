@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -19,6 +18,8 @@ export interface Ops {
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
+  journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
   setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
@@ -33,7 +34,6 @@ export interface Ops {
   moveItem(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
-  postNotice(a: { author: string; session?: string; text: string; item?: string }): Promise<Result>;
   ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling: string }): Promise<Result>;
   replyNote(a: { author: string; session?: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
   setTerm(a: { author: string; session?: string; term: string; definition: string }): Promise<Result>;
@@ -93,6 +93,14 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
 }
 function only总管(author: string): void {
   if (author !== "总管") throw new OpError("author: only 总管 may change the tag vocabulary, and only after the owner approves the change on a decision card");
+}
+
+/** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
+const JOURNAL = { project: "Architect", notes: "architect-notes", tag: "协作流程" };
+/** The local calendar day and clock time of an ISO instant, as the journal's key and entry stamp use them. */
+function localStamp(at: string): { day: string; clock: string } {
+  const d = new Date(at), pad = (n: number) => String(n).padStart(2, "0");
+  return { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, clock: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
 }
 
 function newKey(s: Snapshot, key: string): void {
@@ -220,12 +228,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         // dependents and items whose owner actions a card/note write changes.
         // snapshot() freezes every document. Only these collection slots change;
         // copying all existing plans and logs is unnecessary for a prospective write.
-        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, notices: { ...s.notices }, glossaries: { ...s.glossaries } };
+        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, glossaries: { ...s.glossaries } };
         if (work.board) next.board = parse(Board, work.board);
         for (const put of work.puts) {
           if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
           else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
-          else if (put.kind === "notice") next.notices[put.id] = parse(Notice, put.doc);
           else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
           else next.notes[put.id] = parse(Note, put.doc);
         }
@@ -449,6 +456,25 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    journalEntry: a => run(a, (s, at) => {
+      if (a.author !== JOURNAL.project) throw new OpError(`author ${a.author}: only the ${JOURNAL.project} project writes the journal, under ${JOURNAL.notes}`);
+      const { day, clock } = localStamp(at);
+      const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
+      if (Object.hasOwn(s.items, key)) {
+        const it = ownedItem(s, key, a.author);
+        if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
+        const head = it.head ? `${it.head}\n\n${line}` : line;
+        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
+        return { id: key, kind: "item", message: `journal_entry ${key}`, puts: [itemPut(key, doc)] };
+      }
+      newKey(s, key);
+      const owner = ownedItem(s, JOURNAL.notes, a.author, "owner");
+      const tags = checkedTags(s, owner.group, [JOURNAL.tag], true);
+      const doc = parse(Item, { title: `架构师日志 ${day}`, tags, head: line, record: true, group: owner.group, plan: [], created: at, updated: at, rev: 1 });
+      const puts: Put[] = [{ kind: "item", id: key, doc, expectRev: null }];
+      attach(s, puts, at, a.author, JOURNAL.notes, key);
+      return { id: key, kind: "item", puts, message: `journal_entry ${key}` };
+    }),
     setPlan: a => edit(a, "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
@@ -626,13 +652,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (new Set(doc.options.map(o => o.key)).size !== doc.options.length) throw new OpError("options.key: give each option a unique key");
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }] };
     }, a.rev !== undefined),
-    postNotice: a => run(a, (s, at) => {
-      if (a.item !== undefined) requireItem(s, a.item, "item");
-      let id: string;
-      do { id = Array.from({ length: 20 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(s.notices, id));
-      const doc = parse(Notice, { text: a.text, ...(a.item !== undefined ? { item: a.item } : {}), author: a.author, at, rev: 1 });
-      return { id, kind: "notice", message: `post_notice ${id}`, puts: [{ kind: "notice", id, doc, expectRev: null }] };
-    }),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
       ownedItem(s, card.item, a.author);
