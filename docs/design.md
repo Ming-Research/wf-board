@@ -1722,9 +1722,9 @@ Responsibility belongs to the project, the existing `group` page heading;
 there is no extra item layer. `board.projects` contains unique project names
 and an optional repository identifier such as `Ming-Research/Halo-wf`:
 `{name, repo?, mainline?}`. `mainline` names the branch merges land on when it
-is not the repository's default branch (wf-board's is `claude/first-board`,
-its default branch `main` holds only the first commit); the GitHub watch reads
-the checks of that branch, or of the default branch when `mainline` is absent.
+is not the repository's default branch (wf-board's main line is its default
+branch `main`, so it sets none); the GitHub watch reads the checks of that
+branch, or of the default branch when `mainline` is absent.
 Identity is the project itself. Each project has a responsible
 agent session started in its repository; several sessions may share that
 responsibility and coordinate among themselves. Sessions may be renamed
