@@ -44,8 +44,6 @@ async function main() {
     const started = performance.now(), took = () => `${((performance.now() - started) / 1000).toFixed(1)} s`;
     try {
       const sent = await store.push();
-      // TEMP experiment: delay before the log line, removed before the PR is ready
-      await new Promise(resolve => setTimeout(resolve, 500));
       console.info(`push of ${commits} commits ${sent ? "took" : "found the remote up to date, took"} ${took()}`);
     } catch (error) { console.error(`push of ${commits} commits failed after ${took()}`); throw error; }
   }

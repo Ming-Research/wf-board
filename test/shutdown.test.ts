@@ -230,7 +230,11 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
     assert.ok(waited < 15_000, "the daemon did not push its commits after the delay");
     await sleep(100);
   }
-  assert.match(log, /Z push of \d+ commits took \d+\.\d s$/m, "the push and its duration are in the log");
+  // The daemon writes the push line after the push returns, so the remote can show the commits a moment before the line is there.
+  for (let waited = 0; !/Z push of \d+ commits took \d+\.\d s$/m.test(log); waited += 100) {
+    assert.ok(waited < 5000, "the push and its duration are in the log within 5 s of the remote showing the commits");
+    await sleep(100);
+  }
   // A session with its stream open, as an agent has, and two local changes that only a push would send: a note, and the
   // owner reading it (owner state is saved to a file at once and joins a commit later).
   const mcp = new Client({ name: "Agent", version: "1" }); mcp.onerror = () => {};
