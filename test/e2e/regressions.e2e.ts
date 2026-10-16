@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkChangedBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -38,6 +38,14 @@ const ARROW_OLD = `    const all = stops();
 `;
 interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
 const WITNESSES: Witness[] = [
+  {
+    bug: "changed body blocks lost their mark once the green background was removed (fixed in this change)",
+    // The blue bar rule that marks a changed body block; removing it leaves the block with no mark at all.
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block-bar",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
   {
     bug: "saving a comment on a card folded its comment list and hid the 发送 button (fixed in 1ecc074)",
     // The fix's two lines, removed where they stand now: opening a comment and saving one unfold the list.

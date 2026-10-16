@@ -592,3 +592,19 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   ]);
   return commits;
 }
+
+/** Every changed block of an item's body (not a card's) carries a blue bar on its left and no background of its own. */
+export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
+  const v: string[] = [];
+  const blocks = await bp.page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".rich > .chg-add")].filter(e => e.closest(".item") && !e.closest(".card, .notes")).map(e => {
+    const bar = getComputedStyle(e, "::before"), own = getComputedStyle(e);
+    return { id: e.closest("[id]")?.id ?? "?", bar: bar.backgroundColor, width: bar.width, own: own.backgroundColor, text: (e.textContent ?? "").slice(0, 40) };
+  }));
+  if (!blocks.length) v.push("changed-block: no changed body block on the page to check");
+  for (const b of blocks) {
+    if (b.bar === "rgba(0, 0, 0, 0)" || b.bar === "transparent") v.push(`changed-block: ${b.id} 「${b.text}」 has no blue bar`);
+    if (b.width !== "3px") v.push(`changed-block: ${b.id} 「${b.text}」 bar is ${b.width} wide, expected 3px`);
+    if (b.own !== "rgba(0, 0, 0, 0)" && b.own !== "transparent") v.push(`changed-block: ${b.id} 「${b.text}」 has a background ${b.own}`);
+  }
+  return v;
+}
