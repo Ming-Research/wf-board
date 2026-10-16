@@ -666,3 +666,29 @@ test("status target memoization never caches a cycle fallback as a target result
     for (const id of ["a", "b", "outside"]) assert.equal(r.statusOf(id), "wip", `${first} must not poison ${id}`);
   }
 });
+
+test("open decision cards with fewer than three options get a check on the card and on their item", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    two: { item: "owner", options },
+    three: { item: "owner", options: [...options, { key: "C", text: "Later" }] },
+    ruled: { item: "owner", options, status: "ruled", ruling: "A", choice: "A" },
+  });
+  const r = rules(s), [card] = r.cardChecks("two");
+  assert.deepEqual(r.cardChecks("three"), [], "three options are enough");
+  assert.deepEqual(r.cardChecks("ruled"), [], "a ruled card is not checked");
+  assert.equal(card?.label, "选项不足");
+  assert.deepEqual(r.checks("owner").filter(c => c.label === "选项不足"), [{ ...card, target: { kind: "card", id: "two" } }]);
+});
+
+test("the option check covers one-option cards and stops once the owner has chosen", () => {
+  const options = [{ key: "A", text: "Do" }, { key: "B", text: "Skip" }];
+  const s = snapshot({ owner: {} }, {
+    one: { item: "owner", options: [{ key: "A", text: "Do" }] },
+    chosen: { item: "owner", options, status: "open" },
+  }, {
+    answer: { target: "q:chosen", kind: "choice", text: "A", at: T0, state: "sent", rev: 1 },
+  });
+  assert.equal(rules(s).cardChecks("one")[0]?.label, "选项不足", "a one-option card is checked");
+  assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has already answered is not checked before the ruling");
+});
