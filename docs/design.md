@@ -139,7 +139,14 @@ restart.
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
   on the Mac, with the same notification code as the daemon, only when the
-  daemon does not answer, since then no daemon can push.
+  daemon does not answer, since then no daemon can push. The job only undoes
+  what it did to a checkout that is still the one it moved: on the main line's
+  branch, without local changes to tracked files, and on the deploy's target or
+  on the commit to go back to. A checkout in any other state was changed by hand
+  since (a deploy by hand, a branch made to look into something): nothing is
+  reset or moved, the record is dropped with one push, and the run goes on from
+  what the checkout holds, with its usual refusals. If the daemon does not
+  answer there, the owner is told on the Mac.
 - The checkout is not moved, and one `deployFailed` push per reason and commit
   says why, when it is on another branch, has local changes to tracked
   files (untracked files do not count) or has a commit the main line lacks: the
@@ -147,8 +154,11 @@ restart.
 - The pushes reach the architect through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
   next run. A fetch that still fails after three tries ten seconds apart, and a
-  failure of the job itself, are pushed once with `version` null; a run that
-  finds nothing wrong forgets them, so a problem that returns is news again.
+  failure of the job itself, are pushed once with `version` null. Each kind of
+  standing problem (the fetch, a refusal, a rollback that did not finish, the
+  job itself) is remembered separately and forgotten by a run that ends with
+  nothing wrong, so a problem that returns is news again and two that come and
+  go in turn are not pushed every time.
   The state file, `~/Library/Application Support/wf-board/deploy.json`, is
   outside the board's data directory, which only the daemon writes; one that
   does not parse is set aside as `deploy.json.corrupt` and the job starts empty.
@@ -1598,7 +1608,7 @@ the forms the server sends:
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}` |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
-| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the remote could not be fetched, or the job itself failed |
+| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 

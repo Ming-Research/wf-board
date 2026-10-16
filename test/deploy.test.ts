@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { NO_RESTART, deployOnce } from "../src/deploy.ts";
-import type { DeployDeps, DeployState, Push } from "../src/deploy.ts";
+import type { DeployDeps, DeployOutcome, DeployState, Push } from "../src/deploy.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -473,6 +473,82 @@ test("an interrupted deploy that had begun the restart restarts the daemon again
   w.saved.pending = { target: sha, to: r.first, restarted: true };
   assert.equal(await deploy(), "rolledBack");
   assert.equal(w.restarts, 1);
+});
+
+type Repos = Awaited<ReturnType<typeof repos>>;
+/** A deploy that did not end: git refuses its merge (a stale index.lock), going back is refused too, and the daemon still answers.
+ * The checkout is on `first` with the lock gone and a pending record in the state; returns the commit that was being deployed. */
+async function leftUnfinished(r: Repos, deploy: () => Promise<DeployOutcome>) {
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  const lock = join(r.checkout, ".git/index.lock");
+  writeFileSync(lock, "");
+  assert.equal(await deploy(), "stuck");
+  rmSync(lock);
+  return sha;
+}
+
+test("a checkout moved by hand while a rollback was unfinished is taken over as it is: nothing is reset, one push says so", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  await leftUnfinished(r, deploy);
+  // The architect deploys by hand, to a newer commit.
+  const hand = r.land({ "src/b.ts": "b" }, "B");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", hand);
+  w.builds.length = 0;
+  assert.equal(await deploy(), "current");
+  assert.equal(r.head(), hand, "the hand deploy stays");
+  assert.deepEqual({ builds: w.builds.length, restarts: w.restarts, notices: w.notices.length }, { builds: 0, restarts: 0, notices: 0 });
+  assert.deepEqual([w.saved.pending, w.saved.healthy], [undefined, hand], "the record is dropped, and the commit that serves is the last healthy one");
+  assert.equal(w.posts.length, 2);
+  assert.match(String(w.posts[1]!.reason), /changed by hand.*took over.*reset nothing/);
+});
+
+test("a hand-made checkout the daemon does not answer on is the one failure the job answers: the owner is told on the Mac", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  await leftUnfinished(r, deploy);
+  const hand = r.land({ "src/b.ts": "b" }, "B");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", hand);
+  w.daemon.ok = false;
+  assert.equal(await deploy(), "current");
+  assert.equal(r.head(), hand, "still not reset");
+  assert.equal(w.notices.length, 1);
+  assert.equal(w.notices[0]![0], "看板起不来");
+  assert.equal(w.restarts, 0);
+});
+
+for (const { name, touch, why } of [
+  { name: "a branch made to look into something", touch: (r: Repos) => { sh(r.checkout, "checkout", "-q", "-b", "debug"); }, why: /on debug, not claude\/first-board/ },
+  { name: "a local edit", touch: (r: Repos) => { writeFileSync(join(r.checkout, "README.md"), "edit"); }, why: /local changes to tracked files/ },
+]) {
+  test(`${name} in the checkout while a rollback was unfinished is not reset: the record is dropped and the checkout is refused as any such one is`, async t => {
+    const r = await repos(t), { w, deploy } = world(r);
+    const sha = await leftUnfinished(r, deploy);
+    touch(r);
+    assert.equal(await deploy(), "refused");
+    assert.equal(r.head(), r.first);
+    assert.deepEqual({ builds: w.builds.length, restarts: w.restarts }, { builds: 0, restarts: 0 }, "the rollback was not retried: no reinstall, no build");
+    assert.equal(w.saved.pending, undefined);
+    assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployFailed", sha], ["deployFailed", sha], ["deployFailed", sha]]);
+    assert.match(String(w.posts[1]!.reason), /changed by hand/);
+    assert.match(String(w.posts[2]!.reason), why);
+    if (name.startsWith("a branch")) assert.equal(sh(r.checkout, "symbolic-ref", "--short", "HEAD"), "debug", "the branch is where its owner left it");
+    if (name === "a local edit") assert.equal(readFileSync(join(r.checkout, "README.md"), "utf8"), "edit");
+  });
+}
+
+test("two standing problems that come and go in turn are each pushed once", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  writeFileSync(join(r.checkout, "README.md"), "edit");
+  r.land({ "src/a.ts": "a" }, "A");
+  const away = join(r.dir, "nowhere.git");
+  for (let round = 0; round < 3; round++) {
+    assert.equal(await deploy(), "refused");
+    sh(r.checkout, "remote", "set-url", "origin", away);
+    assert.equal(await deploy(), "unreachable");
+    sh(r.checkout, "remote", "set-url", "origin", r.origin);
+  }
+  assert.deepEqual(w.posts.map(p => String(p.reason).slice(0, 12)), ["the checkout", "could not fe"]);
 });
 
 test("the daemon reads nothing of the checkout at runtime but the page files, so the paths that need no restart stay valid", async () => {

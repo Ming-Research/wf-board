@@ -20,6 +20,10 @@ export interface Pending {
   restarted: boolean;
 }
 
+/** The kinds of standing problem that are pushed once: the fetch fails, a refusal to move the checkout, a rollback that did not
+ * finish, the job itself failing. */
+export type ToldKind = "fetch" | "refuse" | "stuck" | "error";
+
 /** What the job keeps between runs, in a file beside no board data. */
 export interface DeployState {
   /** The commit the board last served healthy: where a failed deploy goes back to when the board was already down. */
@@ -27,8 +31,9 @@ export interface DeployState {
   /** The commit whose deploy failed; it is not tried again until the remote moves on. */
   failed?: string;
   pending?: Pending;
-  /** The standing problem already pushed, so it is pushed once; a run that finds nothing wrong forgets it. */
-  told?: string;
+  /** The standing problems already pushed, one entry per kind, so that each is pushed once even when two kinds of problem
+   * come and go in turn; a run that ends with nothing wrong forgets them. */
+  told?: Partial<Record<ToldKind, string>>;
   /** Pushes the daemon did not take (it was down), sent first on the next run. */
   outbox: Push[];
 }
@@ -85,9 +90,16 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     }
   }
   async function tell(push: Push) { state.outbox.push(push); save(); await flush(); }
-  /** Push a standing problem once: `key` names it, and `calm` forgets it. */
-  async function tellOnce(key: string, push: Push) { if (state.told === key) return; state.told = key; await tell(push); }
-  function calm() { if (state.told !== undefined) { delete state.told; save(); } }
+  /** Push a standing problem once: `key` says which of its kind it is. True when it was pushed now. */
+  async function tellOnce(kind: ToldKind, key: string, push: Push): Promise<boolean> {
+    const told = state.told ??= {};
+    if (told[kind] === key) return false;
+    told[kind] = key; await tell(push);
+    return true;
+  }
+  /** A run that ends with nothing wrong (the board is current, or just deployed): a problem that comes back is news again. A run
+   * that ends with another problem forgets nothing, or two problems that come and go in turn would be pushed every time. */
+  function calm() { if (state.told) { delete state.told; save(); } }
   async function answers(ms: number) {
     const until = d.now() + ms;
     for (;;) {
@@ -128,6 +140,10 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     await build(thorough || differs);
     if (pending.restarted || !await answers(SETTLE_MS)) await restartAndWait(pending);
   }
+  /** The owner is told on the Mac: the board does not answer, and a board that does not answer cannot push. */
+  async function alarm(message: string) {
+    try { await d.notify("看板起不来", message); } catch (error) { d.log(`notify failed: ${reasonOf(error)}`); }
+  }
   async function wentBack(pending: Pending, reason: string): Promise<DeployOutcome> {
     delete state.pending; state.healthy = pending.to; save();
     await tell({ event: "deployFailed", version: pending.target, running: pending.to, reason });
@@ -139,15 +155,19 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     const serving = await answers(SETTLE_MS);
     const why = `${reason}; going back to ${pending.to} failed: ${reasonOf(failure)}; the daemon ${serving ? "still answers" : "is not answering"}, and the job tries again on its next run`;
     d.log(why);
-    const key = `stuck@${pending.target}:${serving}`;
-    if (state.told !== key) {
-      await tellOnce(key, { event: "deployFailed", version: pending.target, running: null, reason: why });
-      if (!serving) {
-        try { await d.notify("看板起不来", `部署 ${pending.target.slice(0, 7)} 失败，退回 ${pending.to.slice(0, 7)} 也没做完：${reasonOf(failure)}`); }
-        catch (error) { d.log(`notify failed: ${reasonOf(error)}`); }
-      }
-    }
+    const news = await tellOnce("stuck", `${pending.target}:${serving}`, { event: "deployFailed", version: pending.target, running: null, reason: why });
+    if (news && !serving) await alarm(`部署 ${pending.target.slice(0, 7)} 失败，退回 ${pending.to.slice(0, 7)} 也没做完：${reasonOf(failure)}`);
     return serving ? "stuck" : "down";
+  }
+  /** Why the job must not go back on `pending`, or undefined when it may: it only undoes what it did to the checkout it moved. A
+   * checkout that is on another branch, has local changes to tracked files, or is on a commit that is neither the deploy's target
+   * nor the one to go back to has been taken over by someone since (a deploy by hand, a branch made to look into something). */
+  async function takenOver(pending: Pending): Promise<string | undefined> {
+    const branch = await d.git(["symbolic-ref", "--short", "HEAD"]).then(line, () => "");
+    if (branch !== d.branch) return `it is on ${branch || "no branch"}, not ${d.branch}`;
+    const head = line(await d.git(["rev-parse", "HEAD"]));
+    if (head !== pending.target && head !== pending.to) return `it is on ${head}, neither ${pending.target} nor ${pending.to}`;
+    if (line(await d.git(["status", "--porcelain", "--untracked-files=no"]))) return "it has local changes to tracked files";
   }
   async function recover(pending: Pending): Promise<DeployOutcome> {
     const failed = state.failed === pending.target;
@@ -159,8 +179,18 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
 
   async function run(): Promise<DeployOutcome> {
     await flush();
-    // A deploy or rollback left unfinished is finished first: nothing below may build on a checkout in an unknown state.
-    if (state.pending) return recover(state.pending);
+    // A deploy or rollback left unfinished is finished first: nothing below may build on a checkout in an unknown state. When
+    // someone has changed the checkout by hand since, it is theirs: nothing is reset or moved, the record is dropped, and the run
+    // goes on from what the checkout holds now. The daemon not answering there is the one failure the job answers: the owner is told.
+    if (state.pending) {
+      const pending = state.pending, why = await takenOver(pending);
+      if (why === undefined) return recover(pending);
+      delete state.pending; save();
+      const up = await answers(SETTLE_MS);
+      d.log(`${pending.target} was unfinished and the checkout was changed by hand (${why}): taking over from what it holds`);
+      await tell({ event: "deployFailed", version: pending.target, running: null, reason: `the checkout was changed by hand while ${pending.target} was unfinished (${why}); the job took over from what it holds now and reset nothing` });
+      if (!up) await alarm(`检出被手动改过（${why}），看板没有答，部署任务没有动检出`);
+    }
 
     const up = await answers(SETTLE_MS);
     const head = line(await d.git(["rev-parse", "HEAD"]));
@@ -176,7 +206,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       catch (error) {
         if (attempt < FETCH_TRIES) { await d.sleep(FETCH_RETRY_MS); continue; }
         d.log(`fetch failed: ${reasonOf(error)}`);
-        await tellOnce("fetch", { event: "deployFailed", version: null, running, reason: `could not fetch ${ref}: ${reasonOf(error)}` });
+        await tellOnce("fetch", "fetch", { event: "deployFailed", version: null, running, reason: `could not fetch ${ref}: ${reasonOf(error)}` });
         return "unreachable";
       }
     }
@@ -187,7 +217,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     // The refusals are about the checkout, not the commit: someone's edit or commit there is not ours to move or undo.
     async function refuse(id: string, reason: string): Promise<DeployOutcome> {
       d.log(`not deploying ${target}: ${reason}`);
-      await tellOnce(`${id}@${target}`, { event: "deployFailed", version: target, running, reason });
+      await tellOnce("refuse", `${id}@${target}`, { event: "deployFailed", version: target, running, reason });
       return "refused";
     }
     const branch = await d.git(["symbolic-ref", "--short", "HEAD"]).then(line, () => "");
@@ -220,7 +250,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       try { await goBack(pending, false); } catch (failure) { return stuck(pending, reason, failure); }
       return wentBack(pending, reason);
     }
-    delete state.pending; delete state.failed; delete state.told; state.healthy = target; save();
+    delete state.pending; delete state.failed; state.healthy = target; calm(); save();
     await tell({ event: "deployed", version: target, previous: head, changes, restarted: restart });
     return "deployed";
   }
@@ -229,7 +259,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   catch (error) {
     // Whatever the job could not do, the architect hears of it once; it would otherwise stop deploying with only a log to show.
     d.log(`the deploy job failed: ${reasonOf(error)}`);
-    await tellOnce(`error@${reasonOf(error)}`, { event: "deployFailed", version: null, running: null, reason: `the deploy job itself failed: ${reasonOf(error)}` })
+    await tellOnce("error", reasonOf(error), { event: "deployFailed", version: null, running: null, reason: `the deploy job itself failed: ${reasonOf(error)}` })
       .catch(failure => d.log(`could not tell: ${reasonOf(failure)}`));
     return "error";
   }
