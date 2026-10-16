@@ -594,6 +594,15 @@ test("plan validation refuses ambiguous modes, caller dates, invalid after and m
   }
 });
 
+test("a cancelled item shows no checks but still refuses a new dangling dependency", async t => {
+  const { store, op } = await board(t);
+  await op.setStatus({ ...asArchitect, id: "b", status: "cancelled", log: "Drop" });
+  const before = store.snapshot();
+  await assert.rejects(op.setPlan({ ...asArchitect, id: "b", row: { item: "missing", own: false } }), /依赖的条目不存在.*missing/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual(rules(store.snapshot()).checks("b"), []);
+});
+
 test("owned rows need deliberate moves; removal names after users and transfers log both owners", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   await assert.rejects(op.setPlan({ author, id: "other", row: { item: "a", own: true } }), /被多个条目拥有/);

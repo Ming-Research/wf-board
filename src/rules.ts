@@ -176,7 +176,7 @@ export interface Rules {
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
   cardsOf(id: string): string[];
-  /** The checks of one open decision card (too few options); the item of the card lists them too. */
+  /** The checks of one open decision card (too few options), none for a card of a cancelled item. */
   cardChecks(key: string): Check[];
   askPending(id: string): boolean;
   cardWaiting(key: string): boolean;
@@ -190,7 +190,10 @@ export interface Rules {
   /** Waiting cards without `blocks` in the item's subtree, the item included. */
   nonBlockingBelow(id: string): number;
   onCycle(id: string): boolean;
+  /** The checks shown for an item: none for a cancelled item. Writes use refusals, which are not filtered. */
   checks(id: string): Check[];
+  /** The same checks unfiltered: the write-time refusals of ops read these, cancelled items included. */
+  refusals(id: string): Check[];
   /** Stalled wip leaves in the item's subtree, the item itself included. */
   stalledBelow(id: string): number;
   /** Items whose plan step text names this item with [[it:key]], any state. */
@@ -838,6 +841,12 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
     });
   }
+  // The card checks shown: none for a card of a cancelled item. Refusals keep them.
+  function shownCardChecks(key: string): Check[] {
+    const d = index().decisions.get(key);
+    return d && statusOf(d.item) === "cancelled" ? [] : cardChecks(key).map(c => ({ ...c }));
+  }
+  function copyChecks(list: Check[]): Check[] { return list.map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }); }
   function checks(id: string): Check[] {
     return cached("checks", id, () => {
       const it = item(id), out: Check[] = [];
@@ -894,9 +903,10 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
-    cardsOf: id => cardsOf(id).slice(), cardChecks: key => cardChecks(key).map(c => ({ ...c })), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
+    cardsOf: id => cardsOf(id).slice(), cardChecks: key => shownCardChecks(key), askPending, cardWaiting, cardBlocking, ownerBlocking, needsOwner,
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
-    checks: id => checks(id).map(c => c.target ? { ...c, target: { ...c.target } } : { ...c }),
+    checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
+    refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };
 }

@@ -94,7 +94,11 @@ hidden in a database.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit. `GET /health` reports its state; the page shows a banner when the server
-does not answer, and every MCP tool error names the cause.
+does not answer, and every MCP tool error names the cause. Every line of the
+service log carries its time, and a start logs how long each step took (reading
+the documents, checking them against the repository, reading the startup cache
+and the commits after it, replaying them) and the time from the start of the
+process to listening.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
@@ -426,11 +430,28 @@ log:
   git history, retaining every content commit timestamp and each item's last
   change, including overwritten and deleted cards and notes. Card moves
   touch both items; later notes on deleted cards retain their last known
-  item. No extra board data file is stored. A disposable marker in git metadata
-  records the checked HEAD and first pause commit (or that none existed).
-  Unchanged history needs no pickaxe; fast-forwards scan only new commits.
-  Missing, corrupt or rewound cache state triggers one historical scan, so
-  clones and resumed items retain restart correctness. Historical pause reads
+  item. No extra board data file is stored. A start does not derive the index
+  from the whole history: a disposable startup cache in git's metadata
+  directory (`wf-board-startup-cache.json`) holds the whole index as of one
+  commit, with where each card last was and the item projections the pause
+  replay continues from (none while no commit had set a pause). A start reads
+  it and replays only the commits after it, with the same code that scans the
+  history, so its time grows with the commits since the cache, not with the
+  history. The cache is trusted only when it has exactly the current format
+  (every field of the index present and none unknown: a field added to the
+  index must be added to the cache, and does not compile until it is), is of a
+  commit the head descends from, and, when it is of the head itself, agrees
+  with the documents on whether a pause was ever set. Otherwise (missing,
+  damaged, another version, a history rewound or gone another way) the start
+  scans the whole history, as the first start after this cache was introduced
+  does, and writes the cache at once, so clones and resumed items retain
+  restart correctness. A start that only replayed commits leaves the write to
+  the timer; afterwards a commit schedules a write at most every two minutes.
+  The daemon writes none at shutdown, which must fit the time launchd gives.
+  Deleting the file forces a scan on the next start. The cache carries what
+  the live updates derived; a scan re-derives it from the commits alone.
+  Changing what the cache holds, or how the replay derives it, changes
+  `STARTUP_CACHE_VERSION`; the next start is then a scan. Historical pause reads
   extract only project, record, pause and owned-target metadata rather than
   validating against today's write schema. Unreadable blobs are logged and
   skipped; unknown fields and malformed plan entries do not prevent startup.
@@ -920,7 +941,8 @@ item in the default tree.
 #### Checks
 
 The checks touching plans, replacing the dependency and completion-condition
-checks:
+checks. A cancelled item, and each card of one, shows none of them; the
+write-time refusals in the last column still apply to it:
 
 | Check | Refused when newly introduced |
 |---|---|
@@ -2370,24 +2392,6 @@ the board.
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
 
-### Difficulty migration
-
-`npm run migrate:difficulty -- --data DIR [--apply]` moves the temporary
-difficulties that plan rows carried in their text into the field. It runs
-offline, with the daemon stopped or on a copy, and without `--apply` only
-prints the report. For each open work item it reads the rows still to do (todo
-or doing): when they all name one level, as 「（难度 N）」 with N in 1–5 or
-「（架构师做）」, it sets the field, removes the marker from every row of the
-item, and logs the rating and the removed markers, all items in one commit.
-Items it will not guess about are listed for a person: unfinished rows naming
-different levels, a wording other than those two (「（难度按设计再评）」, or a noted
-「（架构师做，含走查）」), only finished rows naming a level, a field that
-disagrees with the rows. Closed items keep their row texts. The report also
-lists every row of open work that mentions 难度 or 架构师做 yet matches no rule,
-so a miss shows before `--apply`, and counts the open work that stays unrated
-and will raise 缺难度. A second run migrates nothing. The CLI, its
-module and its tests are deleted after the run on the live board.
-
 ## 11. Testing
 
 - Unit tests for the rules module, the file format round trip, `rev`
@@ -2406,6 +2410,8 @@ module and its tests are deleted after the run on the live board.
 - CI on GitHub-hosted runners for each pull request push and each main-line
   merge; the write-path benchmark runs by hand, as a workflow that reports and
   never fails the run.
+- A private-content check on every pull request and every push to a branch
+  (below), in its own workflow.
 
 ### Three test layers
 
@@ -2492,3 +2498,56 @@ the bug. A fix is reversed by undoing its commit's hunks, or, where later
 work rewrote the lines around it, by a targeted edit that removes just the
 fix. A witness whose edits no longer match the current file fails and is
 updated or retired on purpose.
+
+### Private content check
+
+The repository is public, so what a commit adds stays visible in its history.
+`scripts/check-private-content.ts` (rules in `scripts/private-content-rules.ts`,
+workflow `.github/workflows/private-content.yml`) fails a push to any branch or
+a pull request that adds one of these kinds of thing:
+
+- an address in a private IPv4 range (RFC 1918, or 100.64/10, which
+  carrier-grade NAT and Tailscale use), a user's home directory other than a
+  placeholder or the CI runner's, an SSH key file or option, a private key
+  block, a token in a known format (GitHub, Anthropic and OpenAI `sk-`, AWS,
+  Slack), a secret assigned as a quoted literal, a path under the home
+  directory with a key, token, secret, credential or password word in it, a
+  link to the old board page;
+- a path under a directory named `scratch` or `.scratch`, a `.bak` file, an
+  environment file (`.env`, but not a template such as `.env.example`).
+
+It reads only what the change adds: the added lines of the diff between the
+base and the head, the added or changed paths, the messages of the commits in
+the range and, for a pull request, its title and body. It reads the net
+change of the range, which is what a squash merge lands; pull requests are
+merged by squash, so a value added and removed again inside one pull request
+does not reach `main`. What the history already holds is not read again, and
+author lines are not read (an author address carries the machine's host name,
+which is not private). It prints the rule and the place, never the matched
+text, because the log of a public repository is public; for the same reason it
+reads the pull request's title and body from the event file, not from
+environment variables, which the runner prints. An edit to a pull request's
+title, body or base branch runs the check again. A push to a branch is public
+at once, so the check also runs on every push; it can only report after the
+push, not prevent it. A line that must hold such a value on purpose, a fixture,
+carries the text `private-content: allow` and is skipped; the marker shows in
+review. `test/check-private-content.test.ts` holds, for every rule, a line it
+must flag and a line it must let through, with the shapes real values take.
+
+The rules are general and carry none of the owner's real values. The check
+runs in a public repository, so a list of real values (an address, a user
+name, a key file name) kept in the workflow would sit in the repository, and
+one kept in a secret could not be shown in the log; kinds of thing (any
+private address, any home directory) are public by nature. The cost is a miss
+for a private value that fits no kind, such as a host name, a person's name,
+an address outside the ranges above (link-local, IPv6 local), or an `sk-`
+string with no digit in it, which review still has to catch. The `sk-` rule
+asks for a digit because real keys (`sk-ant-api03-...`, `sk-proj-...`) carry
+digits and hyphenated words such as `sk-assessment-for-the-board-process-document`
+carry none; without the digit the rule would flag ordinary prose. Alternative:
+a secret list of real values for exact matches (`PRIVATE_EXTRA`); left out
+because it needs a secret kept current and nothing has needed it.
+Alternative: `.gitignore` entries for the working directories; left out
+because the list never ends (a new temporary directory tomorrow) and the
+check catches the path wherever it sits. The check is not a
+required status check; requiring it is a repository setting the owner decides.

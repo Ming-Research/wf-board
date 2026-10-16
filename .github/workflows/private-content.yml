@@ -1,0 +1,29 @@
+name: private-content
+# Fails when a push or a pull request adds private content (scripts/check-private-content.ts). It is its own workflow
+# so that it runs without installing anything and apart from the test jobs. A push to any branch is checked, because
+# what is pushed to a public repository is public at once; the check can only report after the push.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    # edited: a changed title, body or base branch is checked again.
+    types: [opened, synchronize, reopened, edited]
+concurrency:
+  # A push is checked from the commit before it, so a run for a push is never replaced by the next one:
+  # only a pull request shares its group between runs.
+  group: private-content-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The check reads the commits and the diff between the base and the head of the change.
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # The script reads the pull request or push from the event file, not from variables the runner would print.
+      - name: Check what the change adds
+        run: node scripts/check-private-content.ts

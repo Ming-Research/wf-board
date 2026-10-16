@@ -20,6 +20,9 @@ matches what the artifact board offered.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
   runs git.
+- `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
+  metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
+  line and the start-up step timings.
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   priority from open work plans, parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
@@ -51,6 +54,11 @@ matches what the artifact board offered.
   of the live board's size; the `bench` workflow runs it by hand
   (`workflow_dispatch`) on this tree and on a base commit, as a step that
   never fails the run.
+- `scripts/check-private-content.ts`, with its rules in
+  `scripts/private-content-rules.ts`: the CI check that a push or a pull
+  request adds nothing private to this public repository (design section
+  11). It reads only added lines, paths, commit messages and the pull request's
+  title and body, and prints the rule and place, never the matched text.
 
 ## Checks
 
