@@ -418,12 +418,12 @@ export async function checkCodeFont(bp: BoardPage, o: Oracle): Promise<string[]>
 
 /** A head's 参考 sections are folded shut: each shows only its title, and a click opens its whole text. */
 export async function checkRefFold(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], x = bp.board.gen.witness.code, want = (o.s.items[x]!.head.match(/^\*\*参考：/gm) ?? []).length;
+  const v: string[] = [], x = bp.board.gen.witness.code, want = ((o.s.items[x]!.head ?? "").match(/^\*\*参考：/gm) ?? []).length;
   await bp.select(x);
   const before = await bp.page.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("#item-detail .rich details.ref")].map(d => ({
     open: d.open, title: d.querySelector("summary")?.textContent ?? "",
-    // A closed details lays out none of its body, so the body's boxes are empty.
-    bodyShown: [...d.children].some(c => c.tagName !== "SUMMARY" && c.getBoundingClientRect().height > 0),
+    // A closed details hides its body (content-visibility), which checkVisibility sees; its boxes still have size.
+    bodyShown: [...d.children].some(c => c.tagName !== "SUMMARY" && c.checkVisibility()),
   })));
   if (before.length !== want) return [`ref-fold: ${x} shows ${before.length} 参考 sections, its head has ${want}`];
   before.forEach((d, i) => {
