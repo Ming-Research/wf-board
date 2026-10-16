@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, tagApplies, tagsRequired, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -37,7 +36,6 @@ export interface Ops {
   moveItemProject(a: { author: string; session?: string; id: string; project: string; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
-  postNotice(a: { author: string; session?: string; text: string; item?: string }): Promise<Result>;
   ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling: string }): Promise<Result>;
   replyNote(a: { author: string; session?: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
   setTerm(a: { author: string; session?: string; term: string; definition: string }): Promise<Result>;
@@ -232,12 +230,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         // dependents and items whose owner actions a card/note write changes.
         // snapshot() freezes every document. Only these collection slots change;
         // copying all existing plans and logs is unnecessary for a prospective write.
-        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, notices: { ...s.notices }, glossaries: { ...s.glossaries } };
+        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, glossaries: { ...s.glossaries } };
         if (work.board) next.board = parse(Board, work.board);
         for (const put of work.puts) {
           if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
           else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
-          else if (put.kind === "notice") next.notices[put.id] = parse(Notice, put.doc);
           else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
           else next.notes[put.id] = parse(Note, put.doc);
         }
@@ -705,13 +702,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (new Set(doc.options.map(o => o.key)).size !== doc.options.length) throw new OpError("options.key: give each option a unique key");
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }] };
     }, a.rev !== undefined),
-    postNotice: a => run(a, (s, at) => {
-      if (a.item !== undefined) requireItem(s, a.item, "item");
-      let id: string;
-      do { id = Array.from({ length: 20 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[randomInt(36)]).join(""); } while (Object.hasOwn(s.notices, id));
-      const doc = parse(Notice, { text: a.text, ...(a.item !== undefined ? { item: a.item } : {}), author: a.author, at, rev: 1 });
-      return { id, kind: "notice", message: `post_notice ${id}`, puts: [{ kind: "notice", id, doc, expectRev: null }] };
-    }),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
       ownedItem(s, card.item, a.author);

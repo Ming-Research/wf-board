@@ -165,7 +165,7 @@ const ANSWER = { approve: "同意：", done: "已完成：" };
 export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
-type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** One source of activity times: the times it gives, and the item they reset (none for board-wide writes). */
 interface Contribution { id: string | undefined; times: number[]; target?: string }
 const parsedTimes = (values: ReadonlyArray<string | undefined>): number[] => values.flatMap(at => { const time = at ? Date.parse(at) : NaN; return Number.isFinite(time) ? [time] : []; });
@@ -215,7 +215,7 @@ export class ActivityIndex {
   private readonly all: number[];
   /** Each item's times, ascending. */
   private readonly perItem: Map<string, number[]>;
-  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "x:" notices, "g:" glossaries. */
+  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "g:" glossaries. */
   private readonly sources: Map<string, Contribution>;
   /** Notes by the card they target, re-resolved when that card changes or goes. */
   private readonly cardNotes: Map<string, Set<string>>;
@@ -225,14 +225,14 @@ export class ActivityIndex {
     this.all = all; this.perItem = perItem; this.sources = sources; this.cardNotes = cardNotes; this.seen = seen;
   }
   static build(s: ActivityInput): ActivityIndex {
-    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, activity: { writes: [], items: {} } });
+    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, glossaries: {}, activity: { writes: [], items: {} } });
     return index.advance(s);
   }
   /** Whether this index was made for exactly these documents. */
   reflects(s: ActivityInput): boolean {
     const seen = this.seen;
     return seen.items === s.items && seen.decisions === s.decisions && seen.notes === s.notes && seen.activity === s.activity
-      && seen.notices === s.notices && seen.glossaries === s.glossaries;
+      && seen.glossaries === s.glossaries;
   }
   /** The index of `s`, sharing what did not change. */
   advance(s: ActivityInput): ActivityIndex {
@@ -299,17 +299,13 @@ export class ActivityIndex {
     // A note on a card resets the card's item: a card that moved or went re-resolves its notes.
     for (const key of cards) for (const n of cardNotes.get(key) ?? []) notes.add(n);
     for (const key of notes) replace("n:" + key, note(key, get(s.notes, key)));
-    for (const key of changedKeys(seen.notices, s.notices)) {
-      const notice = get(s.notices, key);
-      replace("x:" + key, notice && { id: undefined, times: parsedTimes([notice.at, notice.read]) });
-    }
     for (const key of changedKeys(seen.glossaries, s.glossaries)) {
       const glossary = get(s.glossaries, key);
       replace("g:" + key, glossary && { id: undefined, times: parsedTimes(glossary.terms.map(term => term.updated)) });
     }
     for (const id of ownItems) if (!perItem.get(id)!.length) perItem.delete(id);
     for (const key of ownCards) if (!cardNotes.get(key)!.size) cardNotes.delete(key);
-    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, notices: s.notices, glossaries: s.glossaries, activity: s.activity });
+    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, glossaries: s.glossaries, activity: s.activity });
   }
   /** The union of active windows up to `now`: what the from-scratch scan in `rules` gives. */
   intervals(now: number): Array<[number, number]> {
@@ -416,7 +412,7 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else if (doc.kind !== "notice") return null;
+    } else return null;
   }
   return seeds;
 }
@@ -447,7 +443,7 @@ export class DerivedCache {
   }
 }
 
-type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
 export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
@@ -708,7 +704,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const id = note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item;
         add(note.at, id); add(note.sentAt, id); add(note.repliedAt, id);
       }
-      for (const notice of Object.values(s.notices ?? {})) { add(notice.at); add(notice.read); }
       for (const glossary of Object.values(s.glossaries ?? {})) for (const term of glossary.terms) add(term.updated);
       const intervals: Array<[number, number]> = [];
       for (const at of writes.sort((a, b) => a - b)) {

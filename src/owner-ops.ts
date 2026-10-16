@@ -17,12 +17,10 @@ export interface OwnerOps {
   editDraft(a: { id: string; rev: number; text: string }): Promise<{ note: { id: string; doc: Note }; deleted: string[]; commit: string }>;
   deleteNote(a: { id: string }): Promise<void>;
   send(a?: { ids?: string[] }): Promise<{ sent: Array<{ id: string; target: string; kind: string; project: string }> }>;
-  readNotice(a: { id: string } | { all: true }): Promise<{ marked: string[] }>;
   read(a: { through: string } | { doc: string; through?: string }): Promise<void>;
 }
 const queues = new WeakMap<Store, Promise<unknown>>();
 const ReadInput = z.union([z.object({ through: CommitId }).strict(), z.object({ doc: ReadDocument, through: CommitId.optional() }).strict()]);
-const NoticeInput = z.union([z.object({ id: Key }).strict(), z.object({ all: z.literal(true) }).strict()]);
 const DraftInput = Note.pick({ target: true, text: true, choice: true }).extend({ kind: z.enum(["choice", "approve", "done", "explain"]), on: z.boolean() }).strict();
 const SendInput = z.object({ ids: z.array(Key).optional() }).strict();
 const DraftEditInput = z.object({ id: Key, rev: z.number().int().positive(), text: z.string() }).strict();
@@ -125,15 +123,6 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const committed = store.snapshot(), r = store.derived.rules(committed);
       const sent = drafts.map(([id, n]) => ({ id, target: n.target, kind: n.kind, project: r.projectOf(n.target.startsWith("it:") ? n.target.slice(3) : committed.decisions[n.target.slice(2)]?.item ?? "") }));
       return { sent };
-    }),
-    readNotice: a => run(async s => {
-      const parsed = NoticeInput.safeParse(a);
-      if (!parsed.success) throw new OpError("readNotice needs a notice id or all: true");
-      const input = parsed.data, at = now();
-      if ("id" in input && !Object.hasOwn(s.notices, input.id)) throw new NotFoundError(`Unknown notice ${input.id}`);
-      const ids = ("id" in input ? [input.id] : Object.keys(s.notices)).filter(id => !s.notices[id]!.read);
-      if (ids.length) await store.commit({ author: "owner", message: `read_notice ${ids.length > 1 ? ids.length + " notices" : ids[0]}`, puts: ids.map(id => ({ kind: "notice", id, expectRev: s.notices[id]!.rev, doc: { ...s.notices[id]!, read: at } })) });
-      return { marked: ids };
     }),
     read: a => run(async () => {
       const parsed = ReadInput.safeParse(a);
