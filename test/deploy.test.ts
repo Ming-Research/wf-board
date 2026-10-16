@@ -133,6 +133,8 @@ for (const [name, files, restarts] of [
   ["the agent instructions", { "AGENTS.md": "new" }, false],
   ["the workflows", { ".github/workflows/ci.yml": "new" }, false],
   ["a root docs file not listed", { "CHANGELOG.md": "new" }, true],
+  ["a file whose name starts with the readme", { "README.mdx": "new" }, true],
+  ["a file whose name starts with the license", { "LICENSE.ts": "new" }, true],
   ["the job's own script", { "scripts/deploy.ts": "new" }, true],
   ["packages", { "package.json": "{}" }, true],
   ["one source file among docs", { "docs/design.md": "new", "src/main.ts": "new" }, true],
