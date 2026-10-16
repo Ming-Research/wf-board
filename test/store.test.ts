@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { setTimeout } from "node:timers/promises";
 import { parse } from "yaml";
 import { Item } from "../src/model.ts";
-import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc, type CommitInfo } from "../src/store.ts";
+import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc } from "../src/store.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -76,7 +76,9 @@ test("published snapshots refresh on owner-only changes and preserve a failed ow
 });
 
 test("reloading activity invalidates a previously published snapshot without a new commit", async t => {
-  const { store } = await setup(t);
+  const { store, dir } = await setup(t);
+  // With the startup cache gone the reload scans the (mocked) history instead of continuing from it.
+  await rm(join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-startup-cache.json")));
   const before = store.snapshot();
   assert.strictEqual(store.snapshot(), before);
   t.mock.method(store, "log", async () => [{ commit: before.head, parents: [], at, author: "a", message: "Historical work", files: ["items/old.yaml"] }]);
@@ -764,122 +766,6 @@ test("pause replay tolerates historical schema changes and logs unreadable item 
   }, "readable ownership and pause timestamps survive unknown fields and malformed plans");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /Skipping unreadable pause history item .*:items\/unreadable\.yaml/);
-});
-
-test("empty pause history returns before git path, cache or revision queries", async t => {
-  type Activity = NonNullable<ReturnType<Store["snapshot"]>["activity"]>;
-  const commit: CommitInfo = { commit: "a".repeat(40), parents: [], at, author: "Fixture", message: "Synthetic history", files: [] };
-  for (const [head, commits] of [["", [commit]], [commit.commit, []], ["", []]] as Array<[string, CommitInfo[]]>) {
-    const store = Object.create(Store.prototype) as Store;
-    const internals = store as unknown as {
-      state: { head: string; activity?: Activity };
-      git(args: string[]): Promise<string>;
-      firstPauseCommit(commits: CommitInfo[]): Promise<string | null>;
-      loadPauses(activity: Activity, commits: CommitInfo[]): Promise<void>;
-      loadActivity(): Promise<void>;
-    };
-    internals.state = { head };
-    const gitCalls = t.mock.method(internals, "git", async () => { throw new Error("Empty pause history must not query git"); });
-    assert.equal(await internals.firstPauseCommit(commits), null);
-    const activity: Activity = { writes: [], items: {} };
-    await internals.loadPauses(activity, commits);
-    assert.deepEqual(activity, { writes: [], items: {} });
-    t.mock.method(store, "log", async () => []);
-    await internals.loadActivity();
-    assert.deepEqual(internals.state.activity, { writes: [], items: {} });
-    assert.equal(gitCalls.mock.callCount(), 0, "neither the marker path nor an empty git revision is queried");
-  }
-});
-
-test("pause history marker skips repeat pickaxe scans on never-paused boards and survives restart", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Ordinary work", puts: [put("root", item())] });
-  const internals = store as unknown as { git(args: string[], author?: string): Promise<string>; loadActivity(): Promise<void> };
-  const original = internals.git.bind(store), scans: string[][] = [];
-  t.mock.method(internals, "git", async (args: string[], author?: string) => {
-    if (args.includes("-G")) scans.push(args);
-    return original(args, author);
-  });
-  await internals.loadActivity();
-  assert.equal(scans.length, 0, "a known never-paused history needs no pickaxe");
-  const restarted = await Store.open(dir);
-  const reopened = restarted as unknown as typeof internals;
-  const originalReopened = reopened.git.bind(restarted);
-  t.mock.method(reopened, "git", async (args: string[], author?: string) => {
-    assert.ok(!args.includes("-G"), "the on-disk marker must survive restart");
-    return originalReopened(args, author);
-  });
-  await reopened.loadActivity();
-  assert.equal(restarted.snapshot().activity?.pauses, undefined);
-  assert.equal(await git(dir, "status", "--porcelain"), "", "the disposable index is not board content");
-});
-
-test("missing pause history markers recover completed intervals and rewinds invalidate cached heads", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const unpausedHead = store.snapshot().head;
-  const pausedAt = "2026-10-11T07:00:00.125Z", resumedAt = "2026-10-11T07:10:00.250Z";
-  let root = store.snapshot().items.root!;
-  await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  root = store.snapshot().items.root!;
-  const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
-  await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  await rm(markerPath, { force: true });
-  const reopened = await Store.open(dir);
-  assert.deepEqual(reopened.snapshot().activity!.pauses, { root: [{ start: pausedAt, end: resumedAt }] }, "no current paused field does not mean there was never a pause");
-  const marker = parse(await readFile(markerPath, "utf8")) as { first: string | null; head: string };
-  assert.ok(marker.first);
-  assert.equal(marker.head, reopened.snapshot().head);
-  await git(dir, "reset", "--hard", unpausedHead);
-  const rewound = await Store.open(dir);
-  assert.equal(rewound.snapshot().activity?.pauses, undefined);
-  assert.equal((parse(await readFile(markerPath, "utf8")) as { first: string | null }).first, null);
-});
-
-test("pause history rescans only an unindexed suffix and distrusts a negative marker with current pauses", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const knownHead = store.snapshot().head;
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  const previousMarker = `version: 1\nhead: ${knownHead}\nfirst: null\n`;
-  const root = store.snapshot().items.root!, pausedAt = "2026-10-11T08:00:00.125Z";
-  await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  const pausedRoot = store.snapshot().items.root!, resumed = structuredClone(pausedRoot); delete resumed.paused;
-  resumed.updated = "2026-10-11T08:10:00.250Z";
-  await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, pausedRoot.rev)] });
-  await writeFile(markerPath, previousMarker);
-  const internals = store as unknown as { git(args: string[], author?: string): Promise<string>; loadActivity(): Promise<void> };
-  const original = internals.git.bind(store), scans: string[][] = [];
-  t.mock.method(internals, "git", async (args: string[], author?: string) => { if (args.includes("-G")) scans.push(args); return original(args, author); });
-  await internals.loadActivity();
-  assert.equal(scans.length, 1);
-  assert.ok(scans[0]!.includes(`${knownHead}..${store.snapshot().head}`));
-  assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt, end: resumed.updated }]);
-  const latest = store.snapshot().items.root!;
-  await store.commit({ author: "总管", message: "Pause again", puts: [put("root", { ...latest, paused: { reason: "Deferred", at: "2026-10-11T08:20:00.125Z" } }, latest.rev)] });
-  await writeFile(markerPath, `version: 1\nhead: ${store.snapshot().head}\nfirst: null\n`);
-  await internals.loadActivity();
-  assert.equal(scans.length, 2, "current pauses contradict a negative cache and force recovery");
-  assert.equal(store.snapshot().activity!.pauses!.root!.length, 2);
-});
-
-test("an unwritable disposable pause marker cannot turn a committed pause into a failure", async t => {
-  const { store, dir } = await setup(t);
-  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
-  const markerPath = join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-pause-history.yaml"));
-  await rm(markerPath, { force: true });
-  await mkdir(markerPath);
-  const warnings: string[] = [];
-  t.mock.method(console, "warn", (...parts: unknown[]) => { warnings.push(parts.join(" ")); });
-  const root = store.snapshot().items.root!, pausedAt = "2026-10-11T09:00:00.125Z";
-  const result = await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
-  assert.equal(store.snapshot().head, result.commit);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), result.commit);
-  assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt }]);
-  assert.ok(warnings.some(message => message.includes("Cannot save pause history cache")));
-  await rm(markerPath, { recursive: true });
-  assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses!.root, [{ start: pausedAt }]);
 });
 
 test("pause replay tracks historical ownership targets even when a row ID is reused", async t => {

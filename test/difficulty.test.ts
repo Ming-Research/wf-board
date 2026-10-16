@@ -335,12 +335,12 @@ test("a first rating is not unread for the owner, a changed level is, and a log-
   await op.setDifficulty({ ...asArchitect, id: "v", difficulty: 5, reason: "r" });
   const stretch = (await unreadSteps(store, cursor)).filter(step => step.docs.some(d => d.id === "v"));
   assert.equal(stretch.length, 1); assert.deepEqual(stretch[0]!.commits.length, 1, "only the second write, whose baseline is the rated item");
-  // The migration's commit shape: a first rating together with a plan edit counts only the plan edit.
+  // One commit that rates for the first time and edits the plan: only the plan edit counts.
   await unrated("w"); cursor = head();
   const w = store.snapshot().items.w!;
-  await store.commit({ author: "Architect", message: "migrate", puts: [{ kind: "item", id: "w", expectRev: w.rev, doc: { ...w, difficulty: 3, plan: w.plan.map(row => "text" in row ? { ...row, text: "改了" } : row), updated: "2026-10-16T00:00:00Z" } }] });
-  const migrated = (await unreadSteps(store, cursor)).filter(step => step.docs.some(d => d.id === "w"));
-  assert.equal(migrated.length, 1); assert.equal(migrated[0]!.docs[0]!.summary, "plan changed"); assert.deepEqual(migrated[0]!.docs[0]!.pieces, { progress: 1, reply: 0, other: 0 });
+  await store.commit({ author: "Architect", message: "rate and edit plan", puts: [{ kind: "item", id: "w", expectRev: w.rev, doc: { ...w, difficulty: 3, plan: w.plan.map(row => "text" in row ? { ...row, text: "改了" } : row), updated: "2026-10-16T00:00:00Z" } }] });
+  const combined = (await unreadSteps(store, cursor)).filter(step => step.docs.some(d => d.id === "w"));
+  assert.equal(combined.length, 1); assert.equal(combined[0]!.docs[0]!.summary, "plan changed"); assert.deepEqual(combined[0]!.docs[0]!.pieces, { progress: 1, reply: 0, other: 0 });
 });
 
 test("piecesOf leaves a first rating out and keeps every other change of the item", () => {

@@ -21,6 +21,9 @@ import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 
+/** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
+const MAX_EXTERNAL_PUSH = 16 * 1024;
+
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
@@ -129,6 +132,15 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, result); return;
       }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
+      // A push from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly their fields.
+      if (path === "/api/wake") {
+        const { event, ...fields } = args<Record<string, unknown>>(await body(req));
+        if (!Wake.isExternal(event)) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
+        if (JSON.stringify(fields).length > MAX_EXTERNAL_PUSH) throw new OpError(`Wake event ${event} exceeds ${MAX_EXTERNAL_PUSH} bytes`);
+        let frame;
+        try { frame = wake.push(event, fields); } catch (error) { throw new OpError(error instanceof Error ? error.message : String(error)); }
+        json(res, 200, { n: frame.n }); return;
+      }
     }
     if (method === "DELETE" && path.startsWith("/api/notes/")) { await ownerOps.deleteNote({ id: decodeURIComponent(path.slice(11)) }); json(res, 200, { ok: true }); return; }
     json(res, 404, { error: "Unknown route" });
