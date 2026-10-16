@@ -162,7 +162,7 @@ export function dispatchCountProblem(role: (typeof DISPATCH_ROLES)[number], c: {
     if (c.reports === undefined || c.kickbacks === undefined) return `${c.reports === undefined ? "reports" : "kickbacks"}: an engineer dispatch ends with reports and kickbacks (how often it stopped to report, how often it was sent back)`;
     return c.rounds === undefined ? undefined : "rounds: only a review dispatch carries rounds; an engineer carries reports and kickbacks";
   }
-  if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many times it went back and forth)";
+  if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many review rounds it took: the first review and each re-review count one)";
   return c.reports === undefined && c.kickbacks === undefined ? undefined : `${c.reports === undefined ? "kickbacks" : "reports"}: only an engineer dispatch carries reports and kickbacks; a review carries rounds`;
 }
 export const Dispatch = z.object({
@@ -180,8 +180,11 @@ export const Dispatch = z.object({
   did: StepText.optional(),
   /** Present once the session has ended. */
   finish: DispatchFinish.optional(),
-}).strict().refine(d => !d.finish || dispatchCountProblem(d.role, d.finish) === undefined, { message: "A finished dispatch carries the counts of its role", path: ["finish"] })
-  .refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
+}).strict().superRefine((d, ctx) => {
+  // A record edited by hand that breaks the rule is refused with the rule's own words.
+  const problem = d.finish && dispatchCountProblem(d.role, d.finish);
+  if (problem) ctx.addIssue(problem);
+}).refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
 export type Dispatch = z.infer<typeof Dispatch>;
 
 export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();

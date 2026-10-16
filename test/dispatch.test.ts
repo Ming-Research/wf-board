@@ -7,7 +7,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
-import { Item, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
+import { Item, Dispatch, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
 import { board, author, asArchitect } from "./helpers.ts";
 
 const architect = "架构师";
@@ -83,7 +83,7 @@ test("dispatch_finish of a review carries rounds, no signals by default, and tak
   await op.dispatchFinish({ author, id: "a", agentId: "rv-1", result: "一次通过", usage, cost: 3.53, rounds: 1 });
   const d = store.snapshot().items.a!.dispatches![0]!;
   assert.deepEqual(d.finish, { ended: "2026-10-16T10:20:30Z", result: "一次通过", rounds: 1, signals: [], usage, cost: 3.53 });
-  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-review（审查），一次通过，来回 1 次，2026-10-16T10:00Z–2026-10-16T10:20Z，用量 输入 120，写缓存 90000，读缓存 5000000，输出 20000，花费 $3.530，失败信号：无");
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 a-review（审查），一次通过，审查 1 轮，2026-10-16T10:00Z–2026-10-16T10:20Z，用量 输入 120，写缓存 90000，读缓存 5000000，输出 20000，花费 $3.530，失败信号：无");
 });
 
 test("dispatch_finish refuses wrong-role counts, missing counts and values outside the fixed options, and writes nothing", async t => {
@@ -145,6 +145,30 @@ test("the architect, with its session, records on any project's item; without th
   await assert.rejects(() => op.dispatchStart({ ...start, agentId: "agent-0002", id: "other", author: "Architect", session: undefined }), refused(/item other belongs to project Firn/));
 });
 
+test("the schema itself refuses a finished record carrying the other role's counts, in the rule's own words", async t => {
+  const { store, op } = await clocked(t);
+  await op.dispatchStart(start);
+  await op.dispatchStart({ ...start, role: "审查", agentId: "rv-1", agent: "a-review" });
+  await op.dispatchFinish(finish);
+  await op.dispatchFinish({ ...finish, agentId: "rv-1", reports: undefined, kickbacks: undefined, rounds: 2 });
+  const [engineer, review] = store.snapshot().items.a!.dispatches!;
+  // Records as a hand edit of the YAML could leave them: each one breaks the rule differently.
+  const { kickbacks: _k, ...engineerFinish } = engineer!.finish!, { rounds: _r, ...reviewFinish } = review!.finish!;
+  const broken: Array<[string, unknown, RegExp]> = [
+    ["an engineer without kickbacks", { ...engineer!, finish: engineerFinish }, /kickbacks: an engineer dispatch ends with reports and kickbacks/],
+    ["an engineer with rounds", { ...engineer!, finish: { ...engineer!.finish!, rounds: 2 } }, /rounds: only a review dispatch carries rounds/],
+    ["a review without rounds", { ...review!, finish: reviewFinish }, /rounds: a review dispatch ends with rounds/],
+    ["a review with reports", { ...review!, finish: { ...review!.finish!, reports: 1 } }, /reports: only an engineer dispatch carries reports and kickbacks/],
+  ];
+  assert.equal(Dispatch.safeParse(engineer).success, true);
+  assert.equal(Dispatch.safeParse(review).success, true);
+  for (const [what, record, pattern] of broken) {
+    const parsed = Dispatch.safeParse(record);
+    assert.ok(!parsed.success, what);
+    assert.match(parsed.error.issues.map(issue => issue.message).join("; "), pattern, what);
+  }
+});
+
 test("an item's dispatches must have unique agentIds in the schema as well", async t => {
   const { store, op } = await clocked(t);
   await op.dispatchStart(start);
@@ -200,7 +224,7 @@ function expected(rows: Plain[]) {
   const eng = ended.filter(e => e.role === "工程师"), rev = ended.filter(e => e.role === "审查");
   return { n: rows.length, open: rows.length - ended.length, results: DISPATCH_RESULTS.map(count), rework: count("返工后通过") + count("换人"), ended: ended.length, kick: eng.reduce((n, e) => n + e.counts, 0), engN: eng.length, rnd: rev.reduce((n, e) => n + e.counts, 0), revN: rev.length, milli: ended.reduce((n, e) => n + e.milli, 0) };
 }
-const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 返工比例 (.+?) · 平均打回 (\S+) · 平均来回 (\S+) · 花费 \$(\d+\.\d{3})$/;
+const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 返工比例 (.+?) · 平均打回 (\S+) · 平均轮数 (\S+) · 花费 \$(\d+\.\d{3})$/;
 function parsed(report: string, label: string) {
   const line = report.split("\n").find(l => l.startsWith(`${label}：派活`));
   assert.ok(line, `a line for ${label}`);
@@ -320,7 +344,7 @@ test("the three tools round-trip over MCP, with the refusal text reaching the ca
   const ended = await call("dispatch_finish", finish);
   assert.equal(ended.isError, undefined, text(ended));
   const report = text(await call("dispatches", { rows: true }));
-  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均来回 - · 花费 \$0\.365/);
+  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.365/);
   assert.match(report, /2026-10-16T09:02Z–2026-10-16T09:50Z · a · 会话 a-worker（号 agent-0001） · 工程师 · 2 级 Sonnet xhigh · 报告 3 次，打回 1 次 · 返工后通过/);
   assert.match(text(await call("dispatches", { filters: { id: "b" } })), /No dispatches\./);
   const unknown = await call("dispatches", { filters: { id: "nope" } });

@@ -95,13 +95,13 @@ export function summarize(rows: readonly DispatchRow[]): Summary {
 const mean = (m: { sum: number; n: number }) => m.n ? (m.sum / m.n).toFixed(2) : "-";
 function tallyLine(t: Tally): string {
   const ratio = t.rework.ended ? `${Math.round(t.rework.count / t.rework.ended * 100)}%（${t.rework.count}/${t.rework.ended}）` : "-";
-  return [`${t.label}：派活 ${t.n}（进行中 ${t.open}）`, ...DISPATCH_RESULTS.map(r => `${r} ${t.results[r]}`), `返工比例 ${ratio}`, `平均打回 ${mean(t.kickbacks)}`, `平均来回 ${mean(t.rounds)}`, `花费 ${dollars(t.costMilli)}`].join(" · ");
+  return [`${t.label}：派活 ${t.n}（进行中 ${t.open}）`, ...DISPATCH_RESULTS.map(r => `${r} ${t.results[r]}`), `返工比例 ${ratio}`, `平均打回 ${mean(t.kickbacks)}`, `平均轮数 ${mean(t.rounds)}`, `花费 ${dollars(t.costMilli)}`].join(" · ");
 }
 function usageText(d: NonNullable<Dispatch["finish"]>): string {
   return `输入 ${d.usage.input}，写缓存 ${d.usage.cacheWrite}，读缓存 ${d.usage.cacheRead}，输出 ${d.usage.output}`;
 }
 const signalsText = (f: NonNullable<Dispatch["finish"]>) => f.signals.length ? f.signals.map(s => s.note ? `${s.kind}（${s.note}）` : s.kind).join("、") : "无";
-const countsText = (d: Dispatch) => d.role === "工程师" ? `报告 ${d.finish!.reports} 次，打回 ${d.finish!.kickbacks} 次` : `来回 ${d.finish!.rounds} 次`;
+const countsText = (d: Dispatch) => d.role === "工程师" ? `报告 ${d.finish!.reports} 次，打回 ${d.finish!.kickbacks} 次` : `审查 ${d.finish!.rounds} 轮`;
 
 /** The text of `dispatches`: the tallies, and with `rows` one line per dispatch. */
 export function dispatchReport(rows: readonly DispatchRow[], withRows = false): string {

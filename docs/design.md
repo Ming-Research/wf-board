@@ -275,7 +275,7 @@ log:
   `effort`, `worktree`, `started` and `did` (which rows of the item the
   session does, one line), and once the session has ended a `finish` block:
   `ended`; `result` (`一次通过`, `返工后通过`, `换人` or `放弃`); the counts,
-  `reports` and `kickbacks` for an engineer and `rounds` for a review, never
+  `reports` and `kickbacks` for an engineer and `rounds` (review rounds: the first review and each re-review count one) for a review, never
   the other role's; optional `waited` minutes (spent waiting for the owner,
   the 14900K or a dependency); `signals`, none or several of `验收没过`,
   `架构师打回`, `做法被否`, `长时间没进展`, `换模型`, each at most once and
