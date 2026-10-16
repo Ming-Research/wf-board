@@ -31,6 +31,8 @@ export interface Ops {
   removeTag(a: { author: string; session?: string; name: string; replace?: string }): Promise<Result>;
   setPause(a: { author: string; session?: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
   moveItem(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
+  /** Moves an item and everything it owns to another project; an owner left behind keeps a shared row. */
+  moveItemProject(a: { author: string; session?: string; id: string; project: string; priority?: Priority }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; background: string; options: Option[]; confidence?: { score?: number; reason: string }; blocks?: string | null }): Promise<Result>;
   postNotice(a: { author: string; session?: string; text: string; item?: string }): Promise<Result>;
@@ -602,6 +604,45 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (a.priority) { priorityAllowed(next, a.id); const doc = docOf(s, puts, a.id); putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority })); }
       }
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
+    }),
+    moveItemProject: a => run(a, (s, at) => {
+      const root = ownedItem(s, a.id, a.author), from = root.group;
+      requireProject(s, a.project);
+      if (a.project === from) throw new OpError(`project: ${a.id} is already in ${a.project}`);
+      const r = rulesOf(s);
+      // The item and everything it owns, at any depth and in any state: ownership stays within one project, so they move together.
+      const moved = new Set([a.id]);
+      for (const id of moved) for (const child of r.children(id)) {
+        const doc = Object.hasOwn(s.items, child) ? s.items[child] : undefined;
+        if (doc && doc.group !== from) throw new OpError(`item ${child}: owned by ${id} but belongs to project ${doc.group}, not ${from}; fix its 跨项目拥有 first`);
+        if (doc) moved.add(child);
+      }
+      const ids = [...moved], puts: Put[] = [];
+      for (const id of ids) {
+        const it = ownedItem(s, id, a.author);
+        try { checkedTags(s, a.project, it.tags, false); }
+        catch (error) { throw error instanceof OpError ? new OpError(`item ${id}: ${error.message}`) : error; }
+        puts.push(itemPut(id, { ...it, group: a.project, updated: at, log: [...it.log, entry(a.author, at, `换项目：从 ${from} 换到 ${a.project}${id === a.id ? "" : `（随「${root.title}」）`}`)] }));
+      }
+      // An owner left behind cannot keep owning across projects: its owned rows to moved items become shared rows, in place.
+      const left = new Map<string, string[]>();
+      for (const id of ids) for (const d of r.dependents(id)) if (d.own && !moved.has(d.id)) left.set(d.id, [...left.get(d.id) ?? [], id]);
+      for (const [owner, targets] of left) {
+        const doc = ownedItem(s, owner, a.author, "owner");
+        putDoc(puts, itemPut(owner, { ...doc, updated: at,
+          plan: doc.plan.map(row => "item" in row && row.own && targets.includes(row.item) ? { ...row, own: false } : row),
+          log: [...doc.log, entry(a.author, at, `${targets.map(id => `「${s.items[id]!.title}」`).join("")}换到了项目 ${a.project}；计划不再拥有，改成依赖`)] }));
+      }
+      // The moved item arrives as a top item of the new project.
+      const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
+      const after = rules(next), open = after.isOpenWork(a.id);
+      const waiting = after.dependents(a.id).filter(d => !d.own && !moved.has(d.id) && after.isOpenWork(d.id) && after.groupOf(d.id) === a.project).map(d => d.id);
+      if (open && waiting.length) throw new OpError(`project: ${waiting.join(", ")} in ${a.project} still wait on ${a.id} through shared rows, and it would arrive there owned by no item (同项目有条目在等它，却没有条目拥有它); have ${a.project} remove those rows first, and take ${a.id} into a plan with an owned row after the move`);
+      if (a.priority !== undefined) {
+        priorityAllowed(next, a.id);
+        putDoc(puts, itemPut(a.id, { ...docOf(s, puts, a.id), priority: a.priority }));
+      } else if (open && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project}; give priority P0 (urgent), P1 (soon) or P2 (later)`);
+      return { id: a.id, kind: "item", puts, moved: ids, message: `move_item_project ${a.id} ${a.project}` };
     }),
     clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
