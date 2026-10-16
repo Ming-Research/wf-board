@@ -21,7 +21,9 @@ async function main() {
   const startup = startupLogger(), lap = stopwatch(startup);
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("WF_BOARD_PORT must be an integer from 1 to 65535");
-  // The first push waits after the start: the agents that reconnect after a restart catch up on writes in the first seconds.
+  // The first push waits 60 seconds after the server starts listening. That delay dates from when a push held the write queue
+  // and the agents that reconnect after a restart catch up on writes in the first seconds. A push no longer holds the queue, so
+  // the reason is gone; the value stays as a provisional choice, since nothing measured favors another (design section 4, Storage).
   const firstPushMs = Number(process.env.WF_BOARD_FIRST_PUSH_MS ?? 60_000);
   if (!Number.isInteger(firstPushMs) || firstPushMs < 0) throw new Error("WF_BOARD_FIRST_PUSH_MS must be a non-negative integer");
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));

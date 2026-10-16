@@ -89,9 +89,10 @@ private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
-every ten minutes. The first push waits so as not to compete with the start,
-which reads the startup cache and replays the commits after it. It does not push
-on shutdown (see Stopping). Each push writes its duration to the service log. If the server
+every ten minutes. The 60 seconds date from when a push held the write queue and the agents
+that reconnect after a restart catch up on writes in the first seconds; a push no longer
+holds the queue, so that reason is gone and the value stays as a provisional choice,
+since nothing measured favors another. It does not push on shutdown (see Stopping). Each push writes its duration to the service log. If the server
 is down, agents can still read the files with Grep and Read; nothing is
 hidden in a database.
 
@@ -105,8 +106,14 @@ that is ahead of this clone (no error: the next push has nothing to send) from o
 has diverged (an error). Commits written while a push runs go in the next one. One push
 runs at a time, and a call made while one runs gets its result. A push beside a write
 is safe because it reads objects and changes one remote-tracking reference, and its
-git runs with automatic maintenance off, so it never starts the background repack that
-a write's commit can start (design of the git options: item e2e-git-tmp-flake).
+git runs with automatic maintenance off, so it never starts a repack of its own. The
+other direction is a write's commit starting a repack while a push reads objects. A
+40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
+maintenance triggered by each commit, in the foreground or the background, beside
+back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
+pushes each) there was no error, `git fsck` passed, and the remote's head was an
+ancestor of the local one. A push that did fail would be tried again at the next round
+and, if it kept failing, told by the lag push below.
 
 A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
 with the network down, never ends. In the queue, it held every write: in CI with a fake
