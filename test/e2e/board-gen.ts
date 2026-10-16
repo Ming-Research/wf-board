@@ -1,7 +1,8 @@
 // A seeded generator of a synthetic board with the structural variety of the real one: deep and wide ownership trees,
-// records owning backlog work, shared rows inside and across projects, decision cards (each a row of its own item's
-// plan; some placed in the head by a line of their own, the rest after it; old ones with their legacy text, ruled in
-// words or withdrawn; open ones on a record item and on a done item), asks, inbox requests, explicit and inherited
+// records owning backlog work, shared rows inside and across projects, decision cards (options with a name and a
+// detail, a confidence; a row in the item's plan only for a card that blocks; some placed in the head by a line of their
+// own, old ones in a section at its end, the rest not placed at all; old ones with a nameless option and their legacy
+// background, ruled in words or withdrawn; open ones on a record item and on a done item), asks, inbox requests, explicit and inherited
 // pauses, comments folded or open with replies and anchors, code blocks, tables, references, glossary terms,
 // targets, tags, and a history split into read and unread commits. All text comes from the word lists below; no real
 // board text is copied. test/e2e/shapes.ts names the shape categories and test/board-gen.test.ts checks every one is
@@ -21,19 +22,22 @@ export interface Witness {
   commentCard: string;
   /** An open blocking card its item's head places between two paragraphs. */
   multiPlanCard: string;
-  /** A ruled card on a done item. */
+  /** A ruled card on a done item, keeping the row it had. */
   donePlanCard: string;
-  /** An open card its item's head does not place, so the page shows it after the head. */
+  /** An open card that does not block, with no row and no line in its item's head: the page draws it only when asked,
+   * from the 决策 line. */
   otherPlanCard: string;
+  /** An open blocking card its item's head does not place: the page draws it under its plan row when asked. */
+  rowCard: string;
   /** An open card on a record item. */
   recordCard: string;
-  /** A ruled card that keeps its old background, confidence and ruling as legacy text. */
+  /** A ruled card that was converted from the old form: nameless options, its background kept as legacy text. */
   legacyCard: string;
-  /** A card ruled in words, with no choice, whose ruling is legacy text. */
+  /** A card ruled in words, with no choice, whose ruling is the card's ruling field. */
   proseCard: string;
   /** A card withdrawn without a choice. */
   withdrawnCard: string;
-  /** An open card that keeps its old background and confidence, the text its reader decides from. */
+  /** An open blocking card converted from the old form: it keeps its old background, which its reader decides from. */
   openLegacyCard: string;
   /** An item paused explicitly, whose descendants inherit the pause. */
   pausedRoot: string;
@@ -94,7 +98,12 @@ interface ItemDraft {
   request?: { by: string; at: string }; targets?: Array<{ id: string; goal: string; target: string; current: string; baseline: string; date: string }>;
   links: Array<{ label: string; url: string }>; provisional?: true; priority?: string; data?: string; leafKind: "done" | "wip" | "todo" | "blocked" | "parent";
 }
-interface CardDraft { id: string; item: string; question: string; options: Array<{ key: string; text: string; recommended?: boolean }>; status: "open" | "ruled" | "withdrawn"; blocks?: string; choice?: string; ruledAt?: string; legacy?: { background?: string; confidence?: { score: number; reason: string }; ruling?: string }; at: string }
+interface CardDraft {
+  id: string; item: string; question: string; options: Array<{ key: string; text: string; detail: string; recommended?: boolean }>; status: "open" | "ruled" | "withdrawn"; blocks?: string;
+  confidence: { score: number; reason: string }; choice?: string; ruling?: string; ruledAt?: string; legacy?: { background: string }; at: string;
+  /** Converted from the old form; the head places it in the section at its end. */
+  old?: true;
+}
 
 /** Generates the board. `scale` multiplies the number of items per project (1 gives about 160 items). */
 export function generateBoard(seed = 1, scale = 1): Generated {
@@ -172,20 +181,31 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   }
   // Cards: 0–2 per open item, more ruled than open, some blocking; each is a row of its own item's plan.
   let cardSeq = 0;
-  function newCard(item: ItemDraft, status: CardDraft["status"], blocking = false): CardDraft {
+  /** A card written in the current form. Only a card that blocks has a row; a closed card keeps the row it had, half of them. */
+  function newCard(item: ItemDraft, status: CardDraft["status"], blocking = false, row = blocking || (status !== "open" && r.chance(0.5))): CardDraft {
     const id = `${item.id.replace(/[._]/g, "-")}-q${++cardSeq}`;
-    const options = Array.from({ length: 2 + r.int(3) }, (_, k) => ({ key: String.fromCharCode(65 + k), text: r.pick(VERBS) + r.pick(OBJECTS), ...(k === 0 ? { recommended: true } : {}) }));
+    const options = Array.from({ length: 2 + r.int(3) }, (_, k) => ({
+      key: String.fromCharCode(65 + k), text: r.pick(VERBS) + r.pick(OBJECTS),
+      detail: r.pick(STEPS) + "。代价是" + r.pick(OBJECTS) + "要多花一轮评审；" + (k === 0 ? "推荐，因为已有一次测量。" : "没有测量支持。"), ...(k === 0 ? { recommended: true } : {}),
+    }));
     const at = tick();
-    const card: CardDraft = { id, item: item.id, question: `${item.title.split(" ")[0]}：选哪种做法？`, options, status, at };
+    const card: CardDraft = { id, item: item.id, question: `${item.title.split(" ")[0]}：选哪种做法？`, options, status, confidence: { score: 1 + r.int(5), reason: "依据一次测量；换一台机器可能推翻。" }, at };
     if (blocking) card.blocks = "合并" + item.title.split(" ")[0] + "的修复";
     if (status === "ruled") {
       card.choice = "A"; card.ruledAt = tick();
       notes.push({ id: "n" + ++noteSeq, doc: { target: "q:" + id, kind: "choice", choice: "A", text: "选 A", at: card.at, sentAt: card.at, state: "done" } });
-      // Cards written before they became bare questions keep their old text.
-      if (r.chance(0.5)) card.legacy = { background: "背景：" + r.pick(SUBJECTS) + "在" + r.pick(OBJECTS) + "上出错。\n\n```sh\n# 复现\nrun --case " + cardSeq + "\n```", confidence: { score: 1 + r.int(5), reason: "依据一次测量。" }, ruling: "选 A：" + options[0]!.text };
+      if (r.chance(0.3)) card.ruling = "选 A：" + options[0]!.text;
+      // Cards written before options had grounds keep their old text as the option's detail, with no name, and their background.
+      if (r.chance(0.5)) convert(card, "背景：" + r.pick(SUBJECTS) + "在" + r.pick(OBJECTS) + "上出错。\n\n```sh\n# 复现\nrun --case " + cardSeq + "\n```");
     }
-    cards.set(id, card); item.cards.push(id); item.extra.push({ id, card: id });
+    cards.set(id, card); item.cards.push(id);
+    if (row) item.extra.push({ id, card: id });
     return card;
+  }
+  /** The shape the migration gives an old card: the option text becomes the detail, the name stays empty, the background is legacy. */
+  function convert(card: CardDraft, background: string) {
+    if (!card.old) card.options = card.options.map(({ key, text, detail, recommended }) => ({ key, text: "", detail: text + "。" + detail, ...(recommended ? { recommended } : {}) }));
+    card.legacy = { background }; card.old = true;
   }
   for (const it of order) {
     if (it.record || it.status) continue;
@@ -203,21 +223,25 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const home = pickItem(x => open(x) && x.group === p0);
   const multiPlanCard = newCard(home, "open", true);
   const doneHome = pickItem(x => !x.record && !x.status && x.leafKind === "done");
-  const donePlanCard = newCard(doneHome, "ruled");
+  const donePlanCard = newCard(doneHome, "ruled", false, true);
   const otherHome = pickItem(x => open(x) && x.group === p1);
   const otherPlanCard = newCard(otherHome, "open");
   const record = order.find(x => x.record)!;
   const recordCard = newCard(record, "open");
-  // An open card on a done item.
-  newCard(pickItem(x => x.leafKind === "done" && !x.status && !x.record), "open");
-  // The old texts: a ruled card with all of them, one ruled in words (no choice), one withdrawn, an open one.
-  const legacyCard = newCard(pickItem(x => open(x) && x.group === p0 && x.id !== home.id), "ruled");
-  legacyCard.legacy = { background: "背景：旧卡的背景。", confidence: { score: 4, reason: "依据一次测量。" }, ruling: "选 A：" + legacyCard.options[0]!.text };
+  // An open blocking card on a done item: only it holds the item back.
+  newCard(pickItem(x => x.leafKind === "done" && !x.status && !x.record), "open", true);
+  // An open blocking card its head does not place, shown under its plan row when asked.
+  const rowCard = newCard(pickItem(x => open(x) && x.group === p0 && x.id !== home.id), "open", true);
+  // The old texts: a ruled card converted from the old form, one ruled in words (no choice), one withdrawn, an open one.
+  const legacyCard = newCard(pickItem(x => open(x) && x.group === p0 && x.id !== home.id && x.id !== rowCard.item), "ruled");
+  convert(legacyCard, "背景：旧卡的背景。");
+  legacyCard.ruling = "选 A：旧卡的裁定。";
   const proseCard = newCard(pickItem(x => open(x) && x.group === p1 && x.id !== otherHome.id), "ruled");
-  delete proseCard.choice; proseCard.legacy = { background: "背景：这张卡由主人用文字裁决。", ruling: "主人在对话里定了：先不做。" };
+  delete proseCard.choice; proseCard.ruling = "主人在对话里定了：先不做。";
+  convert(proseCard, "背景：这张卡由主人用文字裁决。");
   const withdrawnCard = newCard(pickItem(x => open(x) && x.group === PROJECTS[2].name), "withdrawn");
-  const openLegacyCard = newCard(pickItem(x => open(x) && x.group === p1 && x.id !== otherHome.id), "open");
-  openLegacyCard.legacy = { background: "背景：待裁定的旧卡的背景。", confidence: { score: 2, reason: "只是判断。" } };
+  const openLegacyCard = newCard(pickItem(x => open(x) && x.group === p1 && x.id !== otherHome.id && x.id !== proseCard.item), "open", true);
+  convert(openLegacyCard, "背景：待裁定的旧卡的背景。");
   // The comment witnesses: an open item and an open card its head places, each with listed comments.
   const commentItem = pickItem(x => open(x) && x.group === p0 && x.id !== home.id);
   const commentHome = pickItem(x => open(x) && x.group === PROJECTS[2].name);
@@ -234,11 +258,18 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     // The code witness carries two 参考 sections at the end of its head, the way research reports sit there.
     if (it === code) parts.push("**参考：推导**\n\n推导的第一段。\n\n推导的第二段。\n\n**参考：测量**\n\n测量的正文。");
     // A card is placed by a line of its own: always the witnesses, otherwise about half of the open ones and a few closed ones.
+    // The converted old cards are all placed in the section at the end, before any 参考 section, the way the migration does.
+    const oldKeys: string[] = [];
     for (const key of it.cards) {
       const card = cards.get(key)!;
-      if (key === otherPlanCard.id) continue;
-      if (key === multiPlanCard.id) parts.splice(Math.min(1, parts.length), 0, "[[q:" + key + "]]");
+      if (key === otherPlanCard.id || key === rowCard.id) continue;
+      if (card.old) oldKeys.push(key);
+      else if (key === multiPlanCard.id) parts.splice(Math.min(1, parts.length), 0, "[[q:" + key + "]]");
       else if (key === commentCard.id || (card.status === "open" ? r.chance(0.5) : r.chance(0.15))) parts.push("[[q:" + key + "]]");
+    }
+    if (oldKeys.length) {
+      const section = "**以前的决定**\n\n" + oldKeys.map(key => "[[q:" + key + "]]").join("\n\n"), refs = parts.findIndex(part => part.startsWith("**参考："));
+      parts.splice(refs < 0 ? parts.length : refs, 0, section);
     }
     it.head = parts.join("\n\n");
     const nLog = it.index % 13 === 0 ? 25 : r.int(4);
@@ -288,7 +319,7 @@ export function generateBoard(seed = 1, scale = 1): Generated {
       ...(it.request ? { request: it.request } : {}), created: at, updated: at, order: it.index,
     };
   };
-  const cardDoc = ({ id: _id, ...c }: CardDraft): Record<string, unknown> => ({ ...c, updated: c.ruledAt ?? c.at });
+  const cardDoc = ({ id: _id, old: _old, ...c }: CardDraft): Record<string, unknown> => ({ ...c, updated: c.ruledAt ?? c.at });
   const batches: Batch[] = [];
   batches.push({ message: "Seed generated board", puts: [
     ...all().map(it => ({ kind: "item" as const, id: it.id, doc: itemDoc(it) })),
@@ -338,6 +369,6 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   return {
     board: { title: "合成看板", eyebrow: "状态看板", goal: "合成数据：结构像真实看板，文字全是生成的。", projects: PROJECTS.map(p => ({ name: p.name, ...("repo" in p ? { repo: p.repo } : {}) })), tags: TAGS.map(t => ({ ...t })) },
     batches, readBefore,
-    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, recordCard: recordCard.id, legacyCard: legacyCard.id, proseCard: proseCard.id, withdrawnCard: withdrawnCard.id, openLegacyCard: openLegacyCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id, hiddenFresh: hiddenFresh.id },
+    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, rowCard: rowCard.id, recordCard: recordCard.id, legacyCard: legacyCard.id, proseCard: proseCard.id, withdrawnCard: withdrawnCard.id, openLegacyCard: openLegacyCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id, hiddenFresh: hiddenFresh.id },
   };
 }

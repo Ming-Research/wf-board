@@ -43,7 +43,15 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
     inc("cards"); inc("card " + d.status);
     if (r.cardBlocking(k)) inc("open blocking card");
     const item = s.items[d.item];
-    if (item && !item.plan.some(row => "card" in row && row.card === k)) inc("card without a row in its item's plan");
+    const hasRow = !!item?.plan.some(row => "card" in row && row.card === k);
+    if (item && !hasRow) inc("card without a row in its item's plan");
+    if (d.status === "open" && !hasRow) inc("open card without a row");
+    if (d.status !== "open" && hasRow) inc("closed card with a row");
+    if (r.cardBlocking(k) && !placedCards(item?.head).includes(k)) inc("open blocking card the head does not place");
+    if (d.options.some(o => o.text && o.detail)) inc("card with option names and details");
+    if (d.options.some(o => !o.text)) inc("card with nameless options");
+    if (d.confidence) inc("card with a confidence");
+    if (d.ruling) inc("card with a ruling");
     if (placedCards(item?.head).includes(k)) inc("card placed in its item's head");
     if (d.status === "open" && !placedCards(item?.head).includes(k)) inc("open card the head does not place");
     if (d.status === "open" && item?.record) inc("open card on a record");
@@ -72,7 +80,8 @@ export const REQUIRED_SHAPES = [
   "shared across projects", "parallel plan rows", "dropped step", "doing step", "plan over 10 rows",
   "plan with a card row", "code block in head", "table in head", "reference in head", "log over 20 entries", "links",
   "purple count over 1", "red count over 1", "card open", "card ruled", "card withdrawn", "open blocking card", "card placed in its item's head",
-  "open card the head does not place", "open card on a record", "open card on an otherwise finished item", "ruled card without a choice",
+  "open card the head does not place", "open card without a row", "closed card with a row", "open blocking card the head does not place",
+  "card with option names and details", "card with nameless options", "card with a confidence", "card with a ruling", "open card on a record", "open card on an otherwise finished item", "ruled card without a choice",
   "card with legacy text", "ruled card on a done item", "note comment", "note choice", "note explain",
   "note approve", "note sent", "note done", "note with reply", "anchored note", "note on a card",
   "glossary terms", "project-limited tags",
