@@ -2527,10 +2527,14 @@ name, a key file name) kept in the workflow would sit in the repository, and
 one kept in a secret could not be shown in the log; kinds of thing (any
 private address, any home directory) are public by nature. The cost is a miss
 for a private value that fits no kind, such as a host name, a person's name,
-or an address outside the ranges above (link-local, IPv6 local), which review
-still has to catch. Alternative: a secret list of real values for exact
-matches (`PRIVATE_EXTRA`); left out because it needs a secret kept current and
-nothing has needed it. Alternative: `.gitignore` entries for the working
-directories; left out because the list never ends (a new temporary directory
-tomorrow) and the check catches the path wherever it sits. The check is not a
+an address outside the ranges above (link-local, IPv6 local), or an `sk-`
+string with no digit in it, which review still has to catch. The `sk-` rule
+asks for a digit because real keys (`sk-ant-api03-...`, `sk-proj-...`) carry
+digits and hyphenated words such as `sk-assessment-for-the-board-process-document`
+carry none; without the digit the rule would flag ordinary prose. Alternative:
+a secret list of real values for exact matches (`PRIVATE_EXTRA`); left out
+because it needs a secret kept current and nothing has needed it.
+Alternative: `.gitignore` entries for the working directories; left out
+because the list never ends (a new temporary directory tomorrow) and the
+check catches the path wherever it sits. The check is not a
 required status check; requiring it is a repository setting the owner decides.
