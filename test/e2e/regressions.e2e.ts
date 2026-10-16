@@ -57,7 +57,7 @@ const WITNESSES: Witness[] = [
   {
     bug: "changed body blocks' blue bar lost its place beside the block (fixed in head-change-bar)",
     // Without absolute placement the bar falls into the block's flow, where it has no height and no place at the left.
-    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: "position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "width: 3px; border-radius: 2px; background: var(--fresh); }" }],
+    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; ", replace: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; " }],
     family: "changed-block",
     storage: b => openAll(b),
     run: async bp => checkChangedBlocks(bp),
