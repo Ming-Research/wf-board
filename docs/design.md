@@ -494,7 +494,7 @@ is one of four kinds:
 
 | Kind | Stored fields | Meaning |
 |---|---|---|
-| step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were |
+| step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were; `waits` belongs on a doing step, and a todo step carrying it gets the 在等文字 check |
 | owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
 | shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
 | card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
@@ -523,7 +523,8 @@ is one of four kinds:
   Place each where the check happens, normally before merge or release rows.
   Its text is a completion check, with numbers agreeing with the target
   numbers above the plan. Its `after`, `waits`, state and dates follow ordinary
-  step rules. Step state writes do not enforce readiness; acceptance has no
+  step rules; a todo acceptance step with `waits` gets the 在等文字 check.
+  Step state writes do not enforce readiness; acceptance has no
   additional completion guard. An item is done only when every row, including
   every acceptance and delivery row, is resolved.
 - **Dates.** The server stamps step and acceptance dates exactly as it stamped
@@ -571,7 +572,9 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    does not interrupt inheritance from a work ancestor.
 4. `wip` when any row is in progress: a doing step, or an owned item in
    progress. A doing step with `waits` (CI, a run on the 14900K, something not
-   on the board) is still in progress.
+   on the board) is still in progress. A todo step with `waits` is not in
+   progress, and its check (在等文字) asks for the wait to be written as a
+   shared row, a card, the backlog, or a doing step.
 5. `blocked` when nothing is in progress and either every frontier row is
    waiting (a shared item still open, an open card, an owned item that is
    itself blocked or paused) or the item has a pending legacy ask. A paused
@@ -740,10 +743,11 @@ checks:
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
+| 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
 Effectively paused items retain all form checks, including provisional plans
-and missing acceptance. They receive no stalled check.
+and missing acceptance. They receive no stalled check and no 在等文字 check.
 An owner linked only by its owned row does not raise 暂停冲突: its row
 already waits on the owner and may make the parent blocked. Shared needs
 still raise the check on the paused target.
