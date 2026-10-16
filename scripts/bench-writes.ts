@@ -56,14 +56,16 @@ function board() {
     // A shared row into another project for one item in twenty.
     if (n % 20 === 7) { const target = ids[(n * 7 + 13) % ids.length]!; if (target !== id && group.get(target) !== group.get(id)) rows.get(id)!.push({ id: target, item: target, own: false }); }
   }
-  const files = new Map<string, string>(), decisions: string[] = [];
+  const files = new Map<string, string>(), decisions: string[] = [], placed = new Map(ids.map(id => [id, [] as string[]]));
   for (let k = 0; k < DECISIONS; k++) {
     const key = `c${k}`, item = ids[(k * 7) % ids.length]!, open = k % 3 !== 0;
     decisions.push(key);
     files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, options: [{ key: "A", text: "Do it", recommended: true }, { key: "B", text: "Do not" }],
       status: open ? "open" : "ruled", ...(open && k % 5 === 0 ? { blocks: "work stops" } : {}), ...(open ? {} : { choice: "A", ruledAt: at }), at, updated: at, rev: 1 }));
-    // Every card is a row of its own item's plan.
-    rows.get(item)!.push({ id: key, card: key });
+    // The head places every card on a line of its own, as the converted board does. Only a card that blocks has a row in
+    // its item's plan, and so do some closed cards, which keep the row they had.
+    placed.get(item)!.push(`[[q:${key}]]`);
+    if (open ? k % 5 === 0 : k % 2 === 0) rows.get(item)!.push({ id: key, card: key });
   }
   for (let k = 0; k < NOTES; k++) {
     const onCard = k % 2 === 0 && decisions.length > 0, done = k % 3 === 0;
@@ -75,7 +77,7 @@ function board() {
   const item = (n: number, versions: number): string => {
     const id = ids[n]!, log = Array.from({ length: versions }, (_, v) => ({ at: iso(commitTime(n + v * ITEMS)), by: group.get(id), text: `Progress ${v} on ${id}` }));
     return yaml({ num: n + 1, title: `Item ${id}`, group: group.get(id), ...(Number(id.split("-")[1]) < 10 ? { priority: ["P0", "P1", "P2"][n % 3] } : {}),
-      head: "A synthetic head with a little text.", log, plan: [...rows.get(id)!, { id: "accept", text: "passes", state: "todo", accept: true }], created: at,
+      head: ["A synthetic head with a little text.", ...placed.get(id)!].join("\n\n"), log, plan: [...rows.get(id)!, { id: "accept", text: "passes", state: "todo", accept: true }], created: at,
       updated: versions ? log.at(-1)!.at : at, rev: versions + 1 });
   };
   for (let n = 0; n < ids.length; n++) files.set(`items/${ids[n]}.yaml`, item(n, 0));
