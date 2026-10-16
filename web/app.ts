@@ -143,8 +143,24 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A **label**: written mid-paragraph after a sentence end starts its own paragraph, so a section label still reads as a subheading.
     return String(src == null ? "" : src).replace(/\r/g, "").replace(/([。；！？.!?])[ \t]*(\*\*[^*\n]{1,16}\*\*[ \t]*[：:])/g, "$1\n\n$2").split("\n");
   }
+  // A 「**参考：」 line opens a section that runs to the next such line or the end of the text, and it is shown folded.
   function blocks(src: unknown) {
-    const lines = textLines(src);
+    const [head = [], ...refs] = refSplit(textLines(src));
+    return plainBlocks(head) + refs.map(refSection).join("");
+  }
+  function refSplit(lines: string[]): string[][] {
+    const out: string[][] = [[]]; let fenced = false;
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) fenced = !fenced;
+      if (!fenced && /^\*\*参考：/.test(line)) out.push([line]); else out[out.length - 1]!.push(line);
+    }
+    return out;
+  }
+  function refSection(lines: string[]) {
+    const [title = "", ...body] = lines;
+    return '<details class="ref"><summary>' + inline(title) + "</summary>" + plainBlocks(body) + "</details>";
+  }
+  function plainBlocks(lines: string[]) {
     const out: string[] = [];
     let para: string[] = [], list: {tag:string;items:Array<{text:string}>} | null = null, code: string[] | null = null, codeInfo = "";
     const flushPara = () => {
@@ -2600,11 +2616,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Blank lines delimit blocks, except inside a fenced code block. A contiguous list or table is one block.
   function proseBlocks(text: string): string[] {
     const out: string[] = [], block: string[] = [];
-    let fenced = false;
+    let fenced = false, inRef = false;
     const flush = () => { if (block.length) out.push(block.join("\n")); block.length = 0; };
     for (const line of text.replace(/\r/g, "").split("\n")) {
       if (/^\s*```/.test(line)) fenced = !fenced;
-      if (!line.trim() && !fenced) flush(); else block.push(line);
+      // A 参考 section is one block whatever blank lines it holds, so a change marks it as a whole.
+      if (!fenced && /^\*\*参考：/.test(line)) { flush(); inRef = true; }
+      if (!line.trim() && !fenced && !inRef) flush(); else block.push(line);
     }
     flush(); return out;
   }

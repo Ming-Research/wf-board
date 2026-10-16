@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -100,6 +100,12 @@ const WITNESSES: Witness[] = [
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
     reverts: [{ commit: "756e5ea", file: "web/app.ts" }], family: "empty-row",
     run: (bp, b) => checkEmptyRows(bp, [b.gen.witness.unpaused, b.gen.witness.code]),
+  },
+  {
+    bug: "a head's 参考 sections showed their whole text instead of folding shut under their titles (fold feature, owner's request on ref-fold)",
+    // The fold's split of the head text into sections: without it a 参考 line is ordinary bold text and nothing folds.
+    reverts: [{ file: "web/app.ts", edit: "参考 lines start no section", find: 'if (!fenced && /^\\*\\*参考：/.test(line)) out.push([line]); else out[out.length - 1]!.push(line);', replace: "out[out.length - 1]!.push(line);" }], family: "ref-fold",
+    run: async (bp, b) => checkRefFold(bp, await oracle(b.store)),
   },
 ];
 

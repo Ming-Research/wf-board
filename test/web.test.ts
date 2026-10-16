@@ -460,6 +460,21 @@ test("detail: existing fenced code keeps blank lines and contiguous lists and ta
   assert.match(body, /class="chg-add"[^>]*><div class="tablewrap"><table><thead><tr><th>Header<\/th>.*<td>New row<\/td>/s);
 });
 
+test("detail: each 参考 section is a folded details from its line to the next one or the end, other text unchanged", async () => {
+  const s = snapshot(); s.items.child!.head = "Body\n\n**参考：First**\n\nFirst detail\n\n**参考：Second**\n\nSecond detail";
+  const p = await page(s,unread()); await expand(p);
+  assert.match(markup(item(p)), /<p>Body<\/p><details class="ref"><summary><strong>参考：First<\/strong><\/summary><p>First detail<\/p><\/details><details class="ref"><summary><strong>参考：Second<\/strong><\/summary><p>Second detail<\/p><\/details>/);
+});
+
+test("detail: a changed 参考 section is marked as one block, its unchanged title and body included", async () => {
+  const s = snapshot(), before = {...s.items.child!,head:"Body\n\n**参考：R**\n\nold detail"};
+  s.items.child!.head = "Body\n\n**参考：R**\n\nnew detail\n\nmore";
+  const p = await page(s,unread(),before); await expand(p);
+  const body = markup(item(p));
+  assert.match(body, /<div class="chg-add"><details class="ref"><summary><strong>参考：R<\/strong><\/summary><p>new detail<\/p><p>more<\/p><\/details><\/div>/);
+  assert.ok(!body.includes("old detail"),"the former section text is not shown");
+});
+
 // The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
 const codeText = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
 
