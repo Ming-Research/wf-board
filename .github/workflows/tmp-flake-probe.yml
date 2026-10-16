@@ -5,16 +5,11 @@ on:
     branches: [e2e-git-tmp-flake-study]
 jobs:
   probe:
-    strategy:
-      fail-fast: false
-      matrix:
-        packer: [on, off, on2, off2]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - run: git --version
-      - name: Four writers, with or without the repack loop of the automatic maintenance
-        run: bash scripts/tmp-flake-mechanism.sh 600 "${MODE%2}"
-        env:
-          MODE: ${{ matrix.packer }}
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: How large must a commit be to start background maintenance
+        run: bash scripts/tmp-flake-threshold.sh
