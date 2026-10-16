@@ -84,8 +84,8 @@ test("an open card the owner already answered closes with that pick and the send
   assert.equal(decisions.c4!.status, "open", "a comment on an open card does not rule it");
 });
 
-test("only a card that blocks has a row: an open one without gets it before the acceptance step, an open one that does not block loses it, closed ones get none", () => {
-  const { items, report } = migrateCards(withoutUndefined(old()), now);
+test("only a card that blocks has a row: an open blocking one without gets it before the acceptance step, an open one with a row but no blocks blocks the step after its row and keeps it, closed ones get none", () => {
+  const { items, decisions, report } = migrateCards(withoutUndefined(old()), now);
   assert.deepEqual(report.errors, []);
   assert.deepEqual(items.a!.plan, [
     { id: "s1", text: "One", state: "done", doneAt: at },
@@ -94,12 +94,15 @@ test("only a card that blocks has a row: an open one without gets it before the 
     // the row after the dropped foreign row was ready because that row was resolved; it stays ready
     { id: "s3", text: "Three", state: "todo", after: [] },
     { id: "s4", text: "Four", state: "todo", after: ["s2"] },
-    // an open blocking card is a step the acceptance step also waits for; the acceptance step waits no more for c6
+    // c6 had a row but no blocks: it keeps the row, and the step after it (the acceptance step) is what it blocks
+    { id: "c6", card: "c6" },
+    // an open blocking card is a step the acceptance step also waits for
     { id: "c4", card: "c4", after: [] },
-    { id: "accept", accept: true, text: "Checked", state: "todo", after: ["s4", "c4"] },
+    { id: "accept", accept: true, text: "Checked", state: "todo", after: ["c6", "c4"] },
   ]);
   assert.deepEqual(report.openCardsPlaced, ["c4"]);
-  assert.deepEqual(report.openRowsRemoved, ["c6"]);
+  assert.deepEqual(report.openCardsBlocking, [{ card: "c6", blocks: "Checked" }]);
+  assert.equal(decisions.c6!.blocks, "Checked");
   assert.equal(report.foreignRowsDropped, 1);
   assert.equal(report.afterListsEdited, 1);
   assert.equal(report.successorsReleased, 1);
@@ -118,6 +121,34 @@ test("the cards a head does not place get a section at its end, before the 参�
   const placed = migrateCards(input, now).items.a!.head as string;
   assert.ok(placed.startsWith("Text\n\n[[q:c3]]\n\nAfter\n\n**以前的决定**\n\n[[q:c1]]"), "the line c3 has stays where it is");
   assert.ok(!placed.slice(placed.indexOf("以前的决定")).includes("[[q:c3]]"), "and is not given a second one");
+});
+
+test("an open card with a row but no blocks blocks the row that waits for it, else the row after it, else the work after it; the name is a step's text, an item's title or a card's question", () => {
+  const input = withoutUndefined(old());
+  const open = (n: number, extra: Record<string, unknown> = {}) => card(n, { item: "m", status: "open", choice: undefined, ruling: undefined, ruledAt: undefined, ...extra });
+  input.decisions.k1 = open(20); input.decisions.k2 = open(21); input.decisions.k3 = open(22); input.decisions.k4 = open(23, { question: "**Which\nof two?**" });
+  input.items.m = item({ num: 30, title: "Has open cards", plan: [
+    { id: "k1", card: "k1" }, { id: "p", text: "Prepare", state: "todo" }, { id: "q", text: "Gated work\nsecond line", state: "todo", after: ["k1"] },
+    { id: "k2", card: "k2" }, { id: "z", item: "z", own: false, after: [] },
+    { id: "k3", card: "k3", after: [] }, { id: "k4", card: "k4" },
+    { id: "accept", accept: true, text: "Checked", state: "todo" },
+  ] });
+  const { items, decisions, report } = migrateCards(input, now);
+  assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.openCardsBlocking.filter(c => c.card.startsWith("k")), [
+    { card: "k1", blocks: "Gated work" },
+    // a step with no row waiting for the card: the row after it, here an item's title
+    { card: "k2", blocks: "Holds the foreign card" },
+    // here a card's question, first line, without the bold marks
+    { card: "k3", blocks: "Which" },
+    { card: "k4", blocks: "Checked" },
+  ]);
+  assert.equal(decisions.k1!.blocks, "Gated work");
+  assert.deepEqual((items.m!.plan as Array<{ id: string }>).map(row => row.id), ["k1", "p", "q", "k2", "z", "k3", "k4", "accept"], "the plan keeps every card row and every step");
+  // A card with no row after it names the work after it.
+  const last = withoutUndefined(old()); last.decisions.k9 = card(40, { item: "m", status: "open", choice: undefined, ruling: undefined, ruledAt: undefined });
+  last.items.m = item({ num: 31, title: "Ends with a card", plan: [{ id: "k9", card: "k9" }] });
+  assert.deepEqual(migrateCards(last, now).report.openCardsBlocking.filter(c => c.card === "k9"), [{ card: "k9", blocks: "本条目后面的工作" }]);
 });
 
 test("a dropped foreign row leaves a log entry naming the card and what was chosen", () => {
@@ -176,7 +207,7 @@ test("written through the store in one commit that is not work on the items; the
   const snapshot = store.snapshot();
   assert.equal(snapshot.decisions.c5!.status, "ruled");
   assert.equal(snapshot.decisions.c1!.num, 4, "numbers stay");
-  assert.equal(snapshot.items.a!.plan.length, 7);
+  assert.equal(snapshot.items.a!.plan.length, 8);
   assert.equal(snapshot.items.z!.plan.length, 1);
   assert.equal(parse(await readFile(join(dir, "numbers.yaml"), "utf8")).next, 11);
   // The owner's unread list does not count the migration.

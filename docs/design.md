@@ -2379,9 +2379,12 @@ on the live board.
   send time as `ruledAt`.
 - Only a card that blocks has a row. An open blocking card with no row gets
   one before the first acceptance step, which then also waits for it. An open
-  card that does not block loses the row it had, and what waited for it waits
-  for what it waited for. A closed card keeps the row it has and gets none:
-  the row records the step that once waited for it.
+  card that has a row but no `blocks` becomes a blocking card: in the old plans
+  a card's row made the step after it wait, so `blocks` names that step (the row
+  waiting for the card, else the row after it; a step's text, an item's title or
+  a card's question) and the row stays. No item changes status because of it,
+  and the report lists these cards. A closed card keeps the row it has and gets
+  none: the row records the step that once waited for it.
 - A row for a card of another item is dropped (an open one is an error: place
   it by hand). Every such card was ruled, so the row was resolved. Each
   affected item's log gets one entry naming the card and what was chosen. A

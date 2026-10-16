@@ -6,8 +6,7 @@
  * A pure function over the raw documents (the current schemas refuse the old cards); migrate-cards-cli.ts reads them and
  * Store.commitCardMigration writes the result in one commit. Deleted once it has run on the live board.
  */
-import { rules, withoutCardRow, placedCards } from "./rules.ts";
-import type { PlanRow } from "./model.ts";
+import { rules, placedCards } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 
 type Raw = Record<string, unknown>;
@@ -19,8 +18,8 @@ export interface CardMigrationReport {
   cardsRuled: number;
   /** Open blocking cards that had no row; each got a row before its item's first acceptance step, which now waits for the card. */
   openCardsPlaced: string[];
-  /** Open cards that do not block but had a row: the row is removed, and rows that waited for it wait for what it waited for. */
-  openRowsRemoved: string[];
+  /** Open cards that did not say what they block but had a row: each blocks the step after its row, named here, and keeps the row. */
+  openCardsBlocking: Array<{ card: string; blocks: string }>;
   /** Rows in an item's plan for a card that belongs to another item. */
   foreignRowsDropped: number;
   afterListsEdited: number;
@@ -81,9 +80,16 @@ function optionLine(card: Raw): string {
   return `选 ${choice}${option ? `：${String(option.text || option.detail).split("\n").find(l => l.trim())?.trim() ?? ""}` : ""}`;
 }
 
+/** What a plan row is called in a sentence: a step's text, an item's title, a card's question, first line only. */
+function stepName(row: Raw, input: CardMigrationInput): string {
+  const named = typeof row.text === "string" ? row.text : typeof row.item === "string" ? input.items[row.item]?.title : typeof row.card === "string" ? input.decisions[row.card]?.question : undefined;
+  const line = (typeof named === "string" ? named : "").split("\n")[0]!.replace(/[*`]/g, "").trim();
+  return line || "本条目后面的工作";
+}
+
 export function migrateCards(input: CardMigrationInput, at: string): CardMigration {
   const errors: string[] = [];
-  const report: CardMigrationReport = { cardsOpen: 0, cardsRuled: 0, openCardsPlaced: [], openRowsRemoved: [], foreignRowsDropped: 0, afterListsEdited: 0, successorsReleased: 0,
+  const report: CardMigrationReport = { cardsOpen: 0, cardsRuled: 0, openCardsPlaced: [], openCardsBlocking: [], foreignRowsDropped: 0, afterListsEdited: 0, successorsReleased: 0,
     closedFromNote: [], legacyKept: 0, headsExtended: 0, cardsPlaced: 0, ruledWithoutChoice: 0, itemsChanged: 0, derivedChanges: [], errors };
   const decisions: Record<string, Raw> = {};
   for (const [key, old] of Object.entries(input.decisions).sort(([a], [b]) => byString(a, b))) {
@@ -136,12 +142,17 @@ export function migrateCards(input: CardMigrationInput, at: string): CardMigrati
       else next.push(row);
       before = row;
     }
-    // Only a card that blocks has a row: an open one without a row is placed before the acceptance step, which now waits
-    // for it; an open one that does not block loses the row it had. A closed card keeps the row it has and gets none.
-    for (const key of (cardsOf.get(id) ?? []).filter(k => decisions[k]!.status === "open" && decisions[k]!.blocks === undefined && next.some(row => row.card === k))) {
-      const kept = withoutCardRow(next as unknown as PlanRow[], key) as unknown as Raw[];
-      next.splice(0, next.length, ...kept);
-      report.openRowsRemoved.push(key);
+    // Only a card that blocks has a row. In the old plans a card's row made the step after it wait, so an open card that has a
+    // row but no `blocks` becomes a blocking card that names that step and keeps its row: no item changes status. An open
+    // blocking card without a row is placed before the acceptance step, which now waits for it. A closed card keeps the row
+    // it has and gets none.
+    for (const key of (cardsOf.get(id) ?? []).filter(k => decisions[k]!.status === "open" && decisions[k]!.blocks === undefined)) {
+      const at = next.findIndex(row => row.card === key);
+      if (at < 0) continue;
+      const rowId = String(next[at]!.id), later = next.slice(at + 1), waiting = later.find(row => Array.isArray(row.after) && row.after.includes(rowId)) ?? later[0];
+      const blocks = waiting === undefined ? "本条目后面的工作" : stepName(waiting, input);
+      decisions[key]!.blocks = blocks;
+      report.openCardsBlocking.push({ card: key, blocks });
     }
     const missing = (cardsOf.get(id) ?? []).filter(key => decisions[key]!.status === "open" && decisions[key]!.blocks !== undefined && !next.some(row => row.card === key))
       .sort((a, b) => byString(String(decisions[a]!.at ?? decisions[a]!.updated), String(decisions[b]!.at ?? decisions[b]!.updated)) || byString(a, b));
