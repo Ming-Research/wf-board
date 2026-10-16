@@ -3963,23 +3963,25 @@ test("an owner notice from the stream shows one browser notice; its click opens 
     constructor(title: string, options: { body: string; tag: string }) { this.title = title; this.options = options; shown.push(this); }
     close() { this.closed = true; }
   }
-  const p = await page(s, [], null, undefined, { clock, notification: FakeNotification });
-  await settle();
+  const p = await page(s, [], null, undefined, { clock, notification: FakeNotification }); await expand(p);
   const owner = (notice: unknown) => p.sources.at(-1)!.handlers.get("owner")!({ data: JSON.stringify(notice) });
   owner({ title: "挡事的卡 · Whitefoot", message: "选哪个？（挡住：挡住 chrome-notify）", target: { kind: "card", key: "hard" } });
   assert.equal(shown.length, 1, "one notice for one owner event");
   assert.equal(shown[0]!.title, "挡事的卡 · Whitefoot");
   assert.equal(shown[0]!.options.tag, "card:hard", "the tag is the card's key, so open tabs share one notice");
-  shown[0]!.onclick!();
+  shown[0]!.onclick!(); await p.flush();
   assert.equal(shown[0]!.closed, true);
-  await settle();
-  assert.ok(p.all().find(e => e.id === "q-hard")?.classList.contains("cur"), "the click selects the card the notice names");
+  assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
+  // A notice about no card or item opens the home view, which selects no card.
+  owner({ title: "架构师一小时没响应", message: "x" });
+  shown[1]!.onclick!(); await p.flush();
+  assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
   // After a reconnect the old stream's events are ignored; the new one shows its notices.
   p.sources.at(-1)!.onerror!(); clock.advance(5000); await settle();
   const obsolete = p.sources[0]!;
   obsolete.handlers.get("owner")!({ data: JSON.stringify({ title: "旧的", message: "不该弹" }) });
-  assert.equal(shown.length, 1, "an obsolete stream shows nothing");
+  assert.equal(shown.length, 2, "an obsolete stream shows nothing");
   owner({ title: "新的", message: "弹" });
-  assert.equal(shown.length, 2);
-  assert.equal(shown[1]!.options.tag, "新的", "a notice with no target is tagged with its title");
+  assert.equal(shown.length, 3);
+  assert.equal(shown[2]!.options.tag, "新的", "a notice with no target is tagged with its title");
 });

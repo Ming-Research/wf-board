@@ -1175,8 +1175,9 @@ every tool.
 
 The current template is kept. Its data layer, `window.claude.use("db")` and
 `window.claude.use("comments")`, is replaced by a small client that loads a
-snapshot from `/api/snapshot`, applies changes from `/api/events`, and shows the owner's notices as `owner` events on the same stream, and posts
-the owner's notes and reads to `/api/...`. The rules module
+snapshot from `/api/snapshot`, applies changes from `/api/events`, and shows the owner's notices as
+`owner` events on the same stream; it posts the owner's notes and reads to
+`/api/...`. The rules module
 moves out of the page into `src/rules.ts` and is loaded by both.
 
 The page shows two columns while an item is selected. With no selected item,
@@ -1564,8 +1565,9 @@ no-receipt alert. Each notice goes two ways:
 - To every open board page, as an `owner` event on `/api/events`, carrying the
   title, the message and a target (`{kind: "card" | "item", key}`, or none).
   The page shows a browser notification (Notification API) when the owner
-  allowed notices. The notification's tag is the target's key, so open tabs
-  show one notice for it. A click focuses the page and opens the card or item,
+  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
+  title when the notice has no target, so open tabs show one notice for the
+  same card or item. A click focuses the page and opens the card or item,
   or the home view when there is no target. The event is live only: a page that
   connects later gets nothing from before its connection, and a reconnect does
   not replay. A closed page gets nothing; Web Push is not used.

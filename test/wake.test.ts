@@ -509,6 +509,12 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   second.push("stalled", { item: "a", project: "Whitefoot", title: "中文检查", text: "无人推进" });
   clock += 60_000; second.checkReceipts();
   assert.deepEqual(seconds, [{ kind: "item", key: "a" }]);
+  const fourth = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const noted: unknown[] = [];
+  fourth.onTell(notice => noted.push(notice.target));
+  fourth.push("note", { note: "n2", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  clock += 60_000; fourth.checkReceipts();
+  assert.deepEqual(noted, [{ kind: "item", key: "a" }], "a note on an item opens that item");
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
