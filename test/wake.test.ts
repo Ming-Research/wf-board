@@ -283,7 +283,8 @@ test("the timed wake lists what changed since the last one without the architect
   const wake = new Wake({ file, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
   // One item of the Architect project (the fixture board has it), and an item with a step being worked on.
-  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  // Both are rated, so neither carries 缺难度 and the flags stay empty.
+  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },

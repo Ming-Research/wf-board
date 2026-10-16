@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -17,7 +17,7 @@ export interface Ops {
   createRequest(a: { author: string; session?: string; project: string; key: string; title: string; head: string; accept: string; priority?: Priority; why: string; from?: string; after?: string[]; tags?: string[] }): Promise<Result>;
   triageRequest(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority; log: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
+  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
   /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
   markMerged(a: { author: string; session?: string; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
@@ -34,6 +34,10 @@ export interface Ops {
   setTags(a: { author: string; session?: string; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
+  /** Only the architect sets a difficulty, on an item of any project; the change is logged with its reason. */
+  setDifficulty(a: { author: string; session?: string; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
+  /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
+  setDifficultyMany(a: { author: string; session?: string; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
   setTag(a: { author: string; session?: string; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
   renameTag(a: { author: string; session?: string; name: string; to: string }): Promise<Result>;
   removeTag(a: { author: string; session?: string; name: string; replace?: string }): Promise<Result>;
@@ -106,6 +110,10 @@ interface Writer { author: string; session?: string }
 function onlyArchitect(who: Writer, what: string): void {
   if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may ${what}`);
 }
+/** A difficulty as the log line writes it: the level, or 「架构师做」. */
+const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : difficulty === "architect" ? "架构师做" : String(difficulty);
+/** The log line for a change of difficulty: from what to what, and why. */
+export const difficultyLogText = (from: Difficulty | undefined, to: Difficulty, reason: string): string => `难度：${levelText(from)} → ${levelText(to)}，理由：${reason}`;
 const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
 
 /** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
@@ -366,6 +374,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     const tags = checkedTags(s, it.group, given, true)!;
     return isDeepStrictEqual(tags, it.tags) ? it : { ...it, tags, updated: at };
   }
+  /** The item with its difficulty set and the change logged: the one rule set_difficulty and set_difficulty_many share; the item itself when unchanged. */
+  function rated(it: Item, at: string, author: string, given: unknown, reason: string | undefined): Item {
+    const difficulty = Difficulty.safeParse(given);
+    if (!difficulty.success) throw new OpError('difficulty: give an integer 1–5, or "architect" for an item the architect does itself');
+    if (it.record) throw new OpError("difficulty: a record has no difficulty");
+    if (typeof reason !== "string" || !reason.trim()) throw new OpError("reason: say why the difficulty is this, for the log");
+    if (it.difficulty === difficulty.data) return it;
+    return { ...it, difficulty: difficulty.data, updated: at, log: [...it.log, entry(author, at, difficultyLogText(it.difficulty, difficulty.data, reason.trim()))] };
+  }
   function acceptId(rows: readonly { id?: string; item?: string; card?: string }[]): string {
     const ids = new Set(rows.map(row => row.id ?? row.item ?? row.card));
     let id = "accept", suffix = 1; while (ids.has(id)) id = `accept-${suffix++}`; return id;
@@ -461,6 +478,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     createItem: a => run(a, (s, at) => {
       onlyArchitect(a, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
+      // Only the architect creates items, so only the architect can rate the item as it is made, as in set_difficulty.
+      let difficulty: Difficulty | undefined;
+      if (a.difficulty !== undefined) {
+        const given = Difficulty.safeParse(a.difficulty);
+        if (!given.success) throw new OpError('difficulty: give an integer 1–5, or "architect" for an item the architect does itself');
+        if (a.record) throw new OpError("difficulty: a record has no difficulty");
+        difficulty = given.data;
+      }
       newKey(s, a.key);
       const owner = a.owner ? ownedItem(s, a.owner, a, "owner") : undefined;
       const group = a.group ?? owner?.group;
@@ -476,7 +501,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const id of children) { ownedItem(s, id, a, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
-      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rulesOf(s).parentOf(id);
@@ -593,6 +618,29 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
+    setDifficulty: a => run(a, (s, at) => {
+      onlyArchitect(a, "set an item's difficulty");
+      const it = requireItem(s, a.id);
+      return { id: a.id, kind: "item", message: `set_difficulty ${a.id}`, puts: [itemPut(a.id, rated(it, at, a.author, a.difficulty, a.reason))] };
+    }),
+    setDifficultyMany: a => run(a, (s, at) => {
+      onlyArchitect(a, "set an item's difficulty");
+      if (!Array.isArray(a.items) || !a.items.length) throw new OpError("items: give at least one {id, difficulty, reason}");
+      const seen = new Set<string>(), puts: Put[] = [];
+      for (const [i, given] of a.items.entries()) {
+        if (!given || typeof given !== "object") throw new OpError(`items.${i}: give {id, difficulty, reason}`);
+        if (seen.has(given.id)) throw new OpError(`items.${i}.id ${given.id}: name each item once`);
+        seen.add(given.id);
+        try {
+          const it = requireItem(s, given.id), doc = rated(it, at, a.author, given.difficulty, given.reason ?? a.reason);
+          if (doc !== it) puts.push(itemPut(given.id, doc));
+        } catch (error) {
+          if (error instanceof OpError) throw new OpError(`items.${i} (${given.id}): ${error.message}`);
+          throw error;
+        }
+      }
+      return { id: a.items[0]!.id, kind: "items", message: `set_difficulty ${a.items.length} items`, puts };
+    }),
     setTag: a => run(a, s => {
       onlyArchitect(a, TAG_VOCABULARY);
       const known = boardTags(s.board).find(t => t.name === a.name);
@@ -646,8 +694,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         delete doc.paused;
         if (a.accept !== undefined) throw new OpError("accept: refused for a record");
         const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
-        doc.plan = (it.plan ?? []).filter(row => !("accept" in row && row.accept)); delete doc.status;
-        doc.log.push(entry(a.author, at, `改为记录条目：不再有状态；原验收：${accepts.map(row => "text" in row ? row.text : "").join("；")}`));
+        doc.plan = (it.plan ?? []).filter(row => !("accept" in row && row.accept)); delete doc.status; delete doc.difficulty;
+        doc.log.push(entry(a.author, at, `改为记录条目：不再有状态；原验收：${accepts.map(row => "text" in row ? row.text : "").join("；")}${it.difficulty === undefined ? "" : `；原难度：${levelText(it.difficulty)}`}`));
       } else if (a.record === false && it.record) {
         if (!a.accept) throw new OpError("accept: required when changing a record to work");
         doc.plan = [...it.plan ?? [], stampPlanRow({ id: acceptId(it.plan ?? []), accept: true, text: a.accept, state: "todo" }, undefined, at)];
