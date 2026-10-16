@@ -2709,7 +2709,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The owner's notices: a browser notice per card or item, shown only if the owner allowed them. Asked on the first click,
   // since browsers ignore a permission request with no user gesture.
   const noticeEnv: NoticeEnv = {
-    Notification: typeof Notification === "undefined" ? undefined : Notification,
+    Notification: typeof Notification === "undefined" ? undefined : Notification as unknown as NoticeEnv["Notification"],
     focus: () => window.focus(),
     open: target => target.kind === "card" ? followCard(target.key) : follow(target.key),
   };
