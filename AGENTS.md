@@ -29,6 +29,10 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
+- `src/wake.ts`: the architect's push channel (the table of kinds, numbered
+  events kept in a local file, receipts, the no-receipt alert);
+  `src/timed-wake.ts`: what the half-hourly wake carries; `src/notify.ts`: the
+  owner's notifications on the Mac. The protocol is `docs/design.md`, section 8.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
@@ -75,8 +79,9 @@ matches what the artifact board offered.
 - Board usage for agents lives only in `~/dev/wf/AGENTS.md`, section "Board"
   (from the agents_config repository), never in this file or in the server's
   instructions, which are a short pointer (`src/instructions.ts`, design
-  section 6). A change to a tool's behavior or to a board rule changes that
-  section in the same change, in agents_config.
+  section 6). When a change alters a tool's behavior or a board rule, its
+  engineer writes on the item what that section must say; the observer
+  changes the section after the merge (shared rules, Other rule files).
 - A change to the page that the owner has not asked for in those words, or
   one that changes a rule an earlier test guards, goes to the owner on a card
   before the code changes: the engineer reports it to the architect, naming

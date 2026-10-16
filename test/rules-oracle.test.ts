@@ -9,7 +9,7 @@ const at = "2026-10-13T00:00:00Z";
 const acceptance = (state: "todo" | "done" = "todo"): PlanRow => ({ id: "accept", accept: true, text: "The independent check passes", state, ...(state === "done" ? { doneAt: at } : {}) });
 function fixture(plan: PlanRow[], target: Partial<Item> = {}, cardStatus: "open" | "ruled" | "withtree" | "elsewhere" = "open"): Snapshot {
   return {
-    head: "0".repeat(40), board: { title: "Plan oracle", projects: [{ name: "P" }] }, notices: {}, glossaries: {}, notes: {}, owner: {},
+    head: "0".repeat(40), board: { title: "Plan oracle", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {},
     items: { subject: Item.parse({ title: "Subject", group: "P", priority: "P1", plan, updated: at, rev: 1 }), target: Item.parse({ title: "Target", group: "P", plan: [acceptance()], updated: at, rev: 1, ...target }) },
     decisions: { q: Decision.parse({ item: "target", question: "Proceed?", background: "Independent evidence", options: [{ key: "A", text: "Proceed" }], status: cardStatus, updated: at, rev: 1 }) },
   };

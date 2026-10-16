@@ -72,10 +72,14 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A title longer than this many characters (spaces not counted) gets a check. */
+export const TITLE_MAX_CHARS = 20;
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
 export const STALLED_LABEL = "无人推进";
+/** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
+export const WAITS_TEXT_LABEL = "在等文字";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 export interface Check {
   text: string;
@@ -168,7 +172,7 @@ function mentionsIn(text: string): string[] { return [...text.matchAll(REFERENCE
 export const STALLED_AFTER_MS = 60 * 60 * 1000;
 export const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
-type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type ActivityInput = Pick<Snapshot, "items" | "decisions" | "notes"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** One source of activity times: the times it gives, and the item they reset (none for board-wide writes). */
 interface Contribution { id: string | undefined; times: number[]; target?: string }
 const parsedTimes = (values: ReadonlyArray<string | undefined>): number[] => values.flatMap(at => { const time = at ? Date.parse(at) : NaN; return Number.isFinite(time) ? [time] : []; });
@@ -218,7 +222,7 @@ export class ActivityIndex {
   private readonly all: number[];
   /** Each item's times, ascending. */
   private readonly perItem: Map<string, number[]>;
-  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "x:" notices, "g:" glossaries. */
+  /** Each source's contribution: "a:" activity item entries, "i:" items, "d:" cards, "n:" notes, "g:" glossaries. */
   private readonly sources: Map<string, Contribution>;
   /** Notes by the card they target, re-resolved when that card changes or goes. */
   private readonly cardNotes: Map<string, Set<string>>;
@@ -228,14 +232,14 @@ export class ActivityIndex {
     this.all = all; this.perItem = perItem; this.sources = sources; this.cardNotes = cardNotes; this.seen = seen;
   }
   static build(s: ActivityInput): ActivityIndex {
-    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, notices: {}, glossaries: {}, activity: { writes: [], items: {} } });
+    const index = new ActivityIndex([], new Map(), new Map(), new Map(), { items: {}, decisions: {}, notes: {}, glossaries: {}, activity: { writes: [], items: {} } });
     return index.advance(s);
   }
   /** Whether this index was made for exactly these documents. */
   reflects(s: ActivityInput): boolean {
     const seen = this.seen;
     return seen.items === s.items && seen.decisions === s.decisions && seen.notes === s.notes && seen.activity === s.activity
-      && seen.notices === s.notices && seen.glossaries === s.glossaries;
+      && seen.glossaries === s.glossaries;
   }
   /** The index of `s`, sharing what did not change. */
   advance(s: ActivityInput): ActivityIndex {
@@ -302,17 +306,13 @@ export class ActivityIndex {
     // A note on a card resets the card's item: a card that moved or went re-resolves its notes.
     for (const key of cards) for (const n of cardNotes.get(key) ?? []) notes.add(n);
     for (const key of notes) replace("n:" + key, note(key, get(s.notes, key)));
-    for (const key of changedKeys(seen.notices, s.notices)) {
-      const notice = get(s.notices, key);
-      replace("x:" + key, notice && { id: undefined, times: parsedTimes([notice.at, notice.read]) });
-    }
     for (const key of changedKeys(seen.glossaries, s.glossaries)) {
       const glossary = get(s.glossaries, key);
       replace("g:" + key, glossary && { id: undefined, times: parsedTimes(glossary.terms.map(term => term.updated)) });
     }
     for (const id of ownItems) if (!perItem.get(id)!.length) perItem.delete(id);
     for (const key of ownCards) if (!cardNotes.get(key)!.size) cardNotes.delete(key);
-    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, notices: s.notices, glossaries: s.glossaries, activity: s.activity });
+    return new ActivityIndex(all, perItem, sources, cardNotes, { items: s.items, decisions: s.decisions, notes: s.notes, glossaries: s.glossaries, activity: s.activity });
   }
   /** The union of active windows up to `now`: what the from-scratch scan in `rules` gives. */
   intervals(now: number): Array<[number, number]> {
@@ -424,7 +424,7 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else if (doc.kind !== "notice") return null;
+    } else return null;
   }
   return seeds;
 }
@@ -455,7 +455,7 @@ export class DerivedCache {
   }
 }
 
-type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "notices" | "glossaries">>;
+type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
 export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
@@ -721,7 +721,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const id = note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item;
         add(note.at, id); add(note.sentAt, id); add(note.repliedAt, id);
       }
-      for (const notice of Object.values(s.notices ?? {})) { add(notice.at); add(notice.read); }
       for (const glossary of Object.values(s.glossaries ?? {})) for (const term of glossary.terms) add(term.updated);
       const intervals: Array<[number, number]> = [];
       for (const at of writes.sort((a, b) => a - b)) {
@@ -777,6 +776,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
       if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
+      // Titles of closed items are not revised, so only open items and records are checked.
+      const titleLength = [...it.title.replace(/\s/g, "")].length;
+      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
       if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
       if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
@@ -789,6 +791,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
+        const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
+        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
       }
       return out;
