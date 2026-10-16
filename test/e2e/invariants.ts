@@ -593,18 +593,18 @@ export async function burst(board: BoardServer, round: number): Promise<number> 
   return commits;
 }
 
-/** A changed body block (a card's excluded) carries a blue bar on its left and no background of its own. The page holds
- * no changed block of its own to look at, so one is added beside an item's first rich text and taken out again. */
+/** A changed body block carries a blue bar on its left and no background of its own. The page holds no changed block
+ * to look at, so a probe block is added in a rich text at the end of the page and taken out again. The bar rule is not
+ * scoped to an item, so the probe tests the same rule an item's text gets. */
 export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
   const v: string[] = [];
   const probe = await bp.page.evaluate(() => {
-    const host = [...document.querySelectorAll<HTMLElement>(".item .rich")].find(e => !e.closest(".card, .notes"));
-    if (!host) return null;
+    const host = document.createElement("div"); host.className = "rich"; document.body.appendChild(host);
     const block = document.createElement("div"); block.className = "chg-add"; block.textContent = "probe";
     host.appendChild(block);
     const bar = getComputedStyle(block, "::before"), own = getComputedStyle(block);
     const out = { bar: bar.backgroundColor, width: bar.width, own: own.backgroundColor };
-    block.remove();
+    host.remove();
     return out;
   });
   if (!probe) { v.push("changed-block: the page has no item text to add a changed block to"); return v; }
