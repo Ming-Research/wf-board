@@ -254,8 +254,17 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
-/** The architect's identity: a write whose author is this project may change any project's items, cards and note replies, and alone does what the board reserves for the architect (see ops `onlyArchitect`). */
+/** The architect's author name, a configured project like any other. */
 export const ARCHITECT = "Architect";
+/** The session name the architect writes from. */
+export const ARCHITECT_SESSION = "架构师";
+/**
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
+ * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
+ * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
+ * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ */
+export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && who.session?.trim() === ARCHITECT_SESSION;
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 

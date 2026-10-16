@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, RETIRED_COORDINATOR, tagApplies, tagsRequired, boardTags } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Notice, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags } from "./model.ts";
 import type { PlanRow, ItemTarget, Link, Option, Priority, Snapshot } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
@@ -19,6 +19,8 @@ export interface Ops {
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
+  journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
   setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
@@ -91,11 +93,21 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
   if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
-/** What the board reserves for the architect: every other author is refused, and `what` names the operation in the message. */
-function onlyArchitect(author: string, what: string): void {
-  if (author !== ARCHITECT) throw new OpError(`author: only ${ARCHITECT} may ${what}`);
+/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the architect (model `isArchitect`). */
+interface Writer { author: string; session?: string }
+/** What the board reserves for the architect: every other writer is refused, and `what` names the operation in the message. */
+function onlyArchitect(who: Writer, what: string): void {
+  if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may ${what}`);
 }
 const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
+
+/** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
+const JOURNAL = { notes: "architect-notes", tag: "协作流程" };
+/** The local calendar day and clock time of an ISO instant, as the journal's key and entry stamp use them. */
+function localStamp(at: string): { day: string; clock: string } {
+  const d = new Date(at), pad = (n: number) => String(n).padStart(2, "0");
+  return { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, clock: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
+}
 
 function newKey(s: Snapshot, key: string): void {
   if (!Key.safeParse(key).success) throw new OpError("key: use 1–200 letters, digits, dots, underscores or hyphens, starting with a letter or digit");
@@ -159,18 +171,19 @@ function requireProject(s: Snapshot, name: string) {
   if (!project) throw new OpError(`project ${name}: choose a configured project with projects`);
   return project;
 }
-function projectOrder(projects: Board["projects"], a: { author: string; name: string; after?: string }): Board["projects"] {
+function projectOrder(projects: Board["projects"], a: Writer & { name: string; after?: string }): Board["projects"] {
   if (a.after === undefined) return projects;
-  try { return projectOrderAfter(projects, a.name, a.after, a.author); }
+  try { return projectOrderAfter(projects, a.name, a.after, a); }
   catch (error) { throw new OpError((error as Error).message); }
 }
 function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
   if (!s.board.projects.some(p => p.name === author)) throw new OpError(`${prefix}author ${author}: choose a configured project (${s.board.projects.map(p => p.name).join(", ")}); call projects and use the project whose repo matches your repository`);
 }
-function requireOwnership(s: Snapshot, project: string, author: string, id: string): void {
-  const refusal = `item ${id} belongs to project ${project}; file a request into ${project} with create_request instead`;
-  requireAuthor(s, author, author === project ? "" : `${refusal}. `);
-  if (author !== project && author !== ARCHITECT) throw new OpError(refusal);
+function requireOwnership(s: Snapshot, project: string, who: Writer, id: string): void {
+  const refusal = `item ${id} belongs to project ${project}; file a request into ${project} with create_request instead`
+    + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${ARCHITECT_SESSION}` : "");
+  requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
+  if (who.author !== project && !isArchitect(who)) throw new OpError(refusal);
 }
 /** The author's own glossary, the only one it may change; an empty one when it has none yet. */
 function ownGlossary(s: Snapshot, author: string): Glossary {
@@ -178,17 +191,17 @@ function ownGlossary(s: Snapshot, author: string): Glossary {
   if (!GlossaryId.safeParse(author).success) throw new OpError(`author ${author}: a project whose name contains a slash or starts with a dot cannot keep a glossary file`);
   return s.glossaries[author] ?? { terms: [], rev: 1 };
 }
-function ownedItem(s: Snapshot, id: string, author: string, field = "id"): Item {
+function ownedItem(s: Snapshot, id: string, who: Writer, field = "id"): Item {
   const it = requireItem(s, id, field);
   // An existing item's project is its group (rules projectOf), read without deriving the board.
-  requireOwnership(s, it.group, author, id);
+  requireOwnership(s, it.group, who, id);
   return it;
 }
-function ownedNote(s: Snapshot, id: string, author: string): { note: Note; item: string } {
+function ownedNote(s: Snapshot, id: string, who: Writer): { note: Note; item: string } {
   const note = Object.hasOwn(s.notes, id) ? s.notes[id] : undefined;
   if (!note) throw new OpError(`id ${id}: choose an existing note`);
   const item = note.target.startsWith("it:") ? note.target.slice(3) : requireCard(s, note.target.slice(2)).item;
-  ownedItem(s, item, author);
+  ownedItem(s, item, who);
   return { note, item };
 }
 
@@ -245,7 +258,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
             if (!("item" in row && row.own) || beforeRules.parentOf(row.item) === owner) continue;
             const target = next.items[row.item];
             if (!target?.request || !beforeRules.isRequest(row.item)) continue;
-            requireOwnership(s, target.group, a.author, row.item);
+            requireOwnership(s, target.group, a, row.item);
             const doc = { ...target, updated: at, log: [...target.log, { at, by: a.author, text: `分拣：放到「${ownerDoc.title}」的计划` }] };
             delete doc.request;
             next.items[row.item] = doc;
@@ -271,12 +284,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         // Pause permission covers open work resumed through any indirect effect,
         // including unwritten descendants. Closing work is allowed when its
         // explicit marker stays intact; reopening will restore that pause.
-        if (a.author !== ARCHITECT) for (const id of checked) {
+        if (!isArchitect(a)) for (const id of checked) {
           const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
           const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
           if (!clearedMarker && !resumedWork) continue;
           const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
-          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} can resume it`);
+          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} with session ${ARCHITECT_SESSION} can resume it`);
         }
         for (const id of written) {
           const old = s.items[id], current = next.items[id]!;
@@ -329,8 +342,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   /** `reserved`: names an operation only the architect may do; its refusal comes before the ownership check. */
   function edit(a: { author: string; session?: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = "", reserved?: string): Promise<Result> {
     return run(a, async (s, at) => {
-      if (reserved) onlyArchitect(a.author, reserved);
-      return { id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a.author), s, at))] };
+      if (reserved) onlyArchitect(a, reserved);
+      return { id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a), s, at))] };
     }, overwrite);
   }
   /** The item with its whole tag list set: the one rule set_tags and set_tags_many share; the item itself when unchanged. */
@@ -363,21 +376,21 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (r.isBacklog(id)) throw new OpError(`priority: ${id} is record-owned work and cannot store priority; priority derives from open shared dependents`);
     if (!r.isRoot(id)) throw derivedPriority(id, openDependents(r, id));
   }
-  function attach(s: Snapshot, puts: Put[], at: string, author: string, owner: string, id: string, after?: string[]): void {
-    ownedItem(s, owner, author, "owner"); const doc = docOf(s, puts, owner);
+  function attach(s: Snapshot, puts: Put[], at: string, by: Writer, owner: string, id: string, after?: string[]): void {
+    ownedItem(s, owner, by, "owner"); const doc = docOf(s, puts, owner);
     if (requireItem(s, owner, "owner").group !== docOf(s, puts, id).group) throw new OpError("owner: ownership must stay within the same project");
     putDoc(puts, itemPut(owner, { ...doc, plan: insert(doc.plan ?? [], { id, item: id, own: true, ...(after === undefined ? {} : { after }) }), updated: at,
-      log: [...doc.log, entry(author, at, `计划拥有「${titleOf(s, puts, id)}」`)] }));
+      log: [...doc.log, entry(by.author, at, `计划拥有「${titleOf(s, puts, id)}」`)] }));
   }
-  function transfer(s: Snapshot, puts: Put[], at: string, author: string, id: string, owner?: string, after?: string[]): void {
+  function transfer(s: Snapshot, puts: Put[], at: string, by: Writer, id: string, owner?: string, after?: string[]): void {
     const old = rulesOf(s).parentOf(id);
     if (old && old !== owner) {
-      ownedItem(s, old, author, "owner"); const doc = docOf(s, puts, old);
-      putDoc(puts, itemPut(old, { ...doc, plan: removeRow(doc.plan ?? [], id), updated: at, log: [...doc.log, entry(author, at, `计划不再拥有「${titleOf(s, puts, id)}」；${owner ? `移到「${titleOf(s, puts, owner)}」` : "移到顶层"}`)] }));
+      ownedItem(s, old, by, "owner"); const doc = docOf(s, puts, old);
+      putDoc(puts, itemPut(old, { ...doc, plan: removeRow(doc.plan ?? [], id), updated: at, log: [...doc.log, entry(by.author, at, `计划不再拥有「${titleOf(s, puts, id)}」；${owner ? `移到「${titleOf(s, puts, owner)}」` : "移到顶层"}`)] }));
     }
-    if (owner) attach(s, puts, at, author, owner, id, after);
+    if (owner) attach(s, puts, at, by, owner, id, after);
     else if (after !== undefined) throw new OpError("after: requires owner");
-    const doc = docOf(s, puts, id), moved = { ...doc, updated: at, log: [...doc.log, entry(author, at, doc.request && owner ? `分拣：放到「${titleOf(s, puts, owner)}」的计划` : `${old ? `从「${titleOf(s, puts, old)}」` : "从顶层"}${owner ? `移到「${titleOf(s, puts, owner)}」的计划` : "移到顶层"}`)] };
+    const doc = docOf(s, puts, id), moved = { ...doc, updated: at, log: [...doc.log, entry(by.author, at, doc.request && owner ? `分拣：放到「${titleOf(s, puts, owner)}」的计划` : `${old ? `从「${titleOf(s, puts, old)}」` : "从顶层"}${owner ? `移到「${titleOf(s, puts, owner)}」的计划` : "移到顶层"}`)] };
     delete moved.request;
     putDoc(puts, itemPut(id, moved));
   }
@@ -391,7 +404,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.repo !== undefined && a.author !== a.name && a.author !== ARCHITECT) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} may update its repo`);
+      if (a.repo !== undefined && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} may update its repo`);
       if (a.repo === undefined && a.after === undefined) throw new OpError("repo: provide repo or after");
       const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }) } : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
@@ -404,23 +417,23 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const tags = checkedTags(s, a.project, a.tags, true);
       const doc = parse(Item, { title: a.title, group: a.project, ...(tags ? { tags } : {}), head: a.head, priority: a.priority, plan: [{ id: "accept", accept: true, text: a.accept, state: "todo" }], request: { by: a.author, at }, created: at, updated: at, rev: 1, log: [entry(a.author, at, `${a.author} 提出：${a.why}`)] });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
-      if (a.from) { const from = ownedItem(s, a.from, a.author, "from"); puts.push(itemPut(a.from, { ...from, updated: at, plan: insert(from.plan ?? [], { id: a.key, item: a.key, own: false, ...(a.after === undefined ? {} : { after: a.after }) }) })); }
+      if (a.from) { const from = ownedItem(s, a.from, a, "from"); puts.push(itemPut(a.from, { ...from, updated: at, plan: insert(from.plan ?? [], { id: a.key, item: a.key, own: false, ...(a.after === undefined ? {} : { after: a.after }) }) })); }
       return { id: a.key, kind: "item", puts, message: `create_request ${a.key}` };
     }),
     triageRequest: a => run(a, (s, at) => {
-      const it = ownedItem(s, a.id, a.author), r = rulesOf(s);
+      const it = ownedItem(s, a.id, a), r = rulesOf(s);
       if (!it.request || !r.isRequest(a.id)) throw new OpError(`item ${a.id}: not an open request`);
       if (a.priority && (a.owner || !r.isRoot(a.id))) throw derivedPriority(a.id, openDependents(r, a.id));
       const doc = { ...it, updated: at, ...(a.priority ? { priority: a.priority } : {}) }; if (!a.owner) delete doc.request;
       const puts = [itemPut(a.id, doc)];
-      if (a.owner) transfer(s, puts, at, a.author, a.id, a.owner, a.after);
+      if (a.owner) transfer(s, puts, at, a, a.id, a.owner, a.after);
       else if (a.after !== undefined) throw new OpError("after: requires owner");
       const placed=docOf(s,puts,a.id);
       putDoc(puts,itemPut(a.id,{...placed,log:[...placed.log,entry(a.author,at,a.log)]}));
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `triage_request ${a.id}` };
     }),
     closeNote: a => run(a, (s, at) => {
-      const { note, item } = ownedNote(s, a.id, a.author);
+      const { note, item } = ownedNote(s, a.id, a);
       if (note.state === "draft") throw new OpError(`note ${a.id}: cannot close a draft note`);
       const it = requireItem(s, item);
       return { id: a.id, kind: "note", message: `close_note ${a.id}`, puts: [
@@ -429,10 +442,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       ] };
     }),
     createItem: a => run(a, (s, at) => {
-      onlyArchitect(a.author, "create items");
+      onlyArchitect(a, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
       newKey(s, a.key);
-      const owner = a.owner ? ownedItem(s, a.owner, a.author, "owner") : undefined;
+      const owner = a.owner ? ownedItem(s, a.owner, a, "owner") : undefined;
       const group = a.group ?? owner?.group;
       if (!group) throw new OpError("group: a new top item requires its project");
       requireProject(s, group);
@@ -443,7 +456,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const inputs = [...a.plan ?? []];
       const children = a.children ?? [];
       if (new Set(children).size !== children.length) throw new OpError("children: name each item once");
-      for (const id of children) { ownedItem(s, id, a.author, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
+      for (const id of children) { ownedItem(s, id, a, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
       const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
@@ -453,10 +466,29 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (old) { const previous = docOf(s, puts, old); putDoc(puts, itemPut(old, { ...previous, plan: removeRow(previous.plan ?? [], id), updated: at, log: [...previous.log, entry(a.author, at, `「${titleOf(s, puts, id)}」移到「${a.title}」的计划`)] })); }
         const child = docOf(s, puts, id), moved = { ...child, updated: at, log: [...child.log, entry(a.author, at, child.request ? `分拣：放到「${a.title}」的计划` : `移到「${a.title}」的计划`)] }; delete moved.request; putDoc(puts, itemPut(id, moved));
       }
-      if (a.owner) attach(s, puts, at, a.author, a.owner, a.key, a.after);
+      if (a.owner) attach(s, puts, at, a, a.owner, a.key, a.after);
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    journalEntry: a => run(a, (s, at) => {
+      if (a.author !== ARCHITECT) throw new OpError(`author ${a.author}: only the ${ARCHITECT} project writes the journal, under ${JOURNAL.notes}`);
+      const { day, clock } = localStamp(at);
+      const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
+      if (Object.hasOwn(s.items, key)) {
+        const it = ownedItem(s, key, a);
+        if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
+        const head = it.head ? `${it.head}\n\n${line}` : line;
+        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
+        return { id: key, kind: "item", message: `journal_entry ${key}`, puts: [itemPut(key, doc)] };
+      }
+      newKey(s, key);
+      const owner = ownedItem(s, JOURNAL.notes, a, "owner");
+      const tags = checkedTags(s, owner.group, [JOURNAL.tag], true);
+      const doc = parse(Item, { title: `架构师日志 ${day}`, tags, head: line, record: true, group: owner.group, plan: [], created: at, updated: at, rev: 1 });
+      const puts: Put[] = [{ kind: "item", id: key, doc, expectRev: null }];
+      attach(s, puts, at, a, JOURNAL.notes, key);
+      return { id: key, kind: "item", puts, message: `journal_entry ${key}` };
+    }),
     setPlan: a => edit(a, "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
@@ -503,7 +535,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (seen.has(entry.id)) throw new OpError(`items.${i}.id ${entry.id}: name each item once`);
         seen.add(entry.id);
         try {
-          const it = ownedItem(s, entry.id, a.author), doc = tagged(it, s, at, entry.tags);
+          const it = ownedItem(s, entry.id, a), doc = tagged(it, s, at, entry.tags);
           if (doc !== it) puts.push(itemPut(entry.id, doc));
         } catch (error) {
           if (error instanceof OpError) throw new OpError(`items.${i} (${entry.id}): ${error.message}`);
@@ -513,7 +545,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
     setTag: a => run(a, s => {
-      onlyArchitect(a.author, TAG_VOCABULARY);
+      onlyArchitect(a, TAG_VOCABULARY);
       const known = boardTags(s.board).find(t => t.name === a.name);
       const projects = a.projects === undefined ? known?.projects : a.projects ?? undefined;
       for (const name of projects ?? []) requireProject(s, name);
@@ -524,7 +556,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags }), puts: [], message: `set_tag ${a.name}` };
     }, false, true),
     renameTag: a => run(a, (s, at) => {
-      onlyArchitect(a.author, TAG_VOCABULARY);
+      onlyArchitect(a, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       parse(TagName, a.to);
       if (boardTags(s.board).some(t => t.name === a.to)) throw new OpError(`to ${a.to}: already a tag; choose an unused name, or remove ${a.name} with replace`);
@@ -534,7 +566,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.to, kind: "board", board: parse(Board, { ...s.board, tags }), puts, message: `rename_tag ${a.name} ${a.to}` };
     }, false, true),
     removeTag: a => run(a, (s, at) => {
-      onlyArchitect(a.author, TAG_VOCABULARY);
+      onlyArchitect(a, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       const carrying = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name));
       let replace: Tag | undefined;
@@ -551,8 +583,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags: boardTags(s.board).filter(t => t.name !== a.name) }), puts, message: `remove_tag ${a.name}${a.replace === undefined ? "" : ` → ${a.replace}`}` };
     }, false, true),
     updateItem: a => run(a, async (s, at) => {
-      if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyArchitect(a.author, "change an item's title");
-      const it = ownedItem(s, a.id, a.author); await revision("item", a.id, a.rev, it);
+      if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyArchitect(a, "change an item's title");
+      const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
       if (a.priority !== undefined) priorityAllowed(s, a.id);
@@ -560,6 +592,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = { ...it, updated: at, log: [...it.log] };
       for (const key of ["title", "head", "links", "priority", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
+        // Cancelled work turned into a record and back to work would be reopened without set_status.
+        if (it.status === "cancelled") onlyArchitect(a, "turn a cancelled item into a record");
         delete doc.paused;
         if (a.accept !== undefined) throw new OpError("accept: refused for a record");
         const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
@@ -584,7 +618,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return doc;
     }, false, ` ${a.status}`, "cancel or reopen an item"),
     setPause: a => run(a, (s, at) => {
-      onlyArchitect(a.author, "pause or resume an item, at the owner's request");
+      onlyArchitect(a, "pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
       const it = requireItem(s, a.id);
       if (it.record) throw new OpError("paused: a record cannot be paused or resumed");
@@ -601,9 +635,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)] };
     }, false, true),
     moveItem: a => run(a, (s, at) => {
-      ownedItem(s, a.id, a.author);
+      ownedItem(s, a.id, a);
       if (a.owner && a.priority) throw new OpError("priority: refused with owner");
-      const puts: Put[] = []; transfer(s, puts, at, a.author, a.id, a.owner, a.after);
+      const puts: Put[] = []; transfer(s, puts, at, a, a.id, a.owner, a.after);
       if (!a.owner) {
         const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
         const r = rules(next);
@@ -618,11 +652,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return doc;
     }),
     writeCard: a => run(a, async (s, at) => {
-      ownedItem(s, a.item, a.author, "item");
+      ownedItem(s, a.item, a, "item");
       let previous: Decision | undefined;
       if (a.rev !== undefined) {
         previous = requireCard(s, a.key);
-        ownedItem(s, previous.item, a.author);
+        ownedItem(s, previous.item, a);
         await revision("decision", a.key, a.rev, previous);
         if (previous.status !== "open") throw new OpError("status: only an open card can be revised; create a new card");
       } else newKey(s, a.key);
@@ -644,14 +678,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     ruleCard: a => run(a, (s, at) => {
       const card = requireCard(s, a.key);
-      ownedItem(s, card.item, a.author);
+      ownedItem(s, card.item, a);
       if (card.status !== "open") throw new OpError("status: only an open card can be ruled");
       if (a.choice !== undefined && !card.options.some(o => o.key === a.choice)) throw new OpError("choice: use an option key from this card, or omit choice for a prose ruling");
       const doc = parse(Decision, { ...card, status: "ruled", choice: a.choice, ruling: a.ruling, ruledAt: at, updated: at });
       return { id: a.key, kind: "decision", message: `rule_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: card.rev }] };
     }),
     replyNote: a => run(a, (s, at) => {
-      const { note } = ownedNote(s, a.id, a.author);
+      const { note } = ownedNote(s, a.id, a);
       if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
