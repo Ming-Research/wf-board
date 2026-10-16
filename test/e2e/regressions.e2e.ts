@@ -160,7 +160,13 @@ const WITNESSES: Witness[] = [
   {
     bug: "a root another project began to depend on stayed among its project's own roots until the page was reloaded (owner, 2026-10-15)",
     // Without the comparison, a change between the project's own roots and the roots other projects depend on repaints no group.
-    reverts: [{ file: "web/app.ts", edit: "an item changing section repaints its group", find: '    if (previous.shared !== current.shared) scope.add("group:"+current.group);\n', replace: "" }], family: "shared-section",
+    reverts: [{ file: "web/app.ts", edit: "an item changing section repaints its group", find: '    if (previous.shared !== current.shared) scope.add("group:"+current.group);\n', replace: "" }], family: "shared-section-above",
+    run: async (bp, b) => checkSharedSection(bp, b),
+  },
+  {
+    bug: "a root stayed under the line for the roots other projects depend on after the shared row to it was removed (review of wf-board#44)",
+    // Only a root that becomes depended on repaints its group; one that stops being depended on does not.
+    reverts: [{ file: "web/app.ts", edit: "only an item moving under the line repaints its group", find: 'if (previous.shared !== current.shared) scope.add("group:"+current.group);', replace: 'if (!previous.shared && current.shared) scope.add("group:"+current.group);' }], family: "shared-section-under",
     run: async (bp, b) => checkSharedSection(bp, b),
   },
 ];

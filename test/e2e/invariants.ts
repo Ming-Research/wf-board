@@ -494,8 +494,10 @@ async function sectionViolations(bp: BoardPage, r: Rules, items: Snapshot["items
   const drawn = await bp.page.evaluate(() => [...document.querySelectorAll("#areas .group")].flatMap(group => [...group.querySelectorAll(":scope > ul.tree.lines")].flatMap(list =>
     [...list.querySelectorAll(":scope > li > .item")].map(e => ({ id: e.id.slice(3), under: !!list.previousElementSibling?.classList.contains("shared-sep") })))));
   const ended = (id: string) => /^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  // Two families, so a witness can name the direction it breaks: an item left above the line when it should be under, or under it when it should not.
   return drawn.filter(d => d.under !== r.dependents(d.id).some(w => !ended(w.id) && items[w.id]?.group !== items[d.id]?.group))
-    .map(d => `shared-section: ${d.id} is drawn ${d.under ? "under" : "above"} 被其他项目依赖, but ${d.under ? "no open item of another project depends on it" : "an open item of another project depends on it"}`);
+    .map(d => d.under ? `shared-section-under: ${d.id} is drawn under 被其他项目依赖, but no open item of another project depends on it`
+      : `shared-section-above: ${d.id} is drawn above 被其他项目依赖, but an open item of another project depends on it`);
 }
 /** A root another project starts to depend on moves under its project's 被其他项目依赖 line while the page stays open,
  * and returns to the project's own roots when the shared row goes. Writes to the board: a shared row on an item of
