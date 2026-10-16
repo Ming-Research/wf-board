@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
-import { board, author } from "./helpers.ts";
+import { board, author, asArchitect, at } from "./helpers.ts";
 
 async function clocked(t: Parameters<typeof board>[0]) {
   const fixture = await board(t);
@@ -75,4 +75,51 @@ test("the retry is found after the board restarted: the log and the commit say i
   assert.equal(again.commit, first.commit);
   assert.equal(reopened.snapshot().items.a!.log.filter(e => e.text === "done").length, 1);
   assert.equal(store.snapshot().items.a!.log.filter(e => e.text === "done").length, 1);
+});
+
+// The other writes that add a log line and would add it twice when sent again: close_note, set_status and journal_entry
+// (journal_entry's repeat is in test/journal.test.ts, which has the journal's board).
+test("close_note sent again by the same session closes once: one log line, the note as the first close left it", async t => {
+  const { store, op, setClock } = await clocked(t);
+  await store.commit({ author: "Fixture", message: "Note", puts: [{ kind: "note", id: "n1", expectRev: null, doc: { target: "it:a", kind: "done", text: "Done", state: "sent", at, sentAt: at } }] });
+  const first = await op.closeNote({ author, session: "S", id: "n1", log: "Handled" });
+  const [lines, note] = [logOf(store).length, store.snapshot().notes.n1];
+  setClock("2026-10-16T10:00:30Z");
+  const again = await op.closeNote({ author, session: "S", id: "n1", log: "Handled" });
+  assert.equal(again.repeated, true);
+  assert.equal(again.commit, first.commit);
+  assert.equal(logOf(store).length, lines, "the item has the line once");
+  assert.deepEqual(store.snapshot().notes.n1, note, "and the note keeps the time the first close gave it");
+  // A close with other words, or by another session, is a close of its own.
+  assert.equal((await op.closeNote({ author, session: "S", id: "n1", log: "Handled differently" })).repeated, undefined);
+  assert.equal((await op.closeNote({ author, session: "T", id: "n1", log: "Handled differently" })).repeated, undefined);
+  assert.equal(logOf(store).length, lines + 2);
+});
+
+test("set_status sent again by the same session is answered with the first write: a second cancel adds no line, a second reopen is not refused", async t => {
+  const { store, op, setClock } = await clocked(t);
+  const log = () => store.snapshot().items.other!.log.length;
+  const cancelled = await op.setStatus({ ...asArchitect, id: "other", status: "cancelled", log: "Superseded" });
+  const lines = log();
+  setClock("2026-10-16T10:00:20Z");
+  const again = await op.setStatus({ ...asArchitect, id: "other", status: "cancelled", log: "Superseded" });
+  assert.equal(again.repeated, true);
+  assert.equal(again.commit, cancelled.commit);
+  assert.equal(log(), lines);
+  const reopened = await op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Resume" });
+  assert.equal(reopened.repeated, undefined);
+  setClock("2026-10-16T10:00:40Z");
+  const reopenedAgain = await op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Resume" });
+  assert.equal(reopenedAgain.repeated, true, "the retry of the reopen is answered, not refused for the item no longer being cancelled");
+  assert.equal(reopenedAgain.commit, reopened.commit);
+  assert.equal(store.snapshot().items.other!.status, undefined);
+  // The same words for the opposite change are another write, not the repeat of the first.
+  setClock("2026-10-16T10:00:50Z");
+  await op.setStatus({ ...asArchitect, id: "other", status: "cancelled", log: "Same words" });
+  setClock("2026-10-16T10:00:55Z");
+  assert.equal((await op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Same words" })).repeated, undefined);
+  assert.equal(store.snapshot().items.other!.status, undefined, "the item is open again");
+  // The same words a minute later are a new decision, and the refusal of a reopen of an open item stands.
+  setClock("2026-10-16T10:03:00Z");
+  await assert.rejects(op.setStatus({ ...asArchitect, id: "other", status: "open", log: "Resume" }), /only a cancelled item can be reopened/);
 });

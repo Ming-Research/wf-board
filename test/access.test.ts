@@ -5,7 +5,7 @@ import { ACCESS, PARTS, ROLES, writesAnyProject } from "../src/model.ts";
 import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
-import { board } from "./helpers.ts";
+import { board, asArchitect } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
 // What the design (docs/design.md, section 9) reserves for the architect, written out here and not read from the table.
@@ -127,6 +127,29 @@ test("a card is written inside the subtree only, and a write that reaches anothe
   await assert.rejects(op.writeCard({ ...who, ...card, key: "q-other", item: "b" }), (e: unknown) => e instanceof OpError && /item b: outside the subtree/.test(e.message));
   // A move changes the owners of both items: it is not a part an engineer has.
   await assert.rejects(op.moveItem({ ...who, id: "a", owner: "b" }), (e: unknown) => e instanceof OpError && /item\.move: a 工程师 credential may not write/.test(e.message));
+});
+
+test("a subtree credential cannot change an item outside its subtree through the effect of its own write, nor take one into its subtree", async t => {
+  const { op, store } = await board(t);
+  const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
+  // `other` is a root with a stored priority: a row of `a` that waits on it makes it a non-root, and the board then drops its
+  // priority and logs that in `other` (a document of the Firn project, outside the subtree).
+  const before = store.snapshot();
+  assert.ok(before.items.other!.priority);
+  await assert.rejects(op.setPlan({ ...who, id: "a", row: { item: "other", own: false } }), (e: unknown) => e instanceof OpError && /item other: outside the subtree of a/.test(e.message));
+  assert.equal(store.snapshot().head, before.head, "nothing was written");
+  assert.ok(store.snapshot().items.other!.priority, "and the other item kept its priority");
+  // An own row for an unowned top item of the same project would put it under the subtree, where the credential then writes.
+  await op.createItem({ ...asArchitect, key: "free", title: "Free", record: true, group: "Whitefoot" });
+  const head = store.snapshot().head;
+  await assert.rejects(op.setPlan({ ...who, id: "a", row: { item: "free", own: true } }), (e: unknown) => e instanceof OpError && /item free: outside the subtree of a/.test(e.message));
+  assert.equal(store.snapshot().head, head);
+  // The same rows are what the architect writes.
+  await op.setPlan({ ...asArchitect, id: "a", row: { item: "free", own: true } });
+  assert.equal(store.snapshot().items.a!.plan!.some(r => "item" in r && r.item === "free" && r.own), true);
+  // A row that owns an item already inside the subtree stays allowed.
+  await op.setPlan({ ...who, id: "a", row: { id: "w", text: "work", state: "doing" } });
+  await op.appendLog({ ...who, id: "free", text: "inside now" });
 });
 
 test("a review writes the log of its subtree and nothing else", async t => {

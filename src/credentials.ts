@@ -37,7 +37,10 @@ export const LongLived = z.object({
   /** The items the role's `subtree` parts are limited to; the resource agent's own records, say. */
   roots: z.array(Key).default([]),
   hash: Hash,
-}).strict().refine(c => c.role !== "架构师" || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`);
+}).strict()
+  .refine(c => c.role !== "架构师" || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`)
+  // Author Architect from this session is what the board takes for the architect (model isArchitect); no other role writes under it.
+  .refine(c => c.role === "架构师" || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`);
 export type LongLived = z.infer<typeof LongLived>;
 export const CredentialsFile = z.object({ credentials: z.array(LongLived) }).strict().superRefine((file, ctx) => {
   for (const key of ["session", "hash"] as const) if (new Set(file.credentials.map(c => c[key])).size !== file.credentials.length) ctx.addIssue(`two credentials have the same ${key}`);

@@ -166,17 +166,20 @@ nothing of a stop; one that is retries when the board is back. Who is writing
 comes from the request's `Authorization` header (section 9), not from a session.
 
 A write that was committed when the board stopped but not answered is sent
-again by the client. For the append to an item's log, the write an agent repeats
-most, that would silently add the text twice, so an `append_log` is not
-written when the item's log has an entry of the same author with the same text
-from the last minute and the commit that wrote that entry carries the same
-session: the answer is the first write's commit, marked `repeated`. The rule reads the log and the commit's session
-trailer, so it holds across a restart with nothing kept in memory. A caller that
-names no session is not recognised and writes. The cost is that a second
-identical entry within a minute from one session is not written, which the
-answer says. Other writes that add a log line when repeated (`set_status`,
-`close_note`, `journal_entry`) are not covered; the others are refused or change
-nothing when repeated (a used key, a stale revision, an unchanged plan).
+again by the client. Four writes would silently add a line twice, and nothing
+else stops the second: `append_log`, `close_note`, `set_status` and
+`journal_entry`. Such a write is not made when the item's history holds a commit
+of the same operation on the same target from the same session, made in the
+last minute, that left the item holding the line this write adds (the last log
+line of the same author with the same text; for `journal_entry`, the same text
+at the end of the head). The answer is that first commit, marked `repeated`. The
+rule reads the commit's message and `Session:` trailer and the item as the
+commit left it, so it holds across a restart with nothing kept in memory, and
+one function serves the four writes. A caller that names no session is not
+recognised and writes. The cost is that a second identical write within a
+minute from one session is not made, which the answer says. The other writes
+are refused or change nothing when repeated (a used key, a stale revision, an
+unchanged plan, a note already replied, an ended dispatch).
 
 **Stopping.** launchd sends SIGTERM and kills the process five seconds later.
 The daemon uses well under that:
@@ -2367,6 +2370,10 @@ the writer from it.
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
+- **The session name `架构师`** is the architect's alone: the board takes author `Architect`
+  writing from that session for the architect (section 6) and skips checks for it. A file
+  entry of another role under that name is refused, and so is `dispatch_start` for an agent
+  of that name.
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads
@@ -2378,8 +2385,16 @@ the writer from it.
   `subtree` (the items the credential names, with everything they own, and the writer's own
   project's glossary). `ops.run` takes the parts of every write as an argument, so a write
   cannot omit them, and refuses a part the role lacks before it reads anything; for a
-  `subtree` part it then checks that every document the write changes is inside the subtree.
-  - The architect has every part, on the whole board.
+  `subtree` part it then checks, once the write is complete, that every document it changes
+  is inside the subtree. The check counts the board's own effects on other items as well
+  as what the call names: a row that makes a root with a stored priority wait on another
+  item changes that root (the board drops its priority and logs it), so a subtree
+  credential cannot add such a row. It also counts what a plan row takes in: a row that owns
+  an item puts it under the writer, so a subtree credential may own only items it already
+  writes.
+  - The architect has every part but `item.merge-row`, on the whole board. No role has
+    `item.merge-row`: only the GitHub watch marks a merge row done, and it writes without a
+    credential.
   - The observer has every part but the ones only the architect has: `project.create`,
     `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`, `item.cancel`,
     `item.pause`, `item.move-project` and starting or ending a dispatch. It writes items of

@@ -240,7 +240,7 @@ function updateParts(a: { title?: string; head?: string; links?: unknown; priori
   if (a.record !== undefined || a.accept !== undefined) parts.push("item.record");
   return parts;
 }
-/** An append of the same text by the same session within this long is the retry of a write whose answer was lost, and is not written again (docs/design.md, section 4). */
+/** A write that adds a log line, made again by the same session within this long, is the retry of a write whose answer was lost, and is not made again (docs/design.md, section 4). */
 const REPEAT_MS = 60_000;
 
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z")): Ops {
@@ -280,6 +280,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (work.board) throw new OpError(`board: a ${role} credential does not change projects or tags`);
     for (const put of work.puts) {
       if (put.kind === "item" && !inside.has(put.id)) throw outside(put.id);
+      // A row that owns an item puts it under this one: the credential would then write it, so it may own only what it already writes.
+      else if (put.kind === "item") { for (const row of (put.doc as Item).plan ?? []) if ("item" in row && row.own && !inside.has(row.item)) throw outside(row.item); }
       else if (put.kind === "decision" && !inside.has((put.doc as Decision).item)) throw outside((put.doc as Decision).item);
       else if (put.kind === "note") { const t = (put.doc as Note).target, item = t.startsWith("it:") ? t.slice(3) : s.decisions[t.slice(2)]?.item ?? ""; if (!inside.has(item)) throw outside(item || t); }
       else if (put.kind === "glossary" && put.id !== project) throw new OpError(`glossary ${put.id}: a ${role} credential writes only its own project's glossary (${project})`);
@@ -298,7 +300,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
         if (work.replayed) return { ...work.replayed, repeated: true as const };
-        withinScope(s, a, partList, work);
         if (!anyAuthor) requireAuthor(s, a.author);
         // Validate the prospective board, including indirect effects on children,
         // dependents and items whose owner actions a card/note write changes.
@@ -331,6 +332,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         // The rules above read `next` before these priority drops; derive the changed state once more.
         if (droppedHere) afterRules = candidate();
+        // Last of the writes, so the drops above count: they change an item the call did not name.
+        withinScope(s, a, partList, work);
         const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
         // Pause permission covers open work resumed through any indirect effect,
         // including unwritten descendants. Closing work is allowed when its
@@ -454,27 +457,29 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     putDoc(puts, itemPut(id, moved));
   }
   /**
-   * The commit of an append the same session made a moment ago with the same text, or none. A write that was committed but
-   * not answered (the board restarted) is sent again by the client; the log of the item and the commit's session tell it.
+   * The commit of a write the same session made a moment ago that this one repeats, or none. A write that was committed but not
+   * answered (the board restarted) is sent again by the client; the commit's message and session and the item as that commit left
+   * it tell it. `same` says whether that item holds the line (or the head text) this write would add. It is for the writes that
+   * add a line without any check of their own that stops a second one: append_log, close_note, set_status and journal_entry.
    */
-  async function earlierAppend(it: Item, a: { id: string; author: string; session?: string; text: string }, at: string): Promise<Result | undefined> {
-    const session = a.session?.trim();
-    if (!session) return undefined;
-    // The entries of this author with this text from the last minute; another session may have written one of them.
-    const same: Array<Item["log"][number]> = [];
-    for (let i = it.log.length - 1; i >= 0; i--) {
-      const e = it.log[i]!;
-      if (!(Date.parse(at) - Date.parse(e.at) <= REPEAT_MS)) break;
-      if (e.by === a.author && e.text === a.text) same.push(e);
-    }
-    if (!same.length) return undefined;
-    for (const commit of await store.log({ kind: "item", id: a.id, limit: 20 })) {
-      if (commit.session !== session || commit.message !== `append_log ${a.id}`) continue;
-      const doc = await store.show("item", a.id, commit.commit) as Item | null, last = doc?.log[doc.log.length - 1];
-      if (doc && last && same.some(e => e.at === last.at && e.by === last.by && e.text === last.text)) return { commit: commit.commit, id: a.id, rev: doc.rev, summary: commit.message };
+  async function earlierWrite(it: Item, id: string, session: string | undefined, at: string, message: string, same: (doc: Item) => boolean): Promise<Result | undefined> {
+    const who = session?.trim();
+    // Any write of this window left the item updated in it, so an item last updated before the window has no earlier write to find.
+    if (!who || !(Date.parse(at) - Date.parse(it.updated) <= REPEAT_MS)) return undefined;
+    for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
+      if (commit.session !== who || commit.message !== message) continue;
+      const doc = await store.show("item", id, commit.commit) as Item | null;
+      if (!doc) continue;
+      // The commits come newest first: a write of this kind older than the window is followed by older ones only.
+      if (!(Date.parse(at) - Date.parse(doc.updated) <= REPEAT_MS)) break;
+      if (same(doc)) return { commit: commit.commit, id, rev: doc.rev, summary: commit.message };
     }
     return undefined;
   }
+  /** What a repeat of a write is answered with: the first write's result, and no write. */
+  const replay = (id: string, earlier: Result): Work => ({ id, kind: "item", message: earlier.summary, puts: [], replayed: earlier });
+  /** The log line a write added last, for `earlierWrite`'s `same`. */
+  const lastLine = (doc: Item, by: string, text: string): boolean => { const last = doc.log[doc.log.length - 1]; return last !== undefined && last.by === by && last.text === text; };
   return {
     createProject: a => run(a, "project.create", s => {
       if (s.board.projects.some(p => p.name === a.name)) throw new OpError(`project ${a.name}: already exists`);
@@ -493,13 +498,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const projects = s.board.projects.map(p => p.name === a.name ? changed : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
     }),
-    closeNote: a => run(a, "note.close", (s, at) => {
+    closeNote: a => run(a, "note.close", async (s, at) => {
       const { note, item } = ownedNote(s, a.id, a);
+      const it = requireItem(s, item), text = `关闭评论：${a.log}`;
+      const earlier = await earlierWrite(it, item, a.session, at, `close_note ${a.id}`, doc => lastLine(doc, a.author, text));
+      if (earlier) return { ...replay(a.id, earlier), kind: "note" };
       if (note.state === "draft") throw new OpError(`note ${a.id}: cannot close a draft note`);
-      const it = requireItem(s, item);
       return { id: a.id, kind: "note", message: `close_note ${a.id}`, puts: [
         { kind: "note", id: a.id, expectRev: note.rev, doc: { ...note, state: "done", repliedAt: at, repliedBy: a.author } },
-        itemPut(item, { ...it, updated: at, log: [...it.log, entry(a.author, at, `关闭评论：${a.log}`)] }),
+        itemPut(item, { ...it, updated: at, log: [...it.log, entry(a.author, at, text)] }),
       ] };
     }),
     createItem: a => run(a, "item.create", (s, at) => {
@@ -539,8 +546,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => run(a, "item.log", async (s, at) => {
-      const it = ownedItem(s, a.id, a), earlier = await earlierAppend(it, a, at);
-      if (earlier) return { id: a.id, kind: "item", message: earlier.summary, puts: [], replayed: earlier };
+      const it = ownedItem(s, a.id, a), earlier = await earlierWrite(it, a.id, a.session, at, `append_log ${a.id}`, doc => lastLine(doc, a.author, a.text));
+      if (earlier) return replay(a.id, earlier);
       return { id: a.id, kind: "item", message: `append_log ${a.id}`, puts: [itemPut(a.id, { ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })] };
     }),
     markMerged: a => edit(a, "item.merge-row", "mark_merged", (it, s, at) => {
@@ -550,12 +557,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row;
       return { ...it, updated: at, plan: it.plan.map(r => r === row ? stampPlanRow({ ...input, state: "done" }, row, at) : r), log: [...it.log, entry(a.author, at, a.log)] };
     }),
-    journalEntry: a => run(a, "journal", (s, at) => {
+    journalEntry: a => run(a, "journal", async (s, at) => {
       onlyArchitect(a, `write the journal under ${JOURNAL.notes}`);
       const { day, clock } = localStamp(at);
       const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
       if (Object.hasOwn(s.items, key)) {
         const it = ownedItem(s, key, a);
+        // The entry's text is in the head, after the time of day it was written at, so the repeat is told by the text alone.
+        const earlier = await earlierWrite(it, key, a.session, at, `journal_entry ${key}`, doc => doc.head?.endsWith(`** ${a.text}`) ?? false);
+        if (earlier) return replay(key, earlier);
         if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
         const head = it.head ? `${it.head}\n\n${line}` : line;
         const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
@@ -573,6 +583,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
+        if (a.agent === ARCHITECT_SESSION) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
           if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
@@ -743,7 +754,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
     }, true),
-    setStatus: a => edit(a, "item.cancel", "set_status", (it, s, at) => {
+    setStatus: a => run(a, "item.cancel", async (s, at) => {
+      onlyArchitect(a, "cancel or reopen an item");
+      const it = ownedItem(s, a.id, a), message = `set_status ${a.id} ${a.status}`;
+      const earlier = await earlierWrite(it, a.id, a.session, at, message, doc => lastLine(doc, a.author, a.log));
+      if (earlier) return replay(a.id, earlier);
       if (it.record) throw new OpError("status: a record has no status");
       if (a.status !== "cancelled" && a.status !== "open") throw new OpError("status: only cancelled or open; all other statuses are derived from the plan");
       if (a.status === "open" && it.status !== "cancelled") throw new OpError("status: only a cancelled item can be reopened");
@@ -751,8 +766,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.status === "cancelled" && open.length) throw new OpError(`status: owned items are still open: ${open.join(", ")}; cancel or move each part first`);
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       if (a.status === "cancelled") doc.status = "cancelled"; else delete doc.status;
-      return doc;
-    }, false, ` ${a.status}`, "cancel or reopen an item"),
+      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc)] };
+    }),
     setPause: a => run(a, "item.pause", (s, at) => {
       onlyArchitect(a, "pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");

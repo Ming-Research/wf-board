@@ -59,6 +59,8 @@ test("the file's entries are checked: a role of its own, the architect only as i
     ["a role a dispatch has", { ...ok, role: "工程师" }],
     ["the architect as another session", { ...ok, role: "架构师", session: "别人", project: "Architect" }],
     ["the architect in another project", { ...ok, role: "架构师", session: "架构师", project: "Firn" }],
+    ["the architect's session name for another role", { ...ok, session: "架构师" }],
+    ["the architect's session name for the resource agent", { ...ok, role: "资源管理", session: "架构师" }],
     ["a hash that is not one", { ...ok, hash: "abc" }],
     ["an unknown field", { ...ok, token: "wfb_x" }],
   ];
@@ -89,6 +91,9 @@ test("a dispatch issues a credential for its session, role, item and project, an
   const credentials = new Credentials((await credentialsFile(t, [])).file);
   const { credential } = await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-1" });
   assert.deepEqual(credentials.resolve(`Bearer ${credential}`, store.snapshot()), { ok: true, who: { author: "Whitefoot", session: "a-worker", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } });
+  // The architect's session name is the architect's alone: a dispatch credential under it would be taken for the architect's.
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师", agentId: "agent-3" }), /agent.*the architect's session name/);
+  assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent === "架构师") ?? false, false, "and no dispatch was recorded");
   const review = await op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 3, model: "Opus", agent: "a-review", agentId: "agent-2" });
   const reviewer = credentials.resolve(`Bearer ${review.credential}`, store.snapshot()) as Extract<Resolved, { ok: true }>;
   assert.equal(reviewer.who.access.role, "审查");
