@@ -19,7 +19,7 @@ import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { server, wakeSocket } from "./helpers.ts";
 
-const BRANCH = "claude/first-board";
+const BRANCH = "main";
 const identity = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }).trim();
 type After = { after(fn: () => void | Promise<void>): void };
@@ -305,7 +305,7 @@ test("a checkout with a commit the main line lacks, or on another branch, is not
   assert.equal(w.posts[0]!.version, sha);
   sh(r.checkout, "checkout", "-q", "-b", "other");
   assert.equal(await deploy(), "refused");
-  assert.match(String(w.posts[1]!.reason), /on other, not claude\/first-board/);
+  assert.match(String(w.posts[1]!.reason), /on other, not main/);
   assert.equal(w.restarts, 0);
 });
 
@@ -330,7 +330,7 @@ test("an unreachable remote is tried again within the run, then pushed once, and
   assert.equal(await deploy(), "unreachable");
   assert.ok(w.clock >= 20_000, "it waited between its three tries");
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", null, r.first]]);
-  assert.match(String(w.posts[0]!.reason), /could not fetch origin\/claude\/first-board/);
+  assert.match(String(w.posts[0]!.reason), /could not fetch origin\/main/);
   assert.deepEqual({ restarts: w.restarts, builds: w.builds.length }, { restarts: 0, builds: 0 });
   assert.equal(await deploy(), "unreachable");
   assert.equal(w.posts.length, 1, "the same news is not pushed again");
@@ -556,7 +556,7 @@ test("a checkout the job left where a hand deploy had put it is the job's own: a
 });
 
 for (const { name, touch, why } of [
-  { name: "a branch made to look into something", touch: (r: Repos) => { sh(r.checkout, "checkout", "-q", "-b", "debug"); }, why: /on debug, not claude\/first-board/ },
+  { name: "a branch made to look into something", touch: (r: Repos) => { sh(r.checkout, "checkout", "-q", "-b", "debug"); }, why: /on debug, not main/ },
   { name: "a local edit", touch: (r: Repos) => { writeFileSync(join(r.checkout, "README.md"), "edit"); }, why: /local changes to tracked files/ },
 ]) {
   test(`${name} in the checkout while a rollback was unfinished is not reset: the record is dropped and the checkout is refused as any such one is`, async t => {

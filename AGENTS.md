@@ -94,7 +94,7 @@ matches what the artifact board offered.
 
 A launchd job, `org.ming-research.wf-board-deploy`, deploys every merge within
 five minutes (`docs/design.md`, section 4, Deploying). It fast-forwards
-`~/dev/wf/wf-board` to `claude/first-board`, builds the page, restarts the
+`~/dev/wf/wf-board` to `main`, builds the page, restarts the
 daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
 `~/Library/Logs/wf-board-deploy.log`.
@@ -113,7 +113,7 @@ merge does not install it):
 writes the plist and prints the `launchctl bootstrap` command to run.
 
 By hand, when the job is off or its own script broke: fast-forward
-`~/dev/wf/wf-board` to the merged head of `claude/first-board` and run
+`~/dev/wf/wf-board` to the merged head of `main` and run
 `npm run -s build:web` there (the bundle is not in git). When server code
 changed, restart the daemon
 (`launchctl kickstart -k gui/$(id -u)/org.ming-research.wf-board`; log

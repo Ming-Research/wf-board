@@ -99,7 +99,7 @@ does not answer, and every MCP tool error names the cause.
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
-is `src/deploy.ts`. A run fetches the main line, `origin/claude/first-board`.
+is `src/deploy.ts`. A run fetches the main line, `origin/main`.
 When the checkout the daemon runs from is behind it, the run moves the checkout
 to its head with a fast-forward, installs the packages if `package-lock.json`
 changed, rebuilds the page bundle and, when a changed path needs it, restarts

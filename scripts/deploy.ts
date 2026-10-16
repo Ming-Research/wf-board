@@ -32,7 +32,7 @@ function exec(command: string, args: string[]): Promise<string> {
 }
 
 await deployOnce({
-  branch: "claude/first-board", remote: "origin",
+  branch: "main", remote: "origin",
   git: args => exec("git", args),
   run: async (command, args) => { await exec(command, args); },
   pid: async () => {
