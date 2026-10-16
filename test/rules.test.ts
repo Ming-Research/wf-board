@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutLog, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -628,8 +628,9 @@ test("target text is compact and does not affect status, and freshness uses full
   for (const changed of [{ ...a, goal: "New" }, { ...a, target: "New" }, { ...a, current: "New" }, { ...a, baseline: "New" }, { ...a, date: T1 }, { ...a, id: "new" }]) { assert.deepEqual(changedItemTargets([a, b], [changed, b]), [changed]); assert.equal(targetsChanged([a, b], [changed, b]), true); }
 });
 
-test("log entries never count as owner-unread: one rule drops the log and names log-only change summaries", () => {
-  assert.deepEqual(withoutLog({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
+test("log entries and dispatch records never count as owner-unread: one rule drops them and names log-only change summaries", () => {
+  assert.deepEqual(withoutHistoricalDetail({ title: "T", log: [{ at: T0, text: "x" }] }), { title: "T" });
+  assert.deepEqual(withoutHistoricalDetail({ title: "T", dispatches: [{ agentId: "a" }], log: [] }), { title: "T" });
   assert.deepEqual(["+2 log", "log changed"].map(isLogChange), [true, true]);
   assert.deepEqual(["steps changed", "head changed", "+2 logs here"].map(isLogChange), [false, false, false]);
 });
