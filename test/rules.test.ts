@@ -342,6 +342,12 @@ test("cycles terminate, identify only members, and receive priority only from ou
   const reached = rules(s); assert.equal(reached.onCycle("waiter"), false); assert.equal(reached.priorityOf("a"), "P1"); assert.equal(reached.priorityOf("b"), "P1");
 });
 
+test("cancelled items raise no acceptance-only or placeholder checks", () => {
+  const s = snapshot({ gone: { status: "cancelled", plan: workPlan() }, placeholder: { status: "cancelled", plan: [step("work", "done"), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, open: { plan: workPlan() } });
+  assert.deepEqual(texts(s, "gone"), []); assert.deepEqual(texts(s, "placeholder"), []);
+  assert.ok(texts(s, "open").includes("只差验收：其它行都已完成"));
+});
+
 test("plan checks flag structural violations and conversion placeholders, without old manual-status checks", () => {
   const s = snapshot({ p: { plan: workPlan([own("x")]) }, second: { group: "Second", plan: workPlan([own("x")]) }, x: {}, loose: { priority: undefined }, waiter: { plan: workPlan([shared("loose")]) }, missing: { plan: workPlan([shared("gone"), card("gone-card")]) }, provisional: { provisional: true, plan: workPlan([step()]) }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, oldParent: { status: "cancelled", plan: workPlan([own("open")]) }, open: {}, onlyAcceptance: { plan: workPlan() }, acceptedEarly: { plan: workPlan([step()], "done") }, unconfigured: { group: "Unknown" }, rootMissing: { priority: undefined } });
   assert.ok(texts(s, "x").includes("被多个条目拥有")); assert.ok(texts(s, "x").includes("跨项目拥有"));
