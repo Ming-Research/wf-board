@@ -201,7 +201,7 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
   await api("/api/read", {through: store.snapshot().head});
   const a = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "earlier unread" } });
   const card = store.snapshot().decisions.choice!;
-  const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, background: "new background"}}]});
+  const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, question: "new question"}}]});
   assert.equal((await api("/api/read", {doc: "decision:choice", through: b.commit})).status, 200);
   assert.deepEqual((await api("/api/unread")).data.steps!.map(s => s.id), [a.commit]);
   assert.equal((await api(`/api/step?id=${b.commit}&kind=decision&doc=choice`)).status, 404);

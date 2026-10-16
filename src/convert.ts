@@ -299,6 +299,14 @@ export function convertExport(exportJson: unknown): Converted {
   return { board, asRead, current, owner, orphans, report: Array.from(counts, ([action, info]) => `${action}: ${info.count} (examples: ${[...info.examples].join(", ")})`) };
 }
 
+/** The importer reads the shape cards had before they joined the plans; the store takes the current one, so the long
+ * texts go to `legacy` and a card the old board closed in any way is ruled. */
+function storedCard(card: Decision): unknown {
+  const { background, confidence, ruling, order: _order, status, ...rest } = card;
+  const legacy = { ...(background === undefined ? {} : { background }), ...(confidence === undefined ? {} : { confidence }), ...(ruling === undefined ? {} : { ruling }) };
+  return { ...rest, status: status === "open" ? "open" : "ruled", ...(Object.keys(legacy).length ? { legacy } : {}) };
+}
+
 export async function importExport(store: Store, exportJson: unknown, options: { at?: string } = {}): Promise<{ asReadCommit: string; currentCommit: string }> {
   // The Store contract coalesces no-ops: equal checkpoint states share a commit.
   // Two distinct commits for that case require an explicit empty-checkpoint API.
@@ -319,7 +327,7 @@ export async function importExport(store: Store, exportJson: unknown, options: {
     const puts: Put[] = [];
     const deletes: Del[] = [];
     for (const [kind, collection] of [["item", "items"], ["decision", "decisions"], ["note", "notes"]] as const) {
-      for (const [id, doc] of Object.entries(documents[collection])) puts.push({ kind, id, doc, expectRev: Object.hasOwn(snapshot[collection], id) ? snapshot[collection][id]!.rev : null });
+      for (const [id, doc] of Object.entries(documents[collection])) puts.push({ kind, id, doc: kind === "decision" ? storedCard(doc as Decision) : doc, expectRev: Object.hasOwn(snapshot[collection], id) ? snapshot[collection][id]!.rev : null });
       for (const [id, doc] of Object.entries(snapshot[collection])) if (!Object.hasOwn(documents[collection], id)) deletes.push({ kind: kind as DocKind, id, expectRev: doc.rev });
     }
     return (await store.commit({ author: "migration", message, board: converted.board, puts, deletes })).commit;
@@ -338,7 +346,7 @@ export async function importExport(store: Store, exportJson: unknown, options: {
   for (const { kind, id } of changes) {
     const collection = ({ item: "items", decision: "decisions", note: "notes" } as const)[kind];
     const existing = store.snapshot()[collection][id], doc = converted.current[collection][id];
-    const txn = doc ? { puts: [{ kind, id, doc, expectRev: existing ? existing.rev : null }] } : { deletes: [{ kind, id, expectRev: existing!.rev }] };
+    const txn = doc ? { puts: [{ kind, id, doc: kind === "decision" ? storedCard(doc as Decision) : doc, expectRev: existing ? existing.rev : null }] } : { deletes: [{ kind, id, expectRev: existing!.rev }] };
     currentCommit = (await store.commit({ author: "migration", message: `Import ${kind} ${id} as changed since the owner's last read`, ...txn })).commit;
   }
   store.setOwner({ ...converted.owner, cursor: asReadCommit });

@@ -9,15 +9,15 @@ const acceptance = (text = "验收通过"): PlanStepInput => ({ id: "accept", ac
 test("search finds each Chinese field, ranks title/head/cards/logs/notes, marks snippets and filters", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
   const hits = q.search(s, r, "中文", { limit: 100 });
-  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:background", "card:choice:option.A", "card:ruled:ruling", "item:a:log[6]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
+  assert.deepEqual(hits.map(h => `${h.kind}:${h.id}:${h.field}`), ["item:a:title", "item:a:head", "item:a:data", "item:a:ask", "card:choice:question", "card:choice:option.A", "card:ruled:legacy.ruling", "item:a:log[6]", "item:a:log[0]", "note:note-2:reply", "note:note-1:text"]);
   // One hit per field: log[0] matches twice and reports the second as `more`.
   assert.equal(hits.find(h => h.field === "log[0]")!.more, 1);
   for (const hit of hits) { assert.ok(hit.snippet.includes("«中文»")); assert.equal(hit.area, "解释器工作"); }
-  assert.equal(hits[8]!.time, "2026-10-11T01:02:06Z");
+  assert.equal(hits[7]!.time, "2026-10-11T01:02:06Z");
   assert.equal(q.search(s, r, "WHITEFOOT", { kind: ["item"] })[0]!.id, "a");
   assert.equal(q.search(s, r, "中文", { limit: 2 }).length, 2);
   assert.deepEqual(q.search(s, r, "中文", { group: "Firn" }), []);
-  assert.equal(q.search(s, r, "中文", { under: "a", kind: ["note"], since: later }).length, 1);
+  assert.equal(q.search(s, r, "中文", { under: "b", kind: ["note"], since: later }).length, 1);
   assert.deepEqual(q.search(s, r, "中文", { status: ["done"] }), []);
   assert.throws(() => q.search(s, r, " "), /query/);
   assert.throws(() => q.search(s, r, "中文", { under: "missing" }), /under/);
@@ -53,18 +53,23 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   assert.ok(c.plan.at(-1)!.includes("○") && c.plan.at(-1)!.includes("验收"));
   assert.deepEqual(c.dependents.map(d => d.id), ["b"], "owner belongs in its chain, shared waiter is separate");
   for (const removed of ["children", "deps", "steps", "migrated", "raisedBy"]) assert.equal(Object.hasOwn(c, removed), false);
-  const open = c.cards.find(card => card.key === "choice")!;
-  assert.ok("background" in open); assert.equal(open.background, "中文背景 Whitefoot PR #341");
-  const ruled = c.cards.find(card => card.key === "ruled")!;
-  assert.equal(ruled.ruling, "中文裁决"); assert.equal("background" in ruled, false);
-  assert.equal(c.notes.length, 2); assert.equal(c.notes[0]!.reply, "中文回复");
+  assert.deepEqual(c.cards, [], "the fixture's cards belong to b");
+  assert.equal(c.notes.length, 1);
+  const held = q.context(s, r, "b");
+  assert.ok("plan" in held);
+  assert.deepEqual(held.cards.map(card => card.key), ["ruled", "choice"], "cards follow the plan");
+  const open = held.cards.find(card => card.key === "choice")!;
+  assert.ok("options" in open); assert.equal(open.question, "中文方案？"); assert.equal(Object.hasOwn(open, "background"), false);
+  const ruled = held.cards.find(card => card.key === "ruled")!;
+  assert.equal(ruled.choice, "A"); assert.equal(ruled.choiceText, "Old"); assert.equal("options" in ruled, false, "a closed card is summarized by its pick");
+  assert.equal(held.notes.length, 1); assert.equal(held.notes[0]!.reply, "中文回复");
   assert.equal(c.links[0]!.label, "Pull request"); assert.deepEqual(c.prs.qualified, [{ repo: "Whitefoot", number: 341 }]);
   const all = q.context(s, r, "a", { log: "all" }), none = q.context(s, r, "a", { log: 0 });
   assert.ok("earlierLogs" in all && "earlierLogs" in none);
   assert.equal(c.item.log.length, 5); assert.equal(c.earlierLogs, all.item.log.length - 5);
   assert.equal(all.earlierLogs, 0); assert.equal(none.earlierLogs, all.item.log.length);
   const card = q.context(s, r, "choice"); assert.equal(card.kind, "card");
-  assert.equal(card.card!.confidence!.score, 4); assert.equal(card.item.title, "中文检查");
+  assert.equal(card.card!.options.length, 2); assert.equal(card.item.title, "阻塞证据");
   assert.throws(() => q.context(s, r, "missing"), /Unknown id/);
 });
 
@@ -72,7 +77,7 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
 test("latest five context notes include notes on cards and item, not other targets", async t => {
   const { store } = await board(t);
   await store.commit({ author, message: "More notes", puts: Array.from({ length: 6 }, (_, i) => ({ kind: "note" as const, id: `extra-${i}`, expectRev: null, doc: { target: i === 5 ? "it:other" : "q:choice", kind: "comment", text: `Note ${i}`, at: `2026-10-12T00:00:0${i}Z`, state: "sent" } })) });
-  const c = q.context(store.snapshot(), rules(store.snapshot()), "a");
+  const c = q.context(store.snapshot(), rules(store.snapshot()), "b");
   assert.deepEqual(c.notes.map(n => n.id), ["extra-4", "extra-3", "extra-2", "extra-1", "extra-0"]);
 });
 
@@ -100,10 +105,10 @@ test("overview/list/notes filter derived plan status, inherited priority, subtre
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
-  assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
+  assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["b"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
-  assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["a"]);
+  assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["b"]);
   assert.ok(q.list(s, r, { hasChecks: true }).some(it => it.id === "other" && it.checks.some(c => c.text.startsWith("只差验收"))));
   assert.equal(q.list(s, r, { group: "Firn", limit: 1 })[0]!.id, "other");
   assert.deepEqual(q.list(s, r, { updatedSince: "2999-01-01T00:00:00Z" }), []);
@@ -115,7 +120,7 @@ test("overview/list/notes filter derived plan status, inherited priority, subtre
 test("PR index separates qualified text, links, cards, notes and bare refs, avoids number-prefix matches", async t => {
   const { store } = await board(t), s = store.snapshot(), r = rules(s);
   const prs = q.prs(s, r, "Whitefoot", 341);
-  assert.deepEqual(prs.qualified.map(it => `${it.kind}:${it.id}`), ["item:a", "card:choice", "note:note-1"]);
+  assert.deepEqual(prs.qualified.map(it => `${it.kind}:${it.id}`), ["item:a", "card:ruled", "note:note-1"]);
   assert.deepEqual(prs.unknown.map(it => `${it.kind}:${it.id}`), ["item:b", "note:note-2"]);
   assert.deepEqual(q.prs(s, r, "Whitefoot", 34), { qualified: [], unknown: [] });
   const repos = new Set(["whitefoot", "other"]);
@@ -177,16 +182,16 @@ test("changes recovers no owner for a live root, so it rebuilds no earlier whole
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
   await op.createItem({ author, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
-  await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", background: "Evidence", options: [{ key: "A", text: "A" }] });
+  await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", options: [{ text: "A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
-    { kind: "item", id: "temporary", expectRev: 1 }, { kind: "decision", id: "temporary-card", expectRev: 1 }, { kind: "note", id: "temporary-note", expectRev: 1 },
+    { kind: "item", id: "temporary", expectRev: 2 }, { kind: "decision", id: "temporary-card", expectRev: 1 }, { kind: "note", id: "temporary-note", expectRev: 1 },
   ] });
   const changed = await q.changes(store, store.snapshot(), baseline, { group: "Whitefoot" });
   assert.equal(changed.length, 1); assert.equal(changed[0]!.areaId, "area");
   const docs = changed[0]!.documents.filter(d => d.id.startsWith("temporary"));
   assert.deepEqual(docs.map(d => [d.kind, d.title, d.summary]), [["item", "Temporary item", "created and deleted item"], ["card", "Temporary question?", "created and deleted card"], ["note", "Temporary question?", "created and deleted note"]]);
-  assert.ok(docs.every(d => d.commits.length === 2));
+  assert.deepEqual(docs.map(d => d.commits.length), [3, 2, 2], "the item also changed when its card's row joined its plan");
 });
 
 test("deleting an area and its whole ownership chain preserves area grouping and group-filtered changes", async t => {
@@ -241,9 +246,9 @@ test("search finds a document by its key, and a PR-shaped query through the PR i
   const byKey = q.search(s, r, "choice");
   assert.equal(byKey[0]!.id, "choice"); assert.equal(byKey[0]!.field, "id");
   // "Whitefoot#341" appears verbatim only in a's head; the PR index also attributes
-  // "Whitefoot PR #341" (card) and "Whitefoot #341" (note) to it, and b's bare #341 to an unknown repository.
+  // "Whitefoot PR #341" (a card's old background) and "Whitefoot #341" (note) to it, and b's bare #341 to an unknown repository.
   const pr = q.search(s, r, "Whitefoot#341", { limit: 50 }).filter(h => h.field === "pr");
-  assert.deepEqual(pr.filter(h => h.snippet === "«Whitefoot#341»").map(h => `${h.kind}:${h.id}`).sort(), ["card:choice", "item:a", "note:note-1"]);
+  assert.deepEqual(pr.filter(h => h.snippet === "«Whitefoot#341»").map(h => `${h.kind}:${h.id}`).sort(), ["card:ruled", "item:a", "note:note-1"]);
   assert.ok(pr.some(h => h.id === "b" && h.snippet.includes("未写仓库")));
   assert.deepEqual(q.search(s, r, "Whitefoot #341", { kind: ["note"] }).filter(h => h.field === "pr").map(h => h.id), ["note-1", "note-2"]);
 });
@@ -436,7 +441,7 @@ test("brief progress retains records and blocked work without repeating queues o
   await op.createItem({author,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
   await op.setPlan({author,id:"closed",row:{...acceptance("Closed accepted"),state:"done"}});
   const s=structuredClone(store.snapshot()); delete s.items.a!.ask;
-  s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {...acceptance(),id:"accept"}];
+  s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {id:"ruled",card:"ruled",after:[]}, {id:"choice",card:"choice",after:[]}, {...acceptance(),id:"accept"}];
   s.items.a!.plan=[{id:"ready",text:"Ready work",state:"todo"}, {...acceptance(),id:"accept"}];
   const brief=q.brief(s,rules(s),author);
   assert.ok(brief.todo.some(row=>row.id==="a"));

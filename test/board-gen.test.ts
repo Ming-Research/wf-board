@@ -7,7 +7,7 @@ import { generateBoard } from "./e2e/board-gen.ts";
 import { seedBoard } from "./e2e/seed.ts";
 import { shapeCounts, REQUIRED_SHAPES } from "./e2e/shapes.ts";
 import { unreadSteps } from "../src/history.ts";
-import { rules } from "../src/rules.ts";
+import { placedCards, rules } from "../src/rules.ts";
 
 // The browser tests (test/e2e) run on this board; these checks keep it valid and keep every real shape in it.
 for (const seed of [1, 2]) test(`generated board ${seed}: valid documents, every shape category, read and unread history`, async t => {
@@ -24,7 +24,16 @@ for (const seed of [1, 2]) test(`generated board ${seed}: valid documents, every
   const r = rules(s);
   for (const [name, key] of Object.entries(gen.witness)) assert.ok(s.items[key] || s.decisions[key], `witness ${name} exists`);
   assert.equal(r.cardWaiting(gen.witness.commentCard), true);
-  assert.ok(s.items[s.decisions[gen.witness.commentCard]!.item]!.plan.some(row => "card" in row && row.card === gen.witness.commentCard), "the comment card unfolds inline under its home plan row");
+  const placed = (key: string) => placedCards(s.items[s.decisions[key]!.item]!.head).includes(key);
+  assert.ok(s.items[s.decisions[gen.witness.commentCard]!.item]!.plan.some(row => "card" in row && row.card === gen.witness.commentCard), "the comment card is a row of its item's plan");
+  assert.ok(placed(gen.witness.commentCard) && placed(gen.witness.multiPlanCard), "the witnesses the page shows inside the head are placed there");
+  assert.equal(placed(gen.witness.otherPlanCard), false, "this witness is the card the head does not place");
+  assert.equal(s.decisions[gen.witness.proseCard]!.choice, undefined);
+  assert.equal(s.decisions[gen.witness.withdrawnCard]!.status, "withdrawn");
+  // Every card is a row of its own item's plan and no plan names another item's card.
+  for (const [key, card] of Object.entries(s.decisions)) assert.ok(s.items[card.item]!.plan.some(row => "card" in row && row.card === key), `card ${key} has its row`);
+  for (const [id, item] of Object.entries(s.items)) for (const row of item.plan) if ("card" in row) assert.equal(s.decisions[row.card]!.item, id, `${id} names only its own cards`);
+  assert.deepEqual(Object.keys(s.items).flatMap(id => r.checks(id).filter(c => c.label === "卡和计划对不上").map(c => id)), [], "no card and row disagree");
   assert.equal(r.isPaused(gen.witness.unpaused), false);
   assert.ok(r.isOpenWork(gen.witness.unpaused));
   // The ownership graph is acyclic: every item reaches a top item.
