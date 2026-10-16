@@ -19,6 +19,8 @@ export interface Ops {
   closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[] }): Promise<Result>;
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
+  journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
   setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
@@ -95,6 +97,14 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
 }
 function only总管(author: string): void {
   if (author !== "总管") throw new OpError("author: only 总管 may change the tag vocabulary, and only after the owner approves the change on a decision card");
+}
+
+/** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
+const JOURNAL = { project: "Architect", notes: "architect-notes", tag: "协作流程" };
+/** The local calendar day and clock time of an ISO instant, as the journal's key and entry stamp use them. */
+function localStamp(at: string): { day: string; clock: string } {
+  const d = new Date(at), pad = (n: number) => String(n).padStart(2, "0");
+  return { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, clock: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
 }
 
 function newKey(s: Snapshot, key: string): void {
@@ -451,6 +461,25 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
+    journalEntry: a => run(a, (s, at) => {
+      if (a.author !== JOURNAL.project) throw new OpError(`author ${a.author}: only the ${JOURNAL.project} project writes the journal, under ${JOURNAL.notes}`);
+      const { day, clock } = localStamp(at);
+      const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
+      if (Object.hasOwn(s.items, key)) {
+        const it = ownedItem(s, key, a.author);
+        if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
+        const head = it.head ? `${it.head}\n\n${line}` : line;
+        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
+        return { id: key, kind: "item", message: `journal_entry ${key}`, puts: [itemPut(key, doc)] };
+      }
+      newKey(s, key);
+      const owner = ownedItem(s, JOURNAL.notes, a.author, "owner");
+      const tags = checkedTags(s, owner.group, [JOURNAL.tag], true);
+      const doc = parse(Item, { title: `架构师日志 ${day}`, tags, head: line, record: true, group: owner.group, plan: [], created: at, updated: at, rev: 1 });
+      const puts: Put[] = [{ kind: "item", id: key, doc, expectRev: null }];
+      attach(s, puts, at, a.author, JOURNAL.notes, key);
+      return { id: key, kind: "item", puts, message: `journal_entry ${key}` };
+    }),
     setPlan: a => edit(a, "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
