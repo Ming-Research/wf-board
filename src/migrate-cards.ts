@@ -50,7 +50,7 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.str
 
 function optionLine(card: Raw): string {
   const options = Array.isArray(card.options) ? card.options as Raw[] : [], choice = text(card.choice);
-  if (choice === undefined) return "主人用文字裁决（见卡里的旧内容）";
+  if (choice === undefined) return "主人用文字裁决（原文在那张卡上）";
   const option = options.find(o => o.key === choice);
   return `选 ${choice}${option ? `：${String(option.text).split("\n")[0]!.trim()}` : ""}`;
 }

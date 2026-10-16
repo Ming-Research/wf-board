@@ -1074,8 +1074,23 @@ something to choose at a glance.
   log, and the row counts as resolved. It is the one way to retire a card;
   nothing deletes one.
 - **Legacy text.** Cards written before this form carry `legacy`:
-  `background`, `confidence` and `ruling`, kept verbatim and shown folded under
-  the heading 旧内容. Nothing writes `legacy` again, and search covers it.
+  `background`, `confidence` and `ruling`, kept verbatim and shown in a fold
+  titled by what it holds (原卡的背景、信心和裁定). Nothing writes `legacy`
+  again, and search covers it. An open card's fold starts open, because its
+  reader decides from the background; a closed card's starts folded. A ruling
+  the owner gave in words is shown on the card's line, not again in the fold.
+- **Closed cards.** A ruled or withdrawn card is one line in the body: its
+  tag, its question and its pick (the first line of the chosen option, or the
+  ruling when it was given in words). The whole option text and the legacy
+  fold open under the line on a click; the open state is remembered per card
+  like a 参考 section, and going to a card from a plan row or a reference
+  opens it. Hundreds of converted cards each carry long text, and an item
+  with a dozen of them filled the page; a card with nothing more to show
+  stays a bare line. Open cards, their checks and the comment block are
+  always shown. Rejected: folding all of an item's closed cards under one
+  heading (a click to see one card's pick, and the plan row and reference
+  could not open a single card); shortening what the migration stores
+  (nothing the owner wrote is dropped).
 - **Blocking.** `blocks` works as before: a card with it is blocking, the
   owner is told on the Mac, and the page shows it purple.
 
@@ -2271,8 +2286,9 @@ server's unread history:
   body, keeping the selected item; a step row selects the step and keeps the
   item;
 - each card shows once in its item's body with its question, its option names
-  (the recommended one marked) or its pick, its legacy text folded, and at the
-  line of the head that places it;
+  (the recommended one marked) or, once closed, one line with its pick and the
+  rest folded under it, its legacy text folded (open on an open card), and at
+  the line of the head that places it;
 - each 被依赖 row goes to its dependent and 返回 comes back;
 - the purple and red numbers after a title equal the blocking and other waits
   in the item's owned subtree, and clicking a number as often as it says

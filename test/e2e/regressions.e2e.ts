@@ -85,11 +85,25 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
-    bug: "a card's old text (background, confidence, ruling) showed unfolded instead of folded under 旧内容 (feature, card-in-plan)",
+    bug: "a card's old text (background, confidence, ruling) showed unfolded instead of folded under 原卡的背景、信心和裁定 (feature, card-in-plan)",
     // The fold starts open whatever the reader chose before.
-    reverts: [{ file: "web/app.ts", edit: "old card text starts unfolded", find: "legacy.open = !!refOpen[\"card-legacy\\n\" + d.id];", replace: "legacy.open = true;" }],
+    reverts: [{ file: "web/app.ts", edit: "old card text starts unfolded", find: "fold.open = refOpen[key] ?? !closed;", replace: "fold.open = true;" }],
     family: "card-legacy",
-    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard]); },
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard, w.openLegacyCard], true); },
+  },
+  {
+    bug: "an open card's old background started folded although the reader decides from it (owner, 2026-10-16)",
+    // The fold starts closed whatever the card's state.
+    reverts: [{ file: "web/app.ts", edit: "old card text starts folded on an open card", find: "fold.open = refOpen[key] ?? !closed;", replace: "fold.open = refOpen[key] ?? false;" }],
+    family: "card-legacy-open",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.openLegacyCard], true); },
+  },
+  {
+    bug: "a ruled card filled the item's body with its whole pick and old text instead of being one line (owner, 2026-10-16)",
+    // The card's line is not a fold: everything under it shows at once.
+    reverts: [{ file: "web/app.ts", edit: "a closed card shows all of its content", find: "fold.dataset.ref = key; fold.open = !!refOpen[key];\n      fold.appendChild(top)", replace: "fold.dataset.ref = key; fold.open = true;\n      fold.appendChild(top)" }],
+    family: "card-fold",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard, w.donePlanCard], true); },
   },
   {
     bug: "a card whose line stands in the item's head showed after the head instead of at that line (feature, card-in-plan)",

@@ -493,21 +493,55 @@ test("detail: 参考 text in a card's old background is plain, never a 参考 se
   const card1 = p.all().find(e => e.id === "q-q")!;
   assert.match(markup(card1), /<strong>参考：Not a section<\/strong>/);
   assert.ok(!markup(card1).includes('class="refsec"'),"a card's old background is not split into 参考 sections");
-  assert.equal(descendants(card1).filter(e => e.tagName === "DETAILS").length,1,"only the card's own fold, 旧内容");
+  assert.equal(descendants(card1).filter(e => e.tagName === "DETAILS").length,1,"only the card's own fold, the old background");
 });
 
-test("detail: a card's old text is folded under 旧内容 and stays open once the reader opened it", async () => {
+test("detail: a closed card is one line with its pick; its old text is under it, folded, and both stay open once the reader opened them", async () => {
   const s = snapshot();
-  s.decisions.q = {...card(), status: "ruled", choice: "A", legacy: {background: "Old background", confidence: {score: 4, reason: "Measured"}, ruling: "Old ruling"}};
-  const fold = async (storage?: Map<string,string>) => {
+  s.decisions.q = {...card(), status: "ruled", choice: "A", ruledAt: at, legacy: {background: "Old background", confidence: {score: 4, reason: "Measured"}, ruling: "Old ruling"}};
+  const folds = async (storage?: Map<string,string>) => {
     const p = await page(s,[],null,undefined,{storage}); await expand(p);
-    return descendants(p.all().find(e => e.id === "q-q")!).find(e => e.tagName === "DETAILS")!;
+    const details = descendants(p.all().find(e => e.id === "q-q")!).filter(e => e.tagName === "DETAILS");
+    return {card: details.find(e => e.className.includes("cardfold"))!, legacy: details.find(e => e.className.includes("legacy"))!, all: details};
   };
-  const closed = await fold();
-  assert.match(closed.className, /\blegacy\b/); assert.equal(closed.querySelector("summary")!.innerHTML,"旧内容");
-  assert.ok(!closed.open,"folded by default");
-  for (const text of ["Old background","4/5：Measured","Old ruling"]) assert.ok(markup(closed).includes(text),text);
-  assert.ok((await fold(new Map([["board-refs",JSON.stringify({"card-legacy\nq": true})]]))).open,"the reader's open fold is kept");
+  const closed = await folds();
+  assert.equal(closed.all.length,2,"the card's line and its old text");
+  assert.ok(!closed.card.open,"the card is a line by default");
+  assert.match(markup(closed.card.querySelector("summary")!), /已裁定.*如何显示？.*选 A<\/span>：保留 YAML/s,"the line says the card is ruled, its question and its pick");
+  assert.ok(!markup(closed.card.querySelector("summary")!).includes("Old"),"the line holds none of the old text");
+  assert.equal(closed.legacy.querySelector("summary")!.innerHTML,"原卡的背景、信心和裁定");
+  assert.ok(!closed.legacy.open,"the old text is folded by default");
+  for (const text of ["Old background","4/5：Measured","Old ruling"]) assert.ok(markup(closed.legacy).includes(text),text);
+  const kept = await folds(new Map([["board-refs",JSON.stringify({"card-open\nq": true,"card-legacy\nq": true})]]));
+  assert.ok(kept.card.open && kept.legacy.open,"what the reader opened stays open");
+});
+
+test("detail: an open card shows its old background unfolded; a card ruled in words shows its ruling on its line", async () => {
+  const s = snapshot();
+  s.decisions.q = {...card(), legacy: {background: "Old background", confidence: {score: 2, reason: "Judgment"}}};
+  s.decisions.w = {...card(), question: "Decided in words?", status: "ruled", ruledAt: at, legacy: {background: "Words background", ruling: "Owner ruled **no**"}};
+  const p = await page(s,[]); await expand(p);
+  const open = descendants(p.all().find(e => e.id === "q-q")!).filter(e => e.tagName === "DETAILS");
+  assert.equal(open.length,1); assert.ok(open[0]!.open,"the background an open card is decided from starts open");
+  assert.equal(open[0]!.querySelector("summary")!.innerHTML,"原卡的背景和信心");
+  const words = p.all().find(e => e.id === "q-w")!, line = descendants(words).find(e => e.className.includes("card-line"))!;
+  assert.match(markup(line), /文字裁决：Owner ruled <strong>no<\/strong>/,"the ruling is on the card's line");
+  assert.ok(!markup(words).includes("见下面"),"nothing points down to the old text");
+  const legacy = descendants(words).filter(e => e.tagName === "DETAILS" && e.className.includes("legacy"));
+  assert.equal(legacy.length,1); assert.equal(legacy[0]!.querySelector("summary")!.innerHTML,"原卡的背景");
+  assert.ok(!markup(legacy[0]!).includes("Owner ruled"),"the ruling is not repeated in the fold");
+});
+
+test("detail: a withdrawn card with nothing more to show is only a line, and a ruled one is a line over its pick", async () => {
+  const s = snapshot();
+  s.decisions.q = {...card(), status: "withdrawn"};
+  s.decisions.r = {...card(), question: "Ruled with text", status: "ruled", choice: "B", ruledAt: at};
+  const p = await page(s,[]); await expand(p);
+  const gone = p.all().find(e => e.id === "q-q")!;
+  assert.equal(descendants(gone).filter(e => e.tagName === "DETAILS").length,0,"a withdrawn card with nothing more has no fold");
+  assert.match(markup(gone), /已撤回/);
+  const ruled = descendants(p.all().find(e => e.id === "q-r")!).find(e => e.className.includes("cardfold"))!;
+  assert.ok(!ruled.open); assert.match(markup(ruled.querySelector("summary")!),/选 B<\/span>：渲染正文/);
 });
 
 // The text a reader copies from a rendered block: markup removed, entities decoded; the gutter is CSS-generated, so absent.
@@ -1592,7 +1626,10 @@ test("a card row goes to the card in the item's body, from the link and from the
   const p=await page(s,[],null,undefined,{frames}); await expand(p);
   const cur=() => p.all().filter(e => e.id.startsWith("q-") && e.className.includes("cur")).map(e => e.id);
   await planRow(p,"child","q").querySelector(".plan-link")!.click(); await p.flush(); assert.deepEqual(cur(),["q-q"]); assert.ok(detailItem(p,"child"),"the item stays selected");
+  const fold = () => descendants(p.all().find(e => e.id === "q-r")!).find(e => e.className.includes("cardfold"))!;
+  assert.ok(!fold().open,"a ruled card is a line until it is gone to");
   await planRow(p,"child","r").click(); await p.flush(); assert.deepEqual(cur(),["q-r"],"a click on the row itself also goes to its card");
+  assert.ok(fold().open,"going to a ruled card opens it");
   assert.ok(p.scrollCount>0,"the landing scrolls the card into view");
 });
 test("card rulings and item progress refresh plan consumers and transitive priority", async () => {

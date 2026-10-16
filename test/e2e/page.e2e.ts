@@ -24,12 +24,12 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
     ])];
   };
   // The witness cards (one of every shape) and a sample of the rest.
-  const cardSample = (o: Oracle) => [...new Set([w.commentCard, w.multiPlanCard, w.donePlanCard, w.otherPlanCard, w.recordCard, w.legacyCard, w.proseCard, w.withdrawnCard, ...Object.keys(o.s.decisions).slice(0, 30)])].filter(c => o.s.decisions[c]);
+  const cardSample = (o: Oracle) => [...new Set([w.commentCard, w.multiPlanCard, w.donePlanCard, w.otherPlanCard, w.recordCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.openLegacyCard, ...Object.keys(o.s.decisions).slice(0, 30)])].filter(c => o.s.decisions[c]);
   const depItems = (o: Oracle) => Object.keys(o.s.items).filter(id => o.r.dependents(id).some(d => !d.own)).slice(0, 25);
   const families: Array<[string, (o: Oracle) => Promise<string[]>]> = [
     ["tree rows select their item", o => checkTreeRows(bp, o)],
     ["plan rows: items go there, cards go to the card in the body, steps select", o => checkPlanRows(bp, o, planItems(o))],
-    ["decision cards show question, options or pick, folded old text, and sit where the head puts them", o => checkCardBox(bp, o, cardSample(o))],
+    ["decision cards show question, options or a one-line pick, folded old text, and sit where the head puts them", o => checkCardBox(bp, o, cardSample(o))],
     ["dependent rows go to their item and Back returns", o => checkDependents(bp, o, depItems(o))],
     ["purple and red numbers count and reach their own waits", o => checkBadges(bp, o)],
     ["header wait numbers and the wait panel", o => checkWaitPanel(bp, o)],

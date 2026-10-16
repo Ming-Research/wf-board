@@ -344,6 +344,14 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--todo-s
 .plan-row.cardrow .cardpick { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .card .pick { display: flex; gap: 6px; align-items: baseline; }
 .card .pickat { color: var(--muted); }
+/* A closed card is one line: its tag, question and pick; what more it has opens under the line. */
+.card.closed { padding: 8px 14px; gap: 4px; }
+.card.closed .card-line h3 { display: inline; font-size: 15px; }
+.card.closed .card-line .pick { display: inline; margin-left: 10px; color: var(--muted); }
+.card.closed .card-line .pickshort { display: inline-block; max-width: 34em; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+details.cardfold > summary { cursor: pointer; font-size: 14px; }
+details.cardfold[open] > summary .pickshort { display: none; }
+details.cardfold > .cardbody { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 details.refsec.legacy { margin: 0; }
 details.ruled summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details.ruled ul { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }

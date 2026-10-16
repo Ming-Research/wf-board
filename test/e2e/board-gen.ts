@@ -33,6 +33,8 @@ export interface Witness {
   proseCard: string;
   /** A card withdrawn without a choice. */
   withdrawnCard: string;
+  /** An open card that keeps its old background and confidence, the text its reader decides from. */
+  openLegacyCard: string;
   /** An item paused explicitly, whose descendants inherit the pause. */
   pausedRoot: string;
   /** An open, unpaused item with a plan. */
@@ -208,12 +210,14 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   const recordCard = newCard(record, "open");
   // An open card on a done item.
   newCard(pickItem(x => x.leafKind === "done" && !x.status && !x.record), "open");
-  // The old texts: a ruled card with all of them, one ruled in words (no choice), one withdrawn.
+  // The old texts: a ruled card with all of them, one ruled in words (no choice), one withdrawn, an open one.
   const legacyCard = newCard(pickItem(x => open(x) && x.group === p0 && x.id !== home.id), "ruled");
   legacyCard.legacy = { background: "背景：旧卡的背景。", confidence: { score: 4, reason: "依据一次测量。" }, ruling: "选 A：" + legacyCard.options[0]!.text };
   const proseCard = newCard(pickItem(x => open(x) && x.group === p1 && x.id !== otherHome.id), "ruled");
   delete proseCard.choice; proseCard.legacy = { background: "背景：这张卡由主人用文字裁决。", ruling: "主人在对话里定了：先不做。" };
   const withdrawnCard = newCard(pickItem(x => open(x) && x.group === PROJECTS[2].name), "withdrawn");
+  const openLegacyCard = newCard(pickItem(x => open(x) && x.group === p1 && x.id !== otherHome.id), "open");
+  openLegacyCard.legacy = { background: "背景：待裁定的旧卡的背景。", confidence: { score: 2, reason: "只是判断。" } };
   // The comment witnesses: an open item and an open card its head places, each with listed comments.
   const commentItem = pickItem(x => open(x) && x.group === p0 && x.id !== home.id);
   const commentHome = pickItem(x => open(x) && x.group === PROJECTS[2].name);
@@ -334,6 +338,6 @@ export function generateBoard(seed = 1, scale = 1): Generated {
   return {
     board: { title: "合成看板", eyebrow: "状态看板", goal: "合成数据：结构像真实看板，文字全是生成的。", projects: PROJECTS.map(p => ({ name: p.name, ...("repo" in p ? { repo: p.repo } : {}) })), tags: TAGS.map(t => ({ ...t })) },
     batches, readBefore,
-    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, recordCard: recordCard.id, legacyCard: legacyCard.id, proseCard: proseCard.id, withdrawnCard: withdrawnCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id, hiddenFresh: hiddenFresh.id },
+    witness: { code: code.id, commentItem: commentItem.id, commentCard: commentCard.id, multiPlanCard: multiPlanCard.id, donePlanCard: donePlanCard.id, otherPlanCard: otherPlanCard.id, recordCard: recordCard.id, legacyCard: legacyCard.id, proseCard: proseCard.id, withdrawnCard: withdrawnCard.id, openLegacyCard: openLegacyCard.id, pausedRoot: pausedRoot.id, unpaused: unpaused.id, hiddenFresh: hiddenFresh.id },
   };
 }
