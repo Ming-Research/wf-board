@@ -401,7 +401,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if (a.repo !== undefined && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} may update its repo`);
+      if (a.repo !== undefined && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its repo`);
       if (a.repo === undefined && a.after === undefined) throw new OpError("repo: provide repo or after");
       const projects = s.board.projects.map(p => p.name === a.name ? { ...project, ...(a.repo === undefined ? {} : { repo: a.repo }) } : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
@@ -468,7 +468,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
     journalEntry: a => run(a, (s, at) => {
-      if (a.author !== ARCHITECT) throw new OpError(`author ${a.author}: only the ${ARCHITECT} project writes the journal, under ${JOURNAL.notes}`);
+      onlyArchitect(a, `write the journal under ${JOURNAL.notes}`);
       const { day, clock } = localStamp(at);
       const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
       if (Object.hasOwn(s.items, key)) {

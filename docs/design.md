@@ -1097,9 +1097,11 @@ the session `架构师` (section 9). `Architect` may write any project's items,
 cards and note replies; every other writer only its own project's. Some
 operations are reserved for `Architect`, and every other writer is refused
 before any ownership check: `create_item`, `set_status`, `set_pause`, a
-changed title in `update_item` and turning a cancelled item into a record
-there, the tag vocabulary tools, and the page order and other projects'
-repositories in `create_project` and `update_project`. `create_request`, which
+changed title in `update_item`, the tag vocabulary tools, and the page order
+and other projects' repositories in `create_project` and `update_project`.
+Turning a cancelled item into a record in `update_item` is reserved too, but
+its refusal comes after the ownership and revision checks, because it depends
+on the item's state. `create_request`, which
 files an item into another project's inbox, stays open to every project until
 the inbox is removed. A write under the retired author `总管` is refused by
 every tool.
@@ -1116,7 +1118,7 @@ every tool.
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Architect project only; the day's key must not be a non-record item; text nonempty |
+| `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only `Architect`; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `Architect`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
