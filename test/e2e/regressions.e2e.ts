@@ -54,16 +54,12 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => { const base = await bp.changes(), n = await burst(b, 1); await bp.waitChanges(base + n); return checkBadges(bp, await oracle(b.store)); },
   },
   {
-    bug: "a card row in a plan jumped to the card's own item, even a done one, instead of unfolding in place (fixed in 3a337e8 and 517c448)",
-    // 3a337e8's app.ts hunks around the card row were rewritten by the card-box change, so that part is a targeted
-    // edit: no row unfolds its card, every card row links to the card's own item instead.
-    reverts: [{ commit: "517c448", file: "web/app.ts" },
-      { file: "web/app.ts", edit: "a card row links to the card's item instead of unfolding", find: "const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;", replace: "const home = undefined as ViewDecision | undefined;" },
-      { file: "web/app.ts", edit: "no plan names a card as its host", find: "    if (selectedItem && cardRowOf(selectedItem, id)) return selectedItem;\n    return cardRowOf(d.item, id) ? d.item : null;", replace: "    return null;" },
-      { commit: "3a337e8", file: "web/index.html" }], family: "plan-card-row",
-    // The items whose plans name a card that lives in another item: the card named by three plans, by a done item's
-    // plan, and only by another item's plan.
-    run: async (bp, b) => { const o = await oracle(b.store); return checkPlanRows(bp, o, Object.keys(o.s.items).filter(id => o.s.items[id]!.plan.some(row => "card" in row && o.s.decisions[row.card]?.item !== id))); },
+    bug: "a card row in a plan did not go to the card in the item's body (feature, card-in-plan)",
+    // The click handler keeps its default-prevention and does nothing else: the row stays put.
+    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump(\"q-\" + stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
+    family: "plan-card-row",
+    // The items whose plans hold the witness cards: placed in the head, blocking, ruled on a done item, unplaced, ruled in words.
+    run: async (bp, b) => { const o = await oracle(b.store), w = b.gen.witness; return checkPlanRows(bp, o, [...new Set([w.commentCard, w.multiPlanCard, w.donePlanCard, w.otherPlanCard, w.proseCard].map(c => o.s.decisions[c]!.item))]); },
   },
   {
     bug: "code blocks were not set in Monaco: the global code rule overrode the block's font (fixed in 8f3ed75)",
@@ -89,12 +85,25 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
-    bug: "a card row in a plan showed its title again in a second box when unfolded, and a folded card row took several lines instead of one bold truncated line (owner, 2026-10-14)",
-    // The unfolded card gets its title heading back, and the folded row loses its one-line bold ellipsis style.
-    reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
-      { file: "web/index.html", edit: "a folded card row is one bold line", find: ".plan-row.cardrow .cardtoggle { font-weight: 700; min-width: 0; flex: 1 1 auto; }\n.plan-row.cardrow .cardtoggle[aria-expanded=\"false\"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }", replace: "" }],
+    bug: "a card's old text (background, confidence, ruling) showed unfolded instead of folded under 旧内容 (feature, card-in-plan)",
+    // The fold starts open whatever the reader chose before.
+    reverts: [{ file: "web/app.ts", edit: "old card text starts unfolded", find: "legacy.open = !!refOpen[\"card-legacy\\n\" + d.id];", replace: "legacy.open = true;" }],
+    family: "card-legacy",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard]); },
+  },
+  {
+    bug: "a card whose line stands in the item's head showed after the head instead of at that line (feature, card-in-plan)",
+    // No line is taken as a place for a card, so every card follows the head.
+    reverts: [{ file: "web/app.ts", edit: "a line holding only a card key places no card", find: "key => own.has(key) && !placed.has(key) && !!placed.add(key)", replace: "key => false" }],
+    family: "card-place",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.multiPlanCard, w.commentCard]); },
+  },
+  {
+    bug: "a card showed its question, options or pick wrongly: an open card without its option buttons and 发送, a ruled one without what was chosen (feature, card-in-plan)",
+    // A ruled card's pick line is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "a ruled card shows no pick", find: "    } else if (d.status === \"ruled\") {\n      const option", replace: "    } else if (false as boolean) {\n      const option" }],
     family: "card-box",
-    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.donePlanCard]); },
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.otherPlanCard]); },
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
