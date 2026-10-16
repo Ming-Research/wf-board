@@ -1,9 +1,11 @@
-import { tagApplies } from "../src/model.ts";
+import { tagApplies, difficultyText } from "../src/model.ts";
 import { rules, placedCards, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
+import { showNotice } from "./notice.ts";
+import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
 import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
@@ -1945,7 +1947,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (cs.children.length) row.appendChild(cs);
     }
     box.appendChild(row);
-    if (detail && it.tags?.length) { const tags = el("div", "tagchips item-tags"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; box.appendChild(tags); }
+    // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
+    if (detail && (it.tags?.length || it.difficulty !== undefined)) {
+      const chips = el("div", "tagchips item-tags");
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有架构师能改";
+      for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
+      box.appendChild(chips);
+    }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
     if (bodyOpen) {
@@ -2685,6 +2693,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (retry !== undefined) clearTimeout(retry);
     retry = setTimeout(() => { retry = undefined; connect(); },5000);
   }
+  // The owner's notices: a browser notice per card or item, shown only if the owner allowed them. Asked on the first click,
+  // since browsers ignore a permission request with no user gesture.
+  const noticeEnv: NoticeEnv = {
+    Notification: typeof Notification === "undefined" ? undefined : Notification as unknown as NoticeEnv["Notification"],
+    focus: () => window.focus(),
+    open: target => target ? jumpTo(target.kind, target.key) : clearSelectedItem(),
+  };
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    document.addEventListener("click", () => { void Notification.requestPermission().catch(() => {}); }, { once: true });
+  }
   function connect() {
     if (retry !== undefined) clearTimeout(retry);
     source?.close(); connectionAbort?.abort();
@@ -2707,6 +2725,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       } catch(e) { if (active()) serverDown(next); }
     };
     next.onerror = () => serverDown(next);
+    next.addEventListener("owner", event => {
+      if (!active()) return;
+      showNotice(JSON.parse((event as MessageEvent).data) as OwnerNotice, noticeEnv);
+    });
     next.addEventListener("change", event => {
       if (!active()) return;
       eventGeneration++;

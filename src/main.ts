@@ -8,6 +8,8 @@ import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
 import { macNotify } from "./notify.ts";
+import { ghSource } from "./github.ts";
+import { GithubWatch } from "./watch.ts";
 
 async function main() {
   const port = Number(process.env.WF_BOARD_PORT ?? 7417);
@@ -17,7 +19,9 @@ async function main() {
   const op = ops(store);
   // The pushes to the architect, kept in a file git leaves out so numbers continue across a restart; the owner's notifications go through osascript.
   const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), notify: macNotify() });
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, createMcp: () => createMcpServer({ store, ops: op, wake }) });
+  // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
+  const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, createMcp: () => createMcpServer({ store, ops: op, wake }) });
   async function push() { if (await store.unpushed()) await store.push(); }
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();

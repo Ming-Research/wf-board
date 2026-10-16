@@ -15,6 +15,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { applyActivityDelta } from "../src/rules.ts";
+import { Wake } from "../src/wake.ts";
 
 test("snapshot, static page, health, SSE and owner HTTP lifecycle", async t => {
   const { store, op, api, url } = await server(t);
@@ -237,7 +238,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
 });
 
-// A root with a missing shared row carries a (format) check in the plan model.
+// A root with a missing shared row carries a (format) check in the plan model; it is not rated, so it carries 缺难度 too.
 const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
@@ -251,10 +252,11 @@ test("after a write the check scan rederives only the items the write can reach"
   await star.sync();
   assert.ok(checked.includes("other"), "the written item is checked again");
   assert.deepEqual(checked.filter(id => ["area", "a", "b"].includes(id)), [], "items the write cannot reach are not");
-  // A write that makes a check appear scans the new item, and a check that is not 无人推进 is pushed to no one.
+  // A write that makes a check appear scans the new item, and a check that is not 无人推进 (this item carries two: the missing row and 缺难度) is pushed to no one.
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
   assert.ok(checked.includes("c"));
+  assert.ok(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), "the item is not rated, so it carries 缺难度 as well");
   assert.deepEqual(star.events(), []);
 });
 
@@ -263,4 +265,18 @@ test("the page has no pause endpoint; pausing goes through set_pause only", asyn
   const checkpoint = store.snapshot();
   assert.equal((await api("/api/pause", { id: "area", paused: true, reason: "x" })).status, 404);
   assert.deepEqual(store.snapshot(), checkpoint);
+});
+
+test("an owner notice reaches each open page as an owner event, and a page that connects later gets only what follows it", async t => {
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z") });
+  const { url } = await server(t, { wake });
+  // Told before the page connects: the page must not get it.
+  wake.tell("之前的通知", "不该补发", { kind: "card", key: "choice" });
+  const controller = new AbortController(); t.after(() => controller.abort());
+  const response = await fetch(url + "/api/events", { signal: controller.signal });
+  const reader = response.body!.getReader(); await reader.read();
+  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
+  assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
 });

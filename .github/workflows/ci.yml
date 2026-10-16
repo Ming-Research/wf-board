@@ -1,15 +1,19 @@
 name: ci
 on:
+  # Each merge to the main line is checked once, by its push run.
   push:
+    branches: [main]
   pull_request:
+concurrency:
+  # A main-line run has a group of its own (its commit), so none is replaced.
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  # A newer push to a pull request cancels the run still going.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          # The benchmark compares with the commit this branch started from.
-          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -19,18 +23,6 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm test
-      # Reports CPU per write, change-event bytes and peak memory; never fails the run (scripts/bench-writes.ts).
-      # BENCH_BASE is the branch this work started from: the comparison runs on its merge base with HEAD.
-      - name: Write-path benchmark (non-gating)
-        continue-on-error: true
-        env:
-          BENCH_BASE: origin/claude/first-board
-        run: |
-          node scripts/bench-writes.ts --label "this tree"
-          base=$(git merge-base HEAD "$BENCH_BASE")
-          git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
-          ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
-          node scripts/bench-writes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src"
   # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
   # commits, so the checkout carries history; the browser is cached by Playwright version.
   e2e:

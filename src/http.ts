@@ -19,8 +19,9 @@ import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import { timedWake } from "./timed-wake.ts";
+import type { GithubWatch } from "./watch.ts";
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: () => McpServer; now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // The numbered stream of pushes to the architect, the receipts for it and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
@@ -96,7 +97,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const data = await readFile(join(deps.webDir, path === "/" ? "index.html" : "dist/app.js"));
         res.writeHead(200, { "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(data); return;
       }
-      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed() }); return; }
+      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }
       if (path === "/api/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -164,6 +165,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       stream.write(data);
     }
   }
+  // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
+  const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
   const unsubscribe = wake.onPush(frame => {
     const data = JSON.stringify(frame);
     for (const connection of connections) if (connection.socket.bufferedAmount > maxStreamBytes) connection.socket.terminate();
@@ -195,7 +198,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       // A card that stops work is for the owner, who is told on the Mac; the architect finds it with its other work.
       if (doc.kind === "decision") {
         const card = doc.after as Decision | null, was = doc.before as Decision | null;
-        if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake.tell(`挡事的卡 · ${r.projectOf(card.item)}`, `${card.question}（挡住：${card.blocks}）`);
+        if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake.tell(`挡事的卡 · ${r.projectOf(card.item)}`, `${card.question}（挡住：${card.blocks}）`, { kind: "card", key: doc.id });
       }
       if (doc.kind === "note" && (doc.after as Note | null)?.state === "sent" && (doc.before as Note | null)?.state !== "sent") {
         const n = doc.after as Note, card = n.target.startsWith("q:") ? s.decisions[n.target.slice(2)] : undefined;
@@ -236,10 +239,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => { scanChecks(true); wake.checkReceipts(); void timed(); }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
+  // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
+  deps.watch?.start();
   // Close long-lived transports before http.close waits for their sockets.
   const close = server.close.bind(server);
   server.close = callback => {
-    clearInterval(heartbeat); clearInterval(checker); off(); unsubscribe();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); off(); unsubscribe(); unsubscribeTold();
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
     for (const { mcp } of sessions.values()) void mcp.close().catch(console.error);

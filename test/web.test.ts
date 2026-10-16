@@ -83,7 +83,7 @@ interface PageOptions {
   transform?: (code:string) => string;
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
-  now?: () => number; clock?: FakeClock; autoOpen?: boolean; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
+  now?: () => number; clock?: FakeClock; autoOpen?: boolean; notification?: unknown; response?: (path:string,body:unknown,init:{method?:string;signal?:AbortSignal}) => FakeResponse | Promise<FakeResponse> | undefined;
 }
 async function page(fixture: PageInput, unread: unknown[], before: unknown = null, after?: unknown, options: PageOptions = {}) {
   const snapshot = nativeFixture(fixture);
@@ -162,12 +162,13 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     BoardPage: undefined,
     getSelection: () => ({ isCollapsed: !selected }),
     document, HTMLElement: Element, EventSource, AbortController, structuredClone, console, CSS: { escape: (s: string) => s },
+    ...options.notification === undefined ? {} : { Notification: options.notification },
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
     performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
-    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
+    window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, focus() {}, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
       const input = init?.body ? JSON.parse(init.body) : undefined; calls.push({path,body:input});
       const intercepted = options.response?.(path,input,init ?? {});
@@ -3277,8 +3278,8 @@ test("a stalled leaf shows 无人推进 beside its title with the full explanati
   const s = snapshot(), began = Date.parse(at);
   s.activity = { writes: Array.from({length: 2}, (_, i) => new Date(began + i * 30 * 60 * 1000).toISOString()), items: {} };
   const p = await page(s, [], null, undefined, {now: () => began + 60 * 60 * 1000});
-  // Other checks (here the missing completion condition) keep their own 需核对 tag; only the stalled tags are asserted on.
-  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对");
+  // Other checks (here the missing completion condition and the missing difficulty) keep their own tags; only the stalled tags are asserted on.
+  const tags = (id: string) => rowOf(p, id).querySelectorAll(".checktag").filter(e => e.innerHTML !== "需核对" && e.innerHTML !== "缺难度");
   const folded = tags("area");
   assert.deepEqual(folded.map(e => e.innerHTML), ["无人推进 1"], "the folded parent counts its stalled leaf");
   assert.equal(folded[0]!.title, "1 个进行中的下级条目 1 小时（活跃时间）没有动静", "the subtree chip uses the same one-hour threshold as the leaf check");
@@ -3848,6 +3849,42 @@ test("a tag name is shown as text, not markup, in the chips and the filter butto
   assert.ok(p.all().some(e => e.tagName === "BUTTON" && e.innerHTML === "&lt;b&gt;x&lt;/b&gt; 1"), "the filter button escapes the name");
 });
 
+test("the detail shows the difficulty first on the line under the title, before the tags; the tree row and an unrated item show none", async () => {
+  const s = taggedSnapshot();
+  s.items.child!.difficulty = 3;
+  const p = await page(s, []);
+  await expand(p, "child");
+  const line = item(p, "child").children[1]!;
+  assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
+  assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
+  assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
+  assert.ok(!line.children[1]!.classList.contains("diffchip"));
+  assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
+  // The architect's own item has the label, and its line exists without any tag.
+  const own = taggedSnapshot(); own.items.area!.difficulty = "architect";
+  const q = await page(own, []); await selectWide(q, "area");
+  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["架构师做"]);
+  // An item without a difficulty and tags has no line.
+  const bare = await page(taggedSnapshot(), []); await selectWide(bare, "area");
+  assert.equal(detailItem(bare, "area")!.querySelector(".item-tags"), null);
+  const html = await readFile("web/index.html", "utf8");
+  assert.doesNotMatch(html.match(/\.diffchip \{[^}]*\}/)![0], /--tag-/, "the difficulty is not drawn as one of the teal tags");
+});
+
+test("a live change of the difficulty repaints the chip, also when it first appears or goes", async () => {
+  const s = taggedSnapshot(); s.items.child!.difficulty = 2;
+  const p = await page(s, []); await expand(p, "child");
+  const chips = () => item(p, "child").querySelector(".item-tags")?.children.map(c => c.innerHTML);
+  assert.deepEqual(chips(), ["难度 2", "健全性", "报错信息"]);
+  await p.change("c".repeat(40), [{ kind: "item", id: "child", after: { ...s.items.child!, difficulty: 4, rev: 2 } }]); await p.flush();
+  assert.deepEqual(chips(), ["难度 4", "健全性", "报错信息"], "the changed difficulty is painted");
+  const { difficulty: _gone, ...unrated } = s.items.child!;
+  await p.change("d".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, rev: 3 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["健全性", "报错信息"], "an item that loses its difficulty keeps its tags");
+  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: "architect", rev: 4 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["架构师做", "健全性", "报错信息"]);
+});
+
 test("writing a note on a card keeps the card in its place through save and send", async () => {
   const s=nativeSnapshot(); s.decisions.q=card();
   s.items.child!.plan=planWork([planStep("work","Work"),{...cardRow("q"),id:"ask-owner"}]); // its plan row id differs from the card key
@@ -3983,4 +4020,37 @@ test("an open card with two options shows the option check on the card and its i
   assert.ok(!shown("full").includes(warning), "three options show no check");
   assert.match(markup(item(p)), /需核对：决策卡只有 2 个选项/, "the item lists the check under its body");
   assert.deepEqual(rowOf(p).querySelectorAll(".checktag").map(e => e.innerHTML).filter(label => label === "选项不足"), ["选项不足"], "the item row carries the tag");
+});
+
+test("an owner notice from the stream shows one browser notice; its click opens the card it is about; an obsolete stream shows none", async () => {
+  const s = snapshot(), clock = new FakeClock();
+  s.decisions.hard = { item: "child", question: "选哪个？", options: [{ key: "A", text: "是", recommended: true }], status: "open", blocks: "挡住 chrome-notify", updated: at, rev: 1 };
+  const shown: Array<{ title: string; options: { body: string; tag: string }; onclick: (() => void) | null; closed: boolean; close(): void }> = [];
+  class FakeNotification {
+    static permission = "granted";
+    onclick: (() => void) | null = null; closed = false; title: string; options: { body: string; tag: string };
+    constructor(title: string, options: { body: string; tag: string }) { this.title = title; this.options = options; shown.push(this); }
+    close() { this.closed = true; }
+  }
+  const p = await page(s, [], null, undefined, { clock, notification: FakeNotification }); await expand(p);
+  const owner = (notice: unknown) => p.sources.at(-1)!.handlers.get("owner")!({ data: JSON.stringify(notice) });
+  owner({ title: "挡事的卡 · Whitefoot", message: "选哪个？（挡住：挡住 chrome-notify）", target: { kind: "card", key: "hard" } });
+  assert.equal(shown.length, 1, "one notice for one owner event");
+  assert.equal(shown[0]!.title, "挡事的卡 · Whitefoot");
+  assert.equal(shown[0]!.options.tag, "card:hard", "the tag is the card's key, so open tabs share one notice");
+  shown[0]!.onclick!(); await p.flush();
+  assert.equal(shown[0]!.closed, true);
+  assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
+  // A notice about no card or item opens the home view, which selects no card.
+  owner({ title: "架构师一小时没响应", message: "x" });
+  shown[1]!.onclick!(); await p.flush();
+  assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
+  // After a reconnect the old stream's events are ignored; the new one shows its notices.
+  p.sources.at(-1)!.onerror!(); clock.advance(5000); await settle();
+  const obsolete = p.sources[0]!;
+  obsolete.handlers.get("owner")!({ data: JSON.stringify({ title: "旧的", message: "不该弹" }) });
+  assert.equal(shown.length, 2, "an obsolete stream shows nothing");
+  owner({ title: "新的", message: "弹" });
+  assert.equal(shown.length, 3);
+  assert.equal(shown[2]!.options.tag, "新的", "a notice with no target is tagged with its title");
 });

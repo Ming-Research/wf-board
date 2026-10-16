@@ -6,6 +6,7 @@
 import { placedCards, rules } from "../../src/rules.ts";
 import type { Rules } from "../../src/rules.ts";
 import { unreadSteps } from "../../src/history.ts";
+import { difficultyText } from "../../src/model.ts";
 import type { Snapshot } from "../../src/model.ts";
 import type { Store } from "../../src/store.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
@@ -641,6 +642,32 @@ export async function checkTagChips(bp: BoardPage, o: Oracle): Promise<string[]>
     for (const l of low) v.push(`tag-contrast (${scheme}): ${l}`);
   }
   await page.emulateMedia({ colorScheme: "light" });
+  return v;
+}
+
+/** The detail's difficulty chip says the item's difficulty (「难度 N」 or 「架构师做」), sits on the line under the title
+ * beside the tags, and an unrated item has none. Checked on an item of each kind that also has tags. */
+export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], page = bp.page;
+  const work = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && o.r.isOpenWork(id) && !o.r.isRequest(id) && o.s.items[id]!.tags?.length);
+  const kinds: Array<[string, (d: unknown) => boolean]> = [["rated 1–5", d => typeof d === "number"], ["架构师做", d => d === "architect"], ["unrated", d => d === undefined]];
+  for (const [kind, matches] of kinds) {
+    const id = work.find(id => matches(o.s.items[id]!.difficulty));
+    if (!id) { v.push(`difficulty-chip: the board has no open tagged item that is ${kind}`); continue; }
+    await bp.select(id);
+    const got = await page.evaluate(() => {
+      const box = document.querySelector("#item-detail > .item"), top = (e: Element | null | undefined) => e ? e.getBoundingClientRect().top : null;
+      const chip = box?.querySelector(".item-tags .diffchip"), tag = box?.querySelector(".item-tags .tagchip:not(.diffchip)"), title = box?.querySelector(".item-title");
+      return { text: chip?.textContent ?? null, chipTop: top(chip), tagTop: top(tag), titleBottom: title ? title.getBoundingClientRect().bottom : null, count: box?.querySelectorAll(".diffchip").length ?? 0 };
+    });
+    const d = o.s.items[id]!.difficulty, want = d === undefined ? null : difficultyText(d);
+    if (got.text !== want) v.push(`difficulty-chip: ${id} (${kind}) shows ${JSON.stringify(got.text)}, its difficulty says ${JSON.stringify(want)}`);
+    if (got.count !== (want === null ? 0 : 1)) v.push(`difficulty-chip: ${id} (${kind}) has ${got.count} chips`);
+    if (want !== null && got.chipTop !== null && got.tagTop !== null) {
+      if (Math.abs(got.chipTop - got.tagTop) > 2) v.push(`difficulty-chip: ${id}'s chip is not on its tags' line (${got.chipTop} against ${got.tagTop})`);
+      if (got.titleBottom !== null && got.chipTop < got.titleBottom - 1) v.push(`difficulty-chip: ${id}'s chip is not below its title (${got.chipTop} against ${got.titleBottom})`);
+    }
+  }
   return v;
 }
 

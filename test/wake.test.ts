@@ -283,7 +283,8 @@ test("the timed wake lists what changed since the last one without the architect
   const wake = new Wake({ file, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
   // One item of the Architect project (the fixture board has it), and an item with a step being worked on.
-  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  // Both are rated, so neither carries 缺难度 and the flags stay empty.
+  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
@@ -397,12 +398,15 @@ test("with no receipt for the limit the server's timer tells the owner once, and
 test("a card that stops work tells the owner once; a card without blocks, a revision that keeps blocks and a ruled card do not", async t => {
   const told: Array<[string, string]> = [];
   const wake = new Wake({ notify: (title, message) => { told.push([title, message]); } });
+  const targets: unknown[] = [];
+  wake.onTell(notice => targets.push(notice.target));
   const { op } = await server(t, { wake });
   const card = { author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] };
   await op.writeCard(card);
   assert.deepEqual(told, [], "a card without blocks tells no one");
   await op.writeCard({ ...card, key: "hard", blocks: "#398 合并停着" });
   assert.deepEqual(told, [["挡事的卡 · Whitefoot", "合并吗？（挡住：#398 合并停着）"]]);
+  assert.deepEqual(targets, [{ kind: "card", key: "hard" }], "the notice opens the card that stopped work");
   await op.writeCard({ ...card, key: "hard", rev: 1, blocks: "#398 合并停着", question: "改写" });
   assert.equal(told.length, 1, "revising without changing blocks says nothing new");
   await op.writeCard({ ...card, key: "gate", rev: 1, blocks: "现在停了" });
@@ -468,7 +472,7 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   assert.ok(start >= 0 && end > start, "docs/design.md must hold the headings '### The wake stream' and then '**Why not MCP push.**'");
   const forms = new Map<string, string[]>();
   for (const [, body] of doc.slice(start, end).matchAll(/`\{([^`]*)\}`/g)) {
-    const fields = body!.split(", "), event = fields.map(f => /^event:"(\w+)"$/.exec(f)?.[1]).find(Boolean);
+    const fields = body!.split(", "), event = fields.map(f => /^event:"([\w-]+)"$/.exec(f)?.[1]).find(Boolean);
     if (event) forms.set(event, fields.filter(f => !f.startsWith("event:")).sort());
   }
   const expected = new Map<string, string[]>([
@@ -477,4 +481,45 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   ]);
   assert.deepEqual([...forms.keys()].sort(), [...expected.keys()].sort());
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
+});
+
+test("a told notice goes to the server's notify and to each listener with its card or item; a listener added later gets none of the earlier ones", () => {
+  const told: string[] = [];
+  const notified: string[] = [];
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z"), notify: title => { notified.push(title); } });
+  wake.tell("挡事的卡 · Whitefoot", "问题", { kind: "card", key: "choice" });
+  const off = wake.onTell(notice => told.push(JSON.stringify(notice)));
+  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  off();
+  wake.tell("之后", "没人听");
+  assert.deepEqual(notified, ["挡事的卡 · Whitefoot", "架构师一小时没响应", "之后"], "the script notice still goes out for every tell");
+  assert.deepEqual(told, [JSON.stringify({ title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } })]);
+});
+
+test("a no-receipt notice opens the item or card its oldest unanswered event is about, and none when that event has no target", () => {
+  let clock = T0;
+  const targets: unknown[] = [];
+  const wake = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  wake.onTell(notice => targets.push(notice.target));
+  wake.push("note", { note: "n1", target: "q:choice", kind: "comment", title: "问题", project: "Whitefoot" });
+  clock += 60_000; wake.checkReceipts();
+  assert.deepEqual(targets, [{ kind: "card", key: "choice" }]);
+  const second = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const seconds: unknown[] = [];
+  second.onTell(notice => seconds.push(notice.target));
+  second.push("stalled", { item: "a", project: "Whitefoot", title: "中文检查", text: "无人推进" });
+  clock += 60_000; second.checkReceipts();
+  assert.deepEqual(seconds, [{ kind: "item", key: "a" }]);
+  const fourth = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const noted: unknown[] = [];
+  fourth.onTell(notice => noted.push(notice.target));
+  fourth.push("note", { note: "n2", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  clock += 60_000; fourth.checkReceipts();
+  assert.deepEqual(noted, [{ kind: "item", key: "a" }], "a note on an item opens that item");
+  const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
+  const none: unknown[] = [];
+  third.onTell(notice => none.push(notice.target));
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok" });
+  clock += 60_000; third.checkReceipts();
+  assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
 });

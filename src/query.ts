@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Item, PlanRow, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
-import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
+import type { Decision, Difficulty, Item, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { rules as makeRules, planChanged, targetLine, targetsChanged } from "./rules.ts";
+import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
 /** `<session> · <time to the minute>`: the one form `context` and `brief` print for an item's last writer. */
 export const pushLine = (last: { name: string; at: string }): string => `${last.name} · ${last.at.slice(0, 16)}Z`;
 export interface Scope { group?: string; under?: string }
@@ -39,7 +39,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -226,7 +226,7 @@ function requestRow(s: Snapshot, r: Rules, id: string) {
   const it = s.items[id]!, request = it.request!;
   const prefix = `${request.by} 提出：`;
   const first = it.log[0]?.text ?? "";
-  return { id, ...(it.num === undefined ? {} : { num: it.num }), ...tagsOf(it), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
+  return { id, ...(it.num === undefined ? {} : { num: it.num }), ...tagsOf(it), ...difficultyOf(it), title: it.title, project: r.projectOf(id), by: request.by, at: request.at, why: first.startsWith(prefix) ? first.slice(prefix.length) : first };
 }
 function sentNotes(s: Snapshot, r: Rules) {
   return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
@@ -237,6 +237,8 @@ export function tagVocabulary(s: Snapshot, project?: string) {
   return boardTags(s.board).filter(t => project === undefined || tagApplies(t, project)).map(t => ({ name: t.name, meaning: t.meaning, ...(t.projects ? { projects: t.projects } : {}) }));
 }
 const tagsOf = (doc: { tags?: string[] }) => doc.tags?.length ? { tags: doc.tags } : {};
+/** Absent for unrated work and for records, which the 缺难度 check and the item's kind already say. */
+function difficultyOf(doc: { difficulty?: Difficulty } | undefined): { difficulty?: Difficulty } { return doc?.difficulty === undefined ? {} : { difficulty: doc.difficulty }; }
 const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {
   const config = s.board.projects.find(p => p.name === project);
@@ -253,18 +255,18 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   const wipRow = (id: string): Row & { lastPush?: string } => { const last = s.activity?.sessions?.[id]; return { ...workRow(id), ...(last ? { lastPush: pushLine(last) } : {}) }; };
   const result = { project, inbox: r.inbox(project).map(id => ({ ...requestRow(s,r,id), ...progressLines(id) })),
     notes: sentNotes(s,r).filter(n => n.project === project),
-    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
+    checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
     wip: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "paused" && r.planRows(id).some(p => "text" in p.row && p.row.state === "doing")).sort(r.compareSiblings).map(wipRow),
-    todo: eligible.filter(id => r.isOpenWork(id) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
+    todo: eligible.filter(id => r.isNeeded(id) && dispatchable(s.items[id]!.difficulty) && r.statusOf(id) !== "blocked" && r.statusOf(id) !== "paused" && r.planRows(id).some(p => p.ready && "text" in p.row && p.row.state === "todo")).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(id => ({...workRow(id), ...(r.isRequest(id) ? requestRow(s,r,id) : {})})),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
     tags: tagVocabulary(s, project),
   };
   const shown = new Set([...result.inbox, ...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
   const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
-    .map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), title: s.items[id]!.title, ...progressLines(id) }));
+    .map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */
@@ -288,31 +290,66 @@ function documentText(s: Snapshot, kind: Kind, id: string): string {
   }
   return text.join("\n");
 }
-/** Repositories the board links to (github.com/Ming-Research/<repo>), lowercased: the names a `Repo#N` or `Repo #N` reference may use. */
+/** Repositories the board knows, lowercased: the configured projects' and those its items link to (github.com/Ming-Research/<repo>).
+ * These are the names a `Repo#N` or `Repo #N` reference may use. */
 export function knownRepos(s: Snapshot): Set<string> {
   const out = new Set<string>(), urls: string[] = [];
+  for (const project of s.board.projects) if (project.repo) out.add(project.repo.split("/").pop()!.toLowerCase());
   for (const it of Object.values(s.items)) urls.push(...it.links.map(l => l.url), it.ask?.url ?? "");
   for (const url of urls) { const m = /github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)/i.exec(url); if (m) out.add(m[1]!.toLowerCase()); }
   return out;
 }
-/** PR references in prose. A name before `#N` counts as a repository only when the board links to that repository, so "see #341" stays unknown. */
+/** A PR a text names. `owner` is set only when the text wrote it: `Owner/Repo#N` or a pull request URL. */
+export interface PrRef { repo: string; number: number; owner?: string }
+/** PR references in prose. A bare name before `#N` counts as a repository only when the board knows that repository, so "see #341" stays unknown.
+ * `Owner/Repo#N` and a pull request URL name the repository themselves. */
 export function references(text: string, repos: Set<string>) {
-  const qualified: Array<{ repo: string; number: number }> = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
-  const patterns = [/https?:\/\/github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi, /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi];
+  const qualified: PrRef[] = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
+  const patterns = [
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+    /(?<![A-Za-z0-9_.\/#-])()([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
+  ];
   for (const [i, pattern] of patterns.entries()) for (const match of text.matchAll(pattern)) {
-    const repo = match[1]!, number = Number(match[2]);
-    if (i === 1 && !repos.has(repo.toLowerCase())) continue;
+    const owner = match[1]!, repo = match[2]!, number = Number(match[3]);
+    if (i === 2 && !repos.has(repo.toLowerCase())) continue;
     ranges.push([match.index, match.index + match[0].length]);
-    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push({ repo, number });
+    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(owner ? { repo, number, owner } : { repo, number });
   }
   for (const match of text.matchAll(/#(\d+)\b/g)) if (!ranges.some(([a, b]) => match.index >= a && match.index < b) && !unknown.includes(Number(match[1]))) unknown.push(Number(match[1]));
   return { qualified, unknown };
+}
+/** A PR as the board watches it: `repo` is the `Owner/Name` a project configures. */
+export interface PrId { repo: string; number: number }
+export const prKey = (p: PrId): string => `${p.repo.toLowerCase()}#${p.number}`;
+/** The configured repository a reference names, or none: `Owner/Repo` must match a project's repo, a bare `Repo` exactly one. */
+function repoOf(projects: readonly Project[], ref: PrRef): string | undefined {
+  const repos = projects.flatMap(p => p.repo ? [p.repo] : []);
+  if (ref.owner) return repos.find(repo => repo.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase());
+  const named = repos.filter(repo => repo.split("/").pop()!.toLowerCase() === ref.repo.toLowerCase());
+  return named.length === 1 ? named[0] : undefined;
+}
+/** The PRs a text names that belong to a configured repository. */
+export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRepos(s)): PrId[] {
+  const out = new Map<string, PrId>();
+  for (const ref of references(text, repos).qualified) {
+    const repo = repoOf(s.board.projects, ref);
+    if (repo) out.set(prKey({ repo, number: ref.number }), { repo, number: ref.number });
+  }
+  return [...out.values()];
+}
+/** The PRs a step of item `id` is the merge row of: none unless it is a merge step (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
+export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
+  if (!isOpenMergeStep(step)) return [];
+  const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(s.items[id]?.head), repos).map(prKey)));
+  return named.filter(p => counted.has(prKey(p)));
 }
 export function prs(s: Snapshot, r: Rules, repo: string, number: number) {
   const qualified: Row[] = [], unknown: Row[] = [], repos = knownRepos(s);
   for (const kind of ["item", "card", "note"] as const) for (const id of Object.keys(kind === "item" ? s.items : kind === "card" ? s.decisions : s.notes)) {
     const refs = references(documentText(s, kind, id), repos);
-    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(row(s, r, kind, id));
+    // The tool's repository is a name under Ming-Research: a reference written with another owner is another repository's PR.
+    if (refs.qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number && (p.owner === undefined || p.owner.toLowerCase() === "ming-research"))) qualified.push(row(s, r, kind, id));
     if (refs.unknown.includes(number)) unknown.push(row(s, r, kind, id));
   }
   return { qualified, unknown };

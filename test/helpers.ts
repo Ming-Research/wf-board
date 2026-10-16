@@ -10,6 +10,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Wake } from "../src/wake.ts";
+import type { GithubWatch } from "../src/watch.ts";
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
@@ -23,7 +24,8 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
-  const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
+  // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
+  const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
     { kind: "item", id: "area", expectRev: null, doc: item("解释器工作", { group: "Whitefoot", plan: [{ id: "a", item: "a", own: true, after: [] }, { id: "b", item: "b", own: true, after: [] }, { id: "accept", accept: true, text: "解释器目标通过", state: "todo" }] }) },
@@ -40,10 +42,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; wake?: Wake; timedWakeMs?: number; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; maxMcpSessions?: number; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
   const fixture = await board(t), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op, wake: extra.wake }), now: extra.now, checkIntervalMs: extra.checkIntervalMs, maxMcpSessions: extra.maxMcpSessions, wake: extra.wake, timedWakeMs: extra.timedWakeMs });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: op, wake: extra.wake }), now: extra.now, checkIntervalMs: extra.checkIntervalMs, maxMcpSessions: extra.maxMcpSessions, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
