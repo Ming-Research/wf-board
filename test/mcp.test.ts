@@ -195,7 +195,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 41, "post_notice is gone, journal_entry and move_item_project are new"); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 44, "post_notice is gone; journal_entry, move_item_project, dispatch_start, dispatch_finish and dispatches are new"); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]], ["triage_request", ["parent", "parent_why"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
