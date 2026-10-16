@@ -103,7 +103,7 @@ export function advanceBooks(books: OrgBooks | undefined, reading: UsageReading)
     const key = `${day} ${repo}`, entry = shown.get(key) ?? { day, repo, minutes: 0 };
     entry.minutes += row.minutes * factor; shown.set(key, entry);
   }
-  const entries = new Map((fresh ? [] : books.entries).map(e => [`${e.day} ${e.repo}`, e] as const));
+  const entries = new Map<string, OrgBooks["entries"][number]>((fresh ? [] : books.entries).map(e => [`${e.day} ${e.repo}`, e]));
   for (const [key, { day, repo, minutes }] of shown) {
     const before = entries.get(key) ?? { day, repo, seen: 0, counted: 0 };
     // A report revised downwards adds nothing; what was counted stays.

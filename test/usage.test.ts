@@ -322,7 +322,7 @@ test("the billing is read with three calls for the UTC month, finding the Action
   assert.ok(calls.every(c => c[0] === "api"));
   // No Actions budget at all: none in the reading.
   const none = gh({ "/orgs/": listing, "/billing/usage": usageJson, "/billing/budgets": JSON.stringify({ budgets: [budgetItem("git_lfs", 0, true)], has_next_page: false }) });
-  assert.equal((await ghBilling(none.run).read(ORG, new Date("2026-10-16T00:00:00Z"))).budget, undefined);
+  assert.equal((await ghBilling(none.run).read(ORG, new Date("2026-10-16T00:00:00Z")))?.budget, undefined);
 });
 
 test("a personal account has no organization repositories and is skipped; any other failure is a reason that names the owner and the call", async () => {
