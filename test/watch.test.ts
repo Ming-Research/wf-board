@@ -23,7 +23,7 @@ const run = (name: string, conclusion: string | null, status = "COMPLETED", { at
 const rollup = (state: string, ...nodes: unknown[]) => ({ state, contexts: { pageInfo: { hasNextPage: false }, nodes } });
 const answer = (repository: object) => JSON.stringify({ data: { repository } });
 const prNode = (number: number, fields: object = {}, checks: unknown = rollup("SUCCESS", run("test", "SUCCESS"), run("test", "SUCCESS"), run("e2e", "SUCCESS"))) => ({
-  number, title: `PR ${number}`, url: `https://github.com/Ming-Research/wf-board/pull/${number}`, isDraft: false, baseRefName: "claude/first-board", headRefOid: `c${number}`, mergeable: "MERGEABLE",
+  number, title: `PR ${number}`, url: `https://github.com/Ming-Research/wf-board/pull/${number}`, isDraft: false, createdAt: "2026-01-01T00:00:00Z", baseRefName: "claude/first-board", headRefOid: `c${number}`, mergeable: "MERGEABLE",
   commits: { nodes: [{ commit: { statusCheckRollup: checks } }] }, ...fields,
 });
 
@@ -200,7 +200,7 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   return { dir, store, op, author };
 }
 const green: Checks = { state: "success", failed: [] };
-const pull = (number: number, fields: Partial<PullState> = {}): PullState => ({ number, title: `PR ${number}`, url: `https://github.com/Ming-Research/wf-board/pull/${number}`, draft: false, base: "claude/first-board", commit: `c${number}`, mergeable: "MERGEABLE", checks: green, ...fields });
+const pull = (number: number, fields: Partial<PullState> = {}): PullState => ({ number, title: `PR ${number}`, url: `https://github.com/Ming-Research/wf-board/pull/${number}`, draft: false, createdAt: "2026-01-01T00:00:00Z", base: "claude/first-board", commit: `c${number}`, mergeable: "MERGEABLE", checks: green, ...fields });
 // wf-board's project names its main line branch, so a good answer for it holds that branch.
 const repoState = (repo: string, fields: Partial<RepoState> = {}): RepoState => ({ repo, ...(repo === "Ming-Research/wf-board" ? { main: { branch: "claude/first-board", commit: "m0", checks: green } } : {}), pulls: [], truncated: false, named: [], ...fields });
 const WB = "Ming-Research/wf-board";
@@ -258,7 +258,7 @@ test("a merge row is an open item's step that says 合入 and names a PR its ite
 
 // --- What to tell ------------------------------------------------------------------------------------------------------------------
 
-test("a ready PR is told with the open blocking cards of its item and the cards its merge row waits on; red and main line likewise; drafts, conflicts, pending, no checks and unnamed PRs never", async t => {
+test("a ready PR is told with the open blocking cards of its item and the cards its merge row waits on; red and main line likewise; drafts, conflicts, pending and no checks never; unnamed PRs only as orphans", async t => {
   const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
   const states = [repoState(WB, {
     main: { branch: "claude/first-board", commit: "m1", checks: { state: "failure", failed: ["e2e"] } },
@@ -268,7 +268,8 @@ test("a ready PR is told with the open blocking cards of its item and the cards 
       pull(31, { draft: true, checks: { state: "failure", failed: ["test"] } }),
     ],
   }), repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", checks: green }, pulls: [pull(5, { base: "main" })] })];
-  const pushes = decide(s, r, states);
+  // Unnamed PRs are told as orphans, tested below; here the ready, red and main line pushes.
+  const pushes = decide(s, r, states).filter(p => p.event !== "pr-orphan");
   assert.deepEqual(pushes.map(p => [p.event, p.fields.number ?? p.fields.branch]), [["main-red", "claude/first-board"], ["pr-ready", 23], ["pr-red", 25], ["pr-ready", 5]], "#27 has no repository in the item's text, and #99 sits outside the section");
   const [main, ready, red, other] = pushes;
   assert.deepEqual(main!.fields, { repo: WB, project: "wf-board", branch: "claude/first-board", commit: "m1", failed: ["e2e"], url: `https://github.com/${WB}/commit/m1` });
@@ -308,6 +309,45 @@ test("approval cards are found through the rows the merge row follows, and a row
   const s = store.snapshot(), [ready] = decide(s, rules(s), [repoState(WB, { pulls: [pull(23)] })]);
   const approval = (ready!.fields.items as Array<{ approval: Array<{ card: string }> }>)[0]!.approval;
   assert.deepEqual(approval.map(a => a.card).sort(), ["approval", "late"]);
+});
+
+test("an open PR no open item names is told as an orphan, drafts too, once per PR; the PRs an open item names are not", async t => {
+  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
+  // #24 is a draft an open item names: it is told nothing, not even as an orphan.
+  const pushes = decide(s, r, [repoState(WB, { pulls: [pull(23), pull(24, { draft: true }), pull(99), pull(100, { draft: true }), pull(101, { checks: { state: "failure", failed: ["test"] } })] })]);
+  assert.deepEqual(pushes.map(p => [p.event, p.fields.number]), [["pr-ready", 23], ["pr-orphan", 99], ["pr-orphan", 100], ["pr-orphan", 101]], "a red unnamed PR is an orphan, not a pr-red; a named draft is no orphan");
+  const [, orphan, draft] = pushes;
+  assert.deepEqual(orphan!.fields, { repo: WB, number: 99, project: "wf-board", title: "PR 99", url: `https://github.com/${WB}/pull/99`, draft: false });
+  assert.equal(draft!.fields.draft, true, "a draft is told too: its checks are the engineer's, its being open is not");
+  assert.equal(orphan!.key, `pr-orphan ${WB}#99`);
+  assert.equal(pushKey("pr-orphan", { repo: WB, number: 99, commit: "c1" }), pushKey("pr-orphan", { repo: WB, number: 99, commit: "c2" }), "once per PR, whatever commit it has");
+  assert.notEqual(pushKey("pr-orphan", { repo: WB, number: 99 }), pushKey("pr-red", { repo: WB, number: 99, commit: "c99" }));
+});
+
+test("an unnamed PR is told as an orphan only once it is ten minutes old", async t => {
+  const { store } = await fixture(t), s = store.snapshot(), r = rules(s), now = Date.parse("2026-10-16T12:00:00Z");
+  const young = pull(99, { createdAt: "2026-10-16T11:59:00Z" }), old = pull(98, { createdAt: "2026-10-16T11:49:00Z" });
+  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], now), [], "one minute old: the engineer has not written its 改动 section yet");
+  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [old] })], now).map(p => p.fields.number), [98], "eleven minutes old, still named by no open item: told");
+  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], Date.parse("2026-10-16T12:08:59Z")), [], "not yet at nine minutes fifty-nine seconds");
+  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], Date.parse("2026-10-16T12:09:00Z")).map(p => p.fields.number), [99], "at ten minutes it is told");
+});
+
+test("an unnamed PR that an open item names before it is ten minutes old is never told", async t => {
+  const { store, op } = await fixture(t);
+  let clock = Date.parse("2026-10-16T12:00:00Z");
+  const github = fake({ [WB]: repoState(WB, { pulls: [pull(99, { createdAt: "2026-10-16T11:58:00Z" })] }) });
+  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source, now: () => clock });
+  await watch.poll();
+  assert.equal(wake.latest(), 0, "two minutes old and unnamed: not told yet");
+  const second = store.snapshot().items.second!;
+  await op.updateItem({ author: "wf-board", id: "second", rev: second.rev, head: "## 改动\n\nMing-Research/wf-board#99", reason: "name the PR" });
+  clock = Date.parse("2026-10-16T12:05:00Z");
+  await watch.poll();
+  clock = Date.parse("2026-10-16T12:20:00Z");
+  await watch.poll();
+  // Named, with green checks, it is told as ready instead; it is never told as an orphan.
+  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["pr-ready"], "named before it aged: never an orphan at any later look");
 });
 
 test("a merge row is done when GitHub reports merged every PR that counts for it, and not before", async t => {
