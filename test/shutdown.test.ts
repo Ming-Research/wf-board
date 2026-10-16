@@ -197,7 +197,7 @@ test("an MCP tool call running when the shutdown began finishes, and the session
 });
 
 // The daemon itself, in a process of its own: the part main.ts adds to the server (the owner's reading state, no push).
-test("the daemon stopped by SIGTERM exits at once, saves the owner's reading state in a local commit and does not push; it pushes once after it starts", async t => {
+test("the daemon stopped by SIGTERM exits at once, saves the owner's reading state in a local commit and does not push; its first push comes after a delay from the start and is timed in the log", async t => {
   const data = await mkdtemp(join(tmpdir(), "wf-board-daemon-")), remote = await mkdtemp(join(tmpdir(), "wf-board-remote-"));
   t.after(() => Promise.all([data, remote].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
   await git("git", ["init", "--bare", "-b", "main", remote]);
@@ -212,7 +212,10 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const url = `http://127.0.0.1:${port}`;
-  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port) }, stdio: "ignore" });
+  // The first push is delayed by 4 s here (60 s by default), long enough to see that nothing is pushed before it.
+  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "4000" }, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
   t.after(() => { if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL"); });
   for (let waited = 0; ; waited += 100) {
@@ -221,10 +224,13 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
     await sleep(100);
   }
   const seeded = await local();
+  await sleep(1000);
+  assert.equal(await pushed(), "", "nothing is pushed in the first seconds after the start");
   for (let waited = 0; await pushed() !== seeded; waited += 100) {
-    assert.ok(waited < 8000, "the daemon did not push its commits after starting");
+    assert.ok(waited < 15_000, "the daemon did not push its commits after the delay");
     await sleep(100);
   }
+  assert.match(log, /Z push of \d+ commits took \d+\.\d s$/m, "the push and its duration are in the log");
   // A session with its stream open, as an agent has, and two local changes that only a push would send: a note, and the
   // owner reading it (owner state is saved to a file at once and joins a commit later).
   const mcp = new Client({ name: "Agent", version: "1" }); mcp.onerror = () => {};

@@ -88,8 +88,11 @@ SDK.
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
 `owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
-it has new commits, once soon after it starts and then at most every ten
-minutes. It does not push on shutdown (see Stopping). If the server
+it has new commits: first 60 seconds after it starts listening, then at most
+every ten minutes. The first push waits because the agents that reconnect after
+a restart catch up on writes in the first seconds, and a push holds the write
+queue for its network round trips (item `push-blocks-writes`). It does not push
+on shutdown (see Stopping). Each push writes its duration to the service log. If the server
 is down, agents can still read the files with Grep and Read; nothing is
 hidden in a database.
 
@@ -119,10 +122,17 @@ The daemon uses well under that:
    every connection that is left is closed.
 4. The owner's reading state is committed locally, and the process exits.
 
-A push needs three round trips to GitHub (`ls-remote`, `fetch`, `push`) and
-cannot be relied on to fit in the five seconds, so shutdown does not push. The
-data is already committed locally, so nothing is lost: the remote copy is only
-a backup, and the next start pushes what this run left.
+A push needs three round trips to GitHub (`ls-remote`, `fetch`, `push`). On
+2026-10-16, from the owner's Mac to the data repository's remote, six rounds of
+the three git commands in a clone at the remote's head took a median of 1.14 s,
+1.13 s and 1.25 s (the last as `push --dry-run`, so the transfer of new commits
+is not in it), and 3.01 to 4.18 s (median 3.75 s) for the three in a row. That
+leaves no safe margin in the five seconds, and a slow network exceeds it, so
+shutdown does not push. The data is already committed locally, so nothing is
+lost: the remote copy is only a backup, and the first push after the next start
+sends what this run left. A push still running when the signal arrives holds
+the write queue, so the local commit of the reading state waits behind it (item
+`push-blocks-writes`).
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
