@@ -50,8 +50,16 @@ await deployOnce({
   },
   notify: macNotify(),
   load: () => {
-    try { return { outbox: [], ...(JSON.parse(readFileSync(stateFile, "utf8")) as Partial<DeployState>) }; }
+    let text: string;
+    try { text = readFileSync(stateFile, "utf8"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { outbox: [] }; throw error; }
+    try { return { outbox: [], ...(JSON.parse(text) as Partial<DeployState>) }; }
+    catch (error) {
+      // A file that does not parse would fail every run and nothing could say so: it is set aside and the job starts empty.
+      console.error(`${new Date().toISOString()} state file unreadable, set aside: ${error instanceof Error ? error.message : error}`);
+      renameSync(stateFile, `${stateFile}.corrupt`);
+      return { outbox: [] };
+    }
   },
   save: state => {
     mkdirSync(dirname(stateFile), { recursive: true });

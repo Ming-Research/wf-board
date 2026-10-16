@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -47,6 +47,8 @@ async function repos(t: After) {
 function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDeps> = {}) {
   const w = {
     builds: [] as Array<{ args: string[]; head: string }>, posts: [] as Push[], notices: [] as string[][], restarts: 0, clock: 0, failBuilds: 0,
+    // npm ci fails; the next probes of /health fail; something to do once a build has run.
+    failCi: false, flaky: 0, afterBuild: undefined as (() => void) | undefined,
     daemon: { pid: 100 as number | undefined, ok: true, flap: false, takes: true },
     saved: { outbox: [] } as DeployState,
   };
@@ -57,20 +59,25 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
       catch (error) { throw Object.assign(new Error(String((error as { stderr?: unknown }).stderr)), { code: (error as { status?: number }).status }); }
     },
     // The head is read when npm runs: a build must come after the checkout has moved, in both directions.
-    run: async (command, args) => { w.builds.push({ args: [command, ...args], head: r.head() }); if (w.failBuilds > 0) { w.failBuilds--; throw new Error("build failed"); } },
+    run: async (command, args) => {
+      w.builds.push({ args: [command, ...args], head: r.head() });
+      w.afterBuild?.();
+      if (w.failCi && args[0] === "ci") throw new Error("npm ci failed");
+      if (w.failBuilds > 0) { w.failBuilds--; throw new Error("build failed"); }
+    },
     pid: async () => (w.daemon.flap && w.daemon.pid !== undefined ? ++w.daemon.pid : w.daemon.pid),
     restart: async () => {
       const code = readFileSync(join(r.checkout, "src/main.ts"), "utf8");
       w.restarts++; w.daemon.pid = (w.daemon.pid ?? 100) + 1000; w.daemon.ok = !code.includes("BROKEN"); w.daemon.flap = code.includes("CRASH LOOP");
     },
-    healthy: async () => w.daemon.ok && w.daemon.pid !== undefined,
+    healthy: async () => { if (w.flaky > 0) { w.flaky--; return false; } return w.daemon.ok && w.daemon.pid !== undefined; },
     post: async push => { if (!w.daemon.takes) throw new Error("the daemon is down"); w.posts.push(push); },
     notify: (title, message) => { w.notices.push([title, message]); },
     load: () => structuredClone(w.saved), save: state => { w.saved = structuredClone(state); },
     sleep: async ms => { w.clock += ms; }, now: () => w.clock, log: () => {},
     waitMs: 90_000, stableMs: 5000,
   };
-  return { w, deploy: () => deployOnce({ ...deps, ...override }) };
+  return { w, deps, deploy: () => deployOnce({ ...deps, ...override }) };
 }
 
 const BUILD = ["npm", "run", "-s", "build:web"];
@@ -169,7 +176,7 @@ test("a daemon that does not come up is rolled back: the code and the page go ba
   assert.ok(w.clock >= 90_000, "it waited out the limit before giving up");
   assert.deepEqual(w.posts, [{ event: "deployFailed", version: bad, running: r.first, reason: w.posts[0]!.reason }]);
   assert.match(String(w.posts[0]!.reason), /not healthy/);
-  assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, r.first]);
+  assert.deepEqual([w.saved.failed, w.saved.healthy, w.saved.pending], [bad, r.first, undefined], "the rollback is finished, so nothing is pending");
   assert.equal(w.notices.length, 0, "the owner is told only when the board cannot be brought back");
 
   // The failed commit is not tried again, and nothing more is pushed, while the remote has nothing newer.
@@ -216,7 +223,11 @@ test("when going back fails too the owner is told on the Mac, and the push says 
   assert.match(w.notices[0]![1]!, new RegExp(`${bad.slice(0, 7)}.*${r.first.slice(0, 7)}`));
   assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", bad, null]]);
   assert.deepEqual([w.saved.failed, w.saved.healthy], [bad, undefined], "nothing is recorded healthy when nothing was");
-  assert.equal(await deploy(), "skipped", "and the failed commit is not tried again");
+  // The rollback is unfinished, so the next run tries it again, and does not alarm anyone twice with the same news.
+  assert.deepEqual(w.saved.pending, { target: bad, to: r.first, restarted: true });
+  assert.equal(await deploy(), "down");
+  assert.equal(w.restarts, 3);
+  assert.equal(w.notices.length, 1); assert.equal(w.posts.length, 1);
 });
 
 test("a failed notification does not stop the job", async t => {
@@ -313,11 +324,139 @@ test("a push the daemon does not take is kept and sent first on the next run", a
   assert.deepEqual(w.saved.outbox, []);
 });
 
-test("an unreachable remote is not a deploy and not a push", async t => {
+test("an unreachable remote is tried again within the run, then pushed once, and pushed again if it happens again after a good run", async t => {
   const r = await repos(t), { w, deploy } = world(r);
-  await rm(r.origin, { recursive: true, force: true });
+  sh(r.checkout, "remote", "set-url", "origin", join(r.dir, "nowhere.git"));
   assert.equal(await deploy(), "unreachable");
-  assert.deepEqual({ posts: w.posts, restarts: w.restarts, builds: w.builds }, { posts: [], restarts: 0, builds: [] });
+  assert.ok(w.clock >= 20_000, "it waited between its three tries");
+  assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", null, r.first]]);
+  assert.match(String(w.posts[0]!.reason), /could not fetch origin\/claude\/first-board/);
+  assert.deepEqual({ restarts: w.restarts, builds: w.builds.length }, { restarts: 0, builds: 0 });
+  assert.equal(await deploy(), "unreachable");
+  assert.equal(w.posts.length, 1, "the same news is not pushed again");
+  sh(r.checkout, "remote", "set-url", "origin", r.origin);
+  assert.equal(await deploy(), "current");
+  sh(r.checkout, "remote", "set-url", "origin", join(r.dir, "nowhere.git"));
+  assert.equal(await deploy(), "unreachable");
+  assert.equal(w.posts.length, 2, "a problem that comes back is news again");
+});
+
+test("a fetch that fails once and then works is no news", async t => {
+  const r = await repos(t), { w, deps } = world(r);
+  let failures = 1;
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  const outcome = await deployOnce({ ...deps, git: async args => { if (args[0] === "fetch" && failures-- > 0) throw new Error("Could not resolve host"); return deps.git(args); } });
+  assert.equal(outcome, "deployed");
+  assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]]);
+});
+
+test("a failure of the job itself is pushed once, and the job goes on trying", async t => {
+  const r = await repos(t), { w, deps } = world(r);
+  let broken = true;
+  const run = () => deployOnce({ ...deps, git: async args => { if (broken && args[0] === "status") throw new Error("boom"); return deps.git(args); } });
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  assert.equal(await run(), "error");
+  assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", null, null]]);
+  assert.match(String(w.posts[0]!.reason), /boom/);
+  assert.equal(await run(), "error");
+  assert.equal(w.posts.length, 1);
+  broken = false;
+  assert.equal(await run(), "deployed");
+  assert.equal(r.head(), sha);
+});
+
+test("a health probe that misses does not fail a deploy that needed no restart", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  r.land({ "docs/design.md": "new" }, "docs");
+  // The daemon is busy for the first three probes after the build.
+  w.afterBuild = () => { w.flaky = 3; };
+  assert.equal(await deploy(), "deployed");
+  assert.deepEqual(w.posts.map(p => [p.event, p.restarted]), [["deployed", false]]);
+  assert.equal(w.restarts, 0);
+});
+
+test("a daemon that answers when the job starts is the last healthy commit, however the checkout got there", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  // The job once recorded `first`; two hand deploys since moved the checkout and the daemon to `middle`.
+  const middle = r.land({ "src/a.ts": "a" }, "middle");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", middle);
+  w.saved.healthy = r.first;
+  // The first probe at the start of the run misses.
+  w.flaky = 1;
+  r.land({ "src/main.ts": "BROKEN" }, "Break the daemon");
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(r.head(), middle, "back on what was serving, not on what the job last saw");
+  assert.equal(w.saved.healthy, middle);
+});
+
+test("when going back fails but the daemon still answers, the owner is not alarmed and the next run finishes the rollback", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "package-lock.json": "lock 2", "src/a.ts": "a" }, "new dependency");
+  // npm cannot reach its registry: the install fails going forward and going back, and leaves node_modules in pieces.
+  w.failCi = true;
+  assert.equal(await deploy(), "stuck");
+  assert.equal(r.head(), r.first, "the code is back, the packages are not");
+  assert.equal(w.restarts, 0, "the daemon it never restarted still serves");
+  assert.equal(w.notices.length, 0);
+  assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", sha, null]]);
+  assert.match(String(w.posts[0]!.reason), /still answers.*tries again/);
+  assert.deepEqual(w.saved.pending, { target: sha, to: r.first, restarted: false });
+  // It is not skipped as a failed commit: it is retried, and the same news is not pushed again.
+  assert.equal(await deploy(), "stuck");
+  assert.equal(w.posts.length, 1);
+  // Once npm works the rollback is finished: packages installed whatever the lock file says, page built, no restart.
+  w.failCi = false; w.builds.length = 0;
+  assert.equal(await deploy(), "rolledBack");
+  assert.deepEqual(w.builds, [{ args: ["npm", "ci"], head: r.first }, { args: BUILD, head: r.first }]);
+  assert.equal(w.restarts, 0);
+  assert.equal(w.saved.pending, undefined);
+  assert.equal(w.saved.healthy, r.first);
+  assert.deepEqual(w.posts.map(p => [p.event, p.running]), [["deployFailed", null], ["deployFailed", r.first]]);
+  // The failed commit then waits for a newer one.
+  assert.equal(await deploy(), "skipped");
+});
+
+test("a merge that git refuses, as with a stale index.lock, says nothing about the commit: it is recovered from, then deployed", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  const lock = join(r.checkout, ".git/index.lock");
+  writeFileSync(lock, "");
+  assert.equal(await deploy(), "stuck");
+  assert.match(String(w.posts[0]!.reason), /index\.lock/);
+  assert.equal(w.saved.failed, undefined, "the commit never reached the checkout, so it is not marked failed");
+  rmSync(lock);
+  assert.equal(await deploy(), "rolledBack", "the unfinished deploy is finished first");
+  assert.equal(r.head(), r.first);
+  assert.equal(await deploy(), "deployed", "and the commit gets its turn");
+  assert.equal(r.head(), sha);
+  assert.deepEqual(w.posts.map(p => p.event), ["deployFailed", "deployFailed", "deployed"]);
+});
+
+test("a deploy interrupted part way is finished first on the next run, then the commit is tried again", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  // The job died after it moved the checkout and before it restarted the daemon.
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", sha);
+  w.saved.pending = { target: sha, to: r.first, restarted: false };
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(r.head(), r.first);
+  assert.deepEqual(w.builds, [{ args: ["npm", "ci"], head: r.first }, { args: BUILD, head: r.first }]);
+  assert.equal(w.restarts, 0, "the daemon never ran the new code");
+  assert.match(String(w.posts[0]!.reason), /interrupted/);
+  assert.equal(await deploy(), "deployed");
+  assert.equal(r.head(), sha);
+});
+
+test("an interrupted deploy that had begun the restart restarts the daemon again on the old code", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", sha);
+  w.saved.pending = { target: sha, to: r.first, restarted: true };
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(w.restarts, 1);
 });
 
 test("the daemon reads nothing of the checkout at runtime but the page files, so the paths that need no restart stay valid", async () => {
@@ -363,6 +502,8 @@ test("scripts/deploy.ts end to end: real git, the health check, launchd's pid an
   const star = await wakeSocket(t, url);
   const bin = join(r.dir, "bin"), calls = join(r.dir, "calls.log"), pidFile = join(r.dir, "pid"), stateFile = join(r.dir, "state/deploy.json");
   mkdirSync(bin); writeFileSync(pidFile, "100"); writeFileSync(calls, "");
+  // A state file that does not parse must not stop every run: the job sets it aside and starts empty.
+  mkdirSync(dirname(stateFile)); writeFileSync(stateFile, "{not json");
   // launchctl list prints a property list with "PID" = n; and kickstart -k starts a new process: the format is the Mac's own.
   await writeFile(join(bin, "launchctl"), `#!/bin/sh
 echo "launchctl $*" >> "$STUB_CALLS"
@@ -387,6 +528,7 @@ esac
 
   assert.equal(await run(), "current");
   assert.deepEqual(await calledLines(), []);
+  assert.equal(readFileSync(`${stateFile}.corrupt`, "utf8"), "{not json");
 
   const sha = r.land({ "src/a.ts": "a" }, "Add a (#1)");
   assert.equal(await run(), "deployed");

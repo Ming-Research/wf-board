@@ -99,7 +99,8 @@ last healthy commit when the daemon does not come up. Its log is
 The architect does not deploy by hand. It gets one push per deploy:
 `deployed` names the version now served and the changes, and the architect
 checks the change on the live page; `deployFailed` says why nothing was
-deployed. The job leaves a checkout alone that is on another branch, has local
+deployed (a null version means the job itself could not run, as when its fetch
+fails; the log has the detail). The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys.
 
