@@ -136,8 +136,11 @@ the write queue, so the local commit of the reading state waits behind it (item
 (see Storage). On 2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0,
 a commit that wrote 5,000 new loose objects and triggered the repack took 345 to
 793 ms (three runs; the same commit with the repack in the background took 25 to
-103 ms). Not measured: the first repack of the live repository (4,986 loose
-objects), a repack that merges existing packs, and a repack that overlaps a push.
+103 ms). The study measured a manual repack of 1.3 to 2.2 thousand loose objects on
+CI at 1.4 to 1.5 s. Not measured: the first repack of the live repository (4,986
+loose objects), a repack that merges existing packs, and a repack that overlaps
+a push. After deployment the architect checks the slowest write in the service
+log against three seconds.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
