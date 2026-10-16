@@ -143,7 +143,7 @@ const WITNESSES: Witness[] = [
       await bp.settle();
       await bp.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
       if (await bp.selected() !== null) return ["witness setup: an item is already selected"];
-      // The unfolded list is taller than the screen: scroll its first item row near the top (a little below it, so rounding cannot push it out of range), so that the tree's first row is on screen too.
+      // The unfolded list nearly fills the screen: scroll its first item row near the top (a little below it, so rounding cannot push it out of range), so that the tree's first row is on screen too.
       const shown = await bp.page.evaluate(() => {
         const pane = document.getElementById("page-left")!, row = document.querySelector("#agents .item")!, tree = document.querySelector("#areas .item")!;
         pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - 24;
