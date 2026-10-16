@@ -600,10 +600,10 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
   }
   const readers: string[] = [];
   for (const file of [...loaded].sort()) if (/\b(readFile|readFileSync|createReadStream|readdir|readdirSync|openSync)\b/.test(await readFile(join(src, file), "utf8"))) readers.push(file);
-  // http.ts reads the page files, store.ts the board's data directory, wake.ts and watch.ts their state files (kept in
-  // that directory). A module that reads the checkout itself, such as docs/ or a template, would make a change there need a
+  // http.ts reads the page files, store.ts the board's data directory, wake.ts, watch.ts and usage-watch.ts their state files
+  // (kept in that directory). A module that reads the checkout itself, such as docs/ or a template, would make a change there need a
   // restart: NO_RESTART (src/deploy.ts) must change first.
-  assert.deepEqual(readers, ["http.ts", "store.ts", "wake.ts", "watch.ts"]);
+  assert.deepEqual(readers, ["http.ts", "store.ts", "usage-watch.ts", "wake.ts", "watch.ts"]);
   const http = await readFile(join(src, "http.ts"), "utf8");
   assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, path === \"/\" ? \"index.html\" : \"dist/app.js\")"]);
   assert.ok(NO_RESTART.includes("web/"));

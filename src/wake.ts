@@ -9,11 +9,12 @@ import type { Notify } from "./notify.ts";
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"] },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"] },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect"] },
+  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "actions"] },
   "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url"] },
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"] },
   "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"] },
   "pr-orphan": { label: "PR 没挂在条目上", fields: ["repo", "number", "project", "title", "url", "draft"] },
+  "actions-usage": { label: "Actions 用量", fields: ["org", "reason", "level", "month", "day", "used", "included", "today", "budget", "text"] },
   deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], external: true },
   deployFailed: { label: "部署失败", fields: ["version", "running", "reason"], external: true },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; external?: true }>;
