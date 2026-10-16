@@ -416,6 +416,62 @@ export async function checkCodeFont(bp: BoardPage, o: Oracle): Promise<string[]>
   return v;
 }
 
+/** A head's 参考 sections, checked on the page: each folds shut under its title, looks like body text, opens to its whole text, and stays open across a re-render. Families: ref-fold-split, ref-fold-look, ref-fold-keep. */
+export async function checkRefFold(bp: BoardPage, b: BoardServer): Promise<string[]> {
+  const v: string[] = [], x = b.gen.witness.code;
+  // The expected titles are written out here, not read through the page's own title rule, so a broken rule cannot
+  // make the check expect fewer sections. They are the two sections board-gen.ts writes into the code witness's head.
+  const titles = ["参考：推导", "参考：测量"];
+  const shown = () => bp.page.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("#item-detail .rich details[data-ref]")].map(d => ({
+    open: d.open, title: d.querySelector("summary")?.textContent ?? "",
+    // A closed section hides its body with content-visibility, which checkVisibility sees.
+    bodyShown: [...d.querySelectorAll<HTMLElement>(".refbody")].some(c => c.checkVisibility()),
+  })));
+  await bp.select(x);
+  const first = await shown();
+  if (first.length !== titles.length) return [`ref-fold-split: ${x} shows ${first.length} 参考 sections, the board's code item has ${titles.length}`];
+  first.forEach((d, i) => {
+    if (d.title !== titles[i]) v.push(`ref-fold-split: section ${i + 1} is titled "${d.title}", its head says "${titles[i]}"`);
+    if (d.open) v.push(`ref-fold-split: section ${i + 1} opens by default`);
+    if (d.bodyShown) v.push(`ref-fold-split: folded section ${i + 1} still shows its text`);
+  });
+  if (!first.length) return v;
+  // Its appearance: no monospace or boxed button look, and the text matches an ordinary paragraph of the head.
+  await bp.page.evaluate(() => document.querySelector<HTMLElement>("#item-detail .rich details[data-ref] > summary")?.click());
+  const look = await bp.page.evaluate(() => {
+    const d = document.querySelector<HTMLDetailsElement>("#item-detail .rich details[data-ref]")!, sum = d.querySelector("summary")!;
+    const p = d.querySelector<HTMLElement>(".refbody p"), plain = document.querySelector<HTMLElement>("#item-detail .rich > p");
+    const st = (e: Element) => getComputedStyle(e);
+    return {
+      open: d.open, summaryFont: st(sum).fontFamily, border: st(d).borderTopWidth, summaryBorder: st(sum).borderTopWidth,
+      bodyFont: p ? st(p).fontFamily : "", bodySize: p ? st(p).fontSize : "", plainFont: plain ? st(plain).fontFamily : "", plainSize: plain ? st(plain).fontSize : "",
+      gap: st(d.querySelector(".refbody")!).rowGap,
+    };
+  });
+  if (!look.open) v.push(`ref-fold-look: clicking a 参考 title does not open its section`);
+  if (/mono|courier|menlo|monaco/i.test(look.summaryFont)) v.push(`ref-fold-look: a 参考 title is set in ${look.summaryFont}, not the page's text font`);
+  if (look.border !== "0px" || look.summaryBorder !== "0px") v.push(`ref-fold-look: a 参考 section has a border (${look.border}), as a button would`);
+  if (look.plainFont && (look.bodyFont !== look.plainFont || look.bodySize !== look.plainSize)) v.push(`ref-fold-look: text in a 参考 section is ${look.bodyFont} ${look.bodySize}, not the head's ${look.plainFont} ${look.plainSize}`);
+  if (titles.length > 1 && (look.gap === "0px" || look.gap === "normal")) v.push(`ref-fold-look: paragraphs inside a 参考 section have no space between them`);
+  // Every section opens to its whole text.
+  const clicks = await bp.page.evaluate(() => document.querySelectorAll<HTMLElement>("#item-detail .rich details[data-ref] > summary").length);
+  for (let i = 0; i < clicks; i++) {
+    await bp.page.evaluate(i => { const d = document.querySelectorAll<HTMLDetailsElement>("#item-detail .rich details[data-ref]")[i]!; if (!d.open) d.querySelector("summary")!.click(); }, i);
+  }
+  const opened = await shown();
+  opened.forEach((d, i) => {
+    if (!d.open || !d.bodyShown) v.push(`ref-fold-split: section ${i + 1} does not show its whole text when opened`);
+  });
+  // The open state survives a re-render: the owner's reading is not folded again when the item changes.
+  const cur = b.store.snapshot().items[x]!, { rev, ...doc } = cur, at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const base = await bp.changes();
+  await b.store.commit({ author: "Burst", message: "ref-fold: log the item", puts: [{ kind: "item", id: x, expectRev: rev, doc: { ...doc, log: [...cur.log, { at, by: cur.group, text: "参考展开的检查写入。" }], updated: at } }] });
+  await bp.waitChanges(base + 1);
+  const kept = await shown();
+  if (kept.length !== opened.length || kept.some(d => !d.open)) v.push(`ref-fold-keep: a 参考 section the reader opened is folded again after the item changes`);
+  return v;
+}
+
 /** No empty row under an item's title: every part of the detail after its head row carries text. */
 export async function checkEmptyRows(bp: BoardPage, items: string[]): Promise<string[]> {
   const v: string[] = [];

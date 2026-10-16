@@ -418,7 +418,11 @@ log:
   content, comparing the document before its first unread step with its current
   state. Blocks are separated by blank lines, except inside fenced code;
   contiguous lists and tables remain whole blocks so rich rendering stays
-  intact. Added or changed blocks carry no colour of their own (the item's blue
+  intact. A 参考 section (a line starting 「**参考：」 through to the next such
+  line or the end of the text, fenced code excepted) is one block, whatever
+  blank lines it holds. An item's head shows each one folded under its title;
+  the sections a reader opened stay open across re-renders, kept in this
+  browser only. Added or changed blocks carry no colour of their own (the item's blue
   line says it holds something new, and `n` lands on the first of them);
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
