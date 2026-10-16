@@ -132,8 +132,8 @@ derivation design that replaced this:
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory); CI runs it on every push on this tree and on the code the
-branch started from, without gating.
+peak memory); the `bench` workflow runs it by hand on this tree and on a base
+commit, without gating.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -2299,8 +2299,9 @@ module and its tests are deleted after the run on the live board.
   activity index, a write's prospective rules, the page's activity deltas)
   equal a from-scratch `rules` scan, and every item whose painted
   presentation changed is among the affected items.
-- CI on GitHub-hosted runners for every push, with the write-path benchmark
-  as a step that reports and never fails the run.
+- CI on GitHub-hosted runners for each pull request push and each main-line
+  merge; the write-path benchmark runs by hand, as a workflow that reports and
+  never fails the run.
 
 ### Three test layers
 
