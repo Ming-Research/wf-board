@@ -43,7 +43,7 @@ const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note
 const run = promisify(execFile);
 /** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
  * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
-const FOREGROUND_MAINTENANCE: string[] = [];
+const FOREGROUND_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
