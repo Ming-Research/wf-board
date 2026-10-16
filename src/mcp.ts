@@ -12,6 +12,8 @@ import type { Wake } from "./wake.ts";
 import type { Resolved } from "./credentials.ts";
 import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
+import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
+import type { BudgetLimits } from "./budget.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -118,8 +120,9 @@ const links = z.array(Link).describe("Relevant links as {label, url}; use qualif
  * The tools of one request (the endpoint keeps no session, so a server object serves one request). `credential` is what the
  * request's credential said about the writer (src/credentials.ts): none when it carried none, which leaves reads and the old
  * self-reported writes; a refusal when it carried one that is not valid, which refuses every call.
+ * `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one.
  */
-export function createMcpServer({ store, ops, now, wake, slow, credential }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved }): McpServer {
+export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -154,7 +157,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential }: { s
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
         const caller = credential?.ok ? credential.who.session : args.session;
         if (typeof caller === "string" && isArchitectSession(caller)) wake?.receipt();
-        return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) + (note ? `\nnote: ${note}` : "") }] };
+        // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
+        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "") }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
       finally { timed?.(outcome, () => summarize(a)); }

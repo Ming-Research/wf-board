@@ -1,5 +1,6 @@
 name: bench
-# Write-path benchmark, run by hand: scripts/bench-writes.ts on this branch and on the commit it started from.
+# Benchmarks, run by hand: scripts/bench-writes.ts (the write path) and scripts/bench-changes.ts (the history queries), on this
+# branch and on the commit it started from.
 on:
   workflow_dispatch:
     inputs:
@@ -30,3 +31,19 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
           node scripts/bench-writes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src"
+      # What changes, the unread list and diff cost on a board of the live one's size, and how far the heap gets (docs/design.md,
+      # section 4, Request budgets). This one fails the run when a check fails: changes over the last 50 commits with 10 notes
+      # deleted takes at most 1 s and 100 MB of heap, and no query's heap passes half the line a budget stops a request at.
+      - name: History-query benchmark
+        run: node scripts/bench-changes.ts --label "this tree"
+      # The same on the base, for the numbers the fix is compared with; it may end in the heap running out, which is the finding.
+      - name: History-query benchmark on the base (informational)
+        if: always()
+        continue-on-error: true
+        env:
+          BENCH_BASE: ${{ inputs.base }}
+        run: |
+          base=$(git merge-base HEAD "$BENCH_BASE")
+          [ -d "$RUNNER_TEMP/bench-base" ] || git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
+          [ -e "$RUNNER_TEMP/bench-base/node_modules" ] || ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
+          node scripts/bench-changes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src" --report-only

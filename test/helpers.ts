@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { WebSocket } from "ws";
+import { stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -22,10 +25,10 @@ export const architect = "Architect";
 export const architectSession = "架构师";
 export const asArchitect = { author: architect, session: architectSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
-export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean } = {}) {
+export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
+  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
   const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
@@ -44,8 +47,8 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void } = {}) {
-  const fixture = await board(t), { store, op } = fixture;
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+  const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
@@ -70,4 +73,30 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
   await sync();
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
+}
+
+/** A commit to write with `appendCommits`: `at` is seconds since the epoch, `files` maps a path to the document it holds from then on, or null for deleted. */
+export interface HistoryCommit { at: number; message: string; author?: string; session?: string; files: Record<string, unknown | null> }
+
+/** Writes commits onto the data repository's main branch with git fast-import, so a history of hundreds of commits takes a
+ * moment, and brings the working tree to the last. A store opened before must be opened again; the documents must be valid. */
+export async function appendCommits(dir: string, commits: HistoryCommit[]): Promise<void> {
+  const parts: Buffer[] = [];
+  commits.forEach((commit, k) => {
+    const message = commit.message + (commit.session ? `\n\nSession: ${commit.session}` : "");
+    parts.push(Buffer.from(`commit refs/heads/main\nauthor ${commit.author ?? "Fixture"} <fixture@wf-board.invalid> ${commit.at} +0000\ncommitter wf-board <wf-board@wf-board.invalid> ${commit.at} +0000\ndata ${Buffer.byteLength(message)}\n${message}\n${k === 0 ? "from refs/heads/main^0\n" : ""}`));
+    for (const [path, doc] of Object.entries(commit.files)) {
+      if (doc === null) { parts.push(Buffer.from(`D ${path}\n`)); continue; }
+      const body = Buffer.from(stringify(doc, { version: "1.2", schema: "core", lineWidth: 0, blockQuote: "literal" }));
+      parts.push(Buffer.from(`M 100644 inline ${path}\ndata ${body.length}\n`), body, Buffer.from("\n"));
+    }
+  });
+  const child = spawn("git", ["fast-import", "--quiet"], { cwd: dir, stdio: ["pipe", "inherit", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  const done = once(child, "exit");
+  child.stdin.end(Buffer.concat(parts));
+  const [code] = await done;
+  assert.equal(code, 0, `git fast-import: ${stderr}`);
+  await promisify(execFile)("git", ["reset", "--hard", "-q", "HEAD"], { cwd: dir });
 }
