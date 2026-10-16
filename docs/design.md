@@ -524,7 +524,8 @@ is one of four kinds:
   Place each where the check happens, normally before merge or release rows.
   Its text is a completion check, with numbers agreeing with the target
   numbers above the plan. Its `after`, `waits`, state and dates follow ordinary
-  step rules; a todo acceptance step with `waits` gets the 在等文字 check. Step state writes do not enforce readiness; acceptance has no
+  step rules; a todo acceptance step with `waits` gets the 在等文字 check.
+  Step state writes do not enforce readiness; acceptance has no
   additional completion guard. An item is done only when every row, including
   every acceptance and delivery row, is resolved.
 - **Dates.** The server stamps step and acceptance dates exactly as it stamped
@@ -746,7 +747,7 @@ checks:
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
 
 Effectively paused items retain all form checks, including provisional plans
-and missing acceptance. They receive no stalled check.
+and missing acceptance. They receive no stalled check and no 在等文字 check.
 An owner linked only by its owned row does not raise 暂停冲突: its row
 already waits on the owner and may make the parent blocked. Shared needs
 still raise the check on the paused target.
