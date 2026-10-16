@@ -1,11 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags } from "./model.ts";
-import type { PlanRow, ItemTarget, Link, Priority, Snapshot } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "./model.ts";
+import type { PlanRow, ItemTarget, Link, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, OPTION_MAX_CHARS } from "./rules.ts";
 import { describeChanges } from "./query.ts";
+import { normalizeTime, startLogLine, finishLogLine } from "./dispatch.ts";
 
 export class OpError extends Error {}
 /** `dropped`: items whose stored priority the write removed because they are non-roots. */
@@ -20,6 +21,10 @@ export interface Ops {
   appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
+  /** Records a session the architect started on an item, and logs the start on the item. */
+  dispatchStart(a: { author: string; session?: string; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
+  /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
+  dispatchFinish(a: { author: string; session?: string; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
   setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
@@ -111,6 +116,14 @@ const JOURNAL = { notes: "architect-notes", tag: "协作流程" };
 function localStamp(at: string): { day: string; clock: string } {
   const d = new Date(at), pad = (n: number) => String(n).padStart(2, "0");
   return { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, clock: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
+}
+
+/** A dispatch time argument as the full UTC time; the server's clock when the caller gave none. */
+function dispatchTime(given: string | undefined, now: string, field: string): string {
+  if (given === undefined) return now;
+  const time = normalizeTime(given);
+  if (!time) throw new OpError(`${field}: give a UTC time such as 2026-10-16T09:02Z`);
+  return time;
 }
 
 function newKey(s: Snapshot, key: string): void {
@@ -511,6 +524,31 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       attach(s, puts, at, a, JOURNAL.notes, key);
       return { id: key, kind: "item", puts, message: `journal_entry ${key}` };
     }),
+    dispatchStart: a => edit(a, "dispatch_start", (it, s, at) => {
+      for (const [id, other] of Object.entries(s.items)) {
+        const clash = other.dispatches?.find(d => d.agentId === a.agentId);
+        if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
+      }
+      const d = parse(Dispatch, { agentId: a.agentId, agent: a.agent, role: a.role, level: a.level, model: a.model, ...(a.effort === undefined ? {} : { effort: a.effort }), ...(a.worktree === undefined ? {} : { worktree: a.worktree }), started: dispatchTime(a.startedAt, at, "startedAt"), ...(a.did === undefined ? {} : { did: a.did }) });
+      return { ...it, updated: at, dispatches: [...it.dispatches ?? [], d], log: [...it.log, entry(a.author, at, startLogLine(d))] };
+    }, false, ` ${a.agent}`),
+    dispatchFinish: a => edit(a, "dispatch_finish", (it, _s, at) => {
+      const list = it.dispatches ?? [], i = list.findIndex(d => d.agentId === a.agentId);
+      if (i < 0) throw new OpError(`agentId ${a.agentId}: not dispatched on ${a.id}; recorded here: ${list.map(d => `${d.agentId} (${d.agent})`).join(", ") || "none"}`);
+      const old = list[i]!;
+      if (old.finish && !a.replace) throw new OpError(`agentId ${a.agentId}: already ended at ${old.finish.ended} as ${old.finish.result}; pass replace: true to correct it`);
+      // Which counts a dispatch carries follows its role; the wrong ones are refused by name rather than dropped.
+      const problem = dispatchCountProblem(old.role, a);
+      if (problem) throw new OpError(problem);
+      const ended = dispatchTime(a.endedAt, at, "endedAt");
+      if (Date.parse(ended) < Date.parse(old.started)) throw new OpError(`endedAt ${ended}: earlier than the start ${old.started}`);
+      if (!Number.isFinite(a.cost) || a.cost < 0) throw new OpError("cost: give the cost in US dollars, zero or more");
+      // More than three decimals are rounded, as the tool says: costs are kept in whole thousandths so sums stay exact.
+      const cost = milliDollars(a.cost) / 1000;
+      const finish = { ended, result: a.result, ...(a.reports === undefined ? {} : { reports: a.reports }), ...(a.kickbacks === undefined ? {} : { kickbacks: a.kickbacks }), ...(a.rounds === undefined ? {} : { rounds: a.rounds }), ...(a.waited === undefined ? {} : { waited: a.waited }), signals: a.signals ?? [], usage: a.usage, cost, ...(a.note === undefined ? {} : { note: a.note }) };
+      const d = parse(Dispatch, { ...old, finish });
+      return { ...it, updated: at, dispatches: list.map((x, n) => n === i ? d : x), log: [...it.log, entry(a.author, at, finishLogLine(d, old.finish !== undefined))] };
+    }, false, ` ${a.agentId}`),
     setPlan: a => edit(a, "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];

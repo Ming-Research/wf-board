@@ -8,7 +8,7 @@ import { NUMBERING_MESSAGE, CARD_MIGRATION_MESSAGE } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
-import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutLog } from "./rules.ts";
+import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
@@ -30,7 +30,7 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
   // Inspect the item itself: log text and the agent-facing summary never decide owner visibility.
   const withoutProgress = (item: unknown) => {
     if (item === null) return null;
-    const { plan: _plan, steps: _steps, targets: _targets, ...rest } = withoutLog(item as Item & { steps?: unknown });
+    const { plan: _plan, steps: _steps, targets: _targets, ...rest } = withoutHistoricalDetail(item as Item & { steps?: unknown });
     return rest;
   };
   const other = describeChanges(withoutProgress(before), withoutProgress(after), "item") !== "metadata changed";
@@ -41,7 +41,7 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
 function ownerSummary(before: unknown, after: unknown, kind: DocKind): string {
   const omitLog = (doc: unknown) => {
     if (kind !== "item" || doc === null) return doc;
-    return withoutLog(doc as Item);
+    return withoutHistoricalDetail(doc as Item);
   };
   return describeChanges(omitLog(before), omitLog(after), kind);
 }

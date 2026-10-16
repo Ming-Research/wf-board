@@ -26,6 +26,9 @@ matches what the artifact board offered.
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
+- `src/dispatch.ts`: dispatch records (the agent sessions the architect
+  started on items, kept on the item as `dispatches`): reading them across the
+  board, the tallies, and the log lines the two write tools append.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
