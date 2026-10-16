@@ -478,3 +478,16 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   assert.deepEqual([...forms.keys()].sort(), [...expected.keys()].sort());
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
 });
+
+test("a told notice goes to the server's notify and to each listener with its card or item; a listener added later gets none of the earlier ones", () => {
+  const told: string[] = [];
+  const notified: string[] = [];
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z"), notify: title => { notified.push(title); } });
+  wake.tell("挡事的卡 · Whitefoot", "问题", { kind: "card", key: "choice" });
+  const off = wake.onTell(notice => told.push(JSON.stringify(notice)));
+  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  off();
+  wake.tell("之后", "没人听");
+  assert.deepEqual(notified, ["挡事的卡 · Whitefoot", "架构师一小时没响应", "之后"], "the script notice still goes out for every tell");
+  assert.deepEqual(told, [JSON.stringify({ title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } })]);
+});

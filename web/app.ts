@@ -4,6 +4,8 @@ import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
+import { showNotice } from "./notice.ts";
+import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
 import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary } from "../src/model.ts";
@@ -2704,6 +2706,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (retry !== undefined) clearTimeout(retry);
     retry = setTimeout(() => { retry = undefined; connect(); },5000);
   }
+  // The owner's notices: a browser notice per card or item, shown only if the owner allowed them. Asked on the first click,
+  // since browsers ignore a permission request with no user gesture.
+  const noticeEnv: NoticeEnv = {
+    Notification: typeof Notification === "undefined" ? undefined : Notification,
+    focus: () => window.focus(),
+    open: target => target.kind === "card" ? followCard(target.key) : follow(target.key),
+  };
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    document.addEventListener("click", () => { void Notification.requestPermission().catch(() => {}); }, { once: true });
+  }
   function connect() {
     if (retry !== undefined) clearTimeout(retry);
     source?.close(); connectionAbort?.abort();
@@ -2726,6 +2738,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       } catch(e) { if (active()) serverDown(next); }
     };
     next.onerror = () => serverDown(next);
+    next.addEventListener("owner", event => {
+      if (!active()) return;
+      showNotice(JSON.parse((event as MessageEvent).data) as OwnerNotice, noticeEnv);
+    });
     next.addEventListener("change", event => {
       if (!active()) return;
       eventGeneration++;
