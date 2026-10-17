@@ -68,6 +68,8 @@ matches what the artifact board offered.
   `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
+- `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
+  for the deploy pushes and the red main line.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
   `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
   the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.
@@ -148,11 +150,14 @@ daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
 `~/Library/Logs/wf-board-deploy.log`.
 
-The PM does not deploy by hand. It gets one push per deploy:
-`deployed` names the version now served and the changes, and the change is
-checked on the live page; `deployFailed` says why nothing was
-deployed (a null version means the job itself could not run, as when its fetch
-fails; the log has the detail). The job leaves a checkout alone that is on another branch, has local
+The PM does not deploy by hand. The deploy result goes to the
+engineer holding the item that delivered the merge (the pull request in the
+commit's title, the item whose 改动 section names it): `deployed` names the
+version now served, and the engineer checks the change on the live page;
+`deployFailed` says why nothing was deployed (a null version means the job
+itself could not run, as when its fetch fails; the log has the detail), and
+goes to the PM when no engineer holds such an item, where `deployed` is not
+pushed at all. The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys.
 

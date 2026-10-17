@@ -402,6 +402,16 @@ export interface Progress {
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
 }
+/** The id of the plan step that stands for the item's review: marked in progress while a reviewer reads the pull request. */
+export const REVIEW_STEP = "review";
+/** Whether a plan row is the review step. The one place that knows the convention. */
+export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
+/** The text of the item's review step while it is in progress: the engineer's request for a review. Undefined when the item has no
+ * such step or it is not in progress. */
+export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
+  const step = item?.plan.find(isReviewStep);
+  return step && "text" in step && step.state === "doing" ? step.text : undefined;
+}
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
