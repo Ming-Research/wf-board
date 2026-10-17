@@ -2,11 +2,11 @@
 // The plan is the single source for ownership, status, priority and progress.
 import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, RETIRED_LEVEL, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the architect may place a project after another. */
+/** Project list order is page order; only the PM and the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
-  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
+  if (!mayRunProcess(who)) throw new Error(`after: only ${PROCESS_WRITERS} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -162,7 +162,7 @@ export function usageKey(f: Pick<UsagePushFields, "org" | "reason" | "level" | "
   return f.reason === "month" ? `actions-usage ${f.org} month ${f.month} ${f.level}` : f.reason === "day" ? `actions-usage ${f.org} day ${f.day}` : `actions-usage ${f.org} cap ${f.month}`;
 }
 
-/** What to tell the architect now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
+/** What to tell the PM now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
  * it as well, so a first look at 88% is one push, not two). Day: more than the day limit counted today. Cap: all the included
  * minutes used and a budget of 0, which stops the private repositories' CI. `announced` holds the keys already told. */
 export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): UsagePush[] {

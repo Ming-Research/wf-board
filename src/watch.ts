@@ -10,7 +10,7 @@ import type { PrId } from "./query.ts";
 import type { GithubSource, RepoState } from "./github.ts";
 import type { Wake } from "./wake.ts";
 
-/** What the board does with GitHub (docs/design.md, Watching GitHub): it finds the PRs the open items name, tells the architect
+/** What the board does with GitHub (docs/design.md, Watching GitHub): it finds the PRs the open items name, tells the PM
  * when the main line or such a PR has red checks or a PR can be merged, and marks the merge row of a merged PR done.
  * What counts as an item's 改动 section and as a merge row is in src/rules.ts and src/query.ts. */
 
@@ -71,7 +71,7 @@ export function pushKey(event: string, f: Record<string, unknown>): string | und
   return undefined;
 }
 
-/** What to tell the architect now, from what GitHub says: a red main line; a red non-draft PR an open item names; a non-draft PR
+/** What to tell the PM now, from what GitHub says: a red main line; a red non-draft PR an open item names; a non-draft PR
  * an open item names whose checks all passed and which can merge, with the open blocking cards of those items and the cards the
  * item's merge row waits on; an open PR no open item names (drafts too). A draft PR's checks are never told. */
 /** How old an open PR must be before it is told as an orphan: the engineer writes its 改动 section right after opening it. */
@@ -134,7 +134,7 @@ export interface WatchOptions {
 }
 export interface WatchStatus { polledAt?: string; /** Repositories whose last look failed or was cut short, with why. */ problems: Record<string, string> }
 
-/** Looks at GitHub on a timer and acts on it: pushes to the architect and marks merge rows done. */
+/** Looks at GitHub on a timer and acts on it: pushes to the PM and marks merge rows done. */
 export class GithubWatch {
   private readonly announced = new Set<string>();
   private readonly problems = new Map<string, string>();
@@ -150,7 +150,7 @@ export class GithubWatch {
     this.o = o;
     this.now = o.now ?? Date.now;
     this.session = o.session ?? "看板";
-    // What the kept events already told the architect is not told again, so a restart neither repeats nor forgets a push.
+    // What the kept events already told the PM is not told again, so a restart neither repeats nor forgets a push.
     for (const frame of o.wake.since(0).frames) { const key = pushKey(frame.event, frame); if (key) this.announced.add(key); }
     // A state file that cannot be read costs one early look, never the watch.
     if (o.stateFile) {
