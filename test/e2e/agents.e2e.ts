@@ -20,9 +20,10 @@ async function farItem(bp: BoardPage, board: BoardServer): Promise<string> {
 const write = (board: BoardServer, session: string, id: string) =>
   ops(board.store).appendLog({ author: board.store.snapshot().items[id]!.group, session, id, text: `${session} wrote here` });
 // A dispatch record that is unfinished and alive: the session is then running, so the list unfolds its row. A session
-// with no dispatch record (the plain `write`) is never running.
+// with no dispatch record (the plain `write`) is never running. The record is written with no session of its own, so the
+// writer adds no row to the list.
 const start = (board: BoardServer, agent: string, id: string) =>
-  ops(board.store).dispatchStart({ author: "Architect", session: "架构师", id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id` });
+  ops(board.store).dispatchStart({ author: board.store.snapshot().items[id]!.group, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id` });
 
 test("the agent list is above the projects, and 在树中 lands on the item's tree row and Back returns", async t => {
   const board = await startBoard(t), browser = await launch(t);
