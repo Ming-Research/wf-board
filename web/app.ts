@@ -4,7 +4,7 @@ import type { AgentRow } from "../src/agents.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
-import { watchMermaid } from "./mermaid.ts";
+import { drawMermaid, watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
@@ -2408,6 +2408,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (old && !scope.has("all") && !scope.has("detail") && !scope.has("card:"+id) && !scope.has("notes:q:"+id)) card.replaceWith(old);
       }
       [...next.children].forEach(child => pane.appendChild(child));
+      // The diagrams the library has drawn before are drawn now, not a microtask later: the scroll position restored below is clamped to
+      // the height the pane has at that moment, and a diagram is taller than the code it replaces.
+      drawMermaid(pane);
     }
     pane.scrollTop=top;
     detailDirty=false;

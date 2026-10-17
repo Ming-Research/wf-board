@@ -1,0 +1,22 @@
+name: shots
+# TEMPORARY (item mermaid-wide-open): screenshots of the drawn diagrams for review. Removed before the pull request is ready.
+on:
+  push:
+    branches: [mermaid-wide-open]
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run build:web
+      - run: node test/e2e/shots.tmp.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shots
+          path: shots/
