@@ -407,7 +407,7 @@ export class Wake extends NumberedLog {
     if (!frames.length) return "";
     const shown = frames.slice(0, FOOTER_LINES), rest = frames.slice(FOOTER_LINES);
     const lines = [FOOTER_HEAD];
-    if (gap) lines.push(`有推送没送到就被丢了（看板只留到 #${stream.oldest()}）：去看板读最近的变化`);
+    if (gap) lines.push(`有推送没送到就被丢了（看板只留 #${stream.oldest()} 及以后的）：去看板读最近的变化`);
     lines.push(...shown.map(lineOf));
     if (rest.length) {
       const kinds = new Map<string, number>();

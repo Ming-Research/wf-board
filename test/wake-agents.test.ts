@@ -144,6 +144,15 @@ test("an agent's stream keeps its newest events, and says when undelivered ones 
   assert.deepEqual(stream.pending(), { frames: [], gap: false });
 });
 
+test("a tool result says when undelivered pushes were dropped, naming the oldest the board still keeps", () => {
+  const wake = new Wake({ now: () => T0 }), stream = wake.agent("eng");
+  for (let i = 1; i <= 205; i++) stream.push("item-done", done("c" + i, "p"));
+  assert.equal(stream.oldest(), 6, "an agent's stream keeps its newest 200");
+  const lines = wake.footer("eng").split("\n");
+  assert.equal(lines[1], "有推送没送到就被丢了（看板只留 #6 及以后的）：去看板读最近的变化", "the same words the wait script prints");
+  assert.match(lines[2]!, /^#6 子条目做完 /);
+});
+
 test("a stream nobody uses goes after a week; one with undelivered pushes, a holder's or a recent one stays", async t => {
   const dir = await scratch(t);
   let clock = T0;
