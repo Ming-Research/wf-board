@@ -56,7 +56,7 @@ export async function serveBoard(t: Hooks, board: BoardServer, webDir: string): 
 }
 
 export async function launch(t: Hooks): Promise<Browser> {
-  const browser = await timed("chromium.launch", () => chromium.launch());
+  const browser = await timed("chromium.launch", () => chromium.launch(process.env.E2E_CHROMIUM_ARGS ? { args: process.env.E2E_CHROMIUM_ARGS.split(" ") } : undefined));
   t.after(() => browser.close());
   return browser;
 }
