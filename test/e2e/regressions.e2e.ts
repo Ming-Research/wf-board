@@ -55,6 +55,14 @@ const CAPS = [
   { sel: ".card p", find: ".card p { margin: 0;", ch: 76 },
   { sel: ".refpop", find: ".refpop { display: flex; flex-direction: column;", ch: 78 },
 ];
+// Ways other than a maximum width to keep the column's content from filling the window, one for each other thing the check measures.
+const NARROWINGS: Array<{ bug: string; edit: string; find: string; replace: string; family: string }> = [
+  { bug: "a block of the right column was set to a width of its own, narrower than its box", edit: "a width of 78ch on the log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", replace: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; width: 78ch;", family: "full-width-fill .log:" },
+  { bug: "an item's box in the right column was capped, narrower than the column", edit: "a maximum width on the item's box", find: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }", replace: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }\nbody.wide #item-detail > .item { max-width: 600px; }", family: "full-width-box:" },
+  { bug: "an item's body in the right column was capped, narrower than its box", edit: "a maximum width on the item's body", find: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }", replace: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }\nbody.wide #item-detail .item > .body { max-width: 600px; }", family: "full-width-body:" },
+  { bug: "a block of the right column was wider than the column, so the column scrolled sideways", edit: "a minimum width on the log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", replace: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; min-width: 3000px;", family: "full-width-scroll:" },
+  { bug: "the page was wider than the window, so the page scrolled sideways", edit: "a minimum width on the two columns", find: "body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px;", replace: "body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 3000px;", family: "full-width-page:" },
+];
 const capBack = (c: typeof CAPS[number]): Revert => ({ file: "web/index.html", edit: `the maximum width of ${c.sel}`, find: c.find, replace: `${c.find} max-width: ${c.ch}ch;` });
 const WITNESSES: Witness[] = [
   {
@@ -251,7 +259,12 @@ const WITNESSES: Witness[] = [
   ...CAPS.map((c): Witness => ({
     bug: `blocks of the right column stayed at ${c.ch} characters in a wide window (${c.sel}; owner, 2026-10-17)`,
     // The cap on this one block; the other blocks keep filling the column.
-    reverts: [capBack(c)], family: `full-width ${c.sel}:`,
+    reverts: [capBack(c)], family: `full-width-cap ${c.sel}:`,
+    run: async bp => checkFullWidth(bp),
+  })),
+  ...NARROWINGS.map((n): Witness => ({
+    bug: `${n.bug} (owner, 2026-10-17)`,
+    reverts: [{ file: "web/index.html", edit: n.edit, find: n.find, replace: n.replace }], family: n.family,
     run: async bp => checkFullWidth(bp),
   })),
 ];
@@ -268,7 +281,7 @@ for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout:
   }
 });
 
-test("at a window 700px wide the right column lays out as it did with the maximum widths", { timeout: 10 * 60_000 }, async t => {
+test("at a window 700px wide the blocks of the right column sit where they did with the maximum widths", { timeout: 10 * 60_000 }, async t => {
   const browser = await launch(t), laid: string[][] = [];
   for (const webDir of [undefined, await variantWeb(t, CAPS.map(capBack))]) {
     const board = await startBoard(t, { webDir });

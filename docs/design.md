@@ -1763,9 +1763,6 @@ shrink equally to fit without horizontal page scrolling; header controls and
 project links wrap.
 
 The right column is sticky, fills the viewport height and scrolls independently.
-Its blocks (the head text, the log, comments, cards, checks, the dependency lists and the comment field) set no
-maximum width: each is as wide as the column, so a wide window is used whole. A cap in characters would keep lines
-short but leave the right of a wide window empty, which the owner ruled out.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
 目标, 计划和进展 with its unfolded cards, head text and data,
@@ -1780,6 +1777,10 @@ row is selectable as a dependency row was (`row:<item>@<row id>`), and
 comments on a selected row go to the item without an anchor.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
+
+The blocks of the right column (the head text, the log, comments, the ask, cards, checks, the dependency lists and the
+comment field) set no maximum width: each is as wide as the column, so a wide window is used whole. A cap in
+characters would keep lines short but leave the right of a wide window empty, which the owner ruled out.
 
 Enter on a focused head selects its item; j/k move focus without opening detail.
 Reading requires a current selection or a selected detail item;

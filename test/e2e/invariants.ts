@@ -728,8 +728,11 @@ export async function measureBlocks(bp: BoardPage, o: Oracle): Promise<{ blocks:
   return { blocks, columns, doc: await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth] as [number, number]) };
 }
 /** In a window 2400, 1500 and 700px wide the blocks of an item's detail have no maximum width and fill the column: each
- * is as wide as the box that holds it, the item's box is as wide as the column's content and its body as wide as the box's content, and neither the page nor
- * the column scrolls sideways. Violations open with `full-width <block>:`. */
+ * is as wide as the box that holds it, the item's box is as wide as the column's content and its body as wide as the
+ * box's content, and the page does not scroll sideways; at 1500px and wider the column does not either (at 704px and
+ * narrower the column is `overflow-x: hidden`, so its scroll width says nothing a reader sees). Violations open with
+ * `full-width-cap <block>:` (a maximum width), `full-width-fill <block>:` (narrower than its box), `full-width-box:`,
+ * `full-width-body:`, `full-width-scroll:` (the column) and `full-width-page:`. */
 export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
   const v: string[] = [], o = await oracle(bp.board.store);
   for (const width of [2400, 1500, 700]) {
@@ -738,15 +741,15 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
     const { blocks, columns, doc } = await measureBlocks(bp, o);
     if (width === 2400) for (const sel of FULL_WIDTH_BLOCKS) if (!blocks.some(b => b.sel === sel)) v.push(`full-width-setup: no ${sel} is shown in any probe item`);
     for (const b of blocks) {
-      if (b.maxWidth !== "none") v.push(`full-width ${b.sel}: at ${width}px a ${b.sel} in ${b.item} has max-width ${b.maxWidth}`);
-      else if (b.fills && b.w < b.parentW - 3) v.push(`full-width ${b.sel}: at ${width}px a ${b.sel} in ${b.item} is ${Math.round(b.w)}px wide, its box ${Math.round(b.parentW)}px`);
+      if (b.maxWidth !== "none") v.push(`full-width-cap ${b.sel}: at ${width}px a ${b.sel} in ${b.item} has max-width ${b.maxWidth}`);
+      else if (b.fills && b.w < b.parentW - 3) v.push(`full-width-fill ${b.sel}: at ${width}px a ${b.sel} in ${b.item} is ${Math.round(b.w)}px wide, its box ${Math.round(b.parentW)}px`);
     }
     for (const c of columns) {
-      if (Math.abs(c.box - c.column) > 3) v.push(`full-width column: at ${width}px the box of ${c.item} is ${Math.round(c.box)}px wide, the column's content ${Math.round(c.column)}px`);
-      if (Math.abs(c.body - c.boxContent) > 3) v.push(`full-width column: at ${width}px the body of ${c.item} is ${Math.round(c.body)}px wide, the content of its box ${Math.round(c.boxContent)}px`);
-      if (width >= 1500 && c.detailScroll > c.detailClient + 1) v.push(`full-width scroll: at ${width}px the column of ${c.item} scrolls sideways (${c.detailScroll}px in ${c.detailClient}px)`);
+      if (Math.abs(c.box - c.column) > 3) v.push(`full-width-box: at ${width}px the box of ${c.item} is ${Math.round(c.box)}px wide, the column's content ${Math.round(c.column)}px`);
+      if (Math.abs(c.body - c.boxContent) > 3) v.push(`full-width-body: at ${width}px the body of ${c.item} is ${Math.round(c.body)}px wide, the content of its box ${Math.round(c.boxContent)}px`);
+      if (width >= 1500 && c.detailScroll > c.detailClient + 1) v.push(`full-width-scroll: at ${width}px the column of ${c.item} scrolls sideways (${c.detailScroll}px in ${c.detailClient}px)`);
     }
-    if (doc[0] > doc[1] + 1) v.push(`full-width scroll: at ${width}px the page is ${doc[0]}px wide in a window of ${doc[1]}px`);
+    if (doc[0] > doc[1] + 1) v.push(`full-width-page: at ${width}px the page is ${doc[0]}px wide in a window of ${doc[1]}px`);
   }
   await bp.page.setViewportSize({ width: 1500, height: 1000 });
   await bp.settle();
