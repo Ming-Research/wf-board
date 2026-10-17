@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { board, server, wakeSocket, agentSocket, asArchitect } from "./helpers.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
@@ -56,6 +56,8 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   deployed: { version: L, previous: L, changes: many, restarted: true },
   deployFailed: { version: null, running: null, reason: L },
   "item-done": { item: L, project: L, title: L, parent: L },
+  "ask-alive": { item: L, project: L, title: L, since: L },
+  "no-answer": { session: L, item: L, project: L, title: L, since: L },
 };
 
 test("one line of any push holds at most LINE_LIMIT characters, starts with its number and label, and is what the frame carries", () => {
@@ -152,17 +154,6 @@ test("the holder of an item is the agent of its newest engineer dispatch that ha
   assert.deepEqual(openDispatches(items([d("a", "2026-10-16T01:00:00Z"), d("b", "2026-10-16T03:00:00Z", { finish: {} }), { ...d("c", "2026-10-16T02:00:00Z"), role: "审查" }]), "x").map(x => x.agent), ["c", "a"], "the open ones, newest first, of any role");
 });
 
-/** A socket on an agent's stream, with what it received. */
-async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
-  t.after(() => socket.terminate());
-  const frames: Array<Record<string, unknown>> = [];
-  socket.on("message", data => frames.push(JSON.parse(data.toString())));
-  await once(socket, "open");
-  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
-  await sync();
-  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
-}
 async function refused(t: { after(fn: () => void): void }, url: string, path: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + path);
   socket.on("error", () => {}); t.after(() => socket.terminate());

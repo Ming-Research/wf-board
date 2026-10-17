@@ -33,7 +33,8 @@ async function main() {
   lap("open store");
   const op = ops(store);
   // The pushes to the PM, and to each other agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake") });
+  // The marks of the liveness checks are kept too, so a silence already told is not told again.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
   // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the architect at its levels.

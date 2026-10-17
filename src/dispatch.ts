@@ -138,9 +138,9 @@ export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispat
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
-/** Every session holding an item. */
-export function holders(s: Pick<Snapshot, "items">): Set<string> {
-  const out = new Set<string>();
-  for (const id of Object.keys(s.items)) { const h = holderOf(s, id); if (h !== undefined) out.add(h); }
+/** Every session holding an item, with the items it holds in the board's item order; `only` narrows it to the items it accepts. */
+export function holders(s: Pick<Snapshot, "items">, only: (item: string) => boolean = () => true): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const id of Object.keys(s.items)) { const h = only(id) ? holderOf(s, id) : undefined; if (h !== undefined) out.set(h, [...(out.get(h) ?? []), id]); }
   return out;
 }

@@ -246,7 +246,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
       socket.on("error", console.error);
-      socket.on("close", () => connections.delete(connection));
+      // A wait script connected is a sign of life at each round of the minute timer, and its end is one: the silence counts from the moment it went.
+      socket.on("close", () => { connections.delete(connection); wake.liveness.see(name); });
       socket.on("message", data => {
         let ack: unknown;
         try { ack = (JSON.parse(data.toString()) as { ack?: unknown }).ack; } catch { return; }
@@ -359,7 +360,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     finally { timing = false; }
   }
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
-  const checker = setInterval(() => { scanChecks(true); wake.checkReceipts(); const held = holders(store.snapshot()); wake.prune(name => held.has(name) || connected(name)); void timed(); }, deps.checkIntervalMs ?? 60_000);
+  const checker = setInterval(() => {
+    scanChecks(true); wake.checkReceipts();
+    const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
+    wake.prune(name => held.has(name) || connected(name));
+    // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
+    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
+    void timed();
+  }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
