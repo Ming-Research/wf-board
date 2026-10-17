@@ -25,12 +25,10 @@ const WIDE = "body.wide #item-detail { container-type: inline-size; } .rich .mer
 const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
-  { name: "dagre", cfg: DAGRE },
+  { name: "classic8", cfg: { look: "classic", flowchart: { look: "classic", padding: 8 } } },
   { name: "c-p8-e12", ...C },
   { name: "elk-2400", window: 2400 },
   { name: "c-p8-e12-2400", ...C, window: 2400 },
-  { name: "elk-1280", window: 1280 },
-  { name: "c-p8-e12-1280", ...C, window: 1280 },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["role-narrow", ROLE_NARROW], ["role-own", ROLE_OWN], ["lanes", LANES], ...SMALL];
 
