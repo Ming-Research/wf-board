@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
-import { answersPushes } from "./model.ts";
+import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds, reviewRequested } from "./rules.ts";
+import type { Rules } from "./rules.ts";
+import type { TimedMark } from "./wake.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -26,7 +28,7 @@ import { deliveries } from "./merges.ts";
 import type { Delivery } from "./merges.ts";
 import { offers, poolCounts, toPush, toldNow } from "./offers.ts";
 import type { Told } from "./offers.ts";
-import { timedWake } from "./timed-wake.ts";
+import { architectTimedWake, timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
 import type { UsageWatch } from "./usage-watch.ts";
@@ -50,7 +52,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -279,8 +281,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
     try { name = decodeURIComponent(url.pathname.slice(6)).trim(); } catch { name = ""; }
-    // The PM's stream is /wake, which the PM's and the architect's session names answer for; a name with a slash, none, or a long one is not a session name.
-    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || answersPushes({ session: name }) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    // The PM's stream is /wake, which the PM's session name answers for; a name with a slash, none, or a long one is not a session name.
+    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isPMSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
@@ -421,20 +423,26 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
   }, 25_000);
   heartbeat.unref();
-  // The timed wake: once `timedWakeMs` has passed since the last one (kept across restarts), or since the start when there is none.
-  const timedMs = deps.timedWakeMs ?? 30 * 60_000, started = new Date(now()).toISOString();
-  let timing = false;
-  async function timed() {
-    const last = wake.lastTimed;
-    if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
-    timing = true;
+  // The timed wakes: the PM's once `timedWakeMs` has passed since its last one, the architect's once `architectTimedWakeMs` has
+  // (each kept across restarts), or since the start when there is none.
+  const timedMs = deps.timedWakeMs ?? 30 * 60_000, architectTimedMs = deps.architectTimedWakeMs ?? 60 * 60_000, started = new Date(now()).toISOString();
+  const timing = new Set<object>();
+  /** Make one timed wake on `stream`, which keeps the time of its last one, if it is due; one at a time for a stream. */
+  async function timedOn(stream: { lastTimed: TimedMark | undefined; markTimed(mark: TimedMark): void }, every: number, push: (s: Snapshot, r: Rules, last: TimedMark | undefined) => Promise<void>) {
+    const last = stream.lastTimed;
+    if (timing.has(stream) || now() < Date.parse(last?.at ?? started) + every) return;
+    timing.add(stream);
     try {
-      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => { const r = store.derived.rules(s, now()); return timedWake(store, s, r, last, started, offers(s, r), deps.usage?.alert()); });
-      wake.push("timed", { ...fields });
-      wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
+      const s = store.snapshot();
+      await withBudget(new Budget("timed wake", limits), () => push(s, store.derived.rules(s, now()), last));
+      stream.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
-    finally { timing = false; }
+    finally { timing.delete(stream); }
   }
+  const timed = () => Promise.all([
+    timedOn(wake, timedMs, async (s, r, last) => { wake.push("timed", { ...await timedWake(store, s, r, last, started, offers(s, r), deps.usage?.alert()) }); }),
+    timedOn(wake.agent(ARCHITECT_SESSION), architectTimedMs, async (s, r, last) => { wake.push("timed-architect", { ...await architectTimedWake(store, s, r, last, started) }); }),
+  ]);
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
     scanChecks(true); scanOffers(true); wake.checkReceipts();

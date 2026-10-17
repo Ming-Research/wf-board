@@ -72,7 +72,7 @@ matches what the artifact board offered.
   events kept in a local file, receipts, the no-receipt alert);
   `src/liveness.ts`: whether the sessions holding items are still there (the
   ask and the "no answer" push, its silences kept in `state/liveness.json`);
-  `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
+  `src/timed-wake.ts`: what the PM's half-hourly and the architect's hourly wake carry. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
 - `src/offers.ts`: the pools of engineer slots that have a free slot and candidates, and what the PM was last told of them (the

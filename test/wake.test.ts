@@ -9,19 +9,21 @@ import { request } from "node:http";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, author, later, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { agentSocket, board, author, later, server, wakeSocket, asArchitect } from "./helpers.ts";
 import { Item } from "../src/model.ts";
-import { Wake, WAKE_KINDS, CONTROL_FRAMES } from "../src/wake.ts";
+import { Wake, WAKE_KINDS, CONTROL_FRAMES, agentFileName } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { createHttpServer } from "../src/http.ts";
-import { timedWake } from "../src/timed-wake.ts";
+import { architectTimedWake, timedWake } from "../src/timed-wake.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z"), HOUR = 60 * 60 * 1000;
 const iso = (ms: number) => new Date(ms).toISOString();
 const noteFields = (note: string, project = "Whitefoot") => ({ note, target: "it:a", kind: "comment", title: "中文检查", project });
+/** An event the PM's stream carries (stalled work), for tests of what a numbered stream does whatever it carries. */
+const stallFields = (text: string) => ({ item: "a", project: "Whitefoot", title: "中文检查", text });
 async function scratch(t: { after(fn: () => void | Promise<void>): void }) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-wake-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -39,20 +41,20 @@ async function until<T>(read: () => T | Promise<T>, done: (value: T) => boolean,
 test("push numbers events from 1, keeps them, and refuses a kind or a field set the table does not list", () => {
   const wake = new Wake({ now: () => T0 }), got: WakeFrame[] = [];
   wake.onPush(frame => got.push(frame));
-  const first = wake.push("note", noteFields("n1")), second = wake.push("note", noteFields("n2"));
+  const first = wake.push("stalled", stallFields("n1")), second = wake.push("stalled", stallFields("n2"));
   assert.deepEqual([first.n, second.n], [1, 2]);
-  assert.deepEqual(first, { n: 1, at: iso(T0), event: "note", ...noteFields("n1") });
+  assert.deepEqual(first, { n: 1, at: iso(T0), event: "stalled", ...stallFields("n1") });
   assert.deepEqual(got, [first, second]);
-  assert.throws(() => wake.push("note", { ...noteFields("n3"), extra: 1 }), /fields/);
-  const { title: _title, ...missing } = noteFields("n3");
-  assert.throws(() => wake.push("note", missing), /fields/);
+  assert.throws(() => wake.push("stalled", { ...stallFields("n3"), extra: 1 }), /fields/);
+  const { title: _title, ...missing } = stallFields("n3");
+  assert.throws(() => wake.push("stalled", missing), /fields/);
   assert.throws(() => wake.push("request" as never, {}), /Unknown wake kind/);
   assert.equal(wake.latest(), 2, "a refused push takes no number");
 });
 
 test("since returns what follows a number, and flags a gap when the log no longer holds the number after it, or the number is ahead", () => {
   const wake = new Wake({ now: () => T0, retain: 3 });
-  for (let i = 1; i <= 5; i++) wake.push("note", noteFields("n" + i));
+  for (let i = 1; i <= 5; i++) wake.push("stalled", stallFields("n" + i));
   assert.equal(wake.oldest(), 3, "the oldest two went past the limit of 3");
   const numbers = (after: number) => { const r = wake.since(after); return { n: r.frames.map(f => f.n), gap: r.gap }; };
   assert.deepEqual(numbers(5), { n: [], gap: false });
@@ -65,26 +67,26 @@ test("since returns what follows a number, and flags a gap when the log no longe
 
 test("past the count and byte limits the oldest events go, the file shrinks with them, and numbering goes on after a restart", async t => {
   const file = join(await scratch(t), "wake.jsonl"), first = new Wake({ file, now: () => T0, retain: 3 });
-  for (let i = 1; i <= 5; i++) first.push("note", noteFields("n" + i));
+  for (let i = 1; i <= 5; i++) first.push("stalled", stallFields("n" + i));
   assert.deepEqual((await lines(file)).filter(l => l.event).map(l => l.n), [3, 4, 5]);
   const second = new Wake({ file, now: () => T0, retain: 3 });
   assert.equal(second.latest(), 5); assert.equal(second.oldest(), 3);
-  assert.equal(second.push("note", noteFields("n6")).n, 6);
+  assert.equal(second.push("stalled", stallFields("n6")).n, 6);
   assert.deepEqual(second.since(0).frames.map(f => f.n), [4, 5, 6]);
   // The byte limit alone also drops the oldest, but always keeps the newest.
   const small = new Wake({ now: () => T0, retainBytes: 300 });
-  for (let i = 1; i <= 6; i++) small.push("note", noteFields("n" + i));
+  for (let i = 1; i <= 6; i++) small.push("stalled", stallFields("n" + i));
   assert.ok(small.since(0).frames.length < 6 && small.since(0).frames.at(-1)!.n === 6);
   // The limit counts bytes, not characters: Chinese text is three bytes a character, and the doc's 2 MiB is bytes.
-  const chinese = { ...noteFields("n"), title: "中".repeat(100) }, wide = new Wake({ now: () => T0 }), one = wide.push("note", chinese);
+  const chinese = { ...stallFields("n"), title: "中".repeat(100) }, wide = new Wake({ now: () => T0 }), one = wide.push("stalled", chinese);
   const bytes = Buffer.byteLength(JSON.stringify(one)), characters = JSON.stringify(one).length;
   assert.ok(bytes > 1.5 * characters);
   const counted = new Wake({ now: () => T0, retainBytes: Math.floor(2.5 * bytes) });
-  for (let i = 0; i < 5; i++) counted.push("note", chinese);
+  for (let i = 0; i < 5; i++) counted.push("stalled", chinese);
   assert.deepEqual(counted.since(0).frames.map(f => f.n), [4, 5], "two events fit in 2.5 events' bytes, though four would by characters");
   // An event that alone is over the limit is kept.
   const tiny = new Wake({ now: () => T0, retainBytes: 1 });
-  tiny.push("note", noteFields("n1")); tiny.push("note", noteFields("n2"));
+  tiny.push("stalled", stallFields("n1")); tiny.push("stalled", stallFields("n2"));
   assert.deepEqual(tiny.since(0).frames.map(f => f.n), [2]);
 });
 
@@ -92,13 +94,13 @@ test("a receipt answers everything pushed before it, and writes nothing when it 
   const file = join(await scratch(t), "wake.jsonl"), wake = new Wake({ file, now: () => T0 });
   wake.receipt();
   assert.equal(wake.receiptedUpTo(), 0); assert.equal((await lines(file).catch(() => [])).length, 0, "nothing to answer, nothing written");
-  wake.push("note", noteFields("n1")); wake.push("note", noteFields("n2"));
+  wake.push("stalled", stallFields("n1")); wake.push("stalled", stallFields("n2"));
   wake.receipt();
   assert.equal(wake.receiptedUpTo(), 2);
   const size = (await lines(file)).length;
   wake.receipt(); wake.receipt();
   assert.equal((await lines(file)).length, size, "repeated calls with nothing new write nothing");
-  wake.push("note", noteFields("n3"));
+  wake.push("stalled", stallFields("n3"));
   assert.equal(wake.receiptedUpTo(), 2, "an event pushed after the call is not answered by it");
   assert.equal(new Wake({ file, now: () => T0 }).receiptedUpTo(), 2, "a restart keeps the receipt");
 });
@@ -108,20 +110,20 @@ test("with no receipt for the limit the owner is told once, a receipt starts the
   let clock = T0;
   const open = () => { const wake = new Wake({ file, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
   const a = open();
-  a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
+  a.push("stalled", stallFields("n1")); a.push("stalled", stallFields("n2"));
   a.receipt();
-  a.push("note", noteFields("n3"));
+  a.push("stalled", stallFields("n3"));
   clock = T0 + HOUR - 1; a.checkReceipts();
   assert.deepEqual(told, [], "the oldest event without a receipt is not yet an hour old");
   clock = T0 + HOUR; a.checkReceipts();
-  assert.deepEqual(told, [["PM 1 小时没响应", "最早没回执的是 #3：主人的留言：中文检查"]]);
+  assert.deepEqual(told, [["PM 1 小时没响应", "最早没回执的是 #3：无人推进：中文检查"]]);
   clock += HOUR; a.checkReceipts(); a.checkReceipts();
   assert.equal(told.length, 1, "one alert per silence, not one per tick");
   const b = open();
   b.checkReceipts();
   assert.equal(told.length, 1, "the restart remembers it already told the owner");
   b.receipt();
-  b.push("note", noteFields("n4"));
+  b.push("stalled", stallFields("n4"));
   clock += HOUR - 1; b.checkReceipts();
   assert.equal(told.length, 1);
   clock += 1; b.checkReceipts();
@@ -150,16 +152,16 @@ test("a log file that cannot be written costs the numbers' continuity, never the
   console.error = (...args: unknown[]) => { errors.push(args); };
   try {
     const wake = new Wake({ file: join(dir, "plain-file", "wake.jsonl"), now: () => T0 });
-    assert.equal(wake.push("note", noteFields("n1")).n, 1);
+    assert.equal(wake.push("stalled", stallFields("n1")).n, 1);
     wake.receipt();
     assert.equal(wake.receiptedUpTo(), 1);
   } finally { console.error = original; }
   assert.ok(errors.length >= 1 && errors.every(e => e[0] === "wake log not written"));
 });
 
-test("a sent note is pushed with a number whatever project its item is in, a draft is not, and a second send pushes nothing", async t => {
+test("a sent note is pushed to the architect's stream with a number whatever project its item is in, a draft is not, a second send pushes nothing, and the PM's stream gets none of it", async t => {
   const { url, api, store } = await server(t);
-  const star = await wakeSocket(t, url);
+  const star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
   assert.deepEqual(star.frames, [{ event: "connected", latest: 0 }]);
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "q:choice", kind: "explain", text: "two" });
@@ -167,7 +169,7 @@ test("a sent note is pushed with a number whatever project its item is in, a dra
   await star.sync();
   assert.deepEqual(star.events(), [], "drafts are not pushed");
   await api("/api/send", {}); await star.sync();
-  const seen = star.events().map(({ at, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), frame));
+  const seen = star.events().map(({ at, line, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), assert.match(String(line), /^#\d 主人的留言 · /), frame));
   assert.deepEqual(seen, [
     { n: 1, event: "note", ...noteFields(one.data.id) },
     { n: 2, event: "note", note: two.data.id, target: "q:choice", kind: "explain", title: "中文方案？", project: "Whitefoot" },
@@ -180,6 +182,8 @@ test("a sent note is pushed with a number whatever project its item is in, a dra
   await store.commit({ author: "owner", message: "edit a sent note", puts: [{ kind: "note", id: one.data.id, expectRev: note.rev, doc: { ...note, text: "edited" } }] });
   await star.sync();
   assert.equal(star.events().length, 3);
+  await pm.sync();
+  assert.deepEqual(pm.events(), [], "none of the owner's notes goes to the PM's stream: explain requests and a choice on a card included");
 });
 
 test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {
@@ -193,11 +197,10 @@ test("only the kinds in the table are pushed: not a blocking card, an ask or a f
   assert.deepEqual(star.events(), []);
 });
 
-test("a client that comes back with its last number gets what followed, a gap frame when the log no longer holds it, and a bad number is refused", async t => {
+test("a client of the PM's stream that comes back with its last number gets what followed, a gap frame when the log no longer holds it, and a bad number is refused", async t => {
   const wake = new Wake({ retain: 2 });
-  const { url, api } = await server(t, { wake });
-  for (const text of ["one", "two", "three"]) await api("/api/notes", { target: "it:a", kind: "comment", text });
-  await api("/api/send", {});
+  const { url } = await server(t, { wake });
+  for (const text of ["one", "two", "three"]) wake.push("stalled", stallFields(text));
   assert.equal(wake.latest(), 3);
   const live = await wakeSocket(t, url), resumed = await wakeSocket(t, url, 2), behind = await wakeSocket(t, url, 0), ahead = await wakeSocket(t, url, 99), current = await wakeSocket(t, url, 3);
   assert.deepEqual(live.frames, [{ event: "connected", latest: 3 }], "without a number the client takes events from now on");
@@ -207,7 +210,7 @@ test("a client that comes back with its last number gets what followed, a gap fr
   assert.deepEqual(ahead.frames, [{ event: "connected", latest: 3 }, { event: "gap", oldest: 2, latest: 3 }]);
   assert.deepEqual(current.frames, [{ event: "connected", latest: 3 }]);
   // A live event reaches every connected client, once, after the replay.
-  await api("/api/notes", { target: "it:a", kind: "comment", text: "four" }); await api("/api/send", {});
+  wake.push("stalled", stallFields("four"));
   for (const client of [live, resumed, behind, ahead, current]) await client.sync();
   assert.deepEqual([live, resumed, behind, ahead, current].map(c => c.events().map(f => f.n)), [[4], [3, 4], [2, 3, 4], [4], [4]]);
   // The client rule the doc gives: drop an event numbered at or below the one remembered; a gap frame sets it to oldest − 1.
@@ -330,29 +333,104 @@ test("the timed wake lists what changed since the last one without the architect
   assert.deepEqual(names(next.changed), ["b"], "only what changed after the last wake");
 });
 
-test("the timed wake lists the keys of the reviews and the finished items not yet taken up, and stops a list at 20 with the rest counted", async t => {
+test("the architect's timed wake comes every hour with the items changed since the last one, without the architect's own writes but with the PM's, and a count of the items being worked on; the PM's stream gets none of it, and the mark survives a restart", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const dir = await scratch(t), architectFile = join(dir, agentFileName(ARCHITECT_SESSION));
+  let clock = T0;
+  const wake = new Wake({ dir, now: () => clock });
+  const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12 });
+  const doc = (title: string, group: string, plan: object[], extra: object = {}) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  await store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "doing", since: iso(T0) }]) },
+    { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
+    { kind: "item", id: "held", expectRev: null, doc: doc("会话拿着的条目", "Whitefoot", [{ id: "step", text: "还没标", state: "todo" }], { dispatches: [{ agentId: "h1", agent: "held-eng", role: "工程师", level: 2, model: "Sonnet", started: iso(T0) }] }) },
+  ] });
+  wake.agent(ARCHITECT_SESSION).markTimed({ at: iso(T0), head: store.snapshot().head });
+  // After the mark: an engineer writes b and other; the architect writes a and b; the PM writes area; the owner comments on a card.
+  await op.appendLog({ author, session: "工程师", id: "b", text: "progress" });
+  await op.appendLog({ author: "Firn", session: "工程师", id: "other", text: "progress" });
+  await op.appendLog({ author, session: ARCHITECT_SESSION, id: "a", text: "reviewed" });
+  await op.appendLog({ author, session: ARCHITECT_SESSION, id: "b", text: "reviewed" });
+  await op.appendLog({ author, session: "PM", id: "area", text: "patrolled" });
+  await api("/api/notes", { target: "q:choice", kind: "comment", text: "owner says" });
+  const star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
+  clock = T0 + HOUR - 1; t.mock.timers.tick(1000); await star.sync(); await setImmediate();
+  assert.deepEqual(star.events(), [], "not due yet: the architect's wake is an hour by default, not the PM's half hour");
+  clock = T0 + HOUR; t.mock.timers.tick(1000);
+  await until(() => star.events().length, n => n === 1, "the architect's timed wake");
+  const frame = star.events()[0]!;
+  assert.deepEqual({ n: frame.n, at: frame.at, event: frame.event, since: frame.since }, { n: 1, at: iso(clock), event: "timed-architect", since: iso(T0) });
+  assert.deepEqual(Object.keys(frame).sort(), ["at", "changed", "event", "line", "n", "since", "working"], "changes and a count, none of the PM's lists or counts");
+  const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
+  assert.deepEqual(by, { area: ["PM"], b: ["owner", "工程师"], other: ["工程师"] }, "the PM's write is listed; the architect's own writes are not why a or b is, and a is left out");
+  assert.equal(frame.working, 2, "the items someone holds outside the Architect and PM projects: a step being done, or a live session");
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: store.snapshot().head });
+  assert.deepEqual((await lines(architectFile)).filter(l => l.timed).at(-1), { timed: wake.agent(ARCHITECT_SESSION).lastTimed });
+  t.mock.timers.tick(5000); await setImmediate();
+  assert.equal(star.events().length, 1, "the next one is an hour after this one");
+  await pm.sync();
+  assert.deepEqual(pm.events(), [], "the PM's stream carries none of it, and its own timed wake (set far off here) is not the architect's");
+  // A restart keeps the mark: the next wake counts from it, not from the restart.
+  star.socket.send(JSON.stringify({ ack: 1 })); await star.sync();
+  await op.appendLog({ author, session: "工程师", id: "b", text: "after the wake" });
+  const mark = wake.agent(ARCHITECT_SESSION).lastTimed!;
+  clock += 10 * 60_000;
+  const reopened = new Wake({ dir, now: () => clock });
+  assert.deepEqual(reopened.agent(ARCHITECT_SESSION).lastTimed, mark); assert.equal(reopened.agent(ARCHITECT_SESSION).latest(), 1);
+  const again = await restart(t, store, op, { now: () => clock, checkIntervalMs: 1000, wake: reopened, timedWakeMs: 1e12 });
+  const resumed = await agentSocket(t, again.url, ARCHITECT_SESSION);
+  t.mock.timers.tick(1000); await setImmediate(); await resumed.sync();
+  assert.deepEqual(resumed.events(), [], "ten minutes after the last wake, restart or not, nothing is due");
+  clock = Date.parse(mark.at) + HOUR; t.mock.timers.tick(1000);
+  await until(() => resumed.events().length, n => n === 1, "the architect's timed wake after the restart");
+  const next = resumed.events()[0]!;
+  assert.equal(next.n, 2); assert.equal(next.since, mark.at);
+  assert.deepEqual((next.changed as Array<{ item: string }>).map(e => e.item), ["b"], "only what changed after the last wake");
+});
+
+test("the architect's timed wake lists at most 20 items and counts the rest, and leaves out an item only the architect wrote", async t => {
   const { store } = await board(t);
-  const before = store.snapshot().head, mark = { at: iso(T0), head: before };
-  const doc = (title: string, plan: object[], extra: object = {}) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
-  const dispatch = (role: string, agent: string) => [{ agentId: agent, agent, role, level: 2, model: "Sonnet", started: iso(T0) }];
-  const review = { id: "review", text: "审查（3 级）", state: "doing", since: iso(T0) };
-  const doneAccept = { id: "accept", text: "某项检查通过", state: "done", accept: true, doneAt: iso(T0), since: iso(T0) };
-  const items: Array<[string, object]> = [
-    // A review wanted and nobody on it; the same with a reviewer, which the engineer resumes itself; a step of another name.
-    ["wants", doc("等审查", [review])],
-    ["reviewed", doc("有人在审", [review], { dispatches: dispatch("审查", "rev-1") })],
-    ["other-step", doc("别的步骤", [{ ...review, id: "other-step" }])],
-    // Done with a session still holding it; done with none.
-    ["held-done", { ...doc("做完了会话还在", []), plan: [doneAccept], dispatches: dispatch("工程师", "eng-1") }],
-    ["free-done", { ...doc("做完了没人拿着", []), plan: [doneAccept] }],
-    ...Array.from({ length: 25 }, (_, i): [string, object] => [`bulk${i}`, doc(`批量${i}`, [])]),
-  ];
-  await store.commit({ author, session: "工程师", message: "Seed", puts: items.map(([id, doc]) => ({ kind: "item" as const, id, expectRev: null, doc })) });
-  const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, T0), mark, iso(T0));
-  assert.deepEqual(fields.review, ["wants"], "only the item whose review step is in progress and has no reviewer");
-  assert.deepEqual(fields.finished, ["held-done"], "only the done item a session still holds");
+  const mark = { at: iso(T0), head: store.snapshot().head };
+  const doc = (title: string) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  const put = (id: string) => ({ kind: "item" as const, id, expectRev: null, doc: doc(id) });
+  await store.commit({ author, session: "工程师", message: "Seed", puts: Array.from({ length: 25 }, (_, i) => put(`bulk${i}`)) });
+  await store.commit({ author, session: ARCHITECT_SESSION, message: "Mine", puts: [put("mine")] });
+  const s = store.snapshot(), fields = await architectTimedWake(store, s, store.derived.rules(s, T0), mark, iso(T0));
   assert.equal(fields.changed.length, 21, "the list stops at 20 entries and a count");
-  assert.deepEqual(fields.changed.at(-1), { more: 10 }, "30 items were written, 20 are listed, the rest are counted");
+  assert.deepEqual(fields.changed.at(-1), { more: 5 }, "25 items were written by the engineer, 20 are listed, the rest are counted; the architect's own is not among them");
+});
+
+test("an hour with a push to the architect undelivered tells the owner once, a delivery starts the count again, the alert and the last timed wake survive a restart, and no other agent's stream is watched so", async t => {
+  const dir = await scratch(t), told: Array<[string, string]> = [];
+  let clock = T0;
+  const open = () => { const wake = new Wake({ dir, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
+  const a = open(), stream = a.agent(ARCHITECT_SESSION);
+  a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
+  stream.deliver(1);
+  clock = T0 + HOUR - 1; a.checkReceipts();
+  assert.deepEqual(told, [], "the oldest push not delivered, #2, is not yet an hour old");
+  clock = T0 + HOUR; a.checkReceipts();
+  assert.deepEqual(told, [["架构师 1 小时没响应", "最早没送到的是 #2：主人的留言：中文检查"]], "a delivered push is not the oldest");
+  clock += HOUR; a.checkReceipts(); a.checkReceipts();
+  assert.equal(told.length, 1, "one alert per silence, not one per tick");
+  stream.markTimed({ at: iso(clock), head: "abc" });
+  const b = open();
+  b.checkReceipts();
+  assert.equal(told.length, 1, "the restart remembers it already told the owner");
+  assert.deepEqual(b.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: "abc" }, "and the time of the last timed wake");
+  b.agent(ARCHITECT_SESSION).deliver(2);
+  b.push("note", noteFields("n3"));
+  clock += HOUR - 1; b.checkReceipts();
+  assert.equal(told.length, 1);
+  clock += 1; b.checkReceipts();
+  assert.equal(told.length, 2, "after a delivery the count started again, from the new push");
+  assert.match(told[1]![1], /最早没送到的是 #3：/);
+  // Only the architect's stream is watched for it; a session holding an item is watched by the liveness check.
+  const other = new Wake({ now: () => clock });
+  other.onTell(notice => told.push([notice.title, notice.message]));
+  other.agent("eng").push("item-done", { item: "a", project: "Whitefoot", title: "t", parent: "p" });
+  clock += 10 * HOUR; other.checkReceipts();
+  assert.equal(told.length, 2);
 });
 
 async function mcpClient(t: Parameters<typeof board>[0], wake: Wake) {
@@ -363,34 +441,34 @@ async function mcpClient(t: Parameters<typeof board>[0], wake: Wake) {
   return { ...fixture, client };
 }
 
-test("a call carrying the architect's or the PM's session, read or write, is the receipt for what was pushed before it; another session's, or none, is not", async t => {
+test("a call carrying the architect's or the PM's session, read or write, is the receipt for what was pushed to the PM's stream before it; another session's, or none, is not", async t => {
   const wake = new Wake({ now: () => T0 });
   const { client } = await mcpClient(t, wake);
-  wake.push("note", noteFields("n1")); wake.push("note", noteFields("n2"));
+  wake.push("stalled", stallFields("n1")); wake.push("stalled", stallFields("n2"));
   await client.callTool({ name: "projects", arguments: { session: "别的会话" } });
   await client.callTool({ name: "projects", arguments: {} });
   assert.equal(wake.receiptedUpTo(), 0);
   await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
-  assert.equal(wake.receiptedUpTo(), 2, "a read answers both");
-  wake.push("note", noteFields("n3"));
+  assert.equal(wake.receiptedUpTo(), 2, "a read answers both; the architect keeps answering the PM's stream while no PM runs");
+  wake.push("stalled", stallFields("n3"));
   await client.callTool({ name: "append_log", arguments: { author: "Architect", session: ARCHITECT_SESSION, id: "a", text: "x" } });
   assert.equal(wake.receiptedUpTo(), 3, "a write answers too, even when the board refuses it");
-  wake.push("note", noteFields("n4"));
+  wake.push("stalled", stallFields("n4"));
   const refused = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION, unknown: 1 } });
   assert.equal(refused.isError, true);
   assert.equal(wake.receiptedUpTo(), 3, "a call the schema refuses is not a receipt");
   await client.callTool({ name: "projects", arguments: { session: `  ${ARCHITECT_SESSION}  ` } });
   assert.equal(wake.receiptedUpTo(), 4, "a session name padded with spaces counts, as it does for the permission rule");
-  wake.push("note", noteFields("n5"));
+  wake.push("stalled", stallFields("n5"));
   await client.callTool({ name: "projects", arguments: { session: "PMx" } });
   await client.callTool({ name: "projects", arguments: { session: "pm" } });
   assert.equal(wake.receiptedUpTo(), 4, "a near miss of the PM's session is not a receipt");
   await client.callTool({ name: "projects", arguments: { session: "PM" } });
   assert.equal(wake.receiptedUpTo(), 5, "a read from the session PM answers");
-  wake.push("note", noteFields("n6"));
+  wake.push("stalled", stallFields("n6"));
   await client.callTool({ name: "append_log", arguments: { author: "PM", session: "PM", id: "a", text: "x" } });
   assert.equal(wake.receiptedUpTo(), 6, "a write from the session PM answers too");
-  wake.push("note", noteFields("n7"));
+  wake.push("stalled", stallFields("n7"));
   await client.callTool({ name: "projects", arguments: { session: "  PM  " } });
   assert.equal(wake.receiptedUpTo(), 7, "a padded PM session counts");
 });
@@ -400,7 +478,7 @@ test("a call over a connection with a PM or architect credential is the receipt,
   const who = (role: "PM" | "架构师" | "观察者" | "工程师", session: string) => ({ ok: true as const, who: { author: role === "PM" ? "PM" : "Architect", session, access: { role, project: role === "PM" ? "PM" : "Architect", roots: [] } } });
   const receiptOf = async (credential: ReturnType<typeof who>, session?: string) => {
     const wake = new Wake({ now: () => T0 });
-    wake.push("note", noteFields("n1"));
+    wake.push("stalled", stallFields("n1"));
     const mcp = createMcpServer({ store: fixture.store, ops: fixture.op, wake, credential });
     const client = new Client({ name: "Credential receipt", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
     await mcp.connect(st); await client.connect(ct);
@@ -426,30 +504,39 @@ test("every tool takes an optional session, and post_notice is gone", async t =>
   assert.ok(!tools.some(tool => tool.name === "post_notice"));
 });
 
-test("with no receipt for the limit the server's timer tells the owner once, and a call from the architect starts the count again", async t => {
+test("with no receipt for the limit the server's timer tells the owner once for the PM's stream, and with no delivery for the architect's; a call from the architect starts both counts again", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let clock = T0;
   const told: Array<[string, string]> = [];
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
   wake.onTell(notice => told.push([notice.title, notice.message]));
-  const { url, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12 });
+  const { url, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12, architectTimedWakeMs: 1e12 });
   await api("/api/notes", { target: "it:a", kind: "comment", text: "one" }); await api("/api/send", {});
-  assert.equal(wake.latest(), 1);
+  wake.push("stalled", stallFields("one"));
+  assert.deepEqual([wake.agent(ARCHITECT_SESSION).latest(), wake.latest()], [1, 1], "the note is the architect's, the stalled item the PM's");
   clock = T0 + 10 * 60_000 - 1; t.mock.timers.tick(1000);
   assert.deepEqual(told, []);
   clock++; t.mock.timers.tick(1000);
-  assert.deepEqual(told, [["PM 10 分钟没响应", "最早没回执的是 #1：主人的留言：中文检查"]]);
+  assert.deepEqual(told, [["PM 10 分钟没响应", "最早没回执的是 #1：无人推进：中文检查"], ["架构师 10 分钟没响应", "最早没送到的是 #1：主人的留言：中文检查"]]);
   t.mock.timers.tick(5000);
-  assert.equal(told.length, 1, "not repeated while the silence lasts");
-  // The architect's call through the real MCP route is the receipt.
+  assert.equal(told.length, 2, "not repeated while the silence lasts");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-  const client = new Client({ name: "Architect", version: "1" }), transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
+  const client = new Client({ name: "Receipts", version: "1" }), transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
   await client.connect(transport); t.after(() => client.close());
-  await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
-  assert.equal(wake.receiptedUpTo(), 1);
+  // The PM's call through the real MCP route answers its own stream and delivers nothing to the architect.
+  await client.callTool({ name: "projects", arguments: { session: "PM" } });
+  assert.deepEqual([wake.receiptedUpTo(), wake.agent(ARCHITECT_SESSION).deliveredUpTo()], [1, 0]);
   await api("/api/notes", { target: "it:a", kind: "comment", text: "two" }); await api("/api/send", {});
   clock += 10 * 60_000; t.mock.timers.tick(1000);
-  assert.equal(told.length, 2); assert.match(told[1]![1], /#2：/);
+  assert.equal(told.length, 2, "the PM's call did not start the architect's count again: its silence is already told");
+  // The architect's call answers the PM's stream and is given its own pushes, which delivers them.
+  wake.push("stalled", stallFields("two"));
+  const result = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
+  assert.match((result.content as Array<{ text: string }>).map(c => c.text).join("\n"), /【看板推送】\n#1 主人的留言 .*\n#2 主人的留言 /);
+  assert.deepEqual([wake.receiptedUpTo(), wake.agent(ARCHITECT_SESSION).deliveredUpTo()], [2, 2]);
+  await api("/api/notes", { target: "it:a", kind: "comment", text: "three" }); await api("/api/send", {});
+  clock += 10 * 60_000; t.mock.timers.tick(1000);
+  assert.equal(told.length, 3); assert.equal(told[2]![0], "架构师 10 分钟没响应"); assert.match(told[2]![1], /#3：/);
 });
 
 test("a card that stops work tells the owner once; a card without blocks, a revision that keeps blocks and a ruled card do not", async t => {
@@ -549,6 +636,7 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
   await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], dispatch: [], actions: "" });
+  await refused("timed-architect", { event: "timed-architect", since: "s", changed: [], working: 0 });
   await refused("dispatch", { event: "dispatch", pool: "1", free: 1, limit: 10, candidates: 1 });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
@@ -577,13 +665,13 @@ test("POST /api/wake refuses every other kind, every other field set and every b
 test("a kept file that holds a kind the table no longer has loses that event and keeps its number", async t => {
   const file = join(await scratch(t), "wake.jsonl");
   const first = new Wake({ file, now: () => T0 });
-  first.push("note", noteFields("n1"));
+  first.push("stalled", stallFields("n1"));
   // The earlier table pushed these kinds; a board started over their file must neither fail on them nor reuse their numbers.
-  await writeFile(file, [...(await lines(file)), { n: 2, at: iso(T0), event: "pr-ready", repo: "o/r", number: 1 }, { n: 3, at: iso(T0), event: "note", ...noteFields("n3") }].map(l => JSON.stringify(l) + "\n").join(""));
+  await writeFile(file, [...(await lines(file)), { n: 2, at: iso(T0), event: "pr-ready", repo: "o/r", number: 1 }, { n: 3, at: iso(T0), event: "stalled", ...stallFields("n3") }].map(l => JSON.stringify(l) + "\n").join(""));
   const again = new Wake({ file, now: () => T0 });
-  assert.deepEqual(again.since(0).frames.map(f => [f.n, f.event]), [[1, "note"], [3, "note"]]);
+  assert.deepEqual(again.since(0).frames.map(f => [f.n, f.event]), [[1, "stalled"], [3, "stalled"]]);
   assert.equal(again.latest(), 3);
-  assert.equal(again.push("note", noteFields("n4")).n, 4);
+  assert.equal(again.push("stalled", stallFields("n4")).n, 4);
   assert.doesNotThrow(() => again.checkReceipts());
 });
 
