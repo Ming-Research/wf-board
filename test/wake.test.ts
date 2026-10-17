@@ -16,6 +16,7 @@ import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { createHttpServer } from "../src/http.ts";
+import { timedWake } from "../src/timed-wake.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z"), HOUR = 60 * 60 * 1000;
@@ -138,7 +139,7 @@ test("the limit can be set shorter, and the alert names it in minutes", () => {
   let clock = T0;
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
   wake.onTell(notice => told.push(notice.title));
-  wake.push("timed", { since: iso(T0), changed: [], working: 0, architect: 0, pm: 0, dispatch: [], actions: "" });
+  wake.push("timed", { since: iso(T0), changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], dispatch: [], actions: "" });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["PM 10 分钟没响应"]);
 });
@@ -327,6 +328,31 @@ test("the timed wake lists what changed since the last one without the architect
   const next = resumed.events()[0]!;
   assert.equal(next.n, (frame.n as number) + 1); assert.equal(next.since, mark.at);
   assert.deepEqual(names(next.changed), ["b"], "only what changed after the last wake");
+});
+
+test("the timed wake lists the keys of the reviews and the finished items not yet taken up, and stops a list at 20 with the rest counted", async t => {
+  const { store } = await board(t);
+  const before = store.snapshot().head, mark = { at: iso(T0), head: before };
+  const doc = (title: string, plan: object[], extra: object = {}) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  const dispatch = (role: string, agent: string) => [{ agentId: agent, agent, role, level: 2, model: "Sonnet", started: iso(T0) }];
+  const review = { id: "review", text: "审查（3 级）", state: "doing", since: iso(T0) };
+  const doneAccept = { id: "accept", text: "某项检查通过", state: "done", accept: true, doneAt: iso(T0), since: iso(T0) };
+  const items: Array<[string, object]> = [
+    // A review wanted and nobody on it; the same with a reviewer, which the engineer resumes itself; a step of another name.
+    ["wants", doc("等审查", [review])],
+    ["reviewed", doc("有人在审", [review], { dispatches: dispatch("审查", "rev-1") })],
+    ["other-step", doc("别的步骤", [{ ...review, id: "other-step" }])],
+    // Done with a session still holding it; done with none.
+    ["held-done", { ...doc("做完了会话还在", []), plan: [doneAccept], dispatches: dispatch("工程师", "eng-1") }],
+    ["free-done", { ...doc("做完了没人拿着", []), plan: [doneAccept] }],
+    ...Array.from({ length: 25 }, (_, i): [string, object] => [`bulk${i}`, doc(`批量${i}`, [])]),
+  ];
+  await store.commit({ author, session: "工程师", message: "Seed", puts: items.map(([id, doc]) => ({ kind: "item" as const, id, expectRev: null, doc })) });
+  const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, T0), mark, iso(T0));
+  assert.deepEqual(fields.review, ["wants"], "only the item whose review step is in progress and has no reviewer");
+  assert.deepEqual(fields.finished, ["held-done"], "only the done item a session still holds");
+  assert.equal(fields.changed.length, 21, "the list stops at 20 entries and a count");
+  assert.deepEqual(fields.changed.at(-1), { more: 10 }, "30 items were written, 20 are listed, the rest are counted");
 });
 
 async function mcpClient(t: Parameters<typeof board>[0], wake: Wake) {
@@ -522,7 +548,7 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   // The board's own kinds, with exactly their own fields: the daemon is their only source.
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
-  await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, dispatch: [], actions: "" });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], dispatch: [], actions: "" });
   await refused("dispatch", { event: "dispatch", pool: "1", free: 1, limit: 10, candidates: 1 });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
@@ -610,7 +636,7 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
-  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: 0, architect: 1, pm: 0, dispatch: [], actions: "" });
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: 0, architect: 1, pm: 0, review: [], finished: [], dispatch: [], actions: "" });
   clock += 60_000; third.checkReceipts();
   assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
   const offer = new Wake({ now: () => clock, receiptLimitMs: 60_000 }), offered: unknown[] = [];

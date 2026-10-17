@@ -248,6 +248,7 @@ test("a look that cannot read the billing says why in the line and tells nothing
   assert.equal(watch.line(), "Actions 用量还没读到");
   const bad = await quiet(() => watch.poll());
   assert.equal(watch.line(), "Actions 用量读不到：wf: usage report: gh: HTTP 403");
+  assert.equal(watch.alert(), watch.line(), "a billing that cannot be read needs handling, so the timed wake carries the line");
   assert.deepEqual(watch.status().problems, { [ORG]: "wf: usage report: gh: HTTP 403" });
   assert.ok(bad.said.some(line => /usage report: gh: HTTP 403/.test(line)));
   const second = await quiet(() => watch.poll());
@@ -256,6 +257,7 @@ test("a look that cannot read the billing says why in the line and tells nothing
   failing = undefined;
   await watch.poll();
   assert.equal(watch.line(), "Actions 本月已用 10 / 3000（从 10-16 起记账），今天 10，预算 0 美元，到上限就拦");
+  assert.equal(watch.alert(), "", "good figures are for `usage`, not for the timed wake");
   assert.deepEqual(watch.status().problems, {});
   // Only personal accounts: nothing to read, and the line says so.
   const personal = new UsageWatch({ store, wake, billing: billing(() => undefined).source });

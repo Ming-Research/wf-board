@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
 import { answersPushes } from "./model.ts";
-import { STALLED_LABEL, affectedItems, changeSeeds, isReviewStep } from "./rules.ts";
+import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -21,7 +21,7 @@ import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import type { AgentStream } from "./wake.ts";
-import { holderOf, holders, openDispatches } from "./dispatch.ts";
+import { hasReviewer, holderOf, holders, reviewRequested } from "./dispatch.ts";
 import { deliveries } from "./merges.ts";
 import type { Delivery } from "./merges.ts";
 import { offers } from "./offers.ts";
@@ -356,12 +356,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         }
       }
       if (!Object.hasOwn(s.items, id) || !r.isOpenWork(id)) continue;
-      const step = s.items[id]!.plan.find(isReviewStep);
-      if (step && "text" in step && step.state === "doing") {
+      const requested = reviewRequested(s, id);
+      if (requested !== undefined) {
         review.add(id);
         // A reviewer already on the item is resumed by the engineer: a re-review does not come to the PM.
-        if (announce && !reviewing.has(id) && !openDispatches(s, id).some(d => d.role === "审查")) {
-          wake.push("review", { item: id, project: r.projectOf(id), title: s.items[id]!.title, level: reviewLevel(step.text) });
+        if (announce && !reviewing.has(id) && !hasReviewer(s, id)) {
+          wake.push("review", { item: id, project: r.projectOf(id), title: s.items[id]!.title, level: reviewLevel(requested) });
         }
       }
       const stalled = r.checks(id).find(c => c.label === STALLED_LABEL);

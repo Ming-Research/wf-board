@@ -18,7 +18,7 @@ export type WakeRoute = "pm" | { holder: string; only?: true } | { session: stri
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "dispatch", "actions"], to: "pm" },
+  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "review", "finished", "dispatch", "actions"], to: "pm" },
   dispatch: { label: "可以派活", fields: ["pool", "free", "limit", "candidates"], to: "pm" },
   review: { label: "要审查", fields: ["item", "project", "title", "level"], to: "pm" },
   finished: { label: "条目做完", fields: ["item", "project", "title", "session"], to: "pm" },
@@ -72,7 +72,7 @@ const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.dispatch) ? `，${count(f.dispatch)} 个池有空位和候选` : ""}${f.actions ? `，${str(f.actions)}` : ""}`,
+  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.review) ? `，${count(f.review)} 条审查行在进行中却没有审查会话` : ""}${count(f.finished) ? `，${count(f.finished)} 条做完的条目还有会话没收` : ""}${count(f.dispatch) ? `，${count(f.dispatch)} 个池有空位和候选` : ""}${f.actions ? `，${str(f.actions)}` : ""}`,
   dispatch: f => `${str(f.pool)} 级池空 ${str(f.free)}/${str(f.limit)} · ${str(f.candidates)} 个候选可以派`,
   review: f => `${it(f.item, f.project)} · ${f.level ? `${str(f.level)} 级` : "级别没写"} · ${str(f.title)}`,
   finished: f => `${it(f.item, f.project)} · 拿着它的会话 ${str(f.session)} · ${str(f.title)}`,
@@ -103,7 +103,7 @@ export interface Told { title: string; message: string; target?: { kind: "card" 
 
 /** The kinds that are about one item the PM has to act on: a click on a notice about one opens the item. */
 const ITEM_EVENTS = new Set<WakeKind>(["stalled", "no-answer", "review", "finished"]);
-/** The card or item a frame is about, for a click to open: an item the PM has to act on (stalled, offered for starting, to be
+/** The card or item a frame is about, for a click to open: an item the PM has to act on (stalled, to be
  * reviewed, finished, or whose session gave no answer), or the item or card a note is on. Other frames have none. */
 function targetOf(frame: WakeFrame): Told["target"] {
   if (ITEM_EVENTS.has(frame.event) && typeof frame.item === "string") return { kind: "item", key: frame.item };

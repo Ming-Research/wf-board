@@ -10,7 +10,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { NO_RESTART, deployOnce } from "../src/deploy.ts";
+import { NO_RESTART, PushRefused, deployOnce } from "../src/deploy.ts";
 import type { DeployDeps, DeployOutcome, DeployState, Push } from "../src/deploy.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
@@ -333,6 +333,23 @@ test("a push the daemon does not take is kept and sent first on the next run", a
   w.daemon.takes = true;
   assert.equal(await deploy(), "current");
   assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]]);
+  assert.deepEqual(w.saved.outbox, []);
+});
+
+test("a push the daemon refuses is dropped and the pushes behind it are sent; one it could not take stays", async t => {
+  const r = await repos(t), { w, deploy } = world(r, {
+    // The daemon's rule for the request: the older job's shape, without the repository, is turned down.
+    post: async push => { if (!w.daemon.takes) throw new Error("the daemon is down"); if (!("repo" in push)) throw new PushRefused("POST /api/wake answered 400: asks for the fields"); w.posts.push(push); },
+  });
+  // What a job of the older version left in the outbox when the daemon restarted on this version.
+  w.saved.outbox.push({ event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: true });
+  w.daemon.takes = false;
+  const sha = r.land({ "docs/design.md": "new" }, "docs");
+  assert.equal(await deploy(), "deployed");
+  assert.equal(w.saved.outbox.length, 2, "while the daemon is down both stay");
+  w.daemon.takes = true;
+  assert.equal(await deploy(), "current");
+  assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]], "the refused one is gone and the one behind it was sent");
   assert.deepEqual(w.saved.outbox, []);
 });
 
@@ -682,6 +699,14 @@ esac
   assert.equal(await run(), "current");
   assert.deepEqual(await calledLines(), []);
   assert.equal(readFileSync(`${stateFile}.corrupt`, "utf8"), "{not json");
+
+  // An older job left a request in the shape the daemon no longer takes: the daemon answers 400, and it must not hold the pushes behind it.
+  const stale = JSON.parse(await readFile(stateFile, "utf8"));
+  stale.outbox = [{ event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: true }];
+  await writeFile(stateFile, JSON.stringify(stale));
+  assert.equal(await run(), "current");
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).outbox, [], "the refused request was dropped");
+  assert.deepEqual(frames(), [], "and nothing was pushed for it");
 
   const sha = r.land({ "src/a.ts": "a" }, "Add a (#1)");
   assert.equal(await run(), "deployed");

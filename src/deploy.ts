@@ -11,6 +11,10 @@ export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AG
  * `<short hash> <subject>`: the board finds the pull requests they name and the sessions whose items deliver them. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
 
+/** The daemon turned a request down for what it says (a 4xx answer, as for a request in the shape an older job sent): asking
+ * again gets the same answer. */
+export class PushRefused extends Error {}
+
 /** A deploy that began and did not end, or a rollback that did not finish: the commit to go back to. The next run finishes it
  * before it does anything else, so a failure part way is never left as the new state of the checkout. */
 export interface Pending {
@@ -95,7 +99,12 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   const save = () => d.save(state);
   async function flush() {
     while (state.outbox.length) {
-      try { await d.post(state.outbox[0]!); } catch (error) { d.log(`push not taken, kept for the next run: ${reasonOf(error)}`); return; }
+      try { await d.post(state.outbox[0]!); }
+      catch (error) {
+        // A refused request never becomes acceptable, and kept it would hold back every push behind it.
+        if (!(error instanceof PushRefused)) { d.log(`push not taken, kept for the next run: ${reasonOf(error)}`); return; }
+        d.log(`push refused, dropped: ${reasonOf(error)}`);
+      }
       state.outbox.shift(); save();
     }
   }
