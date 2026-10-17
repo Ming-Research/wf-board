@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PM_AUTHOR, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -35,7 +35,7 @@ export interface Ops {
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  /** Only the PM and the architect set a difficulty, on an item of any project; the change is logged with its reason. */
+  /** The PM and the architect set a difficulty on an item of any project, an engineer's credential on the items below the one it was started on; the change is logged with its reason. */
   setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
   setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
@@ -115,8 +115,16 @@ function onlyArchitect(who: Writer, what: string): void {
 function onlyProcess(who: Writer, what: string): void {
   if (!mayRunProcess(who)) throw new OpError(`author: only ${PROCESS_WRITERS} may ${what}`);
 }
-/** A difficulty as the log line writes it: the level, or 「架构师做」. */
-const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : difficulty === "architect" ? "架构师做" : String(difficulty);
+/**
+ * What the board reserves for the process (the PM and the architect) among writers that carry no credential. A write over a
+ * credential is asked of the role's parts instead (`ACCESS`, checked by `mayWrite` before the write begins), where the
+ * engineer has two of these.
+ */
+function onlyProcessWithoutCredential(who: Writer, what: string): void {
+  if (!who.access) onlyProcess(who, what);
+}
+/** A difficulty as the log line writes it: the level, or 未评. */
+const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : String(difficulty);
 /** The log line for a change of difficulty: from what to what, and why. */
 const difficultyLogText = (from: Difficulty | undefined, to: Difficulty, reason: string): string => `难度：${levelText(from)} → ${levelText(to)}，理由：${reason}`;
 const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
@@ -291,12 +299,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   /** After the write is made: when a part is limited to the credential's subtree, every document the write changes must be inside it. */
   function withinScope(s: Snapshot, a: Writer, parts: readonly Part[], work: Work): void {
-    if (!a.access || !parts.some(part => ACCESS[a.access!.role][part] === "subtree")) return;
-    const { role, project, roots } = a.access, inside = subtreeOf(s, roots);
+    if (!a.access || !parts.some(part => ACCESS[a.access!.role][part] === "subtree" || ACCESS[a.access!.role][part] === "below")) return;
+    const { role, project, roots } = a.access, inside = subtreeOf(s, roots), below = parts.filter(part => ACCESS[role][part] === "below");
     const outside = (id: string) => new OpError(`item ${id}: outside the subtree of ${roots.join(", ")}, the only items a ${role} credential writes for ${parts.join(", ")}`);
     if (work.board) throw new OpError(`board: a ${role} credential does not change projects or tags`);
-    for (const put of work.puts) {
+    // An item this write creates is inside when an item of the subtree owns it: the credential writes it from then on.
+    // One that no such item owns (a top item, say) stays outside and is refused below.
+    const ownedInside = new Set<string>();
+    for (const put of work.puts) if (put.kind === "item" && inside.has(put.id)) for (const row of (put.doc as Item).plan ?? []) if ("item" in row && row.own) ownedInside.add(row.item);
+    for (const put of work.puts) if (put.kind === "item" && put.expectRev === null && ownedInside.has(put.id)) inside.add(put.id);
+    // The documents that already existed come first, so a new item put under an owner outside the subtree names that owner.
+    for (const put of [...work.puts.filter(p => p.expectRev !== null), ...work.puts.filter(p => p.expectRev === null)]) {
       if (put.kind === "item" && !inside.has(put.id)) throw outside(put.id);
+      // The items the credential was started on are handed to it with their level; only the ones below them are rated by it.
+      else if (put.kind === "item" && below.length && roots.includes(put.id)) throw new OpError(`item ${put.id}: the root of this ${role} credential keeps the level it was handed; ${below.join(", ")} reaches only the items below it, and the ${ARCHITECT} changes the root's`);
       // A row that owns an item puts it under this one: the credential would then write it, so it may own only what it already writes.
       else if (put.kind === "item") { for (const row of (put.doc as Item).plan ?? []) if ("item" in row && row.own && !inside.has(row.item)) throw outside(row.item); }
       else if (put.kind === "decision" && !inside.has((put.doc as Decision).item)) throw outside((put.doc as Decision).item);
@@ -312,7 +328,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
       if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
       if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
-      if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write as ${ARCHITECT}`);
+      if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write the process as ${PM_AUTHOR} (session ${PM_SESSION}), and the rules and the architect's own entries as ${ARCHITECT}`);
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
@@ -426,7 +442,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   /** The item with its difficulty set and the change logged: the one rule set_difficulty and set_difficulty_many share; the item itself when unchanged. */
   function rated(it: Item, at: string, author: string, given: unknown, reason: string | undefined): Item {
     const difficulty = Difficulty.safeParse(given);
-    if (!difficulty.success) throw new OpError('difficulty: give an integer 1–5, or "architect" for an item the architect does itself');
+    if (!difficulty.success) throw new OpError("difficulty: give an integer 1–5");
     if (it.record) throw new OpError("difficulty: a record has no difficulty");
     if (typeof reason !== "string" || !reason.trim()) throw new OpError("reason: say why the difficulty is this, for the log");
     if (it.difficulty === difficulty.data) return it;
@@ -532,13 +548,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       ] };
     }),
     createItem: a => run(a, "item.create", (s, at) => {
-      onlyProcess(a, "create items");
+      onlyProcessWithoutCredential(a, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
-      // Only the PM and the architect create items, so only they can rate the item as it is made, as in set_difficulty.
+      // Whoever creates an item may rate it as it is made, as in set_difficulty.
       let difficulty: Difficulty | undefined;
       if (a.difficulty !== undefined) {
         const given = Difficulty.safeParse(a.difficulty);
-        if (!given.success) throw new OpError('difficulty: give an integer 1–5, or "architect" for an item the architect does itself');
+        if (!given.success) throw new OpError("difficulty: give an integer 1–5");
         if (a.record) throw new OpError("difficulty: a record has no difficulty");
         difficulty = given.data;
       }
@@ -691,12 +707,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
     setDifficulty: a => run(a, "item.difficulty", (s, at) => {
-      onlyProcess(a, "set an item's difficulty");
-      const it = requireItem(s, a.id);
+      onlyProcessWithoutCredential(a, "set an item's difficulty");
+      const it = ownedItem(s, a.id, a);
       return { id: a.id, kind: "item", message: `set_difficulty ${a.id}`, puts: [itemPut(a.id, rated(it, at, a.author, a.difficulty, a.reason))] };
     }),
     setDifficultyMany: a => run(a, "item.difficulty", (s, at) => {
-      onlyProcess(a, "set an item's difficulty");
+      onlyProcessWithoutCredential(a, "set an item's difficulty");
       if (!Array.isArray(a.items) || !a.items.length) throw new OpError("items: give at least one {id, difficulty, reason}");
       const seen = new Set<string>(), puts: Put[] = [];
       for (const [i, given] of a.items.entries()) {
@@ -704,7 +720,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (seen.has(given.id)) throw new OpError(`items.${i}.id ${given.id}: name each item once`);
         seen.add(given.id);
         try {
-          const it = requireItem(s, given.id), doc = rated(it, at, a.author, given.difficulty, given.reason ?? a.reason);
+          const it = ownedItem(s, given.id, a), doc = rated(it, at, a.author, given.difficulty, given.reason ?? a.reason);
           if (doc !== it) puts.push(itemPut(given.id, doc));
         } catch (error) {
           if (error instanceof OpError) throw new OpError(`items.${i} (${given.id}): ${error.message}`);
@@ -903,7 +919,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     replyNote: a => run(a, "note.reply", (s, at) => {
       const { note } = ownedNote(s, a.id, a);
-      if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
+      if (note.reply !== undefined) {
+        // A reply is its author's: replacing it rewrites what another writer said to the owner. Only the PM and the architect, who run the process, replace a reply they did not write, also an old one with no author recorded or a retired author's.
+        const seen = `note ${a.id}: already replied by ${note.repliedBy ?? "an unknown author"} at ${note.repliedAt ?? "unknown time"}`;
+        if (note.repliedBy !== a.author && !mayRunProcess(a)) throw new OpError(`${seen}; a reply is replaced only by its author, so leave this one`);
+        if (a.replace !== true) throw new OpError(`${seen}; use replace: true for a deliberate replacement`);
+      }
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
     }),

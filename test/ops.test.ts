@@ -8,7 +8,7 @@ import type { Txn } from "../src/store.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, at, later, author, architect, asArchitect, asPM, rx } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect, asPM, retired, retiredExactly, rx } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 
@@ -295,9 +295,9 @@ test("project after rejects every author but Architect, unknown projects and sel
     [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), rx`only that project or ${ARCHITECT_WRITER} may update its repo`],
     [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
-    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), /author 总管: this identity is retired; write as Architect/],
-    [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed" }), /author 总管: this identity is retired; write as Architect/],
-    [() => op.createProject({ author: "总管", name: "New" }), /author 总管: this identity is retired; write as Architect/],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), retired],
+    [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed" }), retired],
+    [() => op.createProject({ author: "总管", name: "New" }), retired],
     [() => op.updateProject({ ...asArchitect, name: "Whitefoot", repo: "Org/Changed", after: "Missing" }), /after Missing.*configured/],
     [() => op.createProject({ ...asArchitect, name: "New", after: "Missing" }), /after Missing.*configured/],
     [() => op.updateProject({ ...asArchitect, name: "Missing", after: "Firn" }), /project Missing.*configured/],
@@ -1156,7 +1156,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     deleteTerm: () => op.deleteTerm({ author: retired, term: "术语" }),
   };
   for (const [name, call] of Object.entries(calls)) {
-    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, /^author 总管: this identity is retired; write as Architect$/, name); return true; });
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, retiredExactly, name); return true; });
     assert.deepEqual(store.snapshot(), before, name);
     assert.deepEqual((await Store.open(dir)).snapshot(), before, name);
     assert.equal((await store.log()).length, count, name);

@@ -21,6 +21,11 @@ import type { Credentials } from "../src/credentials.ts";
 export const rx = (strings: TemplateStringsArray, ...values: string[]): RegExp =>
   new RegExp(strings.raw.map((part, i) => part + (i < values.length ? values[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "")).join(""));
 
+/** What a write under the retired author 总管 is told, written out: the process is written as the PM, the rules and the architect's own entries as Architect. */
+export const retiredText = "author 总管: this identity is retired; write the process as PM (session PM), and the rules and the architect's own entries as Architect";
+export const retired = rx`${retiredText}`;
+export const retiredExactly = new RegExp(`^${retired.source}$`);
+
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";

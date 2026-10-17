@@ -5,7 +5,6 @@ import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { rules } from "../src/rules.ts";
-import { PROCESS_WRITERS_ZH } from "../src/model.ts";
 import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Status, Project } from "../src/model.ts";
 import { RECHECK_MS, STUCK, WAITING } from "../web/update.ts";
 
@@ -3838,13 +3837,12 @@ test("the detail shows the difficulty first on the line under the title, before 
   assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
   assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
   assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
-  assert.equal(line.children[0]!.title, `难度等级，只有 ${PROCESS_WRITERS_ZH}能改`, "the tooltip says who may change it");
   assert.ok(!line.children[1]!.classList.contains("diffchip"));
   assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
-  // The architect's own item has the label, and its line exists without any tag.
-  const own = taggedSnapshot(); own.items.area!.difficulty = "architect";
+  // An item with a difficulty and no tag has the line too.
+  const own = taggedSnapshot(); own.items.area!.difficulty = 5;
   const q = await page(own, []); await selectWide(q, "area");
-  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["架构师做"]);
+  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["难度 5"]);
   // An item without a difficulty and tags has no line.
   const bare = await page(taggedSnapshot(), []); await selectWide(bare, "area");
   assert.equal(detailItem(bare, "area")!.querySelector(".item-tags"), null);
@@ -3862,8 +3860,8 @@ test("a live change of the difficulty repaints the chip, also when it first appe
   const { difficulty: _gone, ...unrated } = s.items.child!;
   await p.change("d".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, rev: 3 } as Item }]); await p.flush();
   assert.deepEqual(chips(), ["健全性", "报错信息"], "an item that loses its difficulty keeps its tags");
-  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: "architect", rev: 4 } as Item }]); await p.flush();
-  assert.deepEqual(chips(), ["架构师做", "健全性", "报错信息"]);
+  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: 5, rev: 4 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["难度 5", "健全性", "报错信息"]);
 });
 
 test("writing a note on an unfolded inline card keeps it unfolded through save and send", async () => {

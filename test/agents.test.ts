@@ -106,17 +106,17 @@ test("waits wins over the clock, and a step in progress on the older of the two 
 test("the level comes from the newest dispatch record naming it, else from the newest item it touched that has a step in progress", () => {
   const doing = [{ id: "w", text: "work", state: "doing" }];
   const s = snap({
-    easy: item(doing, { difficulty: 1 } as Partial<Item>), hard: item(doing, { difficulty: 4 } as Partial<Item>), mine: item(doing, { difficulty: "architect" } as Partial<Item>),
+    easy: item(doing, { difficulty: 1 } as Partial<Item>), hard: item(doing, { difficulty: 4 } as Partial<Item>), mine: item(doing),
     plain: item([], { difficulty: 3 } as Partial<Item>),
     rec: item(doing, { dispatches: [dispatch("both", minutesAgo(300), { level: 5 }), dispatch("both", minutesAgo(100), { level: 2 })] } as Partial<Item>),
-  }, { derived: wrote(["plain", 1], ["hard", 2], ["easy", 3]), both: wrote(["rec", 4]), architectOwn: wrote(["mine", 4]), idle: wrote(["plain", 4]),
-    // The newest item is the architect's own and the older one is rated 4: the older one gives the level.
+  }, { derived: wrote(["plain", 1], ["hard", 2], ["easy", 3]), both: wrote(["rec", 4]), unratedOwn: wrote(["mine", 4]), idle: wrote(["plain", 4]),
+    // The newest item is unrated and the older one is rated 4: the older one gives the level.
     passedOver: wrote(["mine", 1], ["hard", 2]) });
   assert.equal(row(s, "derived")!.level, 4, "the difficulty of the newest touched item with a step in progress");
   assert.equal(row(s, "both")!.level, 2, "the newest dispatch record, not an older one");
-  assert.equal(row(s, "architectOwn")!.level, undefined, "an item the architect does has no level");
+  assert.equal(row(s, "unratedOwn")!.level, undefined, "an unrated item gives no level");
   assert.equal(row(s, "idle")!.level, undefined, "no step in progress, no dispatch: no level");
-  assert.equal(row(s, "passedOver")!.level, 4, "an item without a 1-5 difficulty is passed over for an older one that has one");
+  assert.equal(row(s, "passedOver")!.level, 4, "an unrated item is passed over for an older one that has a difficulty");
 });
 
 test("a dispatch record adds its item and its start time to the session's activity", () => {

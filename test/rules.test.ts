@@ -673,7 +673,7 @@ test("status target memoization never caches a cycle fallback as a target result
 
 test("the page's presentation signature changes with an item's difficulty, so a reloaded board repaints it", () => {
   const sign = (fields: Partial<Item>) => { const s = snapshot({ a: fields }); return presentationSignature(rules(s), s.decisions, "a"); };
-  const signs = ([2, 3, "architect", undefined] as const).map(difficulty => sign({ difficulty }));
+  const signs = ([2, 3, 5, undefined] as const).map(difficulty => sign({ difficulty }));
   assert.equal(new Set(signs).size, 4, "each difficulty, and none, paints differently");
   assert.equal(sign({ difficulty: 2 }), sign({ difficulty: 2 }), "an unchanged one does not");
 });

@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, author, architect, asArchitect, later, rx } from "./helpers.ts";
+import { board, author, architect, asArchitect, later, retired, rx } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 test("changes output stops at the limit and says how many documents it left out", () => {
@@ -40,7 +40,7 @@ test("project MCP after parameters reorder existing and newly created projects w
     ["create_project", { author: "Firn", name: "Refused", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     ["update_project", { author: architect, name: "Firn", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     ["update_project", { ...asArchitect, name: "Firn", after: "Missing" }, /after Missing: choose a configured project/],
-    ["update_project", { author: "总管", name: "Firn", after: "New" }, /author 总管: this identity is retired; write as Architect/],
+    ["update_project", { author: "总管", name: "Firn", after: "New" }, retired],
   ];
   for (const [name, args, message] of refused) {
     const before = store.snapshot(), result = await client.callTool({ name, arguments: args });
@@ -397,7 +397,7 @@ test("MCP names the PM and Architect on the tools it reserves, lets them write a
   const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
   assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*only ${PROCESS_WRITERS} write other projects' items`); assert.deepEqual(store.snapshot(), before);
   const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
-  assert.equal(retired.isError, true); assert.match(text(retired), /author 总管: this identity is retired; write as Architect/); assert.deepEqual(store.snapshot(), before);
+  assert.equal(retired.isError, true); assert.match(text(retired), retired); assert.deepEqual(store.snapshot(), before);
 });
 
 test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {
