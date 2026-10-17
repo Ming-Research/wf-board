@@ -2311,7 +2311,8 @@ it missed), then every kept event not yet delivered, then live events of this
 stream only. Once it has printed the events up to `n`, the client sends the
 text frame `{"ack": n}`; from then on they are delivered and never sent again,
 on any connection or in any tool result. An ack at or below the delivered
-number, above the newest, or not a whole number changes nothing; any other
+number, above the newest, or not a whole number changes nothing. The frame
+`{"alive": true}` is a sign of life of the session (Liveness, below); any other
 message is ignored. A client killed between printing and acking gets those
 events once more: a repeat, never a loss. An agent's stream keeps its newest
 200 events, at most 256 KiB, with the delivered number and the session name, in
@@ -2352,18 +2353,18 @@ whose status is in progress counts: a session holding a paused, done, cancelled
 or blocked item is waiting or finished, not silent (a blocked item waits on a
 card or another item, and the PM looks for its session when that wait ends). The
 status is the board's derived one, so what counts as in progress follows it. A
-*sign of life* is a
-call to any tool as that session (the same name the tool result uses), its wait
-script being connected at a round of the timer, and the end of that connection.
-A session that gives no sign for 30 minutes is asked: an `ask-alive` goes into
-its stream, and any sign answers it. If it gives none for another 30 minutes,
-`no-answer` goes to the architect with the session, item, project and the time
-its silence began. A sign ends the silence; the next one starts over, so one
-silence is asked once and told once. If the architect does not answer
-`no-answer`, the no-receipt alert below tells the owner an hour later, with the
-item as its target. A session holding no item in progress (a reviewer, the
-observer, the holder of a paused item) is not watched, what the board knew of it
-is dropped, and its silence starts when it holds an item in progress.
+*sign of life* is a call to any tool as that session (the same name the tool
+result uses), or an `{"alive": true}` frame from its wait script on its stream.
+A connection is none, and neither is its end. A session that gives no sign for
+30 minutes is asked: an `ask-alive` goes into its stream, and any sign answers
+it. If it gives none for another 30 minutes, `no-answer` goes to the architect
+with the session, item, project and the time its silence began. A sign ends the
+silence; the next one starts over, so one silence is asked once and told once.
+If the architect does not answer `no-answer`, the no-receipt alert below tells
+the owner an hour later, with the item as its target. A session holding no item
+in progress (a reviewer, the observer, the holder of a paused item) is not
+watched, what the board knew of it is dropped, and its silence starts when it
+holds an item in progress.
 
 The silences are kept in `state/liveness.json` beside the board (git excludes
 it), written at every round with the time of the round. A restart counts the
@@ -2374,11 +2375,21 @@ thus neither delay nor repeat a push, and a told silence stays told until a
 sign. Rejected: counting every silence from the restart, which lets restarts
 less than 30 minutes apart postpone the ask for good.
 
-Counting a connected wait script as a sign is provisional. It assumes the script
-ends with the session that started it; that was not measured when this was
-written. If the script outlives a stopped session, a session that died while its
-script was connected is never asked, and only calls would count (the `connected`
-argument of the timer's call to `check` is then the only change).
+The connection of a wait script is no sign, because it outlives its session. On
+2026-10-17 a probe held a connection to a copy of the board from a background
+command of a session; `claude stop` ended the session at 17:51:40, the probe's
+shell was taken over by process 1, and the connection stayed open for as long as
+the copy's log was read, 2.5 minutes after the stop (the session itself was never
+idle, since a command was running, so the reclaiming of an idle session was not
+observed). So the script sends the alive frame only while the session that
+started it is running, at least every 10 minutes (a silence is asked at 30), and
+ends when that session is gone; the board counts the frame and not the
+connection, so a script that outlives its session, or is an older one that sends
+none, makes the session look as silent as it is. Rejected: counting the
+connection, which the measurement refutes; counting calls only, which makes a
+session that waits on a script call the board by hand every 30 minutes or be
+reported; the script calling a tool as the session every 25 minutes, which hands
+the script the session's credential and costs a tool call for what one frame says.
 
 The 30 and 30 minutes are a provisional choice. The architect then knows within
 an hour of a session's last sign, about when Claude Code stops an idle

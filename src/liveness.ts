@@ -28,10 +28,10 @@ export interface LivenessOptions {
 
 /**
  * Whether the sessions holding items in progress are still there (docs/design.md, The wake streams, Liveness). A session gives a sign of
- * life by calling any tool as itself (`see`, from the tool wrapper) or by having its wait script connected (`check` asks
- * the server which sessions are). After ASK_AFTER_MS without one the board puts an ask in the session's own stream; after
- * TELL_AFTER_MS more it pushes "no answer" to the PM. A sign at any time ends the silence, and the next one starts over, so
- * one silence is told once.
+ * life by calling any tool as itself (`see`, from the tool wrapper in src/mcp.ts) or by its wait script sending an alive frame
+ * on the session's stream (`see`, from src/http.ts); a connection alone is none, since a script outlives a stopped session.
+ * After ASK_AFTER_MS without a sign the board puts an ask in the session's own stream; after TELL_AFTER_MS more it pushes
+ * "no answer" to the PM. A sign at any time ends the silence, and the next one starts over, so one silence is told once.
  */
 export class Liveness {
   private readonly wake: Wake;
@@ -76,13 +76,12 @@ export class Liveness {
 
   /**
    * One round, from the server's minute timer. `holding` maps each session holding an item to the items it holds (the one
-   * reading of that is `holders` in src/dispatch.ts); `connected` says whether a session's wait script is connected now, which
-   * counts as a sign; `about` gives the project and title a push names an item by. Sessions that hold nothing are forgotten.
+   * reading of that is `holders` in src/dispatch.ts); `about` gives the project and title a push names an item by. Sessions that
+   * hold nothing are forgotten.
    */
-  check(holding: ReadonlyMap<string, readonly string[]>, connected: (name: string) => boolean, about: (item: string) => { project: string; title: string }): void {
+  check(holding: ReadonlyMap<string, readonly string[]>, about: (item: string) => { project: string; title: string }): void {
     const now = this.now();
     for (const [name, items] of holding) {
-      if (connected(name)) { this.see(name); continue; }
       let silence = this.silences.get(name);
       if (!silence) this.silences.set(name, silence = { since: now });
       if (silence.told !== undefined) continue;

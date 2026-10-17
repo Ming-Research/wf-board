@@ -235,7 +235,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   /**
    * An agent's stream, `/wake/<session name>` (docs/design.md, The wake streams): the board keeps how far it was delivered, so the
    * client sends no number. It gets `connected`, `gap` when undelivered events were dropped, every undelivered event, then live
-   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again.
+   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again. It also sends
+   * `{"alive": true}` while its session is running, which is a sign of life for the session (src/liveness.ts).
    */
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
@@ -246,12 +247,13 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
       socket.on("error", console.error);
-      // A wait script connected is a sign of life at each round of the minute timer, and its end is one: the silence counts from the moment it went.
-      socket.on("close", () => { connections.delete(connection); wake.liveness.see(name); });
+      socket.on("close", () => connections.delete(connection));
       socket.on("message", data => {
-        let ack: unknown;
-        try { ack = (JSON.parse(data.toString()) as { ack?: unknown }).ack; } catch { return; }
-        if (typeof ack === "number") stream.deliver(ack);
+        let message: { ack?: unknown; alive?: unknown };
+        try { message = JSON.parse(data.toString()) as typeof message; } catch { return; }
+        if (typeof message.ack === "number") stream.deliver(message.ack);
+        // The wait script says its session is still there; the connection alone does not (docs/design.md, Liveness).
+        if (message.alive === true) wake.liveness.see(name);
       });
       // Replay and subscription happen in one synchronous step, so no event falls between them or is sent twice.
       socket.send(JSON.stringify({ event: "connected", latest: stream.latest() }));
@@ -365,7 +367,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
     wake.prune(name => held.has(name) || connected(name));
     // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
-    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
+    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
     void timed();
   }, deps.checkIntervalMs ?? 60_000);
   checker.unref();

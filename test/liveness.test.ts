@@ -1,5 +1,6 @@
 // Whether the sessions holding items are still there (docs/design.md, The wake streams, Liveness): when the board asks, when it
 // tells the PM, what counts as a sign of life, and what a restart keeps.
+import { once } from "node:events";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +37,7 @@ function rig(file?: string, clock = { now: T0 }) {
   return {
     clock, wake, held, liveness: wake.liveness,
     at: (minutes: number) => { clock.now = T0 + minutes * MIN; },
-    check: (connected: (name: string) => boolean = () => false) => wake.liveness.check(held, connected, about),
+    check: () => wake.liveness.check(held, about),
     asks: () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive"),
     told: () => wake.since(0).frames.filter(f => f.event === "no-answer"),
     restart: () => rig(file, clock),
@@ -93,17 +94,6 @@ test("a sign before the ask moves the ask 30 minutes on", () => {
   assert.equal(r.asks().length, 1);
 });
 
-test("a connected wait script is a sign at every round, and the silence counts from the last round that saw it", () => {
-  const r = rig();
-  r.check(() => true);
-  for (let m = 1; m <= 180; m++) { r.at(m); r.check(() => true); }
-  assert.equal(r.asks().length, 0, "three hours connected, never asked");
-  r.at(209); r.check();
-  assert.equal(r.asks().length, 0);
-  r.at(210); r.check();
-  assert.equal(r.asks().length, 1, "30 minutes after the last round that saw the script connected");
-});
-
 test("a session holding nothing is not watched, and what the board knew of it is forgotten", () => {
   const r = rig();
   r.liveness.see("reviewer");
@@ -114,7 +104,7 @@ test("a session holding nothing is not watched, and what the board knew of it is
   // the silence starts at 120 and not at 0 (which would ask it at once).
   const r2 = rig();
   r2.liveness.see("eng");
-  r2.at(1); r2.liveness.check(new Map(), () => false, about);
+  r2.at(1); r2.liveness.check(new Map(), about);
   r2.at(120); r2.check();
   r2.at(149); r2.check();
   assert.equal(r2.asks().length, 0);
@@ -172,7 +162,7 @@ test("a session that stops holding its item loses its silence, so holding again 
   const r = rig(file);
   r.check(); r.at(30); r.check();
   assert.ok(JSON.parse(await readFile(file, "utf8")).silences.eng.asked);
-  r.at(31); r.liveness.check(new Map(), () => false, about);
+  r.at(31); r.liveness.check(new Map(), about);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")).silences, {});
   r.at(100); r.check();
   r.at(129); r.check();
@@ -318,10 +308,9 @@ for (const [name, item, status, prepare] of [
   });
 }
 
-test("on the server a connected wait script is a sign and its end starts the silence; a silent holder is asked, then the PM is told, with the item's project and title", async t => {
+test("on the server an alive frame from the wait script is a sign, its connection and its end are not; a silent holder is asked, then the PM is told, with the item's project and title", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
-  const see = t.mock.method(wake.liveness, "see");
   const { url, op } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000, timedWakeMs: 1e12 });
   await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") });
   await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
@@ -329,19 +318,19 @@ test("on the server a connected wait script is a sign and its end starts the sil
   const asked = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
   const told = () => wake.since(0).frames.filter(f => f.event === "no-answer");
   const script = await agentSocket(t, url, "eng");
+  const send = async (message: string) => { script.socket.send(message); await script.sync(); };
   await tick();
-  clock.now += 120 * MIN; await tick();
-  assert.equal(asked().length, 0, "connected for two hours, never asked");
-  const before = see.mock.calls.length;
-  script.socket.close();
-  for (let i = 0; i < 400 && see.mock.calls.length === before; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(see.mock.calls.length, before + 1, "the end of the connection is a sign too");
-  clock.now += 29 * MIN; await tick();
-  assert.equal(asked().length, 0);
+  for (let i = 0; i < 6; i++) { clock.now += 20 * MIN; await send(JSON.stringify({ alive: true })); await tick(); }
+  assert.equal(asked().length, 0, "two hours of alive frames, never asked");
+  clock.now += 29 * MIN;
+  for (const message of [JSON.stringify({ alive: false }), JSON.stringify({ alive: "yes" }), JSON.stringify({ ack: 0 }), "not json"]) await send(message);
+  await tick();
+  assert.equal(asked().length, 0, "29 minutes after the last frame");
   clock.now += 2 * MIN; await tick();
-  assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["a", "Whitefoot", "中文检查"]], "30 minutes after the connection ended");
+  assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["a", "Whitefoot", "中文检查"]], "30 minutes after the last frame, with the script still connected and other messages sent");
+  script.socket.close(); await once(script.socket, "close");
   clock.now += 29 * MIN; await tick();
   assert.equal(told().length, 0);
   clock.now += 1 * MIN; await tick();
-  assert.deepEqual(told().map(f => [f.session, f.item, f.project, f.title]), [["eng", "a", "Whitefoot", "中文检查"]]);
+  assert.deepEqual(told().map(f => [f.session, f.item, f.project, f.title]), [["eng", "a", "Whitefoot", "中文检查"]], "30 minutes after the ask, whether the connection ended or not");
 });
