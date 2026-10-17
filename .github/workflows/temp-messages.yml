@@ -1,0 +1,37 @@
+# Temporary (agent-messages review R1, day files): deleted with this scratch branch.
+name: temp-messages
+on:
+  push:
+    branches: [agent-messages-temp]
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: History tests with the R1 fix, then with the earlier skip that needs messages alone
+        run: |
+          set +e
+          timeout 300 node --test --test-timeout=60000 test/history.test.ts > with.txt 2>&1; echo "with the fix: exit $?"
+          grep -E "^✖|^ℹ (pass|fail)" with.txt || true
+          node -e 'const fs=require("fs");const p="src/history.ts";const s=fs.readFileSync(p,"utf8");const a="commit.files.every(file => file.startsWith(\"messages/\") || file === \"state/owner.yaml\")";if(!s.includes(a))throw new Error("fix not found");fs.writeFileSync(p,s.replace(a,"commit.files.every(file => file.startsWith(\"messages/\"))"))'
+          timeout 300 node --test --test-timeout=60000 test/history.test.ts > without.txt 2>&1; echo "without the fix: exit $?"
+          grep -E "^✖|^ℹ (pass|fail)" without.txt || true
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: Write benchmark without and with a year of messages in day files, interleaved
+        run: |
+          for round in 1 2 3; do
+            node scripts/bench-writes.ts --label "r$round none set_tags" --writes 300 | grep BENCH
+            node scripts/bench-writes.ts --label "r$round 50000 set_tags" --writes 300 --messages 50000 | grep BENCH
+            node scripts/bench-writes.ts --label "r$round 50000 send_message" --writes 300 --messages 50000 --write send_message | grep BENCH
+          done
