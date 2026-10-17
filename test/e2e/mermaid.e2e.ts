@@ -641,13 +641,20 @@ test("the same check on a page whose second copy keeps the first copy's ids repo
   caught(v, /^mermaid-ids: the visible diagram's lines point at markers outside it/);
 });
 
+/** Prints each diagram's own width and its box's, to the CI log: how much of the checks' diagrams the box shrinks at this window. */
+async function sizes(t: { diagnostic(message: string): void }, bp: BoardPage, window: string) {
+  if (await settled(bp, 3, WAIT)) return;
+  t.diagnostic(`at a window ${window}: ` + (await figures(bp)).figs.map((f, i) => `${["small", "wide", "tall"][i]} ${round(f.natural)} px in a box of ${f.box} px, drawn ${round(f.drawn)} px`).join("; "));
+}
 test("a diagram is as wide as itself or as its box, whichever is less, and neither its box nor the page scrolls sideways", LONG, async t => {
   const { bp } = await open(t, seedFit);
+  await sizes(t, bp, "1500 px wide");
   none(await checkFit(bp, WAIT));
 });
 test("at a window 700px wide the same holds", LONG, async t => {
   const { bp } = await open(t, seedFit);
   await narrow(bp);
+  await sizes(t, bp, "700 px wide");
   none(await checkFit(bp, WAIT));
 });
 test("the same check on a page that draws every diagram at its own width reports the size, the box that scrolls and the drag it offers", LONG, async t => {
