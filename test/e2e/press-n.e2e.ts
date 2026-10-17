@@ -4,7 +4,10 @@
 // (page-n-fast). Two layers hold it:
 //   counts  – a press that lands on another item draws at most twice (every draw from the key to the quiet), builds the rules no
 //             time and counts the filters no time; the page leaves a performance mark for each (countEvent in web/app.ts).
-//             Exact on any machine.
+//             The rules and filter counts do not depend on the machine. The draws do, through one wait: a navigation waits 100 ms at
+//             most for the baselines of the rows around its target, and one that answers later is drawn on its own as a third draw.
+//             The last baseline of a landing answered 78-88 ms after the key at most on a quiet board (the log of each run says), and a
+//             hosted runner's speed differs by up to a factor of two, so a slow runner can fail the draw count too.
 //   time    – the main thread's busy time from the key until the page is quiet, over 30 landings: median 0.2 s at most and
 //             90th percentile 0.3 s at most, with the board quiet and with sessions writing 3 times a second. It depends on the
 //             machine (a hosted runner's speed differs by up to a factor of two between jobs); each run is made once.

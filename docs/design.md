@@ -3137,11 +3137,15 @@ Time limits have their own file, `test/e2e/press-n.e2e.ts`, on a board of the li
 board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a
 15 MB snapshot and 330 unread commits; the default board has 176 items, on which one
 press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
-(board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
-press that lands on another item draws at most twice, builds the board's rules no
-time and counts the filters no time, read from the page's performance marks: every
-draw from the key until the page is quiet counts, those of the rows around the target
-included. Time:
+(board-read-fast); the file holds it in two layers. Counts: a press that lands on
+another item draws at most twice, builds the board's rules no time and counts the
+filters no time, read from the page's performance marks: every draw from the key until
+the page is quiet counts, those of the rows around the target included. The rules and
+filter counts do not depend on the machine; the draws do through the 100 ms wait for
+the baselines of the rows around the target, because one that answers later is drawn on
+its own. On a quiet board the last baseline of a landing answered 78 to 88 ms after the
+key at most in two CI runs, and a hosted runner's speed differs by up to a factor of
+two, so a slow runner can fail the draw count too. Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
 quiet and with sessions writing three times a second, each run made once. The time
