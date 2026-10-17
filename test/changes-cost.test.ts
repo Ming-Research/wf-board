@@ -32,7 +32,7 @@ test("changes over a long history costs what its range costs: no whole board reb
   const { dir, store: seed } = await board(t);
   // Before the range: a chain of three items with a card and a note on its leaf, and three notes the range deletes.
   await seed.commit({ author, message: "Chain and notes", puts: [
-    put("item", "chain-x", doc("Chain root", { priority: "P1", plan: [owns("chain-y"), { id: "accept", accept: true, text: "passes", state: "todo" }] })),
+    put("item", "chain-x", doc("Chain root", { plan: [owns("chain-y"), { id: "accept", accept: true, text: "passes", state: "todo" }] })),
     put("item", "chain-y", doc("Chain middle", { plan: [owns("chain-z"), { id: "accept", accept: true, text: "passes", state: "todo" }] })),
     put("item", "chain-z", doc("Chain leaf")),
     put("decision", "chain-card", card("chain-z", "Chain question?")),
@@ -71,7 +71,7 @@ test("changes over a long history costs what its range costs: no whole board reb
 test("an item whose owner was deleted before the range is grouped as the top of its own project, and a note keeps the item its card was last on", async t => {
   const { store } = await board(t);
   await store.commit({ author, message: "Owner, child and card", puts: [
-    put("item", "old-root", doc("Old root", { priority: "P1", plan: [owns("old-child"), { id: "accept", accept: true, text: "passes", state: "todo" }] })),
+    put("item", "old-root", doc("Old root", { plan: [owns("old-child"), { id: "accept", accept: true, text: "passes", state: "todo" }] })),
     put("item", "old-child", doc("Old child", { group: "Firn" })),
     put("decision", "old-card", card("old-child", "Old question?")),
     put("note", "old-note", note("q:old-card", "On the old card")),

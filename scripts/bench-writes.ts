@@ -93,7 +93,7 @@ function board() {
   // Item `n` is written by history commits n, n + ITEMS, ...; version v carries the log entries of its first v + 1 writes.
   const item = (n: number, versions: number): string => {
     const id = ids[n]!, log = Array.from({ length: versions }, (_, v) => ({ at: iso(commitTime(n + v * ITEMS)), by: group.get(id), text: `Progress ${v} on ${id}` }));
-    return yaml({ num: n + 1, title: `Item ${id}`, group: group.get(id), ...(Number(id.split("-")[1]) < 10 ? { priority: ["P0", "P1", "P2"][n % 3] } : {}),
+    return yaml({ num: n + 1, title: `Item ${id}`, group: group.get(id),
       head: ["A synthetic head with a little text.", ...placed.get(id)!].join("\n\n"), log, plan: [...rows.get(id)!, { id: "accept", text: "passes", state: "todo", accept: true }], created: at,
       updated: versions ? log.at(-1)!.at : at, rev: versions + 1 });
   };

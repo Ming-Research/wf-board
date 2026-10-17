@@ -240,7 +240,7 @@ test("a head that is context's summary is refused when it is written back, and t
   const before = store.snapshot();
   const refused = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: before.items.a!.rev, head: summary, reason: "edited the summary" } });
   assert.equal(refused.isError, true); assert.match(text(refused), /holds the line "… \d+ more characters \(section "[^"]*"\)"/); assert.match(text(refused), /context section: "all"/);
-  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "fresh", title: "新条目", head: summary, accept: "通过", group: author, priority: "P1" } });
+  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "fresh", title: "新条目", head: summary, accept: "通过", group: author } });
   assert.equal(created.isError, true); assert.match(text(created), /context section: "all"/);
   assert.deepEqual(store.snapshot(), before, "nothing was written");
   // The whole head, changed, is written.

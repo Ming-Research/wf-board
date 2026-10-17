@@ -188,10 +188,10 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   ] } });
   const op = ops(store), author = "wf-board";
   const accept = { id: "accept", accept: true as const, text: "验收通过", state: "todo" as const };
-  await op.createItem({ ...asArchitect, key: "watch", group: author, priority: "P1", title: "Watch it", head: heads.watch, accept: "验收通过" });
-  await op.createItem({ ...asArchitect, key: "second", group: author, priority: "P1", title: "Second", head: heads.second, accept: "验收通过" });
-  await op.createItem({ ...asArchitect, key: "bold", group: author, priority: "P1", title: "Bold", head: heads.bold, accept: "验收通过" });
-  await op.createItem({ ...asArchitect, key: "gone", group: author, priority: "P1", title: "Cancelled", head: heads.gone, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "watch", group: author, title: "Watch it", head: heads.watch, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "second", group: author, title: "Second", head: heads.second, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "bold", group: author, title: "Bold", head: heads.bold, accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "gone", group: author, title: "Cancelled", head: heads.gone, accept: "验收通过" });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "not needed" });
   const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, confidence: { reason: "判断" }, options: [{ text: "是", detail: "是" }, { text: "否", detail: "否" }], ...(blocks ? { blocks } : {}) });
   await card("approval", "合入停着"); await card("stop", "发布停着"); await card("plain"); await card("settled", "旧的");

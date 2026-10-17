@@ -1,6 +1,6 @@
 /** Temporary, lossless phase-one mapping. Remove after the board and its read baselines migrate. */
 import { Item, Board, Time, OwnerState } from "./model.ts";
-import type { Snapshot, PlanRow, Priority } from "./model.ts";
+import type { Snapshot, PlanRow } from "./model.ts";
 import type { Snapshot as LegacySnapshot } from "./legacy-model.ts";
 import { rules as legacyRules } from "./legacy-rules.ts";
 import { rules } from "./rules.ts";
@@ -22,10 +22,9 @@ export interface PlanConversionReport {
   findings: PlanFinding[];
   rewritePointers: PlanFinding[];
   survey: Record<string, number>;
-  byProject: Record<string, { findings: number; rewritePointers: number; statusChanges: number; priorityChanges: number }>;
-  byCause: { status: Record<string, number>; priority: Record<string, number> };
+  byProject: Record<string, { findings: number; rewritePointers: number; statusChanges: number }>;
+  byCause: { status: Record<string, number> };
   statusChanges: PlanChange[];
-  priorityChanges: PlanChange[];
   errors: string[];
 }
 export interface PlanConversion { snapshot: Snapshot; report: PlanConversionReport }
@@ -65,7 +64,7 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
   const {archived: _archives, ...owner} = old.owner;
   // The one-time plan conversion carries the cards as they were (old shape); the card conversion (migrate-cards.ts) gives them the new one.
   const snapshot: Snapshot = { ...structuredClone(old), decisions: structuredClone(old.decisions) as unknown as Snapshot["decisions"], owner: OwnerState.parse(owner), board: Board.parse({ ...old.board, projects: old.board.projects.map(({ migrated: _migrated, ...p }) => p) }), items: {} };
-  const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, planConversionAt:at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0, droppedArchives: Object.keys(old.owner.archived).length }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{},priority:{}}, statusChanges: [], priorityChanges: [], errors: [] };
+  const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, planConversionAt:at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0, droppedArchives: Object.keys(old.owner.archived).length }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{}}, statusChanges: [], errors: [] };
   const note = (id: string, kind: string, detail: string) => findings.push({ item: id, project: previous.groupOf(id), kind, detail });
   for (const [id, original] of Object.entries(old.items)) {
     // The inbox's request marker is not part of the item schema any more; a converted item does not carry it.
@@ -101,15 +100,11 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
     snapshot.items[id] = converted;
   }
   const ids = Object.keys(old.items);
-  // Roots retain the displayed seed, or their stored seed when the legacy display was empty.
+  // A non-root's stored legacy priority is logged as not used; no item stores a priority any more, a root's included.
   let current = rules(snapshot);
   for (const id of ids) {
-    const item=snapshot.items[id]!, oldPriority=previous.priorityOf(id);
-    if (current.isRoot(id)) {
-      const seed=oldPriority||old.items[id]!.priority;
-      if(seed)item.priority=seed as Priority;
-    }
-    else if (old.items[id]!.priority) item.log.push({at,by:"总管",text:`迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${old.items[id]!.priority} 不再使用`});
+    const item=snapshot.items[id]!;
+    if (!current.isRoot(id) && old.items[id]!.priority) item.log.push({at,by:"总管",text:`迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 ${old.items[id]!.priority} 不再使用`});
   }
   current = rules(snapshot);
   for (const id of ids) {
@@ -133,23 +128,6 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
       report.statusChanges.push({...identity,old:oldStatus??"record",new:newStatus??"record",cause,detail:explanation});
       note(id,"status changed",`${oldStatus} → ${newStatus}：${explanation}`);
     }
-    const oldPriority=previous.priorityOf(id), newPriority=current.priorityOf(id);
-    if(oldPriority!==newPriority){
-      const unlisted = !!source.parent && !old.items[source.parent]?.deps.some(dep=>"id"in dep&&dep.id===id);
-      const cause=current.isRoot(id)?"root priority retained":current.isBacklog(id)?newPriority?"shared plan dependents":"moved into backlog":!previous.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";
-      const detail=current.isRoot(id)?"根保留原来写的优先级；旧显示为空不删除存储值。":current.isBacklog(id)?newPriority?"记录拥有的工作不存储优先级；共用它的未完成条目传入最高优先级，记录本身不传入。":"记录拥有的工作没有带优先级的未完成引用；记录本身不传入优先级。"
-        : !previous.migrated(id)?"原来的叶条目优先级规则退役；现在从未完成计划的引用推导。"
-        : unlisted?"原来未列在依赖中的子条目现在有拥有行，优先级从未完成计划推导。":"优先级取未完成计划中直接或间接引用它的条目的最高值。";
-      const dependents=current.dependents(id).filter(dependent=>current.isOpenWork(dependent.id));
-      const winning=dependents.filter(dependent=>newPriority?current.priorityOf(dependent.id)===newPriority:true);
-      const owner=current.parentOf(id);
-      const evidence=current.isBacklog(id)&&!newPriority&&owner?`记录「${snapshot.items[owner]?.title??owner}」（${owner}）拥有它。`
-        : winning.length?winning.slice(0,3).map(dependent=>`${dependent.own?"拥有":"共用"}它的「${snapshot.items[dependent.id]?.title??dependent.id}」（${dependent.id}）为 ${current.priorityOf(dependent.id)||"无优先级"}`).join("；")+(winning.length>3?`；另有 ${winning.length-3} 个同值引用`:"")
-        : current.isRoot(id)?`根保留转换前的显示值；显示为空时保留原来写的 ${source.priority??"无优先级"}。`:"没有带优先级的未完成引用。";
-      const explanation=`${detail} ${evidence}`;
-      report.priorityChanges.push({...identity,old:oldPriority,new:newPriority,cause,detail:explanation});
-      note(id,"priority changed",`${oldPriority || "none"} → ${newPriority || "none"}：${explanation}`);
-    }
     const parsed=Item.safeParse(snapshot.items[id]);if(!parsed.success)report.errors.push(`${id}: ${parsed.error.message}`);else snapshot.items[id]=parsed.data;
   }
   // Phase two gets pointers to source facts, not automatic structural judgments.
@@ -167,13 +145,11 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
     survey.unlistedChildren = (survey.unlistedChildren ?? 0) + children.filter(child=>!it.deps.some(dep=>"id"in dep&&dep.id===child)).length;
   }
   report.survey=survey;
-  for(const id of Object.keys(old.items)){const project=previous.groupOf(id);report.byProject[project]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};}
+  for(const id of Object.keys(old.items)){const project=previous.groupOf(id);report.byProject[project]??={findings:0,rewritePointers:0,statusChanges:0};}
   for(const finding of report.findings)report.byProject[finding.project]!.findings++;
   for(const finding of report.rewritePointers)report.byProject[finding.project]!.rewritePointers++;
   for(const change of report.statusChanges)report.byProject[previous.groupOf(change.item)]!.statusChanges++;
-  for(const change of report.priorityChanges)report.byProject[previous.groupOf(change.item)]!.priorityChanges++;
   for(const change of report.statusChanges)report.byCause.status[change.cause]=(report.byCause.status[change.cause]??0)+1;
-  for(const change of report.priorityChanges)report.byCause.priority[change.cause]=(report.byCause.priority[change.cause]??0)+1;
   updatePlanSummary(report);
   report.counts.newLogs=Object.values(snapshot.items).reduce((n,it)=>n+it.log.length,0);
   report.counts.provisional=Object.values(snapshot.items).filter(it=>it.provisional).length;
@@ -193,9 +169,9 @@ export function removeArchives(source: Snapshot, options: { at: string; planConv
       decisions:Object.keys(source.decisions).length, notes:Object.keys(source.notes).length,
       targets:Object.values(source.items).reduce((n,item)=>n+(item.targets?.length??0),0), oldLogs:logs,newLogs:logs,
       provisional:Object.values(source.items).filter(item=>item.provisional).length,droppedArchives:Object.keys(archived).length },
-    findings:[],rewritePointers:[],survey:{},byProject:{},byCause:{status:{},priority:{}},statusChanges:[],priorityChanges:[],errors:[],
+    findings:[],rewritePointers:[],survey:{},byProject:{},byCause:{status:{}},statusChanges:[],errors:[],
   };
-  for(const item of Object.values(source.items))report.byProject[item.group]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
+  for(const item of Object.values(source.items))report.byProject[item.group]??={findings:0,rewritePointers:0,statusChanges:0};
   updatePlanSummary(report);
   return {snapshot,report};
 }
@@ -203,10 +179,10 @@ export function removeArchives(source: Snapshot, options: { at: string; planConv
 /** Called again after independent verification so the report never claims unverified preservation. */
 export function updatePlanSummary(report: PlanConversionReport, verified = false): void {
   const result=verified&&!report.errors.length?"独立校验确认原有条目、步骤、日期、日志、决策卡、评论和目标均已保留。":verified?`独立校验发现 ${report.errors.length} 个结构或保留错误，不能应用转换。`:"等待独立保留校验。";
-  const labels: Record<string,string>={"doing rows count":"原有进行中行现在决定状态","unfinished plan rows":"已标完成的计划仍有未完成行","manual progress removed":"不再沿用手写进行中状态","waiting frontier":"下一步只有等待行","ready frontier":"计划存在可开始的行","pending ask":"仍在等待旧的 owner 请求","moved into backlog":"记录拥有的工作没有带优先级的未完成引用","shared plan dependents":"记录拥有的工作从共用引用获得优先级","root priority retained":"根保留旧显示未体现的存储优先级","legacy priority retired":"旧的优先级规则退役","owned row added":"补齐原来未列出的拥有行","open plan dependents":"按未完成计划的引用传播优先级"};
+  const labels: Record<string,string>={"doing rows count":"原有进行中行现在决定状态","unfinished plan rows":"已标完成的计划仍有未完成行","manual progress removed":"不再沿用手写进行中状态","waiting frontier":"下一步只有等待行","ready frontier":"计划存在可开始的行","pending ask":"仍在等待旧的 owner 请求"};
   const mainCauses=(counts:Record<string,number>)=>Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([cause,count])=>`${labels[cause]??cause} ${count} 处`).join("；")||"没有变化";
   const manual=report.statusChanges.filter(change=>change.old === "wip" && change.cause === "manual progress removed");
   const todo=manual.filter(change=>change.new === "todo").length;
   const blocked=manual.filter(change=>change.new === "blocked").length;
-  report.summary=`转换 ${report.counts.items} 个条目，不补写或改写原有进展。状态变化 ${report.statusChanges.length} 处，主要原因：${mainCauses(report.byCause.status)}。优先级变化 ${report.priorityChanges.length} 处，主要原因：${mainCauses(report.byCause.priority)}。\n已删除 ${report.counts.droppedArchives} 条旧归档记录；其它 owner 状态不变。${result}\n需在阶段二重写计划：${manual.length} 个旧 wip 条目没有进行中行，其中 ${todo} 个变为 todo，${blocked} 个因等待行变为 blocked；没有补写 doing 步骤。`;
+  report.summary=`转换 ${report.counts.items} 个条目，不补写或改写原有进展。状态变化 ${report.statusChanges.length} 处，主要原因：${mainCauses(report.byCause.status)}。\n已删除 ${report.counts.droppedArchives} 条旧归档记录；其它 owner 状态不变。${result}\n需在阶段二重写计划：${manual.length} 个旧 wip 条目没有进行中行，其中 ${todo} 个变为 todo，${blocked} 个因等待行变为 blocked；没有补写 doing 步骤。`;
 }

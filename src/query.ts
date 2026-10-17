@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
@@ -8,7 +8,7 @@ import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
 /** `<session> · <time to the minute>`: the one form `context` and `brief` print for an item's last writer. */
 export const pushLine = (last: { name: string; at: string }): string => `${last.name} · ${last.at.slice(0, 16)}Z`;
 export interface Scope { group?: string; under?: string }
@@ -42,7 +42,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string, owner = itemI
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]), priority: r.priorityOf(id) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -112,7 +112,7 @@ export function search(s: Snapshot, r: Rules, query: string, f: SearchFilters = 
   return hits.sort((a, b) => a.rank - b.rank || Date.parse(b.time ?? "1970-01-01T00:00:00Z") - Date.parse(a.time ?? "1970-01-01T00:00:00Z") || a.id.localeCompare(b.id) || b.index - a.index).slice(0, f.limit ?? 20).map(({ rank: _rank, index: _index, ...hit }) => hit);
 }
 
-export interface ListFilters extends Scope { status?: Status[]; priority?: Priority[]; needsOwner?: boolean; hasChecks?: boolean; updatedSince?: string; limit?: number }
+export interface ListFilters extends Scope { status?: Status[]; needsOwner?: boolean; hasChecks?: boolean; updatedSince?: string; limit?: number }
 export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
   validateScope(s, f);
   const out: Array<Row & { updated: string; needsOwner: boolean; checks: ReturnType<Rules["checks"]> }> = [];
@@ -121,7 +121,7 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
     if (seen.has(id) || !s.items[id]) return;
     seen.add(id);
     const it = s.items[id]!, checks = r.checks(id), needsOwner = r.needsOwner(id);
-    if (inScope(r, id, f) && (f.status ? f.status.some(st => st === r.statusOf(id)) : !["done", "cancelled"].includes(r.statusOf(id) ?? "")) && (!f.priority || f.priority.some(p => p === r.priorityOf(id))) &&
+    if (inScope(r, id, f) && (f.status ? f.status.some(st => st === r.statusOf(id)) : !["done", "cancelled"].includes(r.statusOf(id) ?? "")) &&
       (f.needsOwner === undefined || needsOwner === f.needsOwner) &&
       (f.hasChecks === undefined || !!checks.length === f.hasChecks) && (!f.updatedSince || Date.parse(it.updated) >= Date.parse(f.updatedSince))) out.push({ ...row(s, r, "item", id), updated: it.updated, needsOwner, checks });
     for (const child of r.children(id).sort(r.compareSiblings)) walk(child);
