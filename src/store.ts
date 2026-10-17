@@ -8,12 +8,13 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, MessageDay, MessageDayId, Note, Numbers, OwnerState, RETIRED_LEVEL } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
+import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
@@ -26,7 +27,7 @@ import type { StartupStep } from "./log.ts";
 import { Budget, BudgetError, STARTUP_LIMITS, REQUEST_LIMITS, allowRange, currentBudget, withBudget } from "./budget.ts";
 import { ReadCache } from "./read-cache.ts";
 
-export type DocKind = "item" | "decision" | "note" | "glossary";
+export type DocKind = "item" | "decision" | "note" | "glossary" | "message";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
@@ -39,11 +40,13 @@ export interface CommitInfo { commit: string; parents: string[]; at: string; aut
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
-type Doc = Item | Decision | Note | Glossary;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary };
-const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries" } as const;
-/** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
-const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
+type Doc = Item | Decision | Note | Glossary | MessageDay;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary, message: MessageDay };
+const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries", message: "messages" } as const;
+/** A glossary is named by its project, which may be Chinese (总管); a day's messages by the day; other documents by their key. */
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId, message: MessageDayId };
+/** The documents of one kind in a snapshot; a snapshot built outside the store may have no messages. */
+const docsOf = (s: Snapshot, kind: DocKind): Record<string, Doc> => (s[collections[kind]] ?? {}) as Record<string, Doc>;
 const run = promisify(execFile);
 /** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
  * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
@@ -53,6 +56,8 @@ const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
 /** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
 export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
+/** Start of the message of the one-time commit that cleared the retired level 「架构师做」; the message goes on with the item count. */
+const CLEAR_LEVEL_MESSAGE = "clear_architect_level";
 
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
 // holds and not by how many entries there are: a parsed document takes about 16 times the bytes of its file (a board of
@@ -152,8 +157,16 @@ function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 }
+/** The level 「架构师做」 no longer exists: an old version of an item, or a file the migration has not cleared, holds it as `difficulty: architect`. */
+const holdsRetiredLevel = (doc: unknown): boolean => !!doc && typeof doc === "object" && !Array.isArray(doc) && (doc as { difficulty?: unknown }).difficulty === RETIRED_LEVEL;
+/** The item document without that value, the one rating historical comparison omits; any other value of the field still refuses. */
+function withoutRetiredLevel(doc: unknown): unknown {
+  if (!holdsRetiredLevel(doc)) return doc;
+  const { difficulty: _retired, ...rest } = doc as Record<string, unknown>;
+  return rest;
+}
 function withoutRetiredFields(path: string, doc: unknown): unknown {
-  if (path.startsWith("items/")) return without(doc, retiredFields.item);
+  if (path.startsWith("items/")) return without(withoutRetiredLevel(doc), retiredFields.item);
   if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
   const { projects } = doc as { projects?: unknown };
   if (!Array.isArray(projects) || !projects.some(project => without(project, retiredFields.project) !== project)) return doc;
@@ -220,7 +233,7 @@ function frozen<T>(value: T): T {
  * they enter it, and the snapshot and its collections are frozen here. A write
  * builds the next snapshot by copying only the collections it changes. */
 function sealed(state: Snapshot): Snapshot {
-  for (const collection of [state.items, state.decisions, state.notes, state.glossaries]) Object.freeze(collection);
+  for (const collection of [state.items, state.decisions, state.notes, state.glossaries, state.messages ?? {}]) Object.freeze(collection);
   frozen(state.board); frozen(state.owner);
   if (state.activity) frozen(state.activity);
   return Object.freeze(state);
@@ -358,11 +371,11 @@ export class Store {
   /** `startup` is told how long each step of the start took (docs/design.md, Running). The start reads history under a
    * budget of its own (`STARTUP_LIMITS`). `requireBudget`: from then on a read of history that runs under no budget fails
    * (docs/design.md, section 4, Request budgets); the daemon sets it, and tests leave it off unless they test the budget. */
-  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
+  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
     return withBudget(new Budget("start", STARTUP_LIMITS), () => Store.start(dir, opts));
   }
 
-  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
+  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
     dir = resolve(dir);
     const lap = stopwatch(opts.startup);
     let entries: string[];
@@ -377,7 +390,7 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
       for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
@@ -388,19 +401,25 @@ export class Store {
     const invalid: InvalidDocument[] = [];
     // Whether any document has a shape only a retired format wrote.
     let retired = false;
+    // The items whose files hold the retired level 「架构师做」: read without it, and cleared in one commit below.
+    const clearing: string[] = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
         const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
         if (retiredShape(path, raw)) retired = true;
-        return validated(schema, raw, path);
+        if (path.startsWith("items/") && holdsRetiredLevel(raw)) {
+          if (!opts.clearArchitectLevel) throw new ValidationError([{ path, issues: RETIRED_LEVEL_REFUSAL }]);
+          clearing.push(path.slice("items/".length, -".yaml".length));
+        }
+        return validated(schema, path.startsWith("items/") ? withoutRetiredLevel(raw) : raw, path);
       } catch (error) {
         invalid.push(...(error instanceof ValidationError ? error.invalid : [{ path, issues: String(error) }]));
         return undefined;
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> = { items: {}, decisions: {}, notes: {}, glossaries: {} };
-    for (const kind of ["item", "decision", "note", "glossary"] as const) {
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> & { messages: Record<string, MessageDay> } = { items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {} };
+    for (const kind of ["item", "decision", "note", "glossary", "message"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -447,7 +466,7 @@ export class Store {
     if (opts.cacheDelayMs !== undefined) store.cacheDelayMs = opts.cacheDelayMs;
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries", "messages"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
     store.state = sealed({ ...store.state, head: (await store.git(["rev-parse", "HEAD"])).trim() });
     // Owner state can legitimately be newer than HEAD after a daemon restart.
@@ -458,6 +477,10 @@ export class Store {
     lap("check board", "numbers, git status, HEAD, owner state");
     await store.numberExisting();
     lap("number documents");
+    if (clearing.length) {
+      await store.clearArchitectLevel(clearing);
+      lap("clear the retired level", `${clearing.length} items`);
+    }
     await store.loadActivity();
     return store;
   }
@@ -504,6 +527,17 @@ export class Store {
     pending.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) || (a.kind === b.kind ? 0 : a.kind === "item" ? -1 : 1));
     await this.commit({ author: "wf-board", message: NUMBERING_MESSAGE, numberExisting: true,
       puts: pending.map(({ kind, id, doc }) => ({ kind, id, doc, expectRev: doc.rev })) });
+  }
+
+  /** The items cleared of the retired level 「架构师做」 by this start (src/migrate-architect-level.ts); none when the data held none. */
+  clearedArchitectLevel: readonly string[] = [];
+
+  /** Clear the retired level from the items that held it, in one commit: each item is unrated and logs the change. */
+  private async clearArchitectLevel(ids: string[]): Promise<void> {
+    const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    await this.commit({ author: "wf-board", message: `${CLEAR_LEVEL_MESSAGE} ${ids.length} items`,
+      puts: ids.map(id => { const doc = this.state.items[id]!; return { kind: "item" as const, id, doc: clearedItem(doc, at), expectRev: doc.rev }; }) });
+    this.clearedArchitectLevel = ids;
   }
 
   /** Activity is a derived index of the existing history, including replaced and deleted documents. A start continues
@@ -829,8 +863,8 @@ export class Store {
     const next: Snapshot = { ...this.state };
     const copied = new Set<DocKind>();
     const collection = (kind: DocKind): Record<string, Doc> => {
-      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...this.state[collections[kind]] }; }
-      return next[collections[kind]] as Record<string, Doc>;
+      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...docsOf(this.state, kind) }; }
+      return docsOf(next, kind);
     };
     // Lower-cased ids per collection, built on first use: the letter-case alias check without a scan per put.
     const lowered = new Map<DocKind, Map<string, string[]>>();
@@ -838,7 +872,7 @@ export class Store {
       let byLower = lowered.get(kind);
       if (!byLower) {
         byLower = new Map();
-        for (const id of Object.keys(next[collections[kind]])) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
+        for (const id of Object.keys(docsOf(next, kind))) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
         lowered.set(kind, byLower);
       }
       return byLower;
@@ -856,7 +890,7 @@ export class Store {
       const path = docPath(op.kind, op.id);
       if (seen.has(path)) throw new ValidationError([{ path, issues: "Document appears more than once in transaction" }]);
       seen.add(path);
-      const records = this.state[collections[op.kind]] as Record<string, Doc>;
+      const records = docsOf(this.state, op.kind);
       const current = Object.hasOwn(records, op.id) ? records[op.id]! : null;
       if ((current?.rev ?? null) !== op.expectRev) throw new ConflictError(op.kind, op.id, op.expectRev, current);
     }
@@ -864,7 +898,7 @@ export class Store {
     let nextNum = this.nextNum;
     for (const put of txn.puts ?? []) {
       const path = docPath(put.kind, put.id);
-      const records = next[collections[put.kind]] as Record<string, Doc>;
+      const records = docsOf(next, put.kind);
       const before = Object.hasOwn(records, put.id) ? records[put.id]! : null;
       // Check before any filesystem mutation, including earlier puts in this
       // transaction: these names alias on the owner's case-insensitive volume.
@@ -971,7 +1005,8 @@ export class Store {
     } finally {
       this.writing = false;
     }
-    if (changed.some(c => c.kind !== "owner")) {
+    // A message changes no item and is no work on the board: like owner state, it starts no active time (docs/design.md, Messages).
+    if (changed.some(c => c.kind !== "owner" && c.kind !== "message")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
       const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
@@ -1206,7 +1241,7 @@ export class Store {
     docPath(kind, id);
     const raw = await this.show(kind, id, commit);
     if (kind !== "item" || raw === null || typeof raw === "object" && "plan" in raw) return raw;
-    return (await this.comparisonSnapshot(commit))[collections[kind]][id] ?? null;
+    return docsOf(await this.comparisonSnapshot(commit), kind)[id] ?? null;
   }
 
   /** The full commit id of `ref` when it is `at` or an ancestor of it; null when either ref is unknown or ancestry fails. */
@@ -1277,7 +1312,7 @@ function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numb
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
-    try { raw[path] = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); }
+    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? withoutRetiredLevel(doc) : doc; }
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");
@@ -1295,7 +1330,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
+  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries","messages"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;

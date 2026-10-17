@@ -2,7 +2,7 @@
 // The plan is the single source for ownership, status, priority and progress.
 import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, dispatchable, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, RETIRED_LEVEL, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
@@ -182,12 +182,20 @@ export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): Us
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
 export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
- * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
- * first rating left out of `after`; any other pair comes back as it is. */
-export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
-  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
-  const { difficulty: _rated, ...rest } = after;
-  return [before, rest as T];
+ * items would show each of them new for one added label. So is the migration that cleared the retired level 「架构师做」
+ * (from that level to none), which touched a dozen items for one removed label. Changing a level that exists is news.
+ * Returns the pair with the rating left out of the side that has it; any other pair comes back as it is. */
+export function withoutRatingBookkeeping<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after) return [before, after];
+  if (before.difficulty === undefined && after.difficulty !== undefined) {
+    const { difficulty: _rated, ...rest } = after;
+    return [before, rest as T];
+  }
+  if (before.difficulty === RETIRED_LEVEL && after.difficulty === undefined) {
+    const { difficulty: _cleared, ...rest } = before;
+    return [rest as T, after];
+  }
+  return [before, after];
 }
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
@@ -246,7 +254,6 @@ export const CHECK_LABEL = "需核对";
 export const STALLED_LABEL = "无人推进";
 /** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
 export const WAITS_TEXT_LABEL = "在等文字";
-export const EARLY_ACCEPT_LABEL = "验收过早";
 /** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
 export const CARD_MIN_OPTIONS = 3;
 export const OPTIONS_LABEL = "选项不足";
@@ -277,8 +284,6 @@ export interface Rules {
   /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
    * wrote or was started within the agent list's window). Not inherited from the items it owns. */
   workedOn(id: string): boolean;
-  /** The sessions of the item's live dispatches, newest start first. */
-  sessionsOf(id: string): string[];
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
   /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
@@ -286,7 +291,7 @@ export interface Rules {
   canStart(id: string): boolean;
   /** `canStart` and rated 1–5: what the next-task list offers. */
   startable(id: string): boolean;
-  /** What the detail line under an item's title says: how far it is, what comes next, what it waits on, who is working on it. */
+  /** What the item waits on: the brief tells a sub-item that only waits for its turn from one blocked for its own reason. */
   progress(id: string): Progress;
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
@@ -351,36 +356,14 @@ export interface DerivedPlanRow {
   /** How much the row adds to its plan's progress share: done 1, in progress ½, else 0; null when the row is left out of the share (a cancelled sub-item). */
   weight: number | null;
 }
-/** The progress line of an item (docs/design.md, How the page shows a plan). */
+/** What an item waits on (docs/design.md, Status). */
 export interface Progress {
-  done: number;
-  total: number;
-  /** The first step ready to start, when the plan has one. */
-  next?: { id: string; text: string };
   /** The rows the frontier waits on: items and cards. */
   waiting: Array<{ kind: "item" | "card"; id: string }>;
   /** The item's own request to the owner is still unanswered. */
   ask: boolean;
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
-  /** The rows in progress, in plan order: steps in progress, and owned items that are themselves in progress. */
-  doing: Array<{ id: string; text: string }>;
-  /** The sessions of the live dispatches. */
-  sessions: string[];
-}
-/** The rows the row at `at` comes after, through `after` or the previous-row default, all the way back. */
-function comesBefore(rows: readonly DerivedPlanRow[], at: number): DerivedPlanRow[] {
-  const byId = new Map(rows.map(entry => [entry.row.id, entry])), seen = new Set<string>(), out: DerivedPlanRow[] = [];
-  const visit = (index: number): void => {
-    const after = rows[index]!.row.after, before = after === undefined ? (index > 0 ? [rows[index - 1]!.row.id] : []) : after;
-    for (const key of before) {
-      const entry = byId.get(key);
-      if (!entry || seen.has(key)) continue;
-      seen.add(key); out.push(entry); visit(rows.indexOf(entry));
-    }
-  };
-  visit(at);
-  return out;
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -654,7 +637,9 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else return null;
+    }
+    // A message changes no item, card or note, so it reaches no rule; any other kind (the board, owner state, a glossary) may reach every item.
+    else if (doc.kind !== "message") return null;
   }
   return seeds;
 }
@@ -929,17 +914,11 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const st = statusOf(id);
     return (st === "todo" || st === "idle") && neededSet().has(id) && nextStep(id) !== undefined;
   }
-  function startable(id: string): boolean { return canStart(id) && dispatchable(item(id)?.difficulty); }
+  function startable(id: string): boolean { return canStart(id) && item(id)?.difficulty !== undefined; }
   function progress(id: string): Progress {
-    const rows = planRows(id), ratio = planRatio(id), first = rows.find(entry => entry.ready && entry.state === "open");
-    const text = (entry: DerivedPlanRow): string => "text" in entry.row ? entry.row.text : "item" in entry.row ? item(entry.row.item)?.title ?? entry.row.item : entry.row.card;
     return {
-      done: ratio.done, total: ratio.total,
-      ...(first ? { next: { id: first.row.id, text: text(first) } } : {}),
-      waiting: rows.filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
+      waiting: planRows(id).filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
       ask: askPending(id), behind: !ownerRowReady(id),
-      doing: rows.filter(entry => entry.state === "progress").map(entry => ({ id: entry.row.id, text: text(entry) })),
-      sessions: liveSessions(id).slice(),
     };
   }
   function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
@@ -1152,9 +1131,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
         if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
-        // An acceptance step marked done while a row it comes after is still open: the check ran before the work it checks.
-        const early = rows.flatMap((entry, at) => "text" in entry.row && entry.row.accept && entry.row.state === "done" ? [comesBefore(rows, at).filter(before => before.state !== "resolved").map(before => before.row.id)] : []).flat();
-        if (early.length) out.push({ text: `验收步骤已标完成，它前面的行还有没完成的：${[...new Set(early)].join("、")}。验收要等它检查的行都做完再标；做不了的行先丢弃并写理由，不属于这件交付物的移出去`, label: EARLY_ACCEPT_LABEL });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
@@ -1165,7 +1141,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
         // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
         // it, paused work) is not asked for.
-        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
@@ -1179,7 +1155,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, sessionsOf: id => liveSessions(id).slice(), dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

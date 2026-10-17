@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, EARLY_ACCEPT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -713,7 +713,7 @@ test("status target memoization never caches a cycle fallback as a target result
 
 test("the page's presentation signature changes with an item's difficulty, so a reloaded board repaints it", () => {
   const sign = (fields: Partial<Item>) => { const s = snapshot({ a: fields }); return presentationSignature(rules(s), s.decisions, "a"); };
-  const signs = ([2, 3, "architect", undefined] as const).map(difficulty => sign({ difficulty }));
+  const signs = ([2, 3, 5, undefined] as const).map(difficulty => sign({ difficulty }));
   assert.equal(new Set(signs).size, 4, "each difficulty, and none, paints differently");
   assert.equal(sign({ difficulty: 2 }), sign({ difficulty: 2 }), "an unchanged one does not");
 });
@@ -744,25 +744,6 @@ test("the option check covers one-option cards and stops once the owner has chos
   assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has already answered is not checked before the ruling");
 });
 
-test("a done acceptance row with an unfinished row before it gets the 验收过早 check, and the usual order does not", () => {
-  const early = (plan: PlanRow[]) => rules(snapshot({ a: { plan } })).checks("a").filter(c => c.label === EARLY_ACCEPT_LABEL);
-  // Accepted while the row it comes after is still to do.
-  const [one] = early([step("work"), accept("done")]);
-  assert.match(one!.text, /work/, "the check names the unfinished row");
-  // The usual order: accept after the work, then ship after the acceptance.
-  assert.deepEqual(early([step("work", "done"), accept("done"), step("ship")]), []);
-  // The chain is followed through earlier rows, not only the row just before.
-  assert.match(early([step("a"), step("b", "done"), accept("done")])[0]?.text ?? "", /a/);
-  // A row the acceptance does not come after is not before it.
-  assert.deepEqual(early([step("a"), step("b", "done", { after: [] }), accept("done")].map(row => row.id === "accept" ? { ...row, after: ["b"] } : row)), []);
-  // A dropped row is resolved.
-  assert.deepEqual(early([step("a", "dropped"), accept("done")]), []);
-  // An acceptance row not yet done is not early.
-  assert.deepEqual(early([step("work"), accept("todo")]), []);
-  // The check flags only: the item stays open and the plan is kept.
-  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "idle");
-});
-
 test("the next-task definition is written once: todo or part way, needed, rated, and a step with no waits", () => {
   const s = snapshot({
     root: { plan: [own("fresh"), own("unrated"), own("held"), own("waits"), own("later"), own("finished"), accept()] },
@@ -780,7 +761,7 @@ test("the next-task definition is written once: todo or part way, needed, rated,
   for (const [id, [status, canStart, startable]] of Object.entries(expected)) assert.deepEqual([r.statusOf(id), r.canStart(id), r.startable(id)], [status, canStart, startable], id);
 });
 
-test("workedOn and progress say who is on an item and how far it is, from rows and from live sessions", () => {
+test("workedOn and progress say who is on an item and what it waits on, from rows and from live sessions", () => {
   const now = Date.parse("2026-10-17T12:00:00Z"), ago = (hours: number) => new Date(now - hours * 3600_000).toISOString();
   const session = (agent: string, started: string) => ({ agentId: `id-${agent}`, agent, role: "工程师" as const, level: 2, model: "Sonnet", started });
   const s = snapshot({
@@ -794,15 +775,11 @@ test("workedOn and progress say who is on an item and how far it is, from rows a
   }, { q: { item: "stuck" } });
   const r = rules(s, now);
   assert.deepEqual([r.workedOn("idle"), r.workedOn("stuck"), r.workedOn("working"), r.workedOn("session")], [false, false, true, true]);
-  assert.deepEqual([r.sessionsOf("idle"), r.sessionsOf("session")], [[], ["eng"]], "a session past the window is not listed");
   assert.deepEqual(r.dispatchedItems("eng"), ["session"]);
-  assert.deepEqual(r.progress("idle"), { done: 1, total: 4, next: { id: "two", text: "two" }, waiting: [], ask: false, behind: false, doing: [], sessions: [] });
+  assert.deepEqual(r.progress("idle"), { waiting: [], ask: false, behind: false });
   assert.deepEqual(r.progress("stuck").waiting, [{ kind: "item", id: "dep" }, { kind: "card", id: "q" }], "both rows can go next and both wait");
-  assert.deepEqual(r.progress("working").doing, [{ id: "two", text: "two" }]);
-  assert.deepEqual([r.progress("session").sessions, r.progress("session").next], [["eng"], { id: "two", text: "two" }]);
   assert.deepEqual([r.progress("asking").ask, r.progress("idle").ask], [true, false]);
   assert.deepEqual([r.progress("kid").behind, r.progress("busy").behind, r.progress("idle").behind], [true, false, false], "an owned item whose row follows an open row of its owner is behind it");
-  assert.deepEqual(r.progress("parent").doing, [{ id: "busy", text: "busy" }], "an owned item in progress is the row in progress");
 });
 
 test("two plans whose owned items each wait on the other's earlier row derive without looping, and both stay blocked", () => {

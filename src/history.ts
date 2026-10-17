@@ -9,7 +9,7 @@ import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
 import { allowRange } from "./budget.ts";
-import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail, withoutFirstRating } from "./rules.ts";
+import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail, withoutRatingBookkeeping } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
  * visible document change. Logs are historical detail and never contribute unread content. */
@@ -34,7 +34,7 @@ export function piecesOf(before: unknown, after: unknown, kind: DocKind, summary
     const { plan: _plan, steps: _steps, targets: _targets, ...rest } = withoutHistoricalDetail(item as Item & { steps?: unknown });
     return rest;
   };
-  const [ownerBefore, ownerAfter] = withoutFirstRating(before as Item | null, after as Item | null);
+  const [ownerBefore, ownerAfter] = withoutRatingBookkeeping(before as Item | null, after as Item | null);
   const other = describeChanges(withoutProgress(ownerBefore), withoutProgress(ownerAfter), "item") !== "metadata changed";
   return { progress, reply: 0, other: other ? 1 : 0 };
 }
@@ -45,7 +45,7 @@ function ownerSummary(before: unknown, after: unknown, kind: DocKind): string {
     if (kind !== "item" || doc === null) return doc;
     return withoutHistoricalDetail(doc as Item);
   };
-  const [ownerBefore, ownerAfter] = kind === "item" ? withoutFirstRating(before as Item | null, after as Item | null) : [before, after];
+  const [ownerBefore, ownerAfter] = kind === "item" ? withoutRatingBookkeeping(before as Item | null, after as Item | null) : [before, after];
   return describeChanges(omitLog(ownerBefore), omitLog(ownerAfter), kind);
 }
 const hasPieces = (pieces: Pieces) => pieces.progress + pieces.reply + pieces.other > 0;
@@ -161,6 +161,10 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
     // An owner action breaks consecutiveness even though it is not a step.
     // Format migrations (the plan conversion, numbering existing documents) are not news to the owner.
     if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE || commit.message === NUMBERING_MESSAGE) { previous = undefined; continue; }
+    // A message is no change the owner reads and no work on an item (docs/design.md, Messages): a commit of messages, alone
+    // or with the owner's reading state that rode along, is passed over, so the same author's changes to one item on either
+    // side of it still read as one step.
+    if (commit.files.some(file => file.startsWith("messages/")) && commit.files.every(file => file.startsWith("messages/") || file === "state/owner.yaml")) continue;
     const docs: Step["docs"] = commit.files.flatMap(file => {
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];

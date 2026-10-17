@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkCodeFont, checkEmptyRows, checkTagChips, checkDifficultyChip, checkProgress, checkProgressBands } from "./invariants.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkCodeFont, checkEmptyRows, checkTagChips, checkDifficultyChip, checkIdleStatus, checkProgressBands } from "./invariants.ts";
 import type { Oracle } from "./invariants.ts";
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.slice(0, 60).join("\n"));
@@ -67,9 +67,9 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
     await bp.reset(openAll(board));
     none(await checkDifficultyChip(bp, await oracle(board.store)));
   });
-  await t.test("part-done items read 停滞 and every open item's detail shows its progress line", async () => {
+  await t.test("part-done items read 停滞: their chip, their box and their project's filter", async () => {
     await bp.reset(openAll(board));
-    none(await checkProgress(bp, await oracle(board.store)));
+    none(await checkIdleStatus(bp, await oracle(board.store)));
   });
   await t.test("a comment saved on a folded list stays in view and its 发送 sends it", async () => {
     await bp.reset({ ...openAll(board), "board-notes": { ["it:" + w.commentItem]: false, ["q:" + w.commentCard]: false } });
