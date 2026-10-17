@@ -15,18 +15,22 @@ const t = { after: (fn: () => unknown) => { cleanups.push(fn); } };
 const fence = (code: string) => "```mermaid\n" + code + "\n```";
 const OUT = join(process.cwd(), "shots");
 
-interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown> }
+interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown>; css?: string; window?: number }
 const DAGRE = { layout: "dagre", flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 } };
 const CLASSIC = { look: "classic", flowchart: { look: "classic", padding: 6 } };
 const LAYERS = (nn: number, layers: number, edge: number) => ({ "elk.spacing.nodeNode": nn, "elk.layered.spacing.nodeNodeBetweenLayers": layers, "elk.layered.spacing.edgeNodeBetweenLayers": edge, "elk.spacing.edgeNode": edge, "elk.layered.spacing.edgeEdgeBetweenLayers": 10, "elk.spacing.edgeEdge": 10 });
 const PAGE = (padding: number) => ({ look: "classic", flowchart: { look: "classic", padding, nodeSpacing: 20, rankSpacing: 20 } });
+// A diagram as wide as the detail pane rather than the text column: the pane is a container, and a block takes its width.
+const WIDE = "body.wide #item-detail { container-type: inline-size; } .rich .mermaid-block { width: 100cqw; max-width: 100cqw; }";
+const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
-  { name: "dagre", cfg: DAGRE },
-  { name: "c-p6-e12", cfg: PAGE(6), elk: { fromConfig: { edge: 12 } } },
-  { name: "c-p8-e12", cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } },
-  { name: "c-p8-e16", cfg: PAGE(8), elk: { fromConfig: { edge: 16 } } },
-  { name: "neo-e12", cfg: { flowchart: { nodeSpacing: 20, rankSpacing: 20 } }, elk: { fromConfig: { edge: 12 } } },
+  { name: "c-p8-e12", ...C },
+  { name: "elk-wide", css: WIDE },
+  { name: "c-p8-e12-wide", ...C, css: WIDE },
+  { name: "elk-1280", window: 1280 },
+  { name: "c-p8-e12-wide-1280", ...C, css: WIDE, window: 1280 },
+  { name: "c-p8-e12-wide-1920", ...C, css: WIDE, window: 1920 },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["role-narrow", ROLE_NARROW], ["role-own", ROLE_OWN], ["lanes", LANES], ...SMALL];
 
@@ -126,7 +130,12 @@ async function main() {
   await bp.select(id);
   const results: Record<string, Record<string, unknown>> = {};
   for (const v of VARIANTS) {
-    await bp.page.evaluate(v => { const g = globalThis as unknown as Record<string, unknown>; g.__elk = v.elk; g.__mcfg = v.cfg; }, v);
+    await bp.page.evaluate(v => {
+      const g = globalThis as unknown as Record<string, unknown>; g.__elk = v.elk; g.__mcfg = v.cfg;
+      document.getElementById("variant-css")?.remove();
+      if (v.css) { const style = document.createElement("style"); style.id = "variant-css"; style.textContent = v.css; document.head.append(style); }
+    }, v);
+    await bp.page.setViewportSize({ width: v.window ?? 1500, height: 4000 });
     // A comment naming the variant makes each source new, so the page draws it again with the variant's settings.
     const head = CHARTS.map(([name, code]) => `**${name}**\n\n` + fence(code + `\n%% ${v.name}`)).join("\n\n");
     const seen = await bp.changes();
