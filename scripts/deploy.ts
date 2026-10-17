@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { deployOnce } from "../src/deploy.ts";
+import { PushRefused, deployOnce, refusesRequest } from "../src/deploy.ts";
 import type { DeployState } from "../src/deploy.ts";
 import { macNotify } from "../src/notify.ts";
 import { NET_GIT_CAP_MS, netGitOutput } from "../src/net-git.ts";
@@ -50,7 +50,9 @@ await deployOnce({
   },
   post: async push => {
     const res = await fetch(`${base}/api/wake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(push), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`POST /api/wake answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (res.ok) return;
+    const answer = `POST /api/wake answered ${res.status}: ${(await res.text()).slice(0, 200)}`;
+    throw refusesRequest(res.status) ? new PushRefused(answer) : new Error(answer);
   },
   notify: macNotify(),
   load: () => {

@@ -8,8 +8,8 @@ import { server } from "./helpers.ts";
 import { VERSION_MARK, pageVersion, stampPage } from "../src/page-version.ts";
 
 const HTML = `<!doctype html><meta id="page-version" content="${VERSION_MARK}"><script type="module" src="/app.js"></script>`;
-const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: false };
-const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
+const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: false, repo: null };
+const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy", changes: [], repo: null };
 
 /** A page directory of its own, which a test rewrites the way a deploy does. The diagram library is built only when `library` is given. */
 async function pageDir(t: { after(fn: () => unknown): void }, files: { html?: string; js?: string | null; library?: string } = {}) {

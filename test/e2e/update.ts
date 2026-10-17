@@ -15,7 +15,7 @@ const RELOAD_MS = 15_000;
 async function rebuild(b: BoardServer) { await appendFile(join(b.webDir, "dist/app.js"), "\n// rebuilt\n"); }
 /** What the deploy job does when a deploy ends (src/deploy.ts): it pushes `deployed` through the daemon's own route. */
 async function deployed(b: BoardServer) {
-  const res = await fetch(b.url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: false }) });
+  const res = await fetch(b.url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: false, repo: null }) });
   if (!res.ok) throw new Error(`POST /api/wake answered ${res.status}`);
 }
 /** Marks the loaded page, so a later look can tell whether it is still the same page. */

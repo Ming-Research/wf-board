@@ -8,7 +8,7 @@ import { advanceBooks, usageFigures, usageLine, usagePushes } from "./rules.ts";
 import type { OrgBooks, UsageFigures } from "./rules.ts";
 
 /** What the board does with the organization's Actions billing (docs/design.md, Watching Actions usage): it keeps its own account
- * of the month's included minutes used, says so in a line of the timed wake, and tells the PM when the month's use first
+ * of the month's included minutes used, says so in a line of the timed wake when it needs handling, and tells the PM when the month's use first
  * reaches a level, one day uses a lot, or the included minutes are all used with a budget of 0. How the account is kept and what
  * is told are pure functions in src/rules.ts. */
 
@@ -88,6 +88,11 @@ export class UsageWatch {
     if (!this.results.size) return this.polled ? "Actions 用量：没有可读的组织（项目的仓库都在个人账户下）" : "Actions 用量还没读到";
     const several = this.results.size > 1;
     return [...this.results].map(([owner, result]) => "problem" in result ? `${several ? `${owner}：` : ""}Actions 用量读不到：${result.problem}` : usageLine(result.figures, several)).join("；");
+  }
+
+  /** What the timed wake says of the watch: its line when it needs handling (a billing report that cannot be read, or a sku the account does not know), else nothing. */
+  alert(): string {
+    return [...this.results.values()].some(result => "problem" in result || result.figures.unknown.length) ? this.line() : "";
   }
 
   private persist(): void {
