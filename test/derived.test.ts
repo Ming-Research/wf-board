@@ -127,6 +127,15 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       const target = cards.length && rand() < 0.5 ? `q:${pick(cards)}` : `it:${pick(itemsOf(s))}`;
       await owner.createNote({ target, kind: target.startsWith("q:") ? "choice" : "comment", text: "note", ...(target.startsWith("q:") ? { choice: "A" } : {}) });
     },
+    // A session started on an item, and one ended: an unfinished dispatch holds the item while its session is within the window.
+    // Half of them started seven hours ago: the session's next write anywhere brings the item back inside the window.
+    async s => { const id = pick(itemsOf(s)); return op.dispatchStart({ ...asArchitect, id, role: pick(["工程师", "审查"] as const), level: 2, model: "Sonnet", agent: pick(["session-a", "session-b", "session-c"]), agentId: `d${made++}`, ...(rand() < 0.5 ? { startedAt: iso(now() - 7 * 60 * MINUTE) } : {}) }); },
+    async s => {
+      const open = Object.entries(s.items).flatMap(([id, it]) => (it.dispatches ?? []).filter(d => !d.finish).map(d => ({ id, d })));
+      if (!open.length) return;
+      const { id, d } = pick(open), usage = { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 };
+      return op.dispatchFinish({ ...asArchitect, id, agentId: d.agentId, result: "一次通过", usage, cost: 0, ...(d.role === "工程师" ? { reports: 0, kickbacks: 0 } : { rounds: 1 }) });
+    },
     async () => owner.send({}),
     async s => { const group = pick(["Whitefoot", "Firn"]), ids = itemsOf(s, group).filter(() => rand() < 0.3); if (ids.length) return op.setTagsMany({ author: group, items: ids.map(id => ({ id, tags: [pick(["健全性", "报错信息"])] })) }); },
     async () => op.setTerm({ author: "Firn", term: `词${made++}`, definition: "意思" }),
@@ -164,7 +173,8 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
 
     // Shared rules (store.derived, with the advanced activity index), candidate rules and the page's equal a fresh scan.
     const synthetic = now();
-    for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE]) {
+    // The last two are after the six-hour window of a session started in the sequence has passed.
+    for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE, synthetic + 7 * 60 * MINUTE, Date.now() + 8 * 60 * MINUTE]) {
       const expected = derivedView(rules(after, at), after);
       assert.deepEqual(derivedView(store.derived.rules(after, at), after), expected, `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);

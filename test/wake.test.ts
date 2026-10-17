@@ -277,6 +277,9 @@ test("the timed wake lists what changed since the last one without the architect
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
+    // A live session holds this one, though no step is marked; and the parent is wip only because the item it owns is.
+    { kind: "item", id: "held", expectRev: null, doc: { ...doc("会话拿着的条目", "Whitefoot", [{ id: "step", text: "还没标", state: "todo" }]), dispatches: [{ agentId: "h1", agent: "held-eng", role: "工程师", level: 2, model: "Sonnet", started: iso(T0) }] } },
+    { kind: "item", id: "parent", expectRev: null, doc: doc("只因下级在做的条目", "Whitefoot", [{ id: "work", item: "work", own: true }]) },
   ] });
   wake.markTimed({ at: iso(T0), head: store.snapshot().head });
   // After the mark: an engineer writes b and other; the architect writes a and b; the owner comments on the card of a.
@@ -296,8 +299,8 @@ test("the timed wake lists what changed since the last one without the architect
   assert.deepEqual(names(frame.changed), ["a", "b", "other"], "a is listed for the owner's comment, b and other for the engineer; the architect's own writes are not why");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
   assert.deepEqual(by, { a: ["owner"], b: ["工程师"], other: ["工程师"] });
-  assert.deepEqual(names(frame.working), ["work"], "the item with a step being done, outside the Architect project");
-  assert.deepEqual(frame.working, [{ item: "work", project: "Whitefoot", title: "在做的条目", status: "wip", flags: [] }]);
+  assert.deepEqual(names(frame.working), ["held", "work"], "the items someone holds, outside the Architect project: a step being done, or a live session; not a parent in progress only through its part");
+  assert.deepEqual((frame.working as Array<{ item: string }>).find(e => e.item === "work"), { item: "work", project: "Whitefoot", title: "在做的条目", status: "wip", flags: [] });
   assert.deepEqual(frame.architect, [{ item: "arch", project: "Architect", title: "架构师的条目", status: "todo", flags: [] }]);
   assert.deepEqual(wake.lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(file)).filter(l => l.timed).at(-1), { timed: wake.lastTimed });

@@ -480,15 +480,18 @@ derivation design that replaced this:
   while an item's derived summary changes, plus every reached item's
   ancestors, and the items whose doing steps name a reached item or one of its
   ancestors (their stalled clock reads it, see the stalled-work rule). A
-  change of elapsed time alone is left to the minute timers, which rescan and
-  repaint everything as before.
+  session's write moves its place in the activity index, which can change
+  whether it still holds the items it was started on (status), so the items
+  carrying its unfinished dispatch records are reached too. A change of elapsed
+  time alone is left to the minute timers, which rescan and repaint everything
+  as before; a session's six-hour window running out is such a change.
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory); the `bench` workflow runs it by hand on this tree and on a base
-commit, without gating.
+peak memory, and the characters of each project's brief); the `bench` workflow
+runs it by hand on this tree and on a base commit, without gating.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -857,13 +860,17 @@ log:
   migration that clears it (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
-  dispatched: the item is todo, and one of its ready steps (every step before
-  it done) is a todo text step with no `waits` text. A step that is another
-  item or a card, such as an unfinished study sub-item, is not such a step, so
-  the item raises no check until that sub-item is done. A blocked item, or
-  one with a step in progress, raises none either. Work is not listed as
-  startable (`brief.todo`) without a rating. Whoever may rate the item clears
-  缺难度: the architect, or the engineer whose subtree holds it below its root (the root itself is rated by the architect).
+  dispatched. "Can be dispatched" is defined once, as `canStart`: the status is
+  todo or idle, an unpaused root needs the item, and one of its ready steps
+  (every step before it done) is a todo text step with no `waits` text. The
+  next-task list (`brief.todo`) lists what `canStart` allows and has a rating;
+  the check asks for the rating of what `canStart` allows and has none. A step
+  that is another item or a card, such as an unfinished study sub-item, is not
+  such a step, so the item raises no check until that sub-item is done. A
+  blocked item, or one someone is working on (a step in progress or a live
+  session), raises none either. Whoever may
+  rate the item clears 缺难度: the architect, or the engineer whose subtree holds
+  it below its root (the root itself is rated by the architect).
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -1028,7 +1035,7 @@ Each row is in one derived state, which status and display use:
 | Row | resolved | in progress | waiting | open |
 |---|---|---|---|---|
 | step | done, or dropped with its reason | doing | — | todo |
-| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo |
+| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or idle |
 | shared item | target done | — | target open (any status) | — |
 | card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
 | owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
@@ -1062,13 +1069,44 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    on the board) is still in progress. A todo step with `waits` is not in
    progress, and its check (在等文字) asks for the wait to be written as a
    shared row, a card, the backlog, or a doing step.
-5. `blocked` when nothing is in progress and either every frontier row is
-   waiting (a shared item still open, an open card, an owned item that is
-   itself blocked or paused) or the item has a pending legacy ask. A paused
-   child is waiting on the owner; a parent that is not paused can therefore
-   be blocked by it, under the ordinary frontier rule.
-6. `todo` otherwise: some frontier row is a step or an owned item that can be
-   started.
+5. `blocked` when nothing is in progress and the item has a pending legacy
+   ask, or every frontier row is waiting (a shared item still open, an open
+   card, an owned item that is itself blocked or paused), or the row that owns
+   the item in its owner's plan comes after a row that is not resolved (an
+   owner that is a record has no order, so a backlog item is never blocked
+   this way). Whether the rows before it are resolved reads only whether their
+   items are done or cancelled, never their full status: a full status asks
+   back whether the owned item's turn has come, and two plans that each wait
+   on the other's earlier row would loop. Such a pair is blocked. A paused
+   child is waiting on the owner; a parent that is not paused can therefore be
+   blocked by it, under the ordinary frontier rule.
+6. `wip` when a session is working on the item: it has an unfinished dispatch
+   record, of either role, and that session was started or wrote on the board
+   within the agent list's window (`AGENT_WINDOW_MS`, six hours), so status and
+   the agent list agree on which sessions are on an item. A session that has
+   gone quiet for the window is no longer working on it. The records are read
+   by `openDispatches`, the one reading of an item's unfinished dispatches.
+   This is not the push's holder (The wake streams, Where a push goes): a push
+   goes to the one engineer session that holds the item, whatever the window.
+   Status counts a session of either role, because a reviewer is working on the
+   item too, and only within the window.
+7. `idle` when nobody is working on the item and part of its own work is done: a
+   step of its own is done, or an item it owns is done, or an open item it owns
+   has begun in this same sense (a dropped step, a cancelled owned item and an
+   owned record do not count). What others finished does not count: a shared
+   dependency that is done, a ruled card and a shared record leave the item at
+   `todo`, though the progress count still includes those rows. A parent
+   therefore leaves `todo` as its parts progress.
+8. `todo` otherwise: nothing is done and nobody is working on the item.
+
+The three live states answer three different questions: `wip` says someone is on
+it, `idle` says work was done and nobody is on it now, `todo` says nothing
+was done. How far an item is and what its rows wait on is not a status; the page
+shows them in 计划和进展 (How the page shows a plan). That an item waits for
+its turn in its owner's plan shows in the owner's plan, not in its own detail. `idle` is not
+the 无人推进 check (Stalled work): `idle` says nobody is working on the item;
+无人推进 flags an item someone is working on, with a step in progress, that has
+been quiet for an hour.
 
 So a parent is done only when its own steps, acceptance steps and delivery rows are resolved,
 not merely when its children are (owner decision 6), and an item is blocked
@@ -1081,7 +1119,7 @@ conversion). The checks that existed only because status was set by hand go
 away: 卡住了，但没写在等什么, 可解除阻塞：等的都已完成 and 标为进行中，但还在等别的.
 
 Every work item has a plan with at least one acceptance step, so no work item
-has a stored `todo`, `wip`, `blocked` or `done` any more. An item with an
+has a stored `todo`, `idle`, `wip`, `blocked` or `done` any more. An item with an
 empty plan (none exists after conversion; the schema allows it only on a
 record) shows the check 没有计划：至少要有一个验收步骤.
 
@@ -1270,7 +1308,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or a blocked item or one whose next step is another item or card) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1356,6 +1394,7 @@ The detail column of a selected item reads, top to bottom:
 
 1. the head row: status, priority, title, ratio, chips (unchanged); the left
    tree already shows the owner, so the detail has no ownership line;
+   under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
 3. 计划和进展, the plan, with the cards it names unfolded under their rows;
 4. the head (问题 / 为什么 / 做法) and the `data` line;
@@ -1368,6 +1407,17 @@ The detail column of a selected item reads, top to bottom:
 
 The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
+
+The detail shows no separate progress line: status says whether someone is on the item,
+and 计划和进展 at the top of the detail says how far it is and what its rows wait on, so a
+line under the title would say the same twice. An item that only waits for its turn in its
+owner's plan shows that in the owner's plan, not in its own detail.
+
+The status chip, the tree's left bar, the parent's counts, the status bar and
+the project's filter buttons all carry 停滞 as a status of its own: the filter
+reads "做完了一部分、现在没人在做的条目" and 未开始 reads "什么都还没做、也没人在做的条目".
+Its colour is a blue between the grey of 未开始 and the amber of 进行中, the tokens
+`--idle`, `--idle-soft` and `--bar-idle`, defined for both themes.
 
 The plan's look, row by row. One line per row, a 16-pixel gutter on the left
 carries the row's glyph in its state colour, the same colours as the status
@@ -1607,7 +1657,7 @@ instructions within the limit and free of rule text.
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions the architect started done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -1630,7 +1680,15 @@ whose commits do not count.
   range created are taken away, those it deleted are brought back, and the board settings
   (projects, tag vocabulary) are put back when a range commit wrote them. Its rules are
   worked out at the time the range began, so a flag that comes with time and no commit (a
-  step in progress that stands still) is new when it was not there at that time. Both
+  step in progress that stands still) is new when it was not there at that time. The
+  session activity that the status of an old-board item reads (a session counts as
+  working on an item when it started or wrote within six hours) is the current one,
+  not the one of the range's start: the board keeps only each session's latest
+  writes, and the earlier ones need a scan of the six hours before the range that
+  this case does not justify. A session that wrote after the range began therefore
+  counts as working at its start, however long it had been quiet. Only 缺难度 reads
+  the difference, on an unrated item with an unfinished dispatch, and the error is a
+  flag reported as new that was already there. Both
   boards' checks are worked out in full, so the cost of a call is that of two rule builds
   plus the range's reads; `scripts/bench-changes.ts` measures it against the lines of
   section 4 on a hosted CI runner, and those figures, not a run on another machine, are
@@ -1780,7 +1838,7 @@ tags as small neutral grey chips (never a status colour; the tooltip is the tag'
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-A tree row's right-hand counts show only open parts (todo, in progress,
+A tree row's right-hand counts show only open parts (todo, idle, in progress,
 blocked, paused); done and cancelled parts are not counted there, and a cancelled
 item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
@@ -2230,7 +2288,9 @@ architect's when it names the architect. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
 names it as `agent` and has not ended; when several have not ended, the newest
 start wins, so a takeover holds the item from its start (`holderOf` in
-`src/dispatch.ts`). The dispatch record is written by the script that starts
+`src/dispatch.ts`). This is not what status calls
+someone working on an item (Item plans, Status rule 6): that counts a session of
+either role, within a window. The dispatch record is written by the script that starts
 the engineer and ended when it is finished, so holding needs no call of the
 engineer's own and is never forgotten. Rejected: a claim and a release tool the
 engineer calls, which adds two calls an engineer can forget and a second record
@@ -2300,7 +2360,7 @@ the forms the server sends:
 |---|---|
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
+| `{n, at, event:"timed", since, changed, working, architect, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is left out), and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
@@ -2788,14 +2848,16 @@ start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
-still awaiting the owner, items in progress with a doing step of their own,
-the next ten items rated 1–5 that an unpaused root needs and whose frontier holds a step that can start, by priority,
+still awaiting the owner, items someone is working on (a doing step of their own or a live session),
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), by priority,
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
 `{id, title, plan?, targets?}` rows for records and blocked items
 that are not already represented in the checks, WIP, TODO or
-outgoing rows. It does not repeat those rows or add closed work and the TODO
+outgoing rows, except blocked items that only wait for their turn in their
+owner's plan and that nobody is working on: `brief.queued` counts those per
+owner as `{owner, num, title, count}`. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list holds the open items
 targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
