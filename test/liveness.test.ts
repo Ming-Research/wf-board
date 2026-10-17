@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, server, agentSocket, asArchitect } from "./helpers.ts";
+import { board, server, agentSocket, asArchitect, later } from "./helpers.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { ASK_AFTER_MS, TELL_AFTER_MS } from "../src/liveness.ts";
@@ -275,9 +275,9 @@ test("holders maps each session to the items it holds, in item order, by the one
 /** Make `item` ready as `prepare` says, dispatch an engineer on it, and let two hours pass without a sign from it: what the
  * session was asked, what the PM was told, and the item's status. */
 type Op = Awaited<ReturnType<typeof server>>["op"];
-async function twoSilentHours(t: TestContext, item: string, prepare: (op: Op) => Promise<unknown>) {
+async function twoSilentHours(t: TestContext, item: string, prepare: (op: Op) => Promise<unknown>, start = T0) {
   t.mock.timers.enable({ apis: ["setInterval"] });
-  const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
+  const clock = { now: start }, wake = new Wake({ now: () => clock.now });
   const { op, store } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000, timedWakeMs: 1e12 });
   await prepare(op);
   await op.dispatchStart({ ...asArchitect, id: item, role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
@@ -294,6 +294,17 @@ const acceptRow = (state: "todo" | "doing" | "done") => ({ id: "accept", accept:
 
 test("a session holding an item in progress is asked after 30 minutes and the PM told after 30 more", async t => {
   const result = await twoSilentHours(t, "a", op => op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") }));
+  assert.deepEqual(result, { status: "wip", asked: 1, told: 1 });
+});
+
+test("a session holding an item whose work is done and whose pull request waits for the merge is asked and told: a live session makes it in progress", async t => {
+  const result = await twoSilentHours(t, "a", async op => {
+    // The fixture's item carries an unanswered ask to the owner, which would make it blocked.
+    await op.clearAsk({ ...asArchitect, id: "a", log: "测试" });
+    await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("done") });
+    await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge", text: "合入 wf-board#1", state: "todo" } });
+    // The dispatch is stamped with the fixture's clock, and a session is live for six hours from it: count from there.
+  }, Date.parse(later));
   assert.deepEqual(result, { status: "wip", asked: 1, told: 1 });
 });
 
