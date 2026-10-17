@@ -2750,9 +2750,9 @@ with its project, a title, counts instead of lists), at most 200 characters,
 cut with … past that; the tests measure it for every kind with the longest
 fields. A message's line cuts only what comes before its text (Messages,
 below). An event reaches an agent once (above). The PM's frames are printed whole by its
-script, so the PM's pushes carry no list that repeats from one to the next: the timed wake
+script, so the PM's pushes carry no whole list that repeats from one to the next: the timed wake
 once carried the lists of every open item of two projects each time, 74% of the characters pushed over a day
-(measured on 2026-10-16 and 17: 198,000 of 266,000), and now carries what changed and counts.
+(measured on 2026-10-16 and 17: 198,000 of 266,000), and now carries what changed, counts, and the keys of the two kinds of item not yet taken up (the reminder for a lost push).
 
 **No receipt.** When the oldest unanswered event on the PM's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「PM 1 小时没响应」,

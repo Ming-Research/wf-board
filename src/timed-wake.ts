@@ -1,7 +1,8 @@
-import { hasReviewer, holderOf, reviewRequested } from "./dispatch.ts";
+import { hasReviewer, holderOf } from "./dispatch.ts";
 import { ARCHITECT, PM_AUTHOR, answersPushes } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import type { Offer } from "./offers.ts";
+import { reviewRequested } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 import { itemOfFile, writersByItem } from "./query.ts";
 import type { Store } from "./store.ts";
@@ -49,7 +50,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
     working: open.filter(id => r.projectOf(id) !== ARCHITECT && r.projectOf(id) !== PM_AUTHOR && r.statusOf(id) === "wip" && r.workedOn(id)).length,
     architect: open.filter(id => r.projectOf(id) === ARCHITECT).length,
     pm: open.filter(id => r.projectOf(id) === PM_AUTHOR).length,
-    review: capped(open.filter(id => reviewRequested(s, id) !== undefined && !hasReviewer(s, id))),
+    review: capped(open.filter(id => reviewRequested(s.items[id]) !== undefined && !hasReviewer(s, id))),
     finished: capped(Object.keys(s.items).filter(id => r.statusOf(id) === "done" && holderOf(s, id) !== undefined)),
     dispatch,
     actions,
