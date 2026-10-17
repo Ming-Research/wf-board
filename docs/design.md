@@ -1944,9 +1944,30 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden) and is shown at its own
-size: a narrow one is centered in the text, and one wider than the text starts at its left edge
-and scrolls sideways in its own box, so the page itself never scrolls sideways. A block that
+diagram stands in for its code (the code stays in the page, hidden). The library draws with its
+own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
+the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
+is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
+width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
+nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
+diagram makes the page scroll instead of being squeezed into the window, where its text would
+shrink until it could not be read. A narrow one is centered. A drawn diagram sits in a frame, and
+its toolbar is the top row of the frame, above the diagram, so it never covers the diagram. From
+the left: smaller, the size as a percentage of the diagram's own width, larger, 适应宽度 (back to
+the default size, which is the diagram's own width or the box's, whichever is less), and at the
+right a hint, 双指缩放，拖动或滚动查看, shown at every size. A diagram zooms with Ctrl and the
+wheel too, about the cursor (Chromium sends a pinch on a trackpad as Ctrl and the wheel; other
+browsers are not checked). The plain wheel is left alone and scrolls the page.
+An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll
+bar of its own (the system's hides itself when idle, so a diagram that went past its box looked
+cut off), shows a grabbing hand and shades the side that has more to show,
+along the whole height of the diagram (the scroll bar of a tall diagram is far below the part on
+the screen); a mouse drags it sideways in the box and up or down along the page. The box never scrolls vertically, so the wheel is never taken by it.
+Zoom and sideways scroll are kept per source: a diagram drawn again with the same source (a live
+update repaints its item, the page changes theme) keeps its view, and one whose source changed
+starts at the default size. The detail pane draws the diagrams it already has as soon as it is
+repainted, before it restores its scroll position, so that position is not cut short by the
+code a diagram stands in for. A block that
 does not parse keeps showing its code with the library's error under it, and the
 other blocks and the rest of the page are untouched. The diagrams use the
 library's `dark` theme when the page shows its dark colors (the owner's
@@ -3074,10 +3095,18 @@ log are drawn, with Chinese labels; a block that does not parse shows its code a
 error while the blocks after it are drawn; hostile text (a script in a label, a
 `javascript:` link) leaves nothing that runs; a page with no diagram never fetches the
 library and one with diagrams fetches it once; the diagrams are drawn again after a live
-update repaints their item; a wide diagram keeps its own size and scrolls in its box while the page
-does not scroll sideways; the same diagram drawn twice in one page, the first copy in a folded
-section, has no id twice and the visible copy's line markers are its own; labels
-and lines read in both color schemes, and the `data-theme` attribute wins over the system's
+update repaints their item; a diagram is as wide as itself or its box, whichever is less, with
+nothing to scroll sideways in the box or the page, at a window 1500 px wide and one 700 px wide; the
+settings in a diagram's own frontmatter win over the page's; the buttons, and Ctrl with the wheel,
+zoom, the plain wheel scrolls the page and nothing else, an enlarged diagram can be scrolled to both
+its ends and dragged, and 适应宽度 restores the default size; the toolbar is the top row of the
+diagram's frame, with its items in order and the size in percent following the zoom; an enlarged
+diagram says it can be moved (scroll bar, hand, a shade at the edge with more) and the toolbar and
+the bar read in both color schemes; a live update that
+leaves a diagram's source alone leaves its zoom, its sideways scroll and the page's scroll alone, and one
+that changes the source starts it at the default size; the same diagram drawn twice in one page, the
+first copy in a folded section, has no id twice and the visible copy's line markers are its own;
+labels and lines read in both color schemes, and the `data-theme` attribute wins over the system's
 scheme. Each check also
 runs on a page with the one part it protects taken out by an edit applied while the page is
 bundled, where it must report the part's absence in a line that says what the check was

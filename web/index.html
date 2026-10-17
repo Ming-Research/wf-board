@@ -260,9 +260,31 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .rich pre.code .l::before { content: counter(ln); display: inline-block; min-width: 2.5ch; margin-right: 1.2ch; text-align: right; color: var(--gutter); user-select: none; -webkit-user-select: none; }
 /* A mermaid block: the diagram stands in for its code once drawn; the code shows while the diagram is not drawn and when drawing fails, with the error under it. */
 .mermaid-block[data-state="done"] > pre.code { display: none; }
-.mermaid-fig { overflow-x: auto; padding: 6px 0; }
-/* The diagram keeps its own size (its width is set from its view box in web/mermaid.ts); a narrow one is centered, a wide one starts at the left edge and scrolls. */
-.mermaid-fig svg { display: block; margin-inline: auto; max-width: none !important; height: auto; background: transparent !important; }
+.mermaid-fig { overflow-x: auto; overscroll-behavior-x: contain; padding: 6px 0; }
+/* The diagram is as wide as itself (--natural, set from its view box in web/mermaid.ts) or, when the text is narrower, as wide as the text,
+ * times the zoom (--zoom). So it is never enlarged by fitting, a zoomed one is wider than the box and the box scrolls sideways, and the
+ * page never does. Its height follows its width, and the page scrolls for a tall one. */
+.mermaid-fig svg { display: block; margin-inline: auto; width: calc(min(var(--natural), 100%) * var(--zoom, 1)); max-width: none !important; height: auto; background: transparent !important; }
+/* A drawn diagram sits in a frame; the toolbar is its top row, above the diagram, so it never covers the diagram. From the left: smaller,
+ * the size as a percentage, larger, fit to the width of the box; the hint at the right. */
+.mermaid-block[data-state="done"] { border: 1px solid var(--rule); border-radius: 6px; }
+.mermaid-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 2px 4px; border-bottom: 1px solid var(--rule); border-radius: 5px 5px 0 0; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; }
+.mermaid-tools button { font: inherit; min-width: 24px; height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.mermaid-tools button:hover { background: var(--accent-soft); }
+.mermaid-percent { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
+.mermaid-hint { margin-left: auto; padding: 0 6px; color: var(--muted); }
+/* A box with more to show sideways says so: a scroll bar that stays (the system's own hides itself when idle) and a grabbing hand, besides the hint in the toolbar. */
+.mermaid-block[data-pan="yes"] .mermaid-fig { cursor: grab; user-select: none; -webkit-user-select: none; }
+.mermaid-fig.grabbing { cursor: grabbing; }
+/* A shade along the side of the view that has more to show, at the height of the whole diagram, so a tall diagram whose scroll bar is far below still says so. */
+.mermaid-view { position: relative; }
+.mermaid-block[data-more~="left"] > .mermaid-view::before, .mermaid-block[data-more~="right"] > .mermaid-view::after { content: ""; position: absolute; top: 0; bottom: 0; width: 18px; pointer-events: none; }
+.mermaid-block[data-more~="left"] > .mermaid-view::before { left: 0; background: linear-gradient(to right, color-mix(in srgb, var(--ink) 25%, transparent), transparent); }
+.mermaid-block[data-more~="right"] > .mermaid-view::after { right: 0; background: linear-gradient(to left, color-mix(in srgb, var(--ink) 25%, transparent), transparent); }
+.mermaid-fig::-webkit-scrollbar { height: 10px; }
+.mermaid-fig::-webkit-scrollbar-track { background: var(--todo-soft); border-radius: 5px; }
+.mermaid-fig::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 5px; }
+@supports not selector(::-webkit-scrollbar) { .mermaid-fig { scrollbar-color: var(--muted) var(--todo-soft); } }
 .mermaid-err { margin: 4px 0 0; padding: 6px 10px; border-radius: 6px; background: var(--ask-soft); color: var(--ask); font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; }
 .tk-c { color: var(--tk-comment); font-style: italic; }
 .tk-k { color: var(--tk-keyword); font-weight: 600; }

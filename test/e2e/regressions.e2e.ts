@@ -10,6 +10,7 @@ import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { checkReload, checkWriting, checkLoop } from "./update.ts";
+import { setHead, checkFit, FIT_HEAD } from "./mermaid-checks.ts";
 import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
@@ -267,6 +268,13 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/index.html", edit: n.edit, find: n.find, replace: n.replace }], family: n.family,
     run: async bp => checkFullWidth(bp),
   })),
+  {
+    bug: "a diagram wider than the text was drawn at its own width, so its right part was cut off by a box that scrolled sideways without showing it could (owner, 2026-10-17)",
+    // Every diagram at its own width again, whatever its box.
+    reverts: [{ file: "web/index.html", edit: "a diagram is fitted to its box", find: "width: calc(min(var(--natural), 100%) * var(--zoom, 1));", replace: "width: var(--natural);" }], family: "mermaid-fit",
+    // A small diagram, a wide one and a tall one in one head, as the page's own mermaid checks draw them.
+    run: async (bp, b) => { await setHead(b, b.gen.witness.code, FIT_HEAD); await bp.select(b.gen.witness.code); return checkFit(bp, 60_000); },
+  },
 ];
 
 for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout: 10 * 60_000 }, async t => {
