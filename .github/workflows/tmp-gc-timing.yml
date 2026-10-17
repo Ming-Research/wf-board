@@ -1,0 +1,35 @@
+name: tmp-gc-timing
+# TEMPORARY (item data-repo-gc-timing-study): times git's maintenance on a data repository of the live one's size.
+# Never merged. A push runs the experiments named in the head commit's message, as [cost] [knobs] [packs] [shard].
+on:
+  push:
+    branches: [data-repo-gc-timing-study]
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cmds: ${{ steps.p.outputs.cmds }}
+    steps:
+      - id: p
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs|shard)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+  run:
+    needs: plan
+    if: needs.plan.outputs.cmds != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        cmd: ${{ fromJSON(needs.plan.outputs.cmds) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: ${{ matrix.cmd }}
+        shell: bash
+        run: node scripts/tmp-gc/gc-study.ts ${{ matrix.cmd }} 2>&1 | tee study.log

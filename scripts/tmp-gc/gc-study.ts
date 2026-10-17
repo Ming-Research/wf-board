@@ -1,0 +1,413 @@
+// TEMPORARY harness of item data-repo-gc-timing-study; deleted before the study ends, never merged.
+// It builds a data repository of the live one's size (counts read from the live repository, no content) and times git's
+// maintenance on it. Commands: cost | knobs | packs | shard   (STUDY_SMOKE=1: a tiny scale, to check the script runs).
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpus, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { stringify } from "yaml";
+
+const SMOKE = process.env.STUDY_SMOKE === "1";
+const ROOT = process.env.STUDY_DIR ?? mkdtempSync(join(tmpdir(), "gcstudy-"));
+// Live (read 2026-10-17): 20260 commits, 1749 items, 729 cards, 1032 notes. Pack A (the 10-14 gc) holds the first 15670
+// commits; the gc of 10-16 22:52Z built pack B from the next 3741 commits. Pack X below stands for the part of B that was
+// already packed when that gc ran (3741 commits less the 2160 whose 9087 objects were still loose).
+const SCALE = SMOKE
+  ? { items: 60, decisions: 25, notes: 35, history: 300, packX: 40, preLoose: 80 }
+  : { items: 1749, decisions: 729, notes: 1032, history: 15670, packX: 1580, preLoose: 2160 };
+const ROUNDS = (n: number) => SMOKE ? 2 : n;
+const FG = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
+const NO_AUTO = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+const FORCE = ["-c", "gc.auto=1"];
+const GITENV: Record<string, string> = {
+  ...process.env as Record<string, string>, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "Study", GIT_AUTHOR_EMAIL: "study@example.invalid", GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
+};
+
+// ---------------------------------------------------------------- helpers
+function git(dir: string, args: string[], env: Record<string, string> = {}): string {
+  const r = spawnSync("git", args, { cwd: dir, env: { ...GITENV, ...env }, encoding: "utf8", maxBuffer: 1 << 30 });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} -> ${r.status}\n${r.stderr}`);
+  return r.stdout;
+}
+function timed(dir: string, args: string[], env: Record<string, string> = {}): { ms: number; status: number | null; err: string } {
+  const t0 = performance.now();
+  const r = spawnSync("git", args, { cwd: dir, env: { ...GITENV, ...env }, encoding: "utf8", maxBuffer: 1 << 30 });
+  const ms = performance.now() - t0;
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} -> ${r.status}\n${r.stderr}`);
+  return { ms, status: r.status, err: r.stderr };
+}
+function sh(cmd: string, args: string[]): void {
+  const r = spawnSync(cmd, args, { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`${cmd} ${args.join(" ")} -> ${r.status}\n${r.stderr}`);
+}
+let copies = 0;
+function copyRepo(src: string, name: string): string {
+  const dst = join(ROOT, `${name}-${copies++}`);
+  sh("cp", ["-a", src, dst]);
+  return dst;
+}
+function counts(dir: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const line of git(dir, ["count-objects", "-v"]).trim().split("\n")) { const [k, v] = line.split(": "); out[k!] = Number(v); }
+  return out;
+}
+const shape = (dir: string) => { const c = counts(dir); return `loose ${c.count} (${c.size} KB), in-pack ${c["in-pack"]}, packs ${c.packs} (${c["size-pack"]} KB)`; };
+const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2; };
+const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+const sd = (a: number[]) => { const m = mean(a); return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / Math.max(1, a.length - 1)); };
+const T95 = [0, 12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23, 2.20, 2.18, 2.16, 2.14, 2.13, 2.12, 2.11, 2.10, 2.09, 2.09, 2.08, 2.07, 2.07, 2.06, 2.06, 2.06, 2.05, 2.05, 2.05, 2.04];
+/** Geometric mean of a/b over pairs, with the 95% interval of the mean log ratio. */
+function ratioCi(a: number[], b: number[]): { ratio: number; lo: number; hi: number; half: number } {
+  const l = a.map((x, i) => Math.log(x / b[i]!)), m = mean(l), h = (T95[Math.min(30, l.length - 1)] ?? 1.96) * sd(l) / Math.sqrt(l.length);
+  return { ratio: Math.exp(m), lo: Math.exp(m - h), hi: Math.exp(m + h), half: Math.exp(h) - 1 };
+}
+const f = (x: number, d = 0) => x.toFixed(d);
+function emit(title: string, rows: Record<string, unknown>[]): void {
+  if (!rows.length) return;
+  const keys = Object.keys(rows[0]!);
+  const md = [`\n### ${title}\n`, `| ${keys.join(" | ")} |`, `|${keys.map(() => "---").join("|")}|`, ...rows.map(r => `| ${keys.map(k => String(r[k])).join(" | ")} |`)].join("\n");
+  console.log(md);
+  for (const r of rows) console.log("RESULT " + JSON.stringify({ title, ...r }));
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + "\n");
+}
+function note(text: string): void {
+  console.log(text);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, text + "\n\n");
+}
+
+// ---------------------------------------------------------------- the synthetic board
+class Rng {
+  s: number;
+  constructor(seed: number) { this.s = seed; }
+  next(): number { let t = (this.s += 0x6D2B79F5); t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+  int(n: number): number { return Math.floor(this.next() * n); }
+  gauss(): number { return Math.sqrt(-2 * Math.log(1 - this.next())) * Math.cos(2 * Math.PI * this.next()); }
+  lognormal(median: number, sigma: number): number { return Math.exp(Math.log(median) + sigma * this.gauss()); }
+}
+const CONSONANTS = "bcdfghjklmnprstvwz", VOWELS = "aeiou";
+function asciiWord(r: Rng): string { let s = ""; for (let i = 0, n = 2 + r.int(4); i < n; i++) s += CONSONANTS[r.int(18)]! + VOWELS[r.int(5)]! + (r.next() < 0.3 ? CONSONANTS[r.int(18)]! : ""); return s; }
+const vocab = new Rng(7);
+const ASCII_WORDS = Array.from({ length: 2500 }, () => asciiWord(vocab));
+const CJK = Array.from({ length: 3000 }, (_, i) => String.fromCodePoint(0x4e00 + ((i * 7919) % 20000)));
+/** Text like the board's: mostly Chinese, with English words (the live files are mostly Chinese). Skewed so it compresses like prose. */
+function text(r: Rng, bytes: number): string {
+  let s = "", n = 0;
+  while (n < bytes) {
+    let t: string;
+    if (r.next() < 0.3) t = ASCII_WORDS[Math.floor(2500 * r.next() ** 2)]!;
+    else { t = ""; for (let i = 0, k = 2 + r.int(5); i < k; i++) t += CJK[Math.floor(3000 * r.next() ** 2.5)]!; }
+    t += r.next() < 0.08 ? "。\n" : " ";
+    s += t; n += Buffer.byteLength(t);
+  }
+  return s;
+}
+function quantile(points: [number, number][], u: number): number {
+  for (let i = 1; i < points.length; i++) if (u <= points[i]![0]) { const [u0, v0] = points[i - 1]!, [u1, v1] = points[i]!; return v0 + (v1 - v0) * (u - u0) / (u1 - u0); }
+  return points.at(-1)![1];
+}
+// Length quantiles of the live names (q0, q10, q50, q90, q99, max).
+const ITEM_LEN: [number, number][] = [[0, 4], [0.1, 9], [0.5, 16], [0.9, 26], [0.99, 34], [1, 40]];
+const CARD_LEN: [number, number][] = [[0, 8], [0.1, 15], [0.5, 21], [0.9, 28], [0.99, 34], [1, 40]];
+const PROJECTS = ["Whitefoot", "Firn", "Halo", "Snowghost", "kit", "Architect"];
+const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+const yaml = (v: unknown) => stringify(v, { version: "1.2", schema: "core", lineWidth: 0, blockQuote: "literal" });
+
+type Kind = "item" | "decision" | "note";
+interface Doc { kind: Kind; key: string; obj: any }
+export type Layout = "flat" | "sharded";
+const DIRS: Record<Kind, string> = { item: "items", decision: "decisions", note: "notes" };
+function pathOf(layout: Layout, kind: Kind, key: string): string {
+  return layout === "flat" ? `${DIRS[kind]}/${key}.yaml` : `${DIRS[kind]}/${createHash("sha1").update(key).digest("hex").slice(0, 2)}/${key}.yaml`;
+}
+interface Change { path: string; text: string; message: string }
+
+class World {
+  readonly r: Rng;
+  readonly docs: Record<Kind, Doc[]> = { item: [], decision: [], note: [] };
+  clock: number;
+  readonly layout: Layout;
+  constructor(layout: Layout, seed = 1) {
+    this.layout = layout;
+    this.r = new Rng(seed);
+    this.clock = Date.now() - 7 * 86400_000;
+    const r = this.r, used = new Set<string>(), at = iso(this.clock);
+    const key = (len: number): string => {
+      let k = "";
+      while (k.length < len) k += (k ? "-" : "") + ASCII_WORDS[r.int(2500)]!;
+      k = k.slice(0, Math.max(1, Math.round(len))).replace(/[-.]+$/, "");
+      while (used.has(k)) k += "x";
+      used.add(k);
+      return k;
+    };
+    for (let n = 0; n < SCALE.items; n++) {
+      const k = key(quantile(ITEM_LEN, r.next())), size = Math.min(103_000, Math.max(600, r.lognormal(4572, 1.0))), group = PROJECTS[n % PROJECTS.length]!;
+      const log = Array.from({ length: Math.floor(size * 0.5 / 330) }, () => ({ at, by: group, text: text(r, 200 + r.int(200)) }));
+      this.docs.item.push({ kind: "item", key: k, obj: { num: n + 1, title: `Item ${k}`, group, ...(n % 7 === 0 ? { priority: ["P0", "P1", "P2"][n % 3] } : {}), head: text(r, size * 0.5), log,
+        plan: [{ id: "w", text: "work", state: ["doing", "done", "todo"][n % 3], ...(n % 3 === 0 ? { since: at } : n % 3 === 1 ? { doneAt: at } : {}) }, { id: "accept", text: "passes", state: "todo", accept: true }], created: at, updated: at, rev: 1 } });
+    }
+    for (let n = 0; n < SCALE.decisions; n++) {
+      const k = key(quantile(CARD_LEN, r.next())), open = n % 3 !== 0, size = Math.max(500, r.lognormal(3053, 0.48));
+      this.docs.decision.push({ kind: "decision", key: k, obj: { num: SCALE.items + n + 1, item: this.docs.item[(n * 7) % SCALE.items]!.key, question: `Question ${n}?`, background: text(r, size),
+        options: [{ key: "A", text: "Do it", recommended: true }, { key: "B", text: "Do not" }], status: open ? "open" : "ruled", ...(open ? {} : { choice: "A", ruling: "A", ruledAt: at }), at, updated: at, rev: 1 } });
+    }
+    for (let n = 0; n < SCALE.notes; n++) {
+      const k = Array.from({ length: 20 }, () => "0123456789abcdef"[r.int(16)]).join(""), done = n % 3 === 0, onCard = n % 2 === 0;
+      this.docs.note.push({ kind: "note", key: k, obj: { target: onCard ? `q:${this.docs.decision[n % SCALE.decisions]!.key}` : `it:${this.docs.item[(n * 5) % SCALE.items]!.key}`, kind: onCard ? "choice" : "comment", ...(onCard ? { choice: "A" } : {}),
+        text: text(r, Math.min(11_000, Math.max(40, r.lognormal(206, 1.4)))), at, state: done ? "done" : "sent", sentAt: at, ...(done ? { reply: "Handled", repliedAt: at, repliedBy: "Firn" } : {}), rev: 1 } });
+    }
+  }
+  files(): [string, string][] {
+    const out: [string, string][] = [];
+    for (const kind of ["item", "decision", "note"] as Kind[]) for (const d of this.docs[kind]) out.push([pathOf(this.layout, kind, d.key), yaml(d.obj)]);
+    out.push(["board.yaml", yaml({ title: "Synthetic board", projects: PROJECTS.map(name => ({ name })) })]);
+    out.push(["numbers.yaml", yaml({ next: SCALE.items + SCALE.decisions + 1 })]);
+    return out;
+  }
+  /** One write of the live mix: mostly an item (a log entry appended), sometimes a note or a card. */
+  next(): Change {
+    const r = this.r, u = r.next(), kind: Kind = u < 0.78 ? "item" : u < 0.90 ? "note" : "decision";
+    const list = this.docs[kind], d = list[Math.floor(list.length * r.next() ** 2)]!, at = iso(this.clock += 30_000);
+    d.obj.rev++; d.obj.updated = at;
+    if (kind === "item") d.obj.log.push({ at, by: d.obj.group, text: text(r, 150 + r.int(400)) });
+    else if (kind === "decision") d.obj.background = d.obj.background.length > 12_000 ? text(r, 3000) : d.obj.background + text(r, 60);
+    else { d.obj.state = "done"; d.obj.reply = text(r, 40 + r.int(200)); d.obj.repliedAt = at; d.obj.repliedBy = "Firn"; }
+    return { path: pathOf(this.layout, kind, d.key), text: yaml(d.obj), message: `append_log ${d.key}` };
+  }
+  take(n: number): Change[] { return Array.from({ length: n }, () => this.next()); }
+}
+
+/** The first commit and the history, written by one fast-import: all of it lands in one pack, as an import does. */
+function importHistory(dir: string, world: World, commits: number): void {
+  mkdirSync(dir, { recursive: true });
+  git(dir, ["init", "-q", "-b", "main"]);
+  const stream = join(ROOT, `fi-${copies++}.stream`);
+  writeFileSync(stream, "");
+  let buf: string[] = [], mark = 0;
+  const flush = () => { if (buf.length) { appendFileSync(stream, buf.join("")); buf = []; } };
+  const data = (s: string) => `data ${Buffer.byteLength(s)}\n${s}\n`;
+  const commit = (message: string, at: number, files: [string, string][]) => {
+    mark++;
+    buf.push(`commit refs/heads/main\nmark :${mark}\nauthor Study <study@example.invalid> ${Math.floor(at / 1000)} +0000\ncommitter wf-board <wf-board@wf-board.invalid> ${Math.floor(at / 1000)} +0000\n${data(message)}`);
+    if (mark > 1) buf.push(`from :${mark - 1}\n`);
+    for (const [p, t] of files) buf.push(`M 100644 inline ${p}\n${data(t)}`);
+    if (buf.length > 2000) flush();
+  };
+  commit("Seed synthetic board", world.clock, world.files());
+  for (let k = 0; k < commits; k++) { const c = world.next(); commit(c.message, world.clock, [[c.path, c.text]]); }
+  flush();
+  const fd = openSync(stream, "r");
+  const r = spawnSync("git", ["fast-import", "--quiet"], { cwd: dir, env: GITENV, stdio: [fd, "inherit", "inherit"] });
+  closeSync(fd);
+  rmSync(stream);
+  if (r.status !== 0) throw new Error("git fast-import failed");
+  git(dir, ["reset", "-q", "--hard", "main"]);
+}
+/** The writes of the board's own path: write the file, git add, git commit (no automatic maintenance while generating). */
+function applyChanges(dir: string, changes: Change[]): void {
+  for (const c of changes) {
+    mkdirSync(dirname(join(dir, c.path)), { recursive: true });
+    writeFileSync(join(dir, c.path), c.text);
+    git(dir, [...NO_AUTO, "add", "--", c.path]);
+    git(dir, [...NO_AUTO, "commit", "-q", "-m", c.message]);
+  }
+}
+const MAINT = [...FG, ...FORCE, "maintenance", "run", "--auto"];
+
+interface Prepared { world: World; pre: string; base: string; ckpt: Map<number, string> }
+/** Pack A (history), pack X (a small second pack), the loose objects of `preLoose` commits ("pre", the state before the gc of
+ * 10-16), then that gc ("base"), then the loose objects of the requested numbers of commits on top of base. */
+function prepare(layout: Layout, dirty: number[]): Prepared {
+  const t0 = performance.now(), world = new World(layout);
+  const pre = join(ROOT, `pre-${layout}`);
+  importHistory(pre, world, SCALE.history);
+  note(`replica ${layout}: history imported in ${f((performance.now() - t0) / 1000)} s; ${shape(pre)}`);
+  git(pre, ["repack", "-a", "-d", "-q"]);
+  applyChanges(pre, world.take(SCALE.packX));
+  git(pre, MAINT);
+  applyChanges(pre, world.take(SCALE.preLoose));
+  note(`replica ${layout} "pre" (before the first gc): ${shape(pre)}; ${git(pre, ["rev-list", "--count", "HEAD"]).trim()} commits; built in ${f((performance.now() - t0) / 1000)} s`);
+  const base = copyRepo(pre, `base-${layout}`);
+  const m = timed(base, MAINT);
+  note(`replica ${layout} "base" (after one forced maintenance of the pre state, ${f(m.ms)} ms): ${shape(base)}`);
+  const ckpt = new Map<number, string>();
+  let done = 0;
+  const work = copyRepo(base, `dirty-${layout}`);
+  for (const L of [...dirty].sort((a, b) => a - b)) {
+    applyChanges(work, world.take(L - done));
+    done = L;
+    ckpt.set(L, copyRepo(work, `ckpt-${layout}-${L}`));
+    note(`replica ${layout} checkpoint L=${L} commits on base: ${shape(ckpt.get(L)!)}`);
+  }
+  return { world, pre, base, ckpt };
+}
+
+// ---------------------------------------------------------------- trace2
+function traceLines(file: string): string[] {
+  const events = readFileSync(file, "utf8").trim().split("\n").map(l => JSON.parse(l) as { event: string; sid: string; time: string; argv?: string[]; t_abs?: number; code?: number });
+  const exits = new Map(events.filter(e => e.event === "exit").map(e => [e.sid, e]));
+  return events.filter(e => e.event === "start").map(e => `${e.sid.split("/").length - 1}| ${(exits.get(e.sid)?.t_abs ?? NaN).toFixed(3)} s | ${(e.argv ?? []).slice(0, 12).join(" ")}`);
+}
+
+// ---------------------------------------------------------------- experiment: cost (calibration and the curve)
+function cost(): void {
+  const dirty = SMOKE ? [10, 20, 40] : [200, 400, 800, 1600, 2160, 3200, 4400];
+  const { pre, ckpt } = prepare("flat", dirty);
+  // 1. The trigger as the board meets it: a commit with git's own settings (threshold 6700), foreground; the control is the same commit with maintenance off.
+  const rows: Record<string, unknown>[] = [], trig: number[] = [], ctrl: number[] = [];
+  // git decides to run maintenance from the number of loose objects in one object directory (a sample); when the default threshold
+  // (6700) does not fire on this copy, the threshold is lowered for all rounds, and the table says so.
+  let lowered: string[] = [];
+  for (let i = 0; i < ROUNDS(7); i++) {
+    for (const mode of (i % 2 ? ["trigger", "control"] : ["control", "trigger"])) {
+      const w = copyRepo(pre, "w");
+      const trace = join(ROOT, `trace-${i}-${mode}.jsonl`);
+      const before = counts(w);
+      const args = mode === "trigger" ? [...FG, ...lowered, "commit", "--allow-empty", "-q", "-m", "trigger"] : [...NO_AUTO, "commit", "--allow-empty", "-q", "-m", "control"];
+      const t = timed(w, args, i === 0 ? { GIT_TRACE2_EVENT: trace } : {});
+      const after = counts(w);
+      (mode === "trigger" ? trig : ctrl).push(t.ms);
+      rows.push({ round: i, mode, ms: f(t.ms), looseBefore: before.count, looseAfter: after.count, packsAfter: after.packs, sizePackKB: after["size-pack"] });
+      if (i === 0 && mode === "trigger") {
+        console.log("trace2 of the trigger commit (depth| exit time | argv):\n" + traceLines(trace).join("\n"));
+        if (after.count! >= before.count!) { lowered = ["-c", "gc.auto=2000"]; note("E0: the default threshold did not fire on this copy; later rounds use gc.auto=2000"); }
+      }
+      rmSync(w, { recursive: true, force: true });
+    }
+  }
+  emit("E0 the first foreground maintenance on the pre state, vs the same commit without it", rows);
+  note(`E0 summary: trigger median ${f(median(trig))} ms (range ${f(Math.min(...trig))}-${f(Math.max(...trig))}); control median ${f(median(ctrl))} ms; live: 5672 ms for 9087 loose objects (2160 commits).`);
+  // 2. The curve: the forced maintenance on the base plus L commits.
+  const curve: Record<string, unknown>[] = [];
+  for (const L of dirty) {
+    const ms: number[] = [];
+    let before = counts(ckpt.get(L)!), after = before, triggered = 0;
+    for (let i = 0; i < ROUNDS(5); i++) {
+      const w = copyRepo(ckpt.get(L)!, "w");
+      before = counts(w);
+      const t = timed(w, MAINT);
+      after = counts(w);
+      if (after.count! < before.count! / 2) triggered++;
+      ms.push(t.ms);
+      rmSync(w, { recursive: true, force: true });
+    }
+    curve.push({ L, looseObjects: before.count, looseKB: before.size, KBperCommit: f(before.size / L, 1), medianMs: f(median(ms)), minMs: f(Math.min(...ms)), maxMs: f(Math.max(...ms)), msPerCommit: f(median(ms) / L, 2), packsAfter: after.packs, newPackKB: after["size-pack"]! - before["size-pack"]!, looseAfter: after.count, triggered: `${triggered}/${ROUNDS(5)}` });
+  }
+  emit("E1 forced maintenance on base + L loose commits (5 rounds, copies)", curve);
+}
+
+// ---------------------------------------------------------------- experiment: knobs
+interface Variant { name: string; args: string[] }
+function knobs(): void {
+  const dirty = SMOKE ? [20, 40] : [800, 2160];
+  const { ckpt } = prepare("flat", dirty);
+  const variants: Variant[] = [
+    { name: "default", args: MAINT },
+    { name: "default-twin", args: MAINT },
+    ...[5, 3, 2, 1, 0].map(w => ({ name: `window=${w}`, args: ["-c", `pack.window=${w}`, ...MAINT] })),
+    { name: "threads=1", args: ["-c", "pack.threads=1", ...MAINT] },
+    { name: "threads=2", args: ["-c", "pack.threads=2", ...MAINT] },
+    { name: "window=3,depth=10", args: ["-c", "pack.window=3", "-c", "pack.depth=10", ...MAINT] },
+    { name: "repack -d -l", args: ["repack", "-d", "-l", "-q"] },
+    { name: "loose-objects task", args: ["maintenance", "run", "--task=loose-objects", "--quiet"] },
+    { name: "geometric=2", args: ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"] },
+    { name: "geometric=2,window=3", args: ["-c", "pack.window=3", "repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"] },
+  ];
+  for (const L of dirty) {
+    const per = new Map<string, { ms: number[]; kb: number[]; looseAfter: number[]; packs: number[] }>(variants.map(v => [v.name, { ms: [], kb: [], looseAfter: [], packs: [] }]));
+    for (let i = 0; i < ROUNDS(7); i++) {
+      const order = [...variants].sort(() => Math.random() - 0.5);
+      for (const v of order) {
+        const w = copyRepo(ckpt.get(L)!, "w"), before = counts(w), t = timed(w, v.args), after = counts(w), p = per.get(v.name)!;
+        p.ms.push(t.ms); p.kb.push(after["size-pack"]! - before["size-pack"]!); p.looseAfter.push(after.count); p.packs.push(after.packs);
+        rmSync(w, { recursive: true, force: true });
+      }
+    }
+    const base = per.get("default")!.ms, twin = ratioCi(per.get("default-twin")!.ms, base);
+    note(`E2 L=${L}: noise = twin/base ratio ${f(twin.ratio, 3)} (95% ${f(twin.lo, 3)}-${f(twin.hi, 3)}), half-width ${f(100 * twin.half, 1)} %`);
+    emit(`E2 knobs at L=${L} commits (${ROUNDS(7)} rounds, interleaved, same copies)`, variants.map(v => {
+      const p = per.get(v.name)!, rc = ratioCi(p.ms, base);
+      return { variant: v.name, medianMs: f(median(p.ms)), minMs: f(Math.min(...p.ms)), maxMs: f(Math.max(...p.ms)), ratioToDefault: `${f(rc.ratio, 2)} (${f(rc.lo, 2)}-${f(rc.hi, 2)})`, newPackKB: f(median(p.kb)), looseAfter: f(median(p.looseAfter)), packsAfter: f(median(p.packs)) };
+    }));
+  }
+}
+
+// ---------------------------------------------------------------- experiment: packs (accumulation and merging)
+function readBench(dir: string): Record<string, number> {
+  const files = git(dir, ["ls-tree", "-r", "HEAD", "--", "items"]).trim().split("\n");
+  const rnd = new Rng(99), oids: string[] = [];
+  for (let i = 0; i < 2000; i++) oids.push(files[rnd.int(files.length)]!.split(/\s+/)[2]!);
+  const out: Record<string, number> = {};
+  const run = (name: string, args: string[], input?: string) => {
+    const ms: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const t0 = performance.now();
+      const r = spawnSync("git", args, { cwd: dir, env: GITENV, input, encoding: "utf8", maxBuffer: 1 << 30 });
+      ms.push(performance.now() - t0);
+      if (r.status !== 0) throw new Error(`${name}: ${r.stderr}`);
+    }
+    out[name] = median(ms);
+  };
+  run("revListCount", ["rev-list", "--count", "HEAD"]);
+  run("catFile2000", ["cat-file", "--batch"], oids.join("\n") + "\n");
+  run("logPath200", ["log", "--format=%H", "-n", "200", "--", files[0]!.split("\t")[1]!]);
+  run("diffTree", ["diff-tree", "-r", "--name-only", "HEAD~50", "HEAD"]);
+  return out;
+}
+function packs(): void {
+  const STEP = Number(process.env.STUDY_STEP ?? (SMOKE ? 10 : 200)), K = Number(process.env.STUDY_K ?? (SMOKE ? 6 : 60));
+  const { world, base } = prepare("flat", []);
+  const changes = world.take(STEP * K);
+  const strategies: Variant[] = [
+    { name: "git auto (incremental, consolidates at 50 packs)", args: MAINT },
+    { name: "geometric=2", args: ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"] },
+    { name: "incremental repack -d -l, never merges", args: ["repack", "-d", "-l", "--write-midx", "-q"] },
+  ];
+  const ends = new Map<string, string>();
+  for (const s of strategies) {
+    const w = copyRepo(base, "strat");
+    const rows: Record<string, unknown>[] = [], ms: number[] = [];
+    for (let k = 0; k < K; k++) {
+      applyChanges(w, changes.slice(k * STEP, (k + 1) * STEP));
+      const before = counts(w), t = timed(w, s.args), after = counts(w);
+      ms.push(t.ms);
+      rows.push({ step: k + 1, ms: f(t.ms), looseBefore: before.count, packsAfter: after.packs, sizePackKB: after["size-pack"], looseAfter: after.count });
+    }
+    ends.set(s.name, w);
+    emit(`E3 ${s.name}: ${K} steps of ${STEP} commits each, per step`, rows);
+    note(`E3 ${s.name}: median ${f(median(ms))} ms, p95 ${f([...ms].sort((a, b) => a - b)[Math.floor(ms.length * 0.95)]!)} ms, max ${f(Math.max(...ms))} ms; end state ${shape(w)}`);
+  }
+  // What a full consolidation costs on this repository, and what reading costs with many packs.
+  const full = copyRepo(base, "full");
+  note(`E3 full repack of base (repack -a -d --write-midx): ${f(timed(full, ["repack", "-a", "-d", "-q", "--write-midx"]).ms)} ms; repack -A -d -l (what git auto does past the pack limit): ${f(timed(copyRepo(base, "fullA"), ["repack", "-A", "-d", "-l", "--write-midx", "-q"]).ms)} ms`);
+  const reads: Record<string, unknown>[] = [{ state: "base (2-3 packs)", packs: counts(base).packs, ...Object.fromEntries(Object.entries(readBench(base)).map(([k, v]) => [k, f(v, 1)])) }];
+  for (const [name, dir] of ends) reads.push({ state: name, packs: counts(dir).packs, ...Object.fromEntries(Object.entries(readBench(dir)).map(([k, v]) => [k, f(v, 1)])) });
+  emit("E3 read commands (median ms of 3) by end state", reads);
+}
+
+// ---------------------------------------------------------------- experiment: shard (the layout as the root of the cost)
+function shard(): void {
+  const dirty = SMOKE ? [20, 40] : [800, 2160];
+  const layouts: Layout[] = ["flat", "sharded"], ck = new Map(layouts.map(l => [l, prepare(l, dirty).ckpt]));
+  for (const L of dirty) {
+    const per = new Map<Layout, { ms: number[]; before: Record<string, number>; after: Record<string, number> }>(layouts.map(l => [l, { ms: [], before: {}, after: {} }]));
+    for (let i = 0; i < ROUNDS(5); i++) for (const l of (i % 2 ? [...layouts].reverse() : layouts)) {
+      const w = copyRepo(ck.get(l)!.get(L)!, "w"), p = per.get(l)!;
+      p.before = counts(w);
+      p.ms.push(timed(w, MAINT).ms);
+      p.after = counts(w);
+      rmSync(w, { recursive: true, force: true });
+    }
+    emit(`E5 layout at L=${L} commits on base`, layouts.map(l => { const p = per.get(l)!; return { layout: l, looseObjects: p.before.count, looseKB: p.before.size, objectsPerCommit: f(p.before.count! / L, 1), KBperCommit: f(p.before.size! / L, 1), medianMs: f(median(p.ms)), msPerCommit: f(median(p.ms) / L, 2), newPackKB: p.after["size-pack"]! - p.before["size-pack"]! }; }));
+  }
+}
+
+const command = process.argv[2];
+note(`gc-study ${command}${SMOKE ? " (smoke)" : ""}; git ${git(ROOT, ["--version"]).trim()}; ${process.platform} ${process.arch}; cpus ${cpus().length}; scratch ${ROOT}`);
+if (command === "cost") cost();
+else if (command === "knobs") knobs();
+else if (command === "packs") packs();
+else if (command === "shard") shard();
+else throw new Error("usage: gc-study.ts cost|knobs|packs|shard");
+if (process.env.STUDY_KEEP !== "1") rmSync(ROOT, { recursive: true, force: true });
