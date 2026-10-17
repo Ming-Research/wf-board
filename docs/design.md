@@ -3140,11 +3140,15 @@ made only of other items' own rows, which a late baseline asks for one row at a 
 is not one of the two). Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
-quiet and with sessions writing three times a second. The time layer depends on
-the runner (jobs differ by about a quarter), so it is asserted on the CI runner
-only. Each change that the counts protect is taken out in turn, and a draw made
-150 ms slower stands for the time layer; each must be reported. After n and m, the
-page asks for the unread list and does not fetch the board.
+quiet and with sessions writing three times a second, each run made once. The time
+layer depends on the runner: the same page measured at the median 142 to 205 ms with
+sessions writing in four CI runs, and the speed of a hosted runner differs by up to a
+factor of two between jobs. While sessions write, a press also carries the page's
+handling of the writes that fall into it (about 50 ms for each, the board's rules built
+again), which leaves the limits close. Each change that the counts protect is taken out
+in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
+stands for the time layer; each must be reported. After n and m, the page asks for the
+unread list and does not fetch the board.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix

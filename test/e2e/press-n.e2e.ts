@@ -6,9 +6,9 @@
 //             time; the page leaves a performance mark for each (countEvent in web/app.ts). Exact on any machine.
 //   time    – the main thread's busy time from the key until the page is quiet, over 30 landings: median 0.2 s at most and
 //             90th percentile 0.3 s at most, with the board quiet and with sessions writing 3 times a second. It depends on the
-//             machine (the CI runners differ by about a quarter between jobs), so it only has to hold on this runner.
+//             machine (a hosted runner's speed differs by up to a factor of two between jobs); each run is made once.
 // Each layer also runs on the page with what it protects taken out, where it must report: the three changes one at a time for
-// the counts, a draw made 150 ms slower for the time. Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
+// the counts, a draw made 150 ms slower for the time (quiet and writing). Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -28,20 +28,21 @@ const ms = (x: number) => x.toFixed(0);
 // rebuild would fall into whichever press it meets, so the test holds the page's minute tick still.
 const INIT = `(() => {
   const counts = { "board:render": 0, "board:rules": 0, "board:filter-counts": 0 };
-  let scopes = [];
-  const bump = entries => { for (const e of entries) if (e.name in counts) { counts[e.name]++; if (e.name === "board:render") scopes.push(e.detail); } };
+  let scopes = [], pressAt = 0, lastDraw = 0;
+  addEventListener("keydown", () => { pressAt = performance.now(); }, true);
+  const bump = entries => { for (const e of entries) if (e.name in counts) { counts[e.name]++; if (e.name === "board:render") { scopes.push(e.detail); lastDraw = e.startTime; } } };
   const observer = new PerformanceObserver(list => bump(list.getEntries()));
   observer.observe({ entryTypes: ["mark"] });
   // The marks counted since the last call; those the observer has not delivered yet are taken from its queue.
-  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes }; for (const k in counts) counts[k] = 0; scopes = []; return seen; };
+  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes, lastDrawAfter: lastDraw - pressAt }; for (const k in counts) counts[k] = 0; scopes = []; return seen; };
   const every = window.setInterval.bind(window);
   window.setInterval = (fn, delay, ...rest) => delay >= 30000 ? 0 : every(fn, delay, ...rest);
 })();`;
-interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[] }
+interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[]; lastDrawAfter: number }
 const marks = (bp: BoardPage) => bp.page.evaluate(() => (window as unknown as { __takeMarks(): Marks }).__takeMarks());
 
 /** What one press cost: the main thread's busy time from the key until the page was quiet, and what the page marked meanwhile. */
-interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[] }
+interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[]; lastDraw: number }
 
 async function busyTime(cdp: CDPSession): Promise<number> {
   const { metrics } = await cdp.send("Performance.getMetrics");
@@ -67,7 +68,7 @@ async function landings(bp: BoardPage, cdp: CDPSession, wanted: number): Promise
     await bp.page.keyboard.press("n");
     await quiet(bp);
     const busy = await busyTime(cdp) - before, now = await bp.selected(), m = await marks(bp);
-    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"], scopes: m.scopes });
+    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"], scopes: m.scopes, lastDraw: m.lastDrawAfter });
   }
   return out;
 }
@@ -106,7 +107,7 @@ function checkCounts(label: string, list: Landing[]): string[] {
 /** Violations of the time limit; the numbers go to the log either way. */
 function checkTime(label: string, list: Landing[], log: (line: string) => void): string[] {
   const busy = list.map(l => l.busy), med = median(busy), top = p90(busy);
-  log(`press-n time (${label}): ${list.length} landings, busy ms median ${ms(med)} (limit ${MEDIAN_MS}), 90th percentile ${ms(top)} (limit ${P90_MS}), max ${ms(Math.max(...busy))}; draws per landing median ${median(list.map(l => l.draws))}; ${busy.map(ms).join(" ")}`);
+  log(`press-n time (${label}): ${list.length} landings, busy ms median ${ms(med)} (limit ${MEDIAN_MS}), 90th percentile ${ms(top)} (limit ${P90_MS}), max ${ms(Math.max(...busy))}; draws per landing median ${median(list.map(l => l.draws))}; last draw ${ms(median(list.map(l => l.lastDraw)))} ms after the key (median); ${busy.map(ms).join(" ")}`);
   const v: string[] = [];
   if (med > MEDIAN_MS) v.push(`press-n time (${label}): the median landing took ${ms(med)} ms, over ${MEDIAN_MS}`);
   if (top > P90_MS) v.push(`press-n time (${label}): the 90th percentile of the landings was ${ms(top)} ms, over ${P90_MS}`);
@@ -153,23 +154,18 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
   });
 
   // With sessions writing, the busy time of a press includes the page's handling of the writes that fall into it (about 50 ms each,
-  // the board's rules built again for each), and the runner's speed differs by half between jobs, so a page near the limit passes
-  // or fails by the runner it gets. The limits are the same; the run is made up to three times and must hold in one of them, and
-  // every attempt's numbers are logged. A page that is slower than the limit by what the pages before page-n-fast were fails all three.
+  // the board's rules built again for each). The limits are those of the quiet board, and the run is made once.
+  const withWriters = async (served: BoardServer, wanted: number) => {
+    const { bp, cdp } = await openPage(browser, served);
+    const writers = startWriters(served, WRITES_PER_SECOND);
+    const list = await landings(bp, cdp, wanted), written = await writers.stop();
+    await bp.context.close();
+    log(`press-n time (writing): ${written} writes during ${list.length} landings`);
+    assert.ok(written >= wanted, "the sessions wrote while n was pressed");
+    return list;
+  };
   await t.test("the current page: the same time limit while sessions write", async () => {
-    const reports: string[][] = [];
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const { bp, cdp } = await openPage(browser, board);
-      const writers = startWriters(board, WRITES_PER_SECOND);
-      const list = await landings(bp, cdp, LANDINGS), written = await writers.stop();
-      await bp.context.close();
-      log(`press-n time (writing, attempt ${attempt}): ${written} writes during ${list.length} landings`);
-      assert.ok(written >= LANDINGS, "the sessions wrote while n was pressed");
-      const violations = checkTime(`writing, attempt ${attempt}`, list, log);
-      if (!violations.length) return;
-      reports.push(violations);
-    }
-    assert.deepEqual(reports.flat(), [], "no attempt of three held the limit");
+    assert.deepEqual(checkTime("writing", await withWriters(board, LANDINGS), log), []);
   });
 
   // Each change taken out alone: the counts must name it.
@@ -202,6 +198,11 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     await bp.context.close();
     const violations = checkTime("slow draw", list, log);
     assert.ok(violations.some(v => v.includes("median")), "the median of the slowed page is over the limit (it reported: " + (violations.join("\n") || "nothing") + ")");
+  });
+
+  await t.test("the time limit reports a page whose draw takes 150 ms more while sessions write", async () => {
+    const violations = checkTime("slow draw, writing", await withWriters(await pageOf(SLOW_DRAW), WITNESS_LANDINGS), log);
+    assert.ok(violations.some(v => v.includes("median")), "the median of the slowed page is over the limit while sessions write (it reported: " + (violations.join("\n") || "nothing") + ")");
   });
 
   // Marking a read does not fetch the board again: the unread list carries the new cursor, and a read changes nothing on the board.

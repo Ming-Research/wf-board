@@ -1,7 +1,7 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
+import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { drawMermaid, watchMermaid } from "./mermaid.ts";
@@ -2046,19 +2046,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The baseline is a document; status and priority are derived. Restore that document and use the same current reference
   // targets for comparison. The derivation walks the whole board, and the tree row and the detail both ask, so it is kept
   // for as long as the data and the baseline stay.
-  // Fields of an item that neither its status nor its priority is derived from (src/rules.ts reads record, status, plan, paused,
-  // group, ask and priority for them). A baseline that differs from the item in these alone has the item's own status and
-  // priority and needs no derivation; a field not listed here is taken to matter.
-  const TEXT_ONLY_FIELDS = new Set(["id", "log", "head", "title", "updated", "links", "tags", "data", "dispatches", "num", "rev", "difficulty", "targets", "order"]);
-  function sameForRules(a: Item, b: Item) {
-    const x = a as unknown as Record<string, unknown>, y = b as unknown as Record<string, unknown>;
-    return [...new Set([...Object.keys(x), ...Object.keys(y)])].every(k => TEXT_ONLY_FIELDS.has(k) || sameValue(x[k], y[k]));
-  }
+  // A baseline that differs from the item in its text alone has the item's own status and priority (the rules say which fields
+  // they read: sameStatusAndPriority), so it needs no derivation.
   function baselineDerived(it: ViewItem, before: Item) {
     const id = it.id, kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined; priority: string } | undefined;
     if (kept && kept.before === before) return kept;
     let made: { before: Item; status: string | undefined; priority: string };
-    if (sameForRules(before, it)) made = { before, status: statusOf(it), priority: priorityOf(it) };
+    if (sameStatusAndPriority(before, it)) made = { before, status: statusOf(it), priority: priorityOf(it) };
     else {
       countEvent("board:baseline");
       const r = rules({ ...snapshot, items: { ...snapshot.items, [id]: before } });
