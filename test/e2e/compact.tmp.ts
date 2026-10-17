@@ -23,7 +23,6 @@ const PAGE = (padding: number) => ({ look: "classic", flowchart: { look: "classi
 // A diagram as wide as the detail pane rather than the text column: the pane is a container, and a block takes its width.
 const WIDE = "body.wide #item-detail { container-type: inline-size; } .rich .mermaid-block { width: 100cqw; max-width: 100cqw; }";
 const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
-const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
   { name: "dagre", cfg: DAGRE },
