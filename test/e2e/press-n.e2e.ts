@@ -240,9 +240,9 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
   });
 
   // The draws of a landing depend on when the baselines of the rows around its target answer: the navigation waits 100 ms at most for
-  // them. The test sets that time. In 60 ms they come in the landing's draws, which are two at most; after 200 ms the landing has drawn
+  // them. The test sets that time. In 60 ms they come in the landing's draws, which are two at most; after 300 ms the landing has drawn
   // twice and the row is drawn on its own, which makes exactly three.
-  const IN_TIME_MS = 60, LATE_MS = 200, MIN_LANDINGS_WITH_ROW = 3;
+  const IN_TIME_MS = 60, LATE_MS = 300, MIN_LANDINGS_WITH_ROW = 3;
   const withRowsHeld = async (served: BoardServer, holdMs: number) => {
     assert.ok(targets.length === LANDINGS && answers.size > 0, "the walk of the current page came first");
     const { bp, cdp } = await openPage(browser, served);
@@ -287,7 +287,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const { list, rows } = await withRowsHeld(await pageOf(WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT), LATE_MS);
     assert.ok(rows.length >= MIN_LANDINGS_WITH_ROW, "enough landings had a row around the target");
     const hits = lateRowsViolations(list, rows);
-    assert.ok(hits.length > 0, "the page that waits as long as the row takes draws twice for a row that answers after 200 ms");
+    assert.ok(hits.length > 0, "the page that waits as long as the row takes draws twice for a row that answers after 300 ms");
   });
 
   // Each change taken out alone: the counts must name it.
