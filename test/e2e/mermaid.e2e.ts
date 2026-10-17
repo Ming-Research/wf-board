@@ -239,8 +239,8 @@ async function checkIds(bp: BoardPage, wait: number): Promise<string[]> {
   return v;
 }
 
-/** A wide diagram keeps its own size and its box scrolls sideways, and the page does not; a narrow one is not stretched either. */
-async function checkWide(bp: BoardPage, wait: number): Promise<string[]> {
+/** A diagram keeps its own size. One wider than its box starts at the box's left edge and the box scrolls sideways, and the page does not; one narrower is centered. In a narrow window (`narrowWindow`) even the small diagram is wider than its box, so both are held to the first rule. */
+async function checkWide(bp: BoardPage, wait: number, narrowWindow = false): Promise<string[]> {
   const waited = await settled(bp, 2, wait);
   if (waited) return [`mermaid-wide: ${waited}`];
   const got = await bp.page.evaluate(() => {
@@ -259,11 +259,17 @@ async function checkWide(bp: BoardPage, wait: number): Promise<string[]> {
   const [small, wide] = got.figs;
   if (!small || !wide) return [`mermaid-wide: ${got.figs.length} diagrams, expected 2`];
   if (wide.natural <= wide.box + 1) v.push(`witness setup: the wide diagram is ${wide.natural}px, not wider than its box of ${wide.box}px`);
-  if (small.natural >= small.box - 40) v.push(`witness setup: the narrow diagram is ${small.natural}px, not narrower than its box of ${small.box}px`);
-  for (const [what, f] of [["narrow", small], ["wide", wide]] as const) if (Math.abs(f.drawn - f.natural) > 1) v.push(`mermaid-wide: the ${what} diagram is drawn ${Math.round(f.drawn)}px wide, not its own ${Math.round(f.natural)}px`);
-  if (Math.abs(small.left - (small.box - small.drawn) / 2) > 2) v.push(`mermaid-wide: the narrow diagram is not centered: it starts ${Math.round(small.left)}px from the left of its ${small.box}px box, centered would be ${Math.round((small.box - small.drawn) / 2)}px`);
-  if (Math.abs(wide.left) > 1) v.push(`mermaid-wide: the wide diagram does not start at the left edge of its box (${Math.round(wide.left)}px in)`);
-  if (wide.scroll <= wide.box + 1 || !/auto|scroll/.test(wide.overflowX)) v.push(`mermaid-wide: the wide diagram's box does not scroll sideways (scroll width ${wide.scroll}px in a box of ${wide.box}px, overflow-x ${wide.overflowX})`);
+  if (!narrowWindow && small.natural >= small.box - 40) v.push(`witness setup: the narrow diagram is ${small.natural}px, not narrower than its box of ${small.box}px`);
+  for (const f of [small, wide]) {
+    const kind = f.natural > f.box + 1 ? "wide" : "narrow";
+    if (Math.abs(f.drawn - f.natural) > 1) v.push(`mermaid-wide: the ${kind} diagram is drawn ${Math.round(f.drawn)}px wide, not its own ${Math.round(f.natural)}px`);
+    if (kind === "narrow") {
+      if (Math.abs(f.left - (f.box - f.drawn) / 2) > 2) v.push(`mermaid-wide: the narrow diagram is not centered: it starts ${Math.round(f.left)}px from the left of its ${f.box}px box, centered would be ${Math.round((f.box - f.drawn) / 2)}px`);
+      continue;
+    }
+    if (Math.abs(f.left) > 1) v.push(`mermaid-wide: the wide diagram does not start at the left edge of its box (${Math.round(f.left)}px in)`);
+    if (f.scroll <= f.box + 1 || !/auto|scroll/.test(f.overflowX)) v.push(`mermaid-wide: the wide diagram's box does not scroll sideways (scroll width ${f.scroll}px in a box of ${f.box}px, overflow-x ${f.overflowX})`);
+  }
   if (got.spilling.length) v.push(`mermaid-wide: the page scrolls sideways: ${[...new Set(got.spilling)].join(", ")} are wider than themselves`);
   if (got.page[0]! > got.page[1]! + 1) v.push(`mermaid-wide: the page scrolls sideways: it is ${got.page[0]}px wide in a window of ${got.page[1]}px`);
   return v;
@@ -440,12 +446,12 @@ test("a wide diagram keeps its own size and scrolls in its box, and the page doe
 test("at a window 700px wide a wide diagram still keeps its own size and scrolls in its box, and the page does not scroll sideways", LONG, async t => {
   const { bp } = await open(t, seedWide);
   await narrow(bp);
-  none(await checkWide(bp, WAIT));
+  none(await checkWide(bp, WAIT, true));
 });
 test("the same check at a window 700px wide on a page whose diagram box does not scroll reports the box or the page", LONG, async t => {
   const { bp } = await open(t, seedWide, [NO_SCROLL]);
   await narrow(bp);
-  caught(await checkWide(bp, GIVE_UP), /^mermaid-wide: (the wide diagram's box does not scroll sideways|the page scrolls sideways)/);
+  caught(await checkWide(bp, GIVE_UP, true), /^mermaid-wide: (the wide diagram's box does not scroll sideways|the page scrolls sideways)/);
 });
 test("the same check on a page that fits every diagram to its box reports the size", LONG, async t => {
   const { bp } = await open(t, seedWide, [FIT_WIDTH]);
