@@ -1940,24 +1940,18 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden). It is drawn compact:
-the library runs with tighter gaps between nodes and between layers and less padding
-inside a node than its own, per diagram type (`COMPACT` in `web/mermaid.ts`), and the font
-size is left alone, so the same text takes less room and stays readable. The library's default
-layout (ELK, with its neo look) keeps fixed gaps and paddings and ignores those settings, so
-the page asks for the dagre layout and the classic look. The width of a diagram, not its area,
-sets how far fitting it to the text shrinks the font, so the settings are chosen for a narrow
-diagram (checked on a flow chart shaped like a role's: less area than the library's own layout,
-and a node font of at least 12 px on the screen at a window 1500 px wide). A label wraps at
-100 px: narrower, and a Chinese label breaks into lines of one or two characters. Its width on the page
+diagram stands in for its code (the code stays in the page, hidden). The library draws with its
+own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
+the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
 is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
-width of the drawing: a diagram is shrunk to the text and never enlarged by fitting, nothing is
-measured by script, and the page never scrolls sideways. The height follows the width; a tall
+width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
+nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
 diagram makes the page scroll instead of being squeezed into the window, where its text would
 shrink until it could not be read. A narrow one is centered. Each diagram has a small tool strip
 (smaller, larger, reset), in a row of its own above the diagram at the right so it never covers
-the diagram, and zooms with Ctrl and the wheel too (a pinch on a trackpad arrives so), about the
-cursor. The plain wheel is left alone and scrolls the page.
+the diagram, and zooms with Ctrl and the wheel too, about the cursor (Chromium sends a pinch on a
+trackpad as Ctrl and the wheel; other browsers are not checked). The plain wheel is left alone and
+scrolls the page.
 An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll
 bar of its own (the system's hides itself when idle, so a diagram that went past its box looked
 cut off), shows a grabbing hand, says so in the strip and shades the side that has more to show,
@@ -3097,8 +3091,7 @@ error while the blocks after it are drawn; hostile text (a script in a label, a
 library and one with diagrams fetches it once; the diagrams are drawn again after a live
 update repaints their item; a diagram is as wide as itself or its box, whichever is less, with
 nothing to scroll sideways in the box or the page, at a window 1500 px wide and one 700 px wide; the
-compact settings draw a chart shaped like a role's flow chart in less area than the library's own
-settings, with its node text at least 12 px high on the screen; the buttons, and Ctrl with the wheel,
+settings in a diagram's own frontmatter win over the page's; the buttons, and Ctrl with the wheel,
 zoom, the plain wheel scrolls the page and nothing else, an enlarged diagram can be scrolled to both
 its ends and dragged, and Reset restores the default size; an enlarged diagram says it can be moved
 (scroll bar, hand, word, a shade at the edge with more) and the strip and the bar read in both

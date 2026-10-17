@@ -13,24 +13,6 @@ const BLOCK = ".mermaid-block";
 /** The path the server gives the library at (src/http.ts). Held in a variable so the bundler leaves the import alone. */
 const LIBRARY: string = "/mermaid.js";
 
-/** The settings that make a diagram compact: tighter gaps between nodes and layers and less padding inside a node than the library's own,
- * with the font size left as it is, so the same text takes less room. The library's default layout (ELK) and its default look (neo)
- * keep fixed gaps and paddings and ignore these settings, so the page asks for the layout dagre and the classic look. One entry per
- * diagram type that has such settings. */
-const COMPACT = {
-  layout: "dagre",
-  // A label wraps at wrappingWidth: a narrower chart is a larger one on a page that fits it to the text (the text is shrunk by
-  // the width), but under about 100 px a Chinese label breaks into lines of one or two characters.
-  flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 },
-  // State and class diagrams both read their gaps from the `state` entry (the library's class renderer takes it from there). The gap
-  // between layers stays the library's: the edge between two classes holds its label and the multiplicities at its ends, which run into
-  // each other when the edge is short (they do at a gap of 28 px).
-  state: { nodeSpacing: 30 },
-  er: { nodeSpacing: 70, rankSpacing: 50, diagramPadding: 8 },
-  // The boxes of the actors keep their width (a Chinese name does not wrap in them), and the margin around a note or a loop keeps the
-  // library's 10 px (at 6 px a note sits on the last message's line).
-  sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, messageMargin: 28 },
-};
 /** The zoom is a factor of the default size (1: the diagram at its own size, or shrunk to the width of the text when that is wider). */
 const MIN_ZOOM = 0.5, MAX_ZOOM = 6, STEP = 1.25;
 
@@ -109,7 +91,7 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
   const saved = views.get(source);
   if (saved) { zoom = saved.zoom; fig.style.setProperty("--zoom", String(zoom)); fig.scrollLeft = saved.left; }
   fig.addEventListener("scroll", () => { remember(); refresh(); });
-  // Ctrl and the wheel zoom (a pinch on a trackpad arrives so too); the cursor's point stays put.
+  // Ctrl and the wheel zoom (Chromium sends a pinch on a trackpad so too); the cursor's point stays put.
   fig.addEventListener("wheel", event => {
     if (!event.ctrlKey) return;
     event.preventDefault();
@@ -200,7 +182,6 @@ function draw(block: HTMLElement) {
         // A syntax error is reported here, in the block, not as a picture of a bomb added to the end of the page.
         suppressErrorRendering: true,
         fontFamily: getComputedStyle(document.body).fontFamily,
-        ...COMPACT,
       });
       const { svg } = await mermaid.render(id, source);
       drawn.set(key, { svg, id });

@@ -2,7 +2,7 @@
 // with a generated board, and headless Chromium driving the real page against the real API and event stream.
 
 import { once } from "node:events";
-import { mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -178,6 +178,8 @@ export async function variantWeb(t: Hooks, reverts: Revert[]): Promise<string> {
   t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, "dist"));
   await writeFile(join(dir, "index.html"), await reverted("web/index.html", reverts));
+  // The diagram library is a file beside the page bundle; the variant serves the built one.
+  await symlink(join(ROOT, "web/dist/mermaid.js"), join(dir, "dist/mermaid.js"));
   const contents = await reverted("web/app.ts", reverts);
   // The same options as the build:web script, reading the variant from stdin so its imports resolve from web/.
   await build({ stdin: { contents, resolveDir: join(ROOT, "web"), sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "esm", target: "es2022", outfile: join(dir, "dist/app.js"), logLevel: "silent" });
