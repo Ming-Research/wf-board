@@ -45,9 +45,10 @@ matches what the artifact board offered.
   revokes the long-lived ones. What each role may write is the table `ACCESS` in
   `src/model.ts`; design section 9.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
-  index of the last two items written is advanced, and the rows (who is listed, who is running,
-  the state word, the level) derived from it, the steps in progress and the
-  dispatch records. Imported by the server and bundled into the page.
+  index of the last two items written is advanced, and the rows (who is listed,
+  who is running, the state word, the level) derived from it, the steps in
+  progress and the dispatch records. Imported by the server and bundled into
+  the page.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.

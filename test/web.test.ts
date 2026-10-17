@@ -4041,11 +4041,16 @@ test("an owner notice from the stream shows one browser notice; its click opens 
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
-/** The page's fixture with a session list: `eng` touched child and area; `child` has a step in progress. */
-function agentSnapshot(agents: NonNullable<Snapshot["activity"]>["agents"], steps?: PlanStep[]) {
+/** A dispatch record that ended long before the writes the fixtures make: the session is listed by its writes, holds nothing alive, and is running only through a step in progress. */
+const longEnded = (agent: string) => ({ agentId: agent, agent, role: "工程师" as const, level: 2, model: "Sonnet", started: minutesAgo(400),
+  finish: { ended: minutesAgo(300), result: "一次通过" as const, reports: 0, kickbacks: 0, signals: [], usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0 } });
+/** The page's fixture with a session list: `child` has a step in progress. A session with no dispatch record is never running, so every session named in
+ * `agents` (and in `extra`, for one that writes later) gets a record that ended long ago, kept on `area`. */
+function agentSnapshot(agents: NonNullable<Snapshot["activity"]>["agents"], steps?: PlanStep[], extra: string[] = []) {
   const s = snapshot();
   if (steps) s.items.child!.steps = steps;
   s.activity = { writes: [], items: {}, agents };
+  s.items.area!.dispatches = [...Object.keys(agents ?? {}), ...extra].map(longEnded);
   return s;
 }
 const agentRowsOf = (p: Awaited<ReturnType<typeof page>>) => p.roots.get("agents")!.querySelectorAll(".agent");
@@ -4075,10 +4080,11 @@ test("agent list: a row per session with its level, state word, how long ago it 
 
 test("agent list: waiting shows the step's own text, a long wait is amber, a stale step reads maybe stopped, no step has no word", async () => {
   const waiting = (waits: string): PlanStep[] => [planStep("work", "Work", "doing", { waits }), planAcceptance()];
-  const word = async (m: number, steps?: PlanStep[], item = "child") => {
+  const word = async (m: number, steps?: PlanStep[], item = "child", folded = false) => {
     const p = await page(agentSnapshot({ a: [{ item, at: minutesAgo(m) }] }, steps), [], null, undefined, { now: () => NOW });
-    // A session with no step in progress is not running, so its row is behind 其他 N 个: open that.
-    if (!agentRowsOf(p).length) { await p.roots.get("agents")!.querySelector(".agents-others-toggle")!.click(); await p.flush(); }
+    // Only the case with no step in progress is behind 其他 N 个 (that session is not running): open it. Every other row must be unfolded as it is.
+    if (folded) { assert.equal(agentRowsOf(p).length, 0, "folded"); await p.roots.get("agents")!.querySelector(".agents-others-toggle")!.click(); await p.flush(); }
+    else assert.equal(agentRowsOf(p).length, 1, "a running row is unfolded");
     const state = agentRowsOf(p)[0]!.querySelector(".agent-state");
     return state ? [state.innerHTML, state.className] : null;
   };
@@ -4086,30 +4092,33 @@ test("agent list: waiting shows the step's own text, a long wait is amber, a sta
   assert.deepEqual(await word(61, waiting("PR 草稿 CI")), ["在等：PR 草稿 CI", "agent-state waiting amber"]);
   assert.deepEqual(await word(29), ["干活", "agent-state working"]);
   assert.deepEqual(await word(31), ["可能停了", "agent-state maybe-stopped"]);
-  assert.equal(await word(5, undefined, "area"), null, "no step in progress on the item: only the time");
+  assert.equal(await word(5, undefined, "area", true), null, "no step in progress on the item: only the time");
 });
 
 test("agent list: only running rows are unfolded; the rest sit behind 其他 N 个, which opens them and the choice is kept", async () => {
-  // eng has a step in progress on child; the open reviews are judged by their start; idle touched only area, which has no step.
-  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }], idle: [{ item: "area", at: minutesAgo(8) }], idle2: [{ item: "area", at: minutesAgo(50) }] });
+  // eng has a step in progress on child; norecord touched child too but has no dispatch record; idle touched only area, which has no step.
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }], norecord: [{ item: "child", at: minutesAgo(6) }], idle: [{ item: "area", at: minutesAgo(8) }], idle2: [{ item: "area", at: minutesAgo(50) }] });
+  s.items.area!.dispatches = s.items.area!.dispatches!.filter(d => d.agent !== "norecord");
+  // Reviews are running while their record is unfinished and alive, however long ago they started.
   const review = (agent: string, started: number) => ({ agentId: agent, agent, role: "审查" as const, level: 3, model: "Opus", started: minutesAgo(started) });
   s.items.child!.dispatches = [review("fresh-review", 10), review("old-review", 45)];
   const storage = new Map<string, string>();
   const p = await page(s, [], null, undefined, { now: () => NOW, storage });
   const host = p.roots.get("agents")!, others = () => host.querySelector(".agents-others-toggle")!;
-  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review"], "running rows only, newest first");
-  assert.equal(host.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 2", "the heading counts the running rows");
+  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review"], "running rows only, newest first");
+  assert.equal(host.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 3", "the heading counts the running rows");
   assert.equal(others().innerHTML, "▸ 其他 3 个");
   assert.equal(others().attributes["aria-expanded"], "false");
   assert.equal(host.querySelector(".agent-list")!.children.at(-1)!.classList.contains("agent-others"), true, "the fold is the last line of the list");
   await others().click(); await p.flush();
   assert.equal(others().innerHTML, "▾ 其他 3 个");
-  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "idle", "old-review", "idle2"], "opened: the other rows follow the running ones, newest first, drawn as before");
+  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review", "norecord", "idle", "idle2"], "opened: the other rows follow the running ones, newest first, drawn as before");
+  assert.equal(agentRowsOf(p).find(r => r.dataset.agent === "norecord")!.querySelector(".agent-state")!.innerHTML, "干活", "a folded row keeps its state word, read from the steps");
   assert.equal(storage.get("board-agents-others"), "open");
   const again = await page(s, [], null, undefined, { now: () => NOW, storage });
-  assert.equal(agentRowsOf(again).length, 5, "a reload keeps it open");
+  assert.equal(agentRowsOf(again).length, 6, "a reload keeps it open");
   await again.roots.get("agents")!.querySelector(".agents-others-toggle")!.click(); await again.flush();
-  assert.deepEqual(agentRowsOf(again).map(r => r.dataset.agent), ["eng", "fresh-review"], "closed again");
+  assert.deepEqual(agentRowsOf(again).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review"], "closed again");
   assert.equal(storage.get("board-agents-others"), "closed");
 });
 
@@ -4180,7 +4189,7 @@ test("agent list: the heading folds the list and the choice is kept", async () =
 
 test("agent list: a write by a session shows its row within two seconds, and a minute passing updates the times", async () => {
   let now = NOW;
-  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] });
+  const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(2) }] }, undefined, ["newcomer"]);
   const p = await page(s, [], null, undefined, { now: () => now });
   assert.equal(agentRowsOf(p).length, 1);
   const began = performance.now();

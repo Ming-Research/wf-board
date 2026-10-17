@@ -195,8 +195,8 @@ const WITNESSES: Witness[] = [
       const id = rows.find(x => !s.items[x]!.record && s.items[x]!.group && r.children(x).some(c => rows.includes(c)));
       if (!id) return ["witness setup: the board draws no item with a drawn sub-item"];
       const base = await bp.changes();
-      // A step in progress makes the session running, so its row is unfolded and not behind 其他 N 个.
-      await ops(b.store).setPlan({ author: s.items[id]!.group, session: "agent-x", id, row: { id: "agent-work", text: "agent-x works here", state: "doing" } });
+      // An unfinished dispatch record makes the session running, so its row is unfolded and not behind 其他 N 个.
+      await ops(b.store).dispatchStart({ author: "Architect", session: "架构师", id, role: "工程师", level: 2, model: "Sonnet", agent: "agent-x", agentId: "agent-x-id" });
       await bp.waitChanges(base + 1);
       await bp.page.locator('#agents [data-agent="agent-x"] .agitem-caret').first().click();
       await bp.settle();

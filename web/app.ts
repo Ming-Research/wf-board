@@ -1757,7 +1757,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
     if (!agentsOpen) return;
-    host.appendChild(el("p", "agents-note", "正在跑的会话：手上有进行中的行或拿着条目的，和 30 分钟内起过或写过的审查，各带它最近碰过的 2 个条目。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    host.appendChild(el("p", "agents-note", "正在跑的会话：有派活记录，且派活没收尾、会话还活着，或碰过的条目上有进行中的行的（审查看派活有没有收尾），各带它最近碰过的 2 个条目。没有派活记录的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
     running.forEach(r => list.appendChild(agentRow(r)));
     if (others.length) list.appendChild(agentOthers(others));
