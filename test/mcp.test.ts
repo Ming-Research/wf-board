@@ -35,9 +35,9 @@ test("project MCP after parameters reorder existing and newly created projects w
   assert.equal(created.isError, undefined);
   assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect"]);
   const refused: Array<[string, Record<string, unknown>, RegExp]> = [
-    ["update_project", { author: "Firn", name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
-    ["create_project", { author: "Firn", name: "Refused", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
-    ["update_project", { author: architect, name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
+    ["update_project", { author: "Firn", name: "Firn", after: "New" }, /after: only Architect with session PM or 架构师 may reorder projects/],
+    ["create_project", { author: "Firn", name: "Refused", after: "New" }, /after: only Architect with session PM or 架构师 may reorder projects/],
+    ["update_project", { author: architect, name: "Firn", after: "New" }, /after: only Architect with session PM or 架构师 may reorder projects/],
     ["update_project", { ...asArchitect, name: "Firn", after: "Missing" }, /after Missing: choose a configured project/],
     ["update_project", { author: "总管", name: "Firn", after: "New" }, /author 总管: this identity is retired; write as Architect/],
   ];
@@ -286,17 +286,17 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
 });
 
-test("MCP moves an item and what it owns to another project, and only Architect with session 架构师 may", async t => {
+test("MCP moves an item and what it owns to another project, and only Architect with session PM or 架构师 may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
   assert.deepEqual([...tool.inputSchema.required!].sort(), ["id", "project"], "author is left out when the connection has a credential, so no tool requires it");
-  assert.match(tool.description!, /^Only author Architect with session 架构师 may use it\./);
+  assert.match(tool.description!, /^Only author Architect with session PM or 架构师 may use it\./);
   const before = store.snapshot();
   // The item's own project, another project, Architect without the session and Architect from another session all get the same refusal.
   for (const who of [{ author }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }]) {
     const refused = await client.callTool({ name: "move_item_project", arguments: { ...who, id: "area", project: "Firn" } });
-    assert.equal(refused.isError, true); assert.match(text(refused), /author: only Architect with session 架构师 may move an item to another project/);
+    assert.equal(refused.isError, true); assert.match(text(refused), /author: only Architect with session PM or 架构师 may move an item to another project/);
     assert.deepEqual(store.snapshot(), before);
   }
   const moved = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Firn" } });
@@ -383,17 +383,18 @@ test("MCP set_pause is Architect-only and paused status works in list and overvi
   assert.ok(!resumed.isError, text(resumed)); assert.equal(store.snapshot().items.area!.paused, undefined);
 });
 
-test("MCP names Architect on the tools it reserves, lets it write another project's item, and refuses 总管 with the tool error", async t => {
+test("MCP names the PM and Architect on the tools it reserves, lets them write another project's item, and refuses 总管 with the tool error", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  for (const name of ["create_item", "set_status", "set_tag", "rename_tag", "remove_tag", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session 架构师/, name);
-  assert.match(tools.find(tool => tool.name === "update_item")!.description!, /Only author Architect with session 架构师 may change the title, and turn a cancelled item into a record/);
+  for (const name of ["create_item", "set_status", "set_difficulty", "set_difficulty_many", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session PM or 架构师/, name);
+  for (const name of ["set_tag", "rename_tag", "remove_tag", "journal_entry"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session 架构师/, `${name}: still the architect's alone`);
+  assert.match(tools.find(tool => tool.name === "update_item")!.description!, /Only author Architect with session PM or 架构师 may change the title, and turn a cancelled item into a record/);
   assert.doesNotMatch(tools.map(tool => tool.description).join("\n"), /only author 总管|Only author 总管|Only 总管|总管 only|总管 may/, "no tool still names 总管 as the one who may");
   const written = await client.callTool({ name: "append_log", arguments: { ...asArchitect, id: "other", text: "Architect evidence" } });
   assert.equal(written.isError, undefined, text(written));
   assert.deepEqual(store.snapshot().items.other!.log.at(-1), { at: later, by: architect, text: "Architect evidence" });
   const before = store.snapshot();
   const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
-  assert.equal(sessionless.isError, true); assert.match(text(sessionless), /item other belongs to project Whitefoot.*Architect writes other projects' items only with session 架构师/); assert.deepEqual(store.snapshot(), before);
+  assert.equal(sessionless.isError, true); assert.match(text(sessionless), /item other belongs to project Whitefoot.*Architect writes other projects' items only with session PM or 架构师/); assert.deepEqual(store.snapshot(), before);
   const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
   assert.equal(retired.isError, true); assert.match(text(retired), /author 总管: this identity is retired; write as Architect/); assert.deepEqual(store.snapshot(), before);
 });

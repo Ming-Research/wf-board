@@ -9,7 +9,7 @@ import { brief, context, list } from "../src/query.ts";
 import { unreadSteps, piecesOf } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, at, architect, architectSession, asArchitect } from "./helpers.ts";
+import { board, author, at, architect, architectSession, asArchitect, asPM } from "./helpers.ts";
 
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
@@ -42,13 +42,13 @@ test("a record cannot carry a difficulty, in the schema and by conversion to a r
   await refuses(op.setDifficulty({ ...asArchitect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
 });
 
-test("only Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
+test("only Architect from the session PM or 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
-  const refusal = /only Architect with session 架构师 may set an item's difficulty/;
+  const refusal = /only Architect with session PM or 架构师 may set an item's difficulty/;
   // A project author, a project author borrowing the architect's session, the architect's project from another session or
   // from none, and the retired coordinator are all refused.
-  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author: architect }, { author: architect, session: "另一个会话" }]) {
+  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }]) {
     await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
     await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }
@@ -58,6 +58,10 @@ test("only Architect from the session 架构师 sets a difficulty, on an item of
   await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 4, reason: "Whitefoot 的条目" });
   await op.setDifficulty({ ...asArchitect, id: "other", difficulty: "architect", reason: "Firn 的条目" });
   assert.equal(store.snapshot().items.a!.difficulty, 4); assert.equal(store.snapshot().items.other!.difficulty, "architect");
+  // The PM rates as well, one item and many.
+  await op.setDifficulty({ ...asPM, id: "a", difficulty: 5, reason: "PM 评" });
+  await op.setDifficultyMany({ ...asPM, items: [{ id: "other", difficulty: 1, reason: "PM 评多个" }] });
+  assert.equal(store.snapshot().items.a!.difficulty, 5); assert.equal(store.snapshot().items.other!.difficulty, 1);
 });
 
 test("each change logs from what to what and why, the first rating from 未评, and an unchanged value writes nothing", async t => {
@@ -331,8 +335,9 @@ test("MCP: the tools answer with the row, refuse other authors, and the texts sh
   const tools = (await client.listTools()).tools.map(x => x.name);
   assert.ok(tools.includes("set_difficulty") && tools.includes("set_difficulty_many"));
   assert.match((await call("context", { id: "u" })).text, /check: 缺难度/);
+  assert.match((await call("context", { id: "u" })).text, /缺难度：只有 PM 或架构师能评/, "the check says who may rate");
   const refused = await call("set_difficulty", { author, id: "u", difficulty: 3, reason: "r" });
-  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师/);
+  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session PM or 架构师/);
   assert.equal((await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 7, reason: "r" })).error, true, "the schema refuses 7");
   const set = await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 3, reason: "要查并发" });
   assert.equal(set.error, false); assert.match(set.text, /^set_difficulty u · rev \d+ · commit [0-9a-f]{40}\nu · TODO P2 · 未评级 u · 难度 3 · Whitefoot › u/);
@@ -402,7 +407,7 @@ test("create_item rates the new item, logs it as the first rating, and refuses a
   await op.createItem({ ...asArchitect, ...create, key: "n3" });
   assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored");
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), /only Architect with session 架构师 may create items/);
+  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), /only Architect with session PM or 架构师 may create items/);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never }), /give an integer 1–5/);
   await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
@@ -421,5 +426,5 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   const made = await call("create_item", { ...asArchitect, key: "m1", group: author, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);
   const refused = await call("create_item", { author, key: "m2", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 });
-  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师 may create items/);
+  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session PM or 架构师 may create items/);
 });

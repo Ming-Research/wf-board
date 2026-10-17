@@ -20,10 +20,13 @@ import type { Credentials } from "../src/credentials.ts";
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";
-/** The architect's author name and session: together the only writer that creates, cancels or retitles items and does what the board reserves for the architect. */
+/** The architect's author name and session: together the writer that does what the board reserves for the architect (the journal, the tag vocabulary) and everything the PM does. */
 export const architect = "Architect";
 export const architectSession = "架构师";
 export const asArchitect = { author: architect, session: architectSession };
+/** The PM writes as author Architect (the project of agents_config, where it runs) from the session PM: it creates, cancels and retitles items, but writes no journal and changes no tag vocabulary. */
+export const pmSession = "PM";
+export const asPM = { author: architect, session: pmSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));

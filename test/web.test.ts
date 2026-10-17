@@ -3837,6 +3837,7 @@ test("the detail shows the difficulty first on the line under the title, before 
   assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
   assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
   assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
+  assert.equal(line.children[0]!.title, "难度等级，只有 PM 或架构师能改", "the tooltip says who may change it");
   assert.ok(!line.children[1]!.classList.contains("diffchip"));
   assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
   // The architect's own item has the label, and its line exists without any tag.
@@ -4023,7 +4024,7 @@ test("an owner notice from the stream shows one browser notice; its click opens 
   assert.equal(shown[0]!.closed, true);
   assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
   // A notice about no card or item opens the home view, which selects no card.
-  owner({ title: "架构师一小时没响应", message: "x" });
+  owner({ title: "PM 一小时没响应", message: "x" });
   shown[1]!.onclick!(); await p.flush();
   assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
   // After a reconnect the old stream's events are ignored; the new one shows its notices.

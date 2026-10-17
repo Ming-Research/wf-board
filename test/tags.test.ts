@@ -6,7 +6,7 @@ import { OpError } from "../src/ops.ts";
 import { rules } from "../src/rules.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, architect, asArchitect } from "./helpers.ts";
+import { board, author, architect, asArchitect, asPM } from "./helpers.ts";
 
 const vocabulary = { 健全性: "改动影响程序是否被正确拒绝或接受", 报错信息: "改动影响诊断的措辞或位置" };
 
@@ -17,6 +17,16 @@ async function withTags(t: Parameters<typeof board>[0]) {
   return b;
 }
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
+
+test("the PM may not change the tag vocabulary: only the session 架构师 may", async t => {
+  const { store, op } = await withTags(t);
+  const before = store.snapshot(), count = (await store.log()).length;
+  await refuses(op.setTag({ ...asPM, name: "新标签", meaning: "新" }), /only Architect with session 架构师 may change the tag vocabulary/);
+  await refuses(op.renameTag({ ...asPM, name: "健全性", to: "安全" }), /only Architect with session 架构师 may change the tag vocabulary/);
+  await refuses(op.removeTag({ ...asPM, name: "报错信息" }), /only Architect with session 架构师 may change the tag vocabulary/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.equal((await store.log()).length, count, "a refusal makes no commit");
+});
 
 test("vocabulary writes are refused for every author but Architect and change nothing", async t => {
   const { store, op } = await withTags(t);
