@@ -948,7 +948,7 @@ tree, status, priority and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the PM and the architect (`author: Architect`, session `PM` or `架构师`) set or clear it through
+the server's time. Only the PM and the architect (`author: PM`, session `PM`, or `author: Architect`, session `架构师`) set or clear it through
 `set_pause`, at the owner's request in a comment (the page has no pause or
 resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
@@ -1070,7 +1070,7 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. A write by any author but the PM and the architect (`Architect` from session `PM` or `架构师`) that changes an item from effectively paused
+pause. A write by any author but the PM and the architect (`PM` from session `PM`, or `Architect` from session `架构师`) that changes an item from effectively paused
 to open, not-paused work is refused, naming its pause source and requiring
 the owner, the PM or the architect to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
@@ -1526,8 +1526,9 @@ Without a credential a write takes `author`, the name of the project the
 session works for, selected from `projects` by matching `repo` to its
 repository's GitHub remote (until the old tools are removed), and a write with
 neither is refused. The
-PM and the architect write as `Architect`, a configured project like the others,
-from the sessions `PM` and `架构师` (section 9). Several sessions may share a project and
+PM writes as `PM`, a project of its own with no repository, from the session `PM`, and the
+architect as `Architect`, the project of the agents_config repository, from the session
+`架构师` (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
@@ -1607,7 +1608,7 @@ replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
-the session `架构师`, and the PM author `Architect` writing from the session `PM`
+the session `架构师`, and the PM author `PM` writing from the session `PM`
 (section 9). Both may write any project's items, cards and note replies; every
 other writer only its own project's. Some operations are reserved for the
 process, which the PM does and the architect may do too, and every other writer
@@ -2440,8 +2441,8 @@ area with an absent or unconfigured group gets a shared rules check; older
 boards without `projects` load with an empty list.
 
 At a repository root, a session calls `projects`, picks the project whose
-`repo` matches its repository’s GitHub remote (the PM and the architect use
-`Architect`, from the sessions `PM` and `架构师`), uses that project’s name as `author` in every write, then reads
+`repo` matches its repository’s GitHub remote (the PM uses `PM`, from
+the session `PM`, and the architect uses `Architect`, from the session `架构师`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
 The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
@@ -2462,7 +2463,7 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-the writer is the PM or the architect (`author === Architect`, session `PM` or `架构师`); this applies to items, their cards and owner-note
+the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师`); this applies to items, their cards and owner-note
 replies or closures. Only the PM and the architect create items, in any project.
 `set_term` and `delete_term` change only the author's own glossary,
 `Architect`'s included. Moving work requires the source and destination to
@@ -2480,15 +2481,18 @@ authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
-`架构师` (`isArchitect` in `src/model.ts`), and the PM's is author `Architect`
+`架构师` (`isArchitect` in `src/model.ts`), and the PM's is author `PM`
 writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both names
-are needed because `Architect` is also the project of the agents_config
-repository, and an engineer who does an Architect item there writes as author
-`Architect`, as every project's engineer writes as its project. Without the
-session such a write is an ordinary project author's: it may write the
-Architect project's own items and nothing reserved. The session name is not
+are needed because each author name is also a project: `Architect` is the
+project of the agents_config repository, `PM` the project of the PM's own
+records (it has no repository), and an engineer who does an item there writes as
+that project's author, as every project's engineer writes as its project.
+Without the session such a write is an ordinary project author's: it may write
+that project's own items and nothing reserved. The project `PM` is created
+once by the architect (`create_project`); until it exists the PM's writes are
+refused like any author that is not a configured project. The session name is not
 authenticated, as no project name is; the rule stops misuse, not impersonation.
-Their writes carry `Architect` as commit author and log `by`, so history and logs
+Their writes carry `PM` or `Architect` as commit author and log `by`, so history and logs
 show that the PM or the architect made the change, not the item's project. The
 operations reserved for the process are listed with the tools (section 6); the
 check is `onlyProcess` in `src/ops.ts` and what only the architect does is
@@ -2569,10 +2573,11 @@ the writer from it.
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
 - **The session names `架构师` and `PM`** are the architect's and the PM's alone: without a
-  credential the board takes author `Architect` writing from either session for the architect
-  or the PM (section 6) and skips the process checks for it. A file entry of another role under
-  either name is refused, so is an entry of the architect's or the PM's role under another name
-  or in another project than `Architect`, and so is `dispatch_start` for an agent of either name
+  credential the board takes author `Architect` writing from `架构师` for the architect, and
+  author `PM` writing from `PM` for the PM (section 6), and skips the process checks for them. A
+  file entry of another role under either name is refused, so is an entry of the architect's role
+  under another name or in another project than `Architect`, an entry of the PM's role under another
+  name or in another project than `PM`, and so is `dispatch_start` for an agent of either name
   (spaces around it are ignored, as everywhere the board compares it). With a credential, a
   write is the architect's or the PM's when the credential's role is, whatever names it carries.
 - **A request** with no `Authorization` header can read the board; it can write only in the

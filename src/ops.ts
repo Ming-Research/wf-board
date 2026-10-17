@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PM_AUTHOR, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -209,7 +209,7 @@ function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
 }
 function requireOwnership(s: Snapshot, project: string, who: Writer, id: string): void {
   const refusal = `item ${id} belongs to project ${project}; report what you need from it to the PM, who creates work another project needs in the project that delivers it`
-    + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${PROCESS_SESSIONS}` : "");
+    + (who.author === ARCHITECT || who.author === PM_AUTHOR ? `; only ${PROCESS_WRITERS} write other projects' items` : "");
   requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
   if (who.author !== project && !mayRunProcess(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
 }

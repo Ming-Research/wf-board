@@ -325,21 +325,23 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
-/** The author name of the architect and of the PM: the project of the agents_config repository, a configured project like any other. */
+/** The author name of the architect: the project of the agents_config repository, a configured project like any other. */
 export const ARCHITECT = "Architect";
 /** The session name the architect writes from (docs/design.md, section 9). */
 export const ARCHITECT_SESSION = "架构师";
-/** The session name the PM writes from, as author `Architect` too: the PM runs in the agents_config repository. */
+/** The author name of the PM: a project of its own, with no repository, that holds the PM's records; a configured project like any other. */
+export const PM_AUTHOR = "PM";
+/** The session name the PM writes from, as author `PM`. */
 export const PM_SESSION = "PM";
 /** The role names of the architect and the PM, as a credential and the access table name them. */
 export const ARCHITECT_ROLE = "架构师";
 export const PM_ROLE = "PM";
-/** The sessions that do the process, as an error text or a tool description names them: the one definition every such text is built from. */
-export const PROCESS_SESSIONS = `${PM_SESSION} or ${ARCHITECT_SESSION}`;
 /** The architect alone, as an error text or a tool description names it (ops `onlyArchitect`, the journal and tag tools). */
 export const ARCHITECT_WRITER = `${ARCHITECT} with session ${ARCHITECT_SESSION}`;
-/** The writers that do the process, in English (ops `onlyProcess`, the tool descriptions, the errors that say who may). */
-export const PROCESS_WRITERS = `${ARCHITECT} with session ${PROCESS_SESSIONS}`;
+/** The PM, as an error text or a tool description names it. */
+export const PM_WRITER = `${PM_AUTHOR} with session ${PM_SESSION}`;
+/** The writers that do the process, in English: the one definition every such text is built from (ops `onlyProcess`, the tool descriptions, the errors that say who may). */
+export const PROCESS_WRITERS = `${PM_WRITER} or ${ARCHITECT_WRITER}`;
 /** The same for the owner reading the page. */
 export const PROCESS_WRITERS_ZH = `${PM_ROLE} 或${ARCHITECT_ROLE}`;
 type Writer = { author: string; session?: string; access?: { role: string } };
@@ -352,9 +354,9 @@ type Writer = { author: string; session?: string; access?: { role: string } };
  */
 export const isArchitect = (who: Writer): boolean =>
   who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectSession(who.session);
-/** Whether a write speaks for the PM: author `Architect` from the session 「PM」, or a credential of role `PM`, by the same rule. */
+/** Whether a write speaks for the PM: author `PM` from the session 「PM」, or a credential of role `PM`, by the same rule. */
 export const isPM = (who: Writer): boolean =>
-  who.access ? who.access.role === PM_ROLE : who.author === ARCHITECT && isPMSession(who.session);
+  who.access ? who.access.role === PM_ROLE : who.author === PM_AUTHOR && isPMSession(who.session);
 /**
  * Whether a write may do the process: change any project's items, cards and note replies, create and cancel items, set their
  * difficulty, pause, move and retitle them, place projects in the page order (ops `onlyProcess`). The PM does it, and the
