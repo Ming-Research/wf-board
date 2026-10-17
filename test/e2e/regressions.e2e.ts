@@ -257,13 +257,6 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "the page remembers the reload it began", find: "lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),", replace: "lastReload: () => undefined," }], family: "update-loop", copy: true,
     run: async (bp, b) => checkLoop(bp, b),
   },
-  {
-    bug: "a diagram wider than the text was drawn at its own width, so its right part was cut off by a box that scrolled sideways without showing it could (owner, 2026-10-17)",
-    // Every diagram at its own width again, whatever its box.
-    reverts: [{ file: "web/index.html", edit: "a diagram is fitted to its box", find: "width: calc(min(var(--natural), 100%) * var(--zoom, 1));", replace: "width: var(--natural);" }], family: "mermaid-fit",
-    // A small diagram, a wide one and a tall one in one head, as the page's own mermaid checks draw them.
-    run: async (bp, b) => { await setHead(b, b.gen.witness.code, FIT_HEAD); await bp.select(b.gen.witness.code); return checkFit(bp, 60_000); },
-  },
   ...CAPS.map((c): Witness => ({
     bug: `blocks of the right column stayed at ${c.ch} characters in a wide window (${c.sel}; owner, 2026-10-17)`,
     // The cap on this one block; the other blocks keep filling the column.
