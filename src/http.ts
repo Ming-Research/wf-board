@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
 import { answersPushes } from "./model.ts";
-import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
+import { STALLED_LABEL, affectedItems, changeSeeds, reviewRequested } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -21,7 +21,11 @@ import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import type { AgentStream } from "./wake.ts";
-import { holderOf, holders } from "./dispatch.ts";
+import { hasReviewer, holderOf, holders } from "./dispatch.ts";
+import { deliveries } from "./merges.ts";
+import type { Delivery } from "./merges.ts";
+import { offers, poolCounts, toPush, toldNow } from "./offers.ts";
+import type { Told } from "./offers.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
@@ -191,14 +195,20 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, result); return;
       }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
-      // A push from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly their fields.
+      // A request from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly
+      // the fields it lists. The daemon turns it into the pushes of the sessions it concerns (pushDeploy).
       if (path === "/api/wake") {
         const { event, ...fields } = args<Record<string, unknown>>(await body(req));
-        if (!Wake.isExternal(event)) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
+        const wanted = Wake.externalFields(event);
+        if (!wanted) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
         if (JSON.stringify(fields).length > MAX_EXTERNAL_PUSH) throw new OpError(`Wake event ${event} exceeds ${MAX_EXTERNAL_PUSH} bytes`);
-        let frame;
-        try { frame = wake.push(event, fields); } catch (error) { throw new OpError(error instanceof Error ? error.message : String(error)); }
-        json(res, 200, { n: frame.n }); return;
+        const given = Object.keys(fields).sort().join(","), expected = [...wanted].sort().join(",");
+        if (given !== expected) throw new OpError(`Wake ${event} asks for the fields ${expected}, not ${given}`);
+        const pushed = pushDeploy(event as "deployed" | "deployFailed", fields);
+        // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages
+        // are told if it did, whoever the pushes went to.
+        void readPage(true);
+        json(res, 200, { pushed }); return;
       }
     }
     if (method === "DELETE" && path.startsWith("/api/notes/")) { await ownerOps.deleteNote({ id: decodeURIComponent(path.slice(11)) }); json(res, 200, { ok: true }); return; }
@@ -243,6 +253,24 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     });
   });
   /**
+   * A deploy's result as pushes (docs/design.md, The wake streams): the commits it deployed name pull requests, each pull
+   * request is delivered by an item, and the result goes to the session holding each such item. A deploy that did not happen and
+   * concerns no held item goes to the PM; one that happened and concerns none is told to nobody, since nobody has to act on it.
+   * Returns how many pushes it made.
+   */
+  function pushDeploy(event: "deployed" | "deployFailed", fields: Record<string, unknown>): number {
+    const s = store.snapshot(), r = store.derived.rules(s, now());
+    const subjects = (Array.isArray(fields.changes) ? fields.changes : []).flatMap(c => typeof c === "string" ? [c.slice(c.indexOf(" ") + 1)] : []);
+    const found = typeof fields.repo === "string" ? deliveries(s, fields.repo, subjects) : [];
+    const held = found.filter(d => wake.holds(d.item) !== undefined);
+    const about = (d?: Delivery) => ({ item: d?.item ?? null, project: d ? r.projectOf(d.item) : null, title: d ? s.items[d.item]!.title : null, pr: d?.pr ?? null });
+    const base = event === "deployed" ? { version: fields.version, restarted: fields.restarted } : { version: fields.version, running: fields.running, reason: fields.reason };
+    for (const d of held) wake.push(event, { ...base, ...about(d) });
+    if (held.length || event === "deployed") return held.length;
+    wake.push(event, { ...base, ...about(found[0]) });
+    return 1;
+  }
+  /**
    * An agent's stream, `/wake/<session name>` (docs/design.md, The wake streams): the board keeps how far it was delivered, so the
    * client sends no number. It gets `connected`, `gap` when undelivered events were dropped, every undelivered event, then live
    * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again. It also sends
@@ -285,8 +313,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
-  // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages are told if it did.
-  const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void readPage(true); });
   /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
   const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
   /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined) or an agent's. */
@@ -303,33 +329,63 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The items flagged 无人推进 now; one that appears and was not in it pushes one "stalled" event. Seeded at start without
   // pushing, so a restart does not announce every standing stall. Other checks are format flags the writer sees; none is pushed.
   let flagged = new Set<string>();
-  // The items done now; one that becomes done pushes "item-done" for each open item waiting on it (an owner or a shared
-  // dependent), to the session holding that item, else to the PM. Seeded at start like `flagged`, so a restart announces nothing.
+  // The items done now; one that becomes done pushes "item-done" for each open item waiting on it that a session holds, and
+  // "finished" to the PM when a session holds the done item itself. Seeded at start without pushing, like `flagged`, so a restart announces nothing.
   let finished = new Set<string>();
+  // The items whose review step is in progress now; one that enters it pushes "review" to the PM, unless a reviewer is already on it.
+  let reviewing = new Set<string>();
   // The snapshot the last scan read: a change is compared with it to find the items whose checks it can change.
   let scanned: Snapshot | undefined;
+  /** The review level a review step's text names ("审查（3 级）"), null when it names none. */
+  const reviewLevel = (text: string): number | null => { const level = /([1-5]) 级/.exec(text)?.[1]; return level === undefined ? null : Number(level); };
   /** `only`: rescan these items and keep every other item's state (rules affectedItems: a write changes no other item's
    * checks; elapsed active time alone is the timer's full scan). */
   function scanChecks(announce: boolean, s = store.snapshot(), only?: Iterable<string>) {
-    const r = store.derived.rules(s, now()), next = only ? new Set(flagged) : new Set<string>(), done = only ? new Set(finished) : new Set<string>();
+    const r = store.derived.rules(s, now()), next = only ? new Set(flagged) : new Set<string>(), done = only ? new Set(finished) : new Set<string>(), review = only ? new Set(reviewing) : new Set<string>();
     for (const id of only ?? Object.keys(s.items)) {
-      next.delete(id); done.delete(id);
+      next.delete(id); done.delete(id); review.delete(id);
       if (Object.hasOwn(s.items, id) && r.statusOf(id) === "done") {
         done.add(id);
-        if (announce && !finished.has(id)) for (const { id: parent } of r.dependents(id)) {
-          if (!r.isOpenWork(parent)) continue;
-          wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });
+        if (announce && !finished.has(id)) {
+          for (const { id: parent } of r.dependents(id)) {
+            if (!r.isOpenWork(parent) || wake.holds(parent) === undefined) continue;
+            wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });
+          }
+          const session = holderOf(s, id);
+          if (session !== undefined) wake.push("finished", { item: id, project: r.projectOf(id), title: s.items[id]!.title, session });
         }
       }
       if (!Object.hasOwn(s.items, id) || !r.isOpenWork(id)) continue;
+      const requested = reviewRequested(s.items[id]);
+      if (requested !== undefined) {
+        review.add(id);
+        // A reviewer already on the item is resumed by the engineer: a re-review does not come to the PM.
+        if (announce && !reviewing.has(id) && !hasReviewer(s, id)) {
+          wake.push("review", { item: id, project: r.projectOf(id), title: s.items[id]!.title, level: reviewLevel(requested) });
+        }
+      }
       const stalled = r.checks(id).find(c => c.label === STALLED_LABEL);
       if (!stalled) continue;
       next.add(id);
       if (announce && !flagged.has(id)) wake.push("stalled", { item: id, project: r.projectOf(id), title: s.items[id]!.title, text: stalled.text });
     }
-    flagged = next; finished = done; scanned = s;
+    flagged = next; finished = done; reviewing = review; scanned = s;
   }
-  scanChecks(false);
+  // What the PM was last told in each pool of engineer slots (src/offers.ts). More free slots or candidates than that (a slot
+  // freed, a candidate appeared) pushes "dispatch"; the PM's own starts, which only lower them, push nothing and lower what it was
+  // told. Seeded at start without pushing. Looked at on the minute timer, not at every write: nobody starts an engineer within the
+  // second a slot frees. A failure here is logged, not allowed to end the daemon.
+  let told: Told = new Map();
+  function scanOffers(announce: boolean) {
+    try {
+      const s = store.snapshot(), counts = poolCounts(s, store.derived.rules(s, now()));
+      if (!announce) { told = toldNow(counts); return; }
+      const next = toPush(counts, told);
+      told = next.told;
+      for (const offer of next.push) wake.push("dispatch", { ...offer });
+    } catch (error) { console.error(error); }
+  }
+  scanChecks(false); scanOffers(false);
   const off = store.onChange(change => {
     const s = store.snapshot(), r = store.derived.rules(s, now());
     for (const doc of change.changed) {
@@ -373,7 +429,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
     timing = true;
     try {
-      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line()));
+      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => { const r = store.derived.rules(s, now()); return timedWake(store, s, r, last, started, offers(s, r), deps.usage?.alert()); });
       wake.push("timed", { ...fields });
       wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
@@ -381,7 +437,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
-    scanChecks(true); wake.checkReceipts();
+    scanChecks(true); scanOffers(true); wake.checkReceipts();
     const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
     wake.prune(name => held.has(name) || connected(name));
     // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
@@ -398,7 +454,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeDeploys(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();

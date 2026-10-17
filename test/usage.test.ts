@@ -248,6 +248,7 @@ test("a look that cannot read the billing says why in the line and tells nothing
   assert.equal(watch.line(), "Actions 用量还没读到");
   const bad = await quiet(() => watch.poll());
   assert.equal(watch.line(), "Actions 用量读不到：wf: usage report: gh: HTTP 403");
+  assert.equal(watch.alert(), watch.line(), "a billing that cannot be read needs handling, so the timed wake carries the line");
   assert.deepEqual(watch.status().problems, { [ORG]: "wf: usage report: gh: HTTP 403" });
   assert.ok(bad.said.some(line => /usage report: gh: HTTP 403/.test(line)));
   const second = await quiet(() => watch.poll());
@@ -256,6 +257,7 @@ test("a look that cannot read the billing says why in the line and tells nothing
   failing = undefined;
   await watch.poll();
   assert.equal(watch.line(), "Actions 本月已用 10 / 3000（从 10-16 起记账），今天 10，预算 0 美元，到上限就拦");
+  assert.equal(watch.alert(), "", "good figures are for `usage`, not for the timed wake");
   assert.deepEqual(watch.status().problems, {});
   // Only personal accounts: nothing to read, and the line says so.
   const personal = new UsageWatch({ store, wake, billing: billing(() => undefined).source });
@@ -378,11 +380,12 @@ test("a personal account has no organization repositories and is skipped; any ot
 
 // --- Inside the server -----------------------------------------------------------------------------------------------------------------
 
-test("the timed wake carries the usage line, and /health reports the last look", async t => {
+test("the timed wake carries the usage line only when the watch needs handling, and /health reports the last look", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const half = 30 * 60_000, T0 = Date.parse("2026-10-16T00:00:00Z");
   let clock = T0;
-  const wake = new Wake({ now: () => clock }), { source } = billing((owner, at) => owner === "Ming-Research" ? reading({ at: at.toISOString(), rows: [row(2, "app", 100)] }) : undefined);
+  let rows = [row(2, "app", 100)];
+  const wake = new Wake({ now: () => clock }), { source } = billing((owner, at) => owner === "Ming-Research" ? reading({ at: at.toISOString(), rows }) : undefined);
   let usage: UsageWatch | undefined;
   const { url, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half, usage: fx => (usage = new UsageWatch({ store: fx.store, wake, billing: source, now: () => clock })) });
   for (let i = 0; i < 300 && usage!.status().figures.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
@@ -392,7 +395,13 @@ test("the timed wake carries the usage line, and /health reports the last look",
   for (let i = 0; i < 400 && star.events().length === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
   const frame = star.events()[0]!;
   assert.equal(frame.event, "timed");
-  assert.equal(frame.actions, "Actions 本月已用 100 / 3000（从 10-16 起记账），今天 0，预算 0 美元，到上限就拦");
+  assert.equal(frame.actions, "", "the figures alone are for `usage`, not for every timed wake");
+  // A sku the account does not know needs handling: the next timed wake says so.
+  rows = [row(2, "app", 100), row(2, "app", 5, "Actions Linux 4-core")];
+  await usage!.poll();
+  clock = T0 + 2 * half; t.mock.timers.tick(1000);
+  for (let i = 0; i < 400 && star.events().length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(star.events()[1]!.actions, "Actions 本月已用 100 / 3000（从 10-16 起记账），今天 0，预算 0 美元，到上限就拦；有不认识的计费项：Actions Linux 4-core");
   const health = await api("/health", undefined, "GET");
   assert.deepEqual((health.data as { usage: { polledAt: string; problems: object; figures: Array<{ used: number }> } }).usage.figures.map(f => f.used), [100]);
   assert.ok((health.data as { usage: { polledAt: string } }).usage.polledAt);

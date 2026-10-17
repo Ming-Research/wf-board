@@ -349,6 +349,8 @@ export interface Rules {
   isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
+  /** How many open, unpaused work items hold a shared row for it: the ones that wait for it. Its owner does not count: every owned item has one. */
+  openDependents(id: string): number;
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
@@ -381,6 +383,8 @@ export interface Rules {
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
+  /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. Priority is not part of it. */
+  compareCandidates(a: string, b: string): number;
 }
 
 type Dependency = ReturnType<Rules["depsOf"]>[number];
@@ -401,6 +405,19 @@ export interface Progress {
   ask: boolean;
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
+}
+/** The id of the plan step that stands for the item's review: marked in progress while a reviewer reads the pull request. */
+export const REVIEW_STEP = "review";
+/** Whether a plan row is the review step. The one place that knows the convention. */
+export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
+/** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
+ * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
+export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
+/** The text of the item's review step while it is in progress: the engineer's request for a review. Undefined when the item has no
+ * such step or it is not in progress. */
+export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
+  const step = item?.plan.find(isReviewStep);
+  return step && "text" in step && step.state === "doing" ? step.text : undefined;
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -1026,6 +1043,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
+  function openDependents(id: string): number {
+    return cached("openDependents", id, () => (reverseDeps().items.get(id) || []).filter(w => !w.own && isOpenWork(w.id) && !isPaused(w.id)).length);
+  }
   // The reach of the unpaused roots, by the same walk as the priorities: up from every root along the open, unpaused rows.
   function neededSet(): Set<string> {
     return cached("needed", "", () => {
@@ -1236,7 +1256,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf, openDependents,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
@@ -1245,6 +1265,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
     refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
+    // An item without a number (written before numbers) sorts after the numbered; the key settles what is left.
+    compareCandidates: (a, b) => openDependents(b) - openDependents(a)
+      || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),
   };
   INTERNALS.set(made, { memo, now, closedMemo, targetStatuses });
   return made;

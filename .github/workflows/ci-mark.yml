@@ -1,0 +1,27 @@
+name: ci-mark
+# Marks the head commit of a pull request "no full CI result yet" (the status `full-ci`, pending). The full CI runs on a
+# pull request only when the engineer starts it, and it writes the result to the same status. Without this mark a pull
+# request with no full CI run would show only the checks that did run, all green, and the engineer's wait script and the
+# board's "can be merged" push would take it for passed. docs/design.md, section 11, Fast checks while writing.
+on:
+  pull_request:
+concurrency:
+  group: ci-mark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      # A status already on the commit is the result of a run that finished before this job started (a reopened pull
+      # request keeps its head commit): keep it.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          have=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" --jq '[.[] | select(.context == "full-ci")] | length')
+          if [ "$have" = 0 ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=full-ci \
+              -f description="no full CI result on this commit; start the ci workflow by hand"
+          fi

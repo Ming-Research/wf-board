@@ -49,6 +49,9 @@ matches what the artifact board offered.
   who is running, the state word, the level) derived from it, the steps in
   progress and the dispatch records. Imported by the server and bundled into
   the page.
+- `src/candidates.ts`: the items an engineer could be started on and the two pools of engineer slots, read from the whole
+  board (the `candidates` tool, and what the push that says work can be handed out reads): the board lists, the architect
+  chooses (design section 6, The candidates read).
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
@@ -61,6 +64,10 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
+- `src/head-sections.ts`: an item head split into its sections (`context`'s
+  default answer and `section`); `src/tool-errors.ts`: the parameter table and
+  example a refused call is answered with, and the wrong names the tools read as
+  the right ones. Both are in `docs/design.md`, section 6, Lean replies.
 - `src/wake.ts`: the PM's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
   `src/liveness.ts`: whether the sessions holding items are still there (the
@@ -68,6 +75,10 @@ matches what the artifact board offered.
   `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
+- `src/offers.ts`: the pools of engineer slots that have a free slot and candidates, and what the PM was last told of them (the
+  `dispatch` push and the timed wake's reminder), made from `src/candidates.ts`.
+- `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
+  for the deploy pushes and the red main line.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
   `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
   the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.
@@ -105,11 +116,14 @@ matches what the artifact board offered.
 ## Checks
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
-  the sources directly), `npm run build:web`, `npm test`. CI runs all three on
-  every pull request push and on every main-line merge.
+  the sources directly), `npm run build:web`, `npm test`. The full CI runs all
+  three on every main-line merge, and on a pull request when the engineer
+  starts it (`gh workflow run ci.yml --ref <branch>`); pushes in between are
+  checked by a temporary `tmp-*.yml` workflow that runs what the change
+  touches (design section 11, Fast checks while writing).
 - `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it on every pull request push and main-line merge. It
-  needs a Playwright browser and is never run on the owner's Mac.
+  CI's `e2e` job runs it with the full CI. It needs a Playwright browser and
+  is never run on the owner's Mac.
 - Three test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
   (`test/web.test.ts`), fast but without CSS or layout; the page in a real
@@ -148,11 +162,14 @@ daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
 `~/Library/Logs/wf-board-deploy.log`.
 
-The PM does not deploy by hand. It gets one push per deploy:
-`deployed` names the version now served and the changes, and the change is
-checked on the live page; `deployFailed` says why nothing was
-deployed (a null version means the job itself could not run, as when its fetch
-fails; the log has the detail). The job leaves a checkout alone that is on another branch, has local
+The PM does not deploy by hand. The deploy result goes to the
+engineer holding the item that delivered the merge (the pull request in the
+commit's title, the item whose 改动 section names it): `deployed` names the
+version now served, and the engineer checks the change on the live page;
+`deployFailed` says why nothing was deployed (a null version means the job
+itself could not run, as when its fetch fails; the log has the detail), and
+goes to the PM when no engineer holds such an item, where `deployed` is not
+pushed at all. The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys.
 

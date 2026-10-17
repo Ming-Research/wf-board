@@ -66,7 +66,7 @@ test("project MCP onboarding, close and coordinator reads use the configured con
   const brief=JSON.parse(await call("brief",{project:"Third"})); assert.equal(Object.hasOwn(brief,"inbox"),false);
   const pending=JSON.parse(await call("followups",{minutes:1}));assert.equal(Object.hasOwn(pending,"requests"),false);assert.ok(pending.notes.some((r:{id:string})=>r.id==="note-1"));
   await call("close_note",{author,id:"note-1",log:"Handled"});assert.equal(store.snapshot().notes["note-1"]!.state,"done");
-  const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:|inbox/);assert.match(summary,/^Whitefoot$/m);
+  const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:|inbox/);assert.match(summary,/^Whitefoot · /m);
   for (const name of ["create_item","update_item"]) {
     const schema=(await client.listTools()).tools.find(t=>t.name===name)!.inputSchema;
     assert.ok(!Object.hasOwn(schema.properties!,"agent"));
@@ -194,7 +194,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 47, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, withdraw_card, dispatch_start, dispatch_finish, dispatches, set_difficulty, set_difficulty_many, send_message and messages are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 48, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, withdraw_card, dispatch_start, dispatch_finish, dispatches, set_difficulty, set_difficulty_many, send_message, messages and candidates are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;

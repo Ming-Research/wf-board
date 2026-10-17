@@ -3,18 +3,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { agentSocket, board, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { agentSocket, board, server, wakeSocket, asArchitect, author, later } from "./helpers.ts";
 import { ARCHITECT_SESSION, MESSAGE_TEXT_LIMIT, PM_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
 import { holderOf, openDispatches } from "../src/dispatch.ts";
+import { candidates } from "../src/candidates.ts";
+import { offers, toPush, toldNow } from "../src/offers.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Resolved } from "../src/credentials.ts";
 
@@ -34,12 +37,19 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 test("every kind says where it goes, and a holder or session route names one of the kind's own fields", () => {
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) {
-    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string } | "pm" | undefined;
+    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true } | "pm" | undefined;
     const field = typeof to === "object" && to !== null ? to.holder ?? to.session : undefined;
-    assert.ok(to === "pm" || (field !== undefined && Object.keys(to!).length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
+    const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only") : [];
+    assert.ok(to === "pm" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
-  assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent" });
+  // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
+  for (const kind of ["dispatch", "review", "finished", "stalled", "no-answer", "note", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
+  assert.deepEqual(WAKE_KINDS.deployed.to, { holder: "item", only: true });
+  assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
+  assert.deepEqual(WAKE_KINDS["main-red"].to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
+  assert.equal("pr-ready" in WAKE_KINDS, false, "a pull request that can merge is the engineer's to merge, not pushed");
 });
 
 // Every field at a length no real push reaches: the line must stay within its limit whatever the fields hold.
@@ -47,16 +57,18 @@ const L = "长".repeat(1000), many = Array.from({ length: 500 }, (_, i) => `x${i
 const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
-  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: many, architect: many, pm: many, actions: L },
-  "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L },
+  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many, dispatch: many, actions: L },
+  dispatch: { pool: L, free: 99999, limit: 99999, candidates: 99999 },
+  review: { item: L, project: L, title: L, level: 5 },
+  finished: { item: L, project: L, title: L, session: L },
+  "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },
   "pr-red": { repo: L, number: 123456, project: L, title: L, commit: L, failed: many, url: L, items: many },
-  "pr-ready": { repo: L, number: 123456, project: L, title: L, base: L, commit: L, url: L, items: many },
   "pr-orphan": { repo: L, number: 123456, project: L, title: L, url: L, draft: true },
   "slow-op": { op: L, ms: 123456789, limitMs: 1000, params: L },
   "backup-behind": { commits: 123456, lastSuccess: L, reason: L },
   "actions-usage": { org: L, reason: "month", level: 90, month: L, day: L, used: 1, included: 1, today: 1, budget: null, text: L },
-  deployed: { version: L, previous: L, changes: many, restarted: true },
-  deployFailed: { version: null, running: null, reason: L },
+  deployed: { version: L, restarted: true, item: L, project: L, title: L, pr: 123456 },
+  deployFailed: { version: L, running: L, reason: L, item: L, project: L, title: L, pr: 123456 },
   "item-done": { item: L, project: L, title: L, parent: L },
   "ask-alive": { item: L, project: L, title: L, since: L },
   "no-answer": { session: L, item: L, project: L, title: L, since: L },
@@ -94,9 +106,12 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   const wake = new Wake({ file, dir, now: () => T0 });
   const held: Record<string, string> = { p1: "工程师甲", p2: "eng-b" };
   wake.routeBy(item => held[item]);
-  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("item-done", done("c4", "nobody"))];
+  const ask = (item: string) => ({ item, project: "Whitefoot", title: "t", since: "2026-10-17T00:00:00Z" });
+  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("ask-alive", ask("nobody"))];
   assert.deepEqual(pushed.map(f => f.n), [1, 1, 2, 1], "each stream numbers from 1");
-  assert.deepEqual(wake.since(0).frames.map(f => f.item), ["c4"], "only the unheld item's push is the PM's");
+  assert.deepEqual(wake.since(0).frames.map(f => f.item), ["nobody"], "only the unheld item's push is the PM's");
+  assert.throws(() => wake.push("item-done", done("c5", "nobody")), /nobody does/, "a push for a holder alone is not made without one");
+  assert.equal(wake.latest(), 1, "and takes no number");
   assert.deepEqual(wake.agent("工程师甲").pending().frames.map(f => f.item), ["c1", "c3"]);
   assert.deepEqual(wake.agent("eng-b").pending().frames.map(f => f.item), ["c2"]);
   assert.deepEqual((await readdir(dir)).sort(), ["pm.jsonl", agentFileName("eng-b"), agentFileName("工程师甲")].sort(), "one file per agent, named by a hash of its name");
@@ -115,6 +130,9 @@ test("a push routed to the session of the PM or of the architect goes to the PM'
   wake.push("message", message(PM_SESSION)); wake.push("message", message(ARCHITECT_SESSION));
   wake.push("item-done", done("c1", "mine")); wake.push("item-done", done("c2", "theirs"));
   assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "message", "item-done", "item-done"]);
+  // A holder-routed kind with no item to name (the red main line no PR explains) is the PM's too.
+  wake.push("main-red", { repo: "o/r", project: "p", branch: "main", commit: "c", failed: [], url: "u", item: null, pr: null });
+  assert.equal(wake.since(0).frames.at(-1)!.event, "main-red");
   assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), false);
 });
 
@@ -275,7 +293,135 @@ test("an item becoming done tells the session holding each open item that waits 
   await op.appendLog({ ...asArchitect, id: "a", text: "a later write to the done item" });
   await pm.sync();
   assert.equal(wake.agent("b-worker").latest(), 1, "a done item is announced once");
-  assert.deepEqual(pm.events().filter(f => f.event === "item-done").map(f => [f.item, f.parent]), [["a", "area"]], "nobody holds area, so its push goes to the PM, once");
+  assert.deepEqual(pm.events().filter(f => f.event === "item-done"), [], "nobody holds area, so no push is made for it");
+});
+
+test("the offers are the pools with a free slot and candidates, counted by an independent reading of what can start", async t => {
+  const { store } = await board(t);
+  const s = store.snapshot(), r = store.derived.rules(s, T0);
+  const starters = Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined);
+  assert.ok(starters.length >= 1, "the fixture has an item to start");
+  const [pool1, pool2] = [starters.filter(id => s.items[id]!.difficulty === 1), starters.filter(id => s.items[id]!.difficulty! >= 2)];
+  assert.deepEqual(offers(s, r), [...(pool1.length ? [{ pool: "1", free: 10, limit: 10, candidates: pool1.length }] : []), { pool: "2+", free: 6, limit: 6, candidates: pool2.length }]);
+});
+
+test("something more to hand out than the PM was last told pushes dispatch, with no item named; its own starts, which only lower it, push nothing; what stood at the start is not announced", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const wake = new Wake({ now: () => T0 });
+  const { url, store, op } = await server(t, { wake, checkIntervalMs: 1000 });
+  const pm = await wakeSocket(t, url);
+  const dispatches = () => pm.events().filter(f => f.event === "dispatch").map(({ n, at, line, ...f }) => f);
+  const tick = async () => { t.mock.timers.tick(1000); await pm.sync(); await setImmediate(); };
+  const starting = offers(store.snapshot(), store.derived.rules(store.snapshot(), T0)).find(o => o.pool === "2+")!;
+  await tick();
+  assert.deepEqual(dispatches(), [], "what stood at the start is not announced");
+  // The PM starts an engineer on a candidate: a free slot and a candidate fewer.
+  const candidate = Object.keys(store.snapshot().items).find(id => store.derived.rules(store.snapshot(), T0).startable(id) && store.snapshot().items[id]!.difficulty! >= 2)!;
+  await op.dispatchStart({ ...asArchitect, id: candidate, role: "工程师", level: 2, model: "Sonnet", agent: "c-worker", agentId: "agent-c" });
+  await tick();
+  assert.deepEqual(dispatches(), [], "its own start only lowers the offer");
+  // A new candidate appears.
+  const fresh = ({ title: "新的可开工条目", group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later });
+  await store.commit({ author, message: "a new item", puts: [{ kind: "item", id: "fresh", expectRev: null, doc: fresh }] });
+  await tick();
+  assert.deepEqual(dispatches(), [{ event: "dispatch", pool: "2+", free: starting.free - 1, limit: 6, candidates: starting.candidates }], "one more candidate than after the start; no item is named");
+  await tick();
+  assert.equal(dispatches().length, 1, "the same offer is not pushed again");
+  // The engineer asks for a review and waits for it, which frees its slot with no candidate added.
+  await op.setPlan({ ...asArchitect, id: candidate, row: { id: "review", text: "审查（2 级）", state: "doing" } });
+  await tick();
+  assert.deepEqual(dispatches().at(-1), { event: "dispatch", pool: "2+", free: starting.free, limit: 6, candidates: starting.candidates }, "a slot freed");
+  assert.equal(dispatches().length, 2);
+});
+
+test("a pool is pushed when it has something to hand out and more free slots or candidates than the PM was last told; its own starts lower what it was told", () => {
+  const counts = (free: number, candidates: number) => [{ pool: "2+", free, limit: 6, candidates }];
+  const look = (told: ReturnType<typeof toldNow>, free: number, candidates: number) => toPush(counts(free, candidates), told);
+  let told = toldNow(counts(3, 5));
+  // The same, and fewer: nothing, and what the PM is told follows the lower numbers.
+  assert.deepEqual(look(told, 3, 5).push, []);
+  told = look(told, 2, 4).told;
+  assert.deepEqual(told.get("2+"), { free: 2, candidates: 4 });
+  // A candidate appears with no slot freed: pushed. A slot frees with no candidate added: pushed.
+  const added = look(told, 2, 5);
+  assert.deepEqual(added.push, counts(2, 5));
+  assert.deepEqual(look(added.told, 3, 5).push, counts(3, 5), "the slot only");
+  assert.deepEqual(look(added.told, 2, 5).push, [], "pushed once for the same state");
+  // No free slot, or no candidate: nothing to hand out, though a number is higher than it was told; the lower number is what it is told.
+  told = look(told, 0, 9).told;
+  assert.deepEqual(look(told, 0, 9).push, []);
+  assert.deepEqual(told.get("2+"), { free: 0, candidates: 4 });
+  assert.deepEqual(look(told, 1, 9).push, counts(1, 9), "a slot frees after none: pushed");
+  assert.deepEqual(look(look(told, 2, 0).told, 2, 1).push, counts(2, 1), "a candidate after none: pushed");
+  // A pool that was never told counts as told nothing.
+  assert.deepEqual(toPush(counts(1, 1), new Map()).push, counts(1, 1));
+  assert.deepEqual(toPush(counts(0, 1), new Map()).push, []);
+});
+
+test("the offers count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {
+  const doc = (title: string, extra: object = {}) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  // The count of what can start in the 2+ pool, read without the code under test.
+  const independent = (s: Snapshot, r: ReturnType<(typeof import("../src/rules.ts"))["rules"]>) => Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined && s.items[id]!.difficulty! >= 2).length;
+  // Five startable parts under one parent are listed as the parent and 5, not as five rows.
+  const grouped = await board(t), children = Array.from({ length: 5 }, (_, i) => `part${i}`);
+  await grouped.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "parent", expectRev: null, doc: doc("有五个部分的条目", { plan: [...children.map(id => ({ id, item: id, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...children.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`部分 ${id}`) })),
+  ] });
+  const g = grouped.store.snapshot(), gr = grouped.store.derived.rules(g, T0), gpool = candidates(g, gr).pools.find(p => p.pool === "2+")!;
+  assert.ok(gpool.listed.some(x => "parent" in x && x.count === 5), "the five parts are listed as one group");
+  assert.deepEqual(offers(g, gr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(g, gr) });
+  assert.ok(independent(g, gr) >= 6, "the five parts and the fixture's own candidate");
+  // A parent whose parts are of two levels is one group in each pool, and each pool counts only its own parts.
+  const mixed = await board(t), levels = [2, 2, 2, 1, 1];
+  await mixed.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "mparent", expectRev: null, doc: doc("两个级别的部分", { plan: [...levels.map((_, i) => ({ id: `m${i}`, item: `m${i}`, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...levels.map((difficulty, i) => ({ kind: "item" as const, id: `m${i}`, expectRev: null, doc: doc(`部分 m${i}`, { difficulty }) })),
+  ] });
+  const m = mixed.store.snapshot(), mr = mixed.store.derived.rules(m, T0);
+  const ofLevel = (level: (d: number) => boolean) => Object.keys(m.items).filter(id => mr.startable(id) && holderOf(m, id) === undefined && level(m.items[id]!.difficulty!)).length;
+  assert.deepEqual(offers(m, mr).map(o => [o.pool, o.candidates]), [["1", ofLevel(d => d === 1)], ["2+", ofLevel(d => d >= 2)]]);
+  assert.equal(ofLevel(d => d === 1), 2, "the two level 1 parts");
+  // Twelve loose candidates are more than the rows listed for a pool: the rest are only counted.
+  const crowded = await board(t), loose = Array.from({ length: 12 }, (_, i) => `loose${i}`);
+  await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`) })) });
+  const c = crowded.store.snapshot(), cr = crowded.store.derived.rules(c, T0), cpool = candidates(c, cr).pools.find(p => p.pool === "2+")!;
+  assert.ok(cpool.more > 0, "some candidates are past the rows listed");
+  assert.deepEqual(offers(c, cr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(c, cr) });
+  assert.ok(independent(c, cr) >= 13, "the twelve and the fixture's own candidate");
+});
+
+test("an item a session holds becoming done tells the PM which session to stop, once; one nobody holds tells nothing", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "other", role: "工程师", level: 2, model: "Sonnet", agent: "other-worker", agentId: "agent-o" });
+  const pm = await wakeSocket(t, url);
+  const finish = (id: string) => op.setPlan({ ...asArchitect, id, row: { id: "accept", accept: true, text: "独立验收通过", state: "done" } });
+  await finish("a");
+  await finish("other");
+  await until(() => pm.events().some(f => f.event === "finished"), "the finished push");
+  assert.deepEqual(pm.events().filter(f => f.event === "finished").map(({ n, at, line, ...f }) => f), [{ event: "finished", item: "other", project: "Firn", title: "其他项目", session: "other-worker" }]);
+  await op.appendLog({ ...asArchitect, id: "other", text: "a later write to the done item" });
+  await pm.sync();
+  assert.equal(pm.events().filter(f => f.event === "finished").length, 1, "announced once");
+});
+
+test("the review step going in progress tells the PM the level its text names, unless a reviewer is already on the item; another step does not", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: "a-review", agentId: "agent-r" });
+  const pm = await wakeSocket(t, url);
+  const step = (id: string, row: object) => op.setPlan({ ...asArchitect, id, row: { text: "审查（3 级）", state: "doing", ...row } as never });
+  await step("a", { id: "review" });
+  await step("area", { id: "other", text: "审查（3 级）" });
+  await step("other", { id: "review" });
+  await until(() => pm.events().some(f => f.event === "review"), "the review push");
+  await pm.sync();
+  assert.deepEqual(pm.events().filter(f => f.event === "review").map(({ n, at, line, ...f }) => f), [{ event: "review", item: "other", project: "Firn", title: "其他项目", level: 3 }], "item a has a reviewer, and area's step is not the review step");
+  await step("other", { id: "review", state: "done" });
+  await step("other", { id: "review", state: "doing", text: "审查" });
+  await until(() => pm.events().filter(f => f.event === "review").length === 2, "the second review push");
+  assert.equal(pm.events().filter(f => f.event === "review").at(-1)!.level, null, "a text with no level says none");
 });
 
 test("any session name up to 80 characters has a stream that survives a restart, and names differing only in case are two streams", async t => {

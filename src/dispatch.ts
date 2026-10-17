@@ -138,6 +138,8 @@ export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispat
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
+/** Whether a reviewer session has an open dispatch on the item: a review the engineer resumes itself, not one the PM starts. */
+export const hasReviewer = (s: Pick<Snapshot, "items">, item: string): boolean => openDispatches(s, item).some(d => d.role === "审查");
 /** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
 export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   const out = new Set<string>();

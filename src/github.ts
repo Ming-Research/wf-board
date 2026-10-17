@@ -6,7 +6,7 @@ import { z } from "zod";
 /** `none`: the commit has no checks at all, which is not green. */
 export type CheckState = "success" | "failure" | "pending" | "none";
 export interface Checks { state: CheckState; /** Names of the checks that failed. */ failed: string[] }
-export interface MainLine { branch: string; commit: string; checks: Checks }
+export interface MainLine { branch: string; commit: string; /** The first line of its message: a merge commit names its pull request. */ subject: string; checks: Checks }
 export interface PullState {
   number: number; title: string; url: string; draft: boolean;
   /** When GitHub opened it, ISO 8601. */
@@ -45,7 +45,7 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
   const main = branch ? "main: ref(qualifiedName: $ref)" : "main: defaultBranchRef";
   const named = numbers.map(n => `p${n}: pullRequest(number: ${n}) { number state mergedAt url }`).join("\n");
   return `query($owner: String!, $name: String!${branch ? ", $ref: String!" : ""}) { repository(owner: $owner, name: $name) {
-  ${main} { name target { ... on Commit { oid ${CHECKS} } } }
+  ${main} { name target { ... on Commit { oid messageHeadline ${CHECKS} } } }
   pullRequests(states: OPEN, first: ${LIMIT}, orderBy: {field: CREATED_AT, direction: DESC}) { pageInfo { hasNextPage } nodes {
     number title url isDraft createdAt baseRefName headRefOid mergeable commits(last: 1) { nodes { commit { ${CHECKS} } } } } }
   ${named}
@@ -64,7 +64,7 @@ const Rollup = z.object({ contexts: z.object({ pageInfo: z.object({ hasNextPage:
 const Response = z.object({
   data: z.object({
     repository: z.object({
-      main: z.object({ name: z.string(), target: z.object({ oid: z.string(), statusCheckRollup: Rollup }).nullable() }).nullable(),
+      main: z.object({ name: z.string(), target: z.object({ oid: z.string(), messageHeadline: z.string().default(""), statusCheckRollup: Rollup }).nullable() }).nullable(),
       pullRequests: z.object({
         pageInfo: z.object({ hasNextPage: z.boolean() }),
         nodes: z.array(z.object({
@@ -143,7 +143,7 @@ export function parseResponse(repo: string, text: string): RepoState {
   }
   return {
     repo,
-    ...(main?.target ? { main: { branch: main.name, commit: main.target.oid, checks: summarize(main.target.statusCheckRollup) } } : {}),
+    ...(main?.target ? { main: { branch: main.name, commit: main.target.oid, subject: main.target.messageHeadline, checks: summarize(main.target.statusCheckRollup) } } : {}),
     pulls: pullRequests.nodes.map(pull => ({
       number: pull.number, title: pull.title, url: pull.url, draft: pull.isDraft, createdAt: pull.createdAt, base: pull.baseRefName, commit: pull.headRefOid,
       mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
