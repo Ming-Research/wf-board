@@ -1089,8 +1089,9 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
 
 The three live states answer three different questions: `wip` says someone is on
 it, `idle` says work was done and nobody is on it now, `todo` says nothing
-was done. How far an item is and what it waits on is not a status; the page
-shows it in 计划和进展 (How the page shows a plan). `idle` is not
+was done. How far an item is and what its rows wait on is not a status; the page
+shows them in 计划和进展 (How the page shows a plan). That an item waits for
+its turn in its owner's plan shows in the owner's plan, not in its own detail. `idle` is not
 the 无人推进 check (Stalled work): `idle` says nobody is working on the item;
 无人推进 flags an item someone is working on, with a step in progress, that has
 been quiet for an hour.
@@ -1396,8 +1397,9 @@ The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
 
 The detail shows no separate progress line: status says whether someone is on the item,
-and 计划和进展 at the top of the detail says how far it is and what it waits on, so a line
-under the title would say the same twice.
+and 计划和进展 at the top of the detail says how far it is and what its rows wait on, so a
+line under the title would say the same twice. An item that only waits for its turn in its
+owner's plan shows that in the owner's plan, not in its own detail.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
