@@ -47,6 +47,7 @@ async function pageDir(old: boolean): Promise<string> {
 async function main() {
   await mkdir(OUT, { recursive: true });
   const browser = await launch(t);
+  // A tall window, so that a block is photographed whole.
   const head = [fence(PIPELINE), ...SAMPLES.flatMap(([name, code]) => ["", `**${name}**`, "", fence(code)])].join("\n");
   for (const old of [false, true]) {
     const tag = old ? "old" : "new";
@@ -54,6 +55,7 @@ async function main() {
     const it = board.store.snapshot().items[id]!;
     await ops(board.store).updateItem({ author: it.group, id, rev: it.rev, head, reason: "screenshots" });
     const bp = await BoardPage.open(browser, board);
+    await bp.page.setViewportSize({ width: 1500, height: 3600 });
     await bp.select(id);
     const drawn = () => bp.page.waitForFunction(count => {
       const blocks = [...document.querySelectorAll<HTMLElement>("#item-detail .mermaid-block")];
@@ -69,6 +71,10 @@ async function main() {
       for (let i = 0; i < names.length; i++) await blocks.nth(i).screenshot({ path: join(OUT, `${names[i]}-${tag}-${scheme}.png`) });
       const sizes = await bp.page.evaluate(() => [...document.querySelectorAll("#item-detail .mermaid-fig svg")].map(s => { const v = (s as SVGSVGElement).viewBox.baseVal; return `${Math.round(v.width)}x${Math.round(v.height)}`; }));
       console.log(`${tag} ${scheme}: ${names.map((n, i) => `${n} ${sizes[i]}`).join(", ")}`);
+      if (scheme === "light") {
+        const nodes = await bp.page.evaluate(() => [...document.querySelectorAll("#item-detail .mermaid-fig svg")[0]!.querySelectorAll("g.node")].slice(0, 8).map(n => { const b = (n as SVGGElement).getBBox(); return `${n.id.replace(/.*flowchart-/, "")} ${n.getAttribute("transform")} ${Math.round(b.width)}x${Math.round(b.height)}`; }));
+        console.log(`${tag} nodes: ${nodes.join(" | ")}`);
+      }
     }
     await bp.page.emulateMedia({ colorScheme: "light" });
     if (!old) {

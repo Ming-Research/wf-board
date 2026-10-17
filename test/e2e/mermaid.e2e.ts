@@ -581,7 +581,7 @@ const probe = (bp: BoardPage) => bp.page.evaluate(() => { (window as unknown as 
 const NO_WRAP: Edit = { file: "highlight.ts", find: `return fenceLang(info) === "mermaid" ? '<div class="mermaid-block">' + pre + "</div>" : pre;`, replace: "return pre;" };
 const LOOSE: Edit = { file: "mermaid.ts", find: 'securityLevel: "strict"', replace: 'securityLevel: "loose"' };
 const EAGER: Edit = { file: "mermaid.ts", find: 'if (typeof MutationObserver === "undefined") return;', replace: 'if (typeof MutationObserver === "undefined") return;\n  void load();' };
-// Draws only until the first diagram is drawn, the way a page that draws from its first render alone would.
+// Draws only until the first diagram is drawn, the way a page that draws from its first render alone would (with LATE_DRAW, which takes out the other place the page draws a repainted item's diagrams).
 const FIRST_ONLY: Edit = { file: "mermaid.ts", find: "new MutationObserver(records => {\n", replace: "new MutationObserver(records => {\n    if (drawn.size) return;\n" };
 const LIGHT_ONLY: Edit = { file: "mermaid.ts", find: 'theme = dark() ? "dark" : "default"', replace: 'theme = "default"' };
 const NO_ERROR: Edit = { file: "mermaid.ts", find: 'note.textContent = "图画不出来：" + message;', replace: 'note.textContent = "";' };
@@ -612,7 +612,7 @@ const ONE_VIEW: Edit[] = [
 ];
 // The detail pane is repainted and its scroll restored before the diagrams are drawn again.
 const LATE_DRAW: Edit = { file: "app.ts", find: "drawMermaid(pane);", replace: "" };
-const SAME_IDS: Edit = { file: "mermaid.ts", find: 'show(block, known.svg.replaceAll(known.id, "mermaid-" + ++serial))', replace: "show(block, known.svg)" };
+const SAME_IDS: Edit = { file: "mermaid.ts", find: 'show(block, known.svg.replaceAll(known.id, "mermaid-" + ++serial), source)', replace: "show(block, known.svg, source)" };
 
 const LONG = { timeout: 5 * 60_000 };
 
@@ -667,7 +667,7 @@ test("a diagram is a diagram again after a live update repaints its item", LONG,
   none(await checkRepaint(bp, board, id, WAIT));
 });
 test("the same check on a page that draws only its first render reports the code left behind", LONG, async t => {
-  const { bp, board, id } = await open(t, seedHead, [FIRST_ONLY]);
+  const { bp, board, id } = await open(t, seedHead, [FIRST_ONLY, LATE_DRAW]);
   // The blocks are in the page after the update, and none of them was drawn.
   caught(await checkRepaint(bp, board, id, GIVE_UP), /^mermaid-repaint: after the live update, expected 4 mermaid blocks drawn within 8 s; found 4 blocks, states none,none,none,none/);
 });

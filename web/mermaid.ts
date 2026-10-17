@@ -132,7 +132,7 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     hint,
     button("−", "缩小", () => set(zoom / STEP, middle())),
     button("+", "放大", () => set(zoom * STEP, middle())),
-    button("还原", "还原到默认大小", () => { set(1, middle()); fig.scrollLeft = 0; }),
+    button("还原", "还原", () => { set(1, middle()); fig.scrollLeft = 0; }),
   );
   return bar;
 }
