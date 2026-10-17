@@ -86,8 +86,9 @@ jobs:
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run test:e2e
-  # Writes the result of a run started by hand to the commit it ran on. A cancelled run writes nothing: the run that
-  # replaced it does. A push to the main line writes nothing; its checks are listed on the commit.
+  # Writes the result of a run started by hand to the commit it ran on. A cancelled run's result job writes nothing: the
+  # pending its start wrote stands until the next run of the commit. A push to the main line writes nothing; its checks
+  # are listed on the commit. `needs` lists every job whose result counts: a project adds each of its test jobs here.
   result:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
     needs: [start, no-tmp-workflow, test, e2e]

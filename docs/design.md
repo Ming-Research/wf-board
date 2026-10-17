@@ -3749,11 +3749,12 @@ updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
-The full CI (`.github/workflows/ci.yml`: `no-tmp-workflow`, `test`, `e2e` and
-`result`) takes about 12 minutes with its queue, and a change under way is
-pushed many times. A push to a pull request branch therefore does not start it.
-A project that adopts this scheme copies `ci.yml` and `ci-mark.yml` and changes
-only the test jobs.
+The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `test`,
+`e2e` and `result`) takes about 12 minutes with its queue, and a change under
+way is pushed many times. A push to a pull request branch therefore does not
+start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
+and changes the test jobs and the job list in `needs` of `result`, which reads
+only the jobs it lists.
 
 - **While writing**, the engineer adds a temporary workflow
   `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
@@ -3830,25 +3831,32 @@ only the test jobs.
   wrote were absent from `gh pr checks` and from the GraphQL roll-up of both
   the pull request and the commit, five minutes and more after the run ended.
   GitHub's documentation does not say this. Reopen the choice if GitHub lists
-  such runs among a pull request's checks: `result` and `ci-mark.yml` would
-  then go, and the wait script and the board would read the run itself. The
-  first job of a run started by hand (`start`) writes `full-ci` as pending
-  again, so the red of an earlier run of the same commit does not stand
-  while the new one runs; its last job (`result`) writes the outcome of the
-  run's jobs as `full-ci` (success or failure, linking to the run). To try a
-  commit again, start the full CI again; rerunning only the failed jobs
-  leaves the earlier red standing until `result` runs. `ci-mark.yml` writes
-  `full-ci` as pending on every pull request push, unless the commit already
-  has one. A pull request therefore
-  reads pending until a full CI has run on its head commit, and the board
-  does not push "can be merged" for a commit that never had one, except in
-  the seconds between a push and the mark (about 8 seconds in the run seen,
-  against a look every five minutes), or when the mark job does not run
-  (queued, or Actions minutes used up): then only the checks that did run are
-  read and a commit without a full CI can be taken for passed. That gap is
-  accepted; whoever merges reads `full-ci` on the head commit. A newer status
-  of the same name replaces the older, so a rerun after a failure replaces
-  the red.
+  such runs among a pull request's checks: `start` and `result` would then
+  go, and the wait script and the board would read the run itself.
+  `ci-mark.yml` would need another way to tell a pull request that never had
+  a full CI, because such a pull request still lists neither `test` nor
+  `e2e`.
+
+  The status is written in three places. `ci-mark.yml` writes `full-ci` as
+  pending on every pull request push, unless the commit already has one. The
+  first job of a run started by hand (`start`) writes it as pending again, so
+  the red of an earlier run of the same commit does not stand while the new
+  one runs; the last job (`result`) writes the outcome of the run's jobs
+  (success or failure, linking to the run). To try a commit again, start the
+  full CI again; rerunning only the failed jobs leaves the earlier red
+  standing until `result` runs. A run cancelled by hand leaves the pending
+  that `start` wrote, over any earlier success of the commit, until the next
+  run of the commit; that direction is safe, since pending blocks "can be
+  merged".
+
+  A pull request therefore reads pending until a full CI has run on its head
+  commit, and the board does not push "can be merged" for a commit that never
+  had one, except in the seconds between a push and the mark (about 8 seconds
+  in the run seen, against a look every five minutes), or when the mark job
+  does not run (queued, or Actions minutes used up): then only the checks that
+  did run are read and a commit without a full CI can be taken for passed.
+  That gap is accepted; the status on the head commit shows whether a full CI
+  ran.
 - **The merge**: the run a pull request starts tests the branch merged with
   the main line as it was at that push; a run started by hand tests the branch
   head. The engineer merges the main line into the branch before starting it,
