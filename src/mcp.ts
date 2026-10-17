@@ -90,8 +90,9 @@ export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>, lim
 export function formatReport(report: q.ChangesReport, o: { limit?: number; detail?: boolean } = {}): string {
   const limit = o.limit ?? 30, { total, dropped } = report.commits;
   const since = /^[0-9a-f]{40}$/.test(report.since) ? report.since.slice(0, 12) : report.since;
-  if (!total) return `自 ${since} 起没有改动。`;
-  const out = [`自 ${since} 起 ${total} 个提交${report.except.length ? `，去掉 ${report.except.join("、")} 的 ${dropped} 个` : ""}`];
+  const { items, cards, notes, bySession } = report.others, rows = report.flags.length + report.created.length + report.replies.length;
+  if (!total && !rows && !items && !cards && !notes) return `自 ${since} 起没有改动。`;
+  const out = [`自 ${since} 起 ${total} 个提交${report.except.length ? `，去掉 ${report.except.join("、")} 的 ${dropped} 个` : ""}${report.unreadable ? `；${report.unreadable} 个旧版本读不出，按没有算` : ""}${rows ? "" : "，没有要处理的行"}`];
   const group = <T>(title: string, list: readonly T[], line: (x: T) => string) => {
     if (!list.length) return;
     out.push(title, ...list.slice(0, limit).map(line));
@@ -104,7 +105,7 @@ export function formatReport(report: q.ChangesReport, o: { limit?: number; detai
     x => `  ${x.id} · ${x.project} · ${oneLine(x.title)} · 建的人：${x.by}${x.flags.length ? ` · 标记：${x.flags.join("、")}` : ""}`);
   group(`留言和卡 ${report.replies.length} 个`, report.replies,
     x => `  ${x.kind === "note" ? "留言" : "卡"} ${x.id} · ${x.item} · ${x.summary} · ${x.by.join("、")}`);
-  const { items, cards, notes, bySession } = report.others, kinds = [["条目", items], ["卡", cards], ["留言", notes]].filter(([, n]) => n).map(([name, n]) => `${name} ${n} 个`);
+  const kinds = [["条目", items], ["卡", cards], ["留言", notes]].filter(([, n]) => n).map(([name, n]) => `${name} ${n} 个`);
   if (kinds.length) {
     const sessions = Object.entries(bySession).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, n]) => `${name} ${n}`).join("，");
     out.push(`其它改动：${kinds.join("、")}（${sessions}）${o.detail ? "：" : "。逐个看加 detail。"}`);

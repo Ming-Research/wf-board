@@ -4,6 +4,7 @@ import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.t
 import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
+import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
 
 export type Kind = "item" | "card" | "note";
@@ -409,8 +410,6 @@ interface RangeDoc { doc: { kind: Exclude<DocKind, "glossary">; id: string; comm
 interface Range {
   /** Every commit of the range, oldest first. */
   commits: CommitInfo[];
-  /** The commits that wrote an item, a card or a note. */
-  content: CommitInfo[];
   /** Each document written in the range, with the commits that wrote it and its version before the first and after the last. */
   changed: RangeDoc[];
   /** The head board with the documents deleted in the range added back, for the rules of anything that hangs on them. */
@@ -428,13 +427,12 @@ async function readRange(store: Store, s: Snapshot, since: string, f: Scope, hea
   allowRange(listed.length);
   const commits = listed.filter(c => !/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since)).reverse();
   const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
-  const content = new Set<CommitInfo>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;
     const kind = ({ items: "item", decisions: "decision", notes: "note" } as const)[match[1] as "items" | "decisions" | "notes"], id = match[2]!;
     const key = `${kind}:${id}`, doc = docs.get(key) ?? { kind, id, commits: [] };
-    doc.commits.push(commit); docs.set(key, doc); content.add(commit);
+    doc.commits.push(commit); docs.set(key, doc);
   }
   // A document the snapshot no longer holds was deleted in the range. Its last version is its file in the commit before the
   // one that deleted it: one file read, never a rebuilt board.
@@ -463,23 +461,27 @@ async function readRange(store: Store, s: Snapshot, since: string, f: Scope, hea
   /** A card that is gone from the view still has the item the store last saw it on. */
   const cardItem = (card: string): string | undefined => store.cardItem(card);
   const ownerOf = (kind: Kind, id: string): string => documentItem(view, kind === "card" ? "decision" : kind, id, cardItem) ?? "";
-  return { commits, content: [...content], changed, view, r, rulesFor, ownerOf };
+  return { commits, changed, view, r, rulesFor, ownerOf };
 }
 
-/** The documents the range changed, grouped by area, each with the commits that wrote it. `except` leaves out the commits of
- * the named sessions, and the documents only they wrote. */
-export async function changes(store: Store, s: Snapshot, since: string, f: Scope = {}, o: { except?: readonly string[]; rules?: Rules } = {}) {
-  const range = await readRange(store, s, since, f, o.rules), dropped = droppedBy(o.except);
-  const grouped = new Map<string, { areaId: string; area: string; documents: DocumentChange[] }>();
-  for (const { doc, before, after } of range.changed) {
-    const kept = doc.commits.filter(c => !dropped(c));
-    if (!kept.length) continue;
+type AreaGroups = Array<{ areaId: string; area: string; documents: DocumentChange[] }>;
+/** The documents of the range grouped by area, each with the commits `shown` gives for it; a document it gives none for is left out. */
+function groupByArea(range: Range, f: Scope, shown: (entry: RangeDoc) => CommitInfo[] | undefined): AreaGroups {
+  const grouped = new Map<string, AreaGroups[number]>();
+  for (const entry of range.changed) {
+    const { doc, before, after } = entry, commits = shown(entry);
+    if (!commits?.length) continue;
     const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = range.ownerOf(kind, doc.id), vr = range.rulesFor(owner);
     if (!inScope(vr, owner, f)) continue;
     const meta = row(range.view, vr, kind, doc.id, owner), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
-    group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits: kept }); grouped.set(meta.areaId, group);
+    group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits }); grouped.set(meta.areaId, group);
   }
   return [...grouped.values()];
+}
+/** The documents the range changed, grouped by area, each with the commits that wrote it. */
+export async function changes(store: Store, s: Snapshot, since: string, f: Scope = {}) {
+  const range = await readRange(store, s, since, f);
+  return groupByArea(range, f, entry => entry.doc.commits);
 }
 
 export interface ReportOptions { except?: readonly string[]; detail?: boolean; rules?: Rules }
@@ -490,15 +492,18 @@ export interface CreatedRow { id: string; project: string; title: string; by: st
 export interface ReplyRow { kind: "note" | "card"; id: string; item: string; summary: string; by: string[] }
 export interface ChangesReport {
   since: string;
+  /** Every commit of the range, and how many of them carry an excluded session. */
   commits: { total: number; dropped: number };
   except: string[];
+  /** Earlier versions of documents that do not fit today's schema; the old board has none of those documents. */
+  unreadable: number;
   flags: FlagRow[];
   /** How many new flags there are, by kind of flag. */
   flagCounts: Record<string, number>;
   created: CreatedRow[];
   replies: ReplyRow[];
   /** The changes that are not rows above: counted by kind and by session; the documents themselves only with `detail`. */
-  others: { items: number; cards: number; notes: number; bySession: Record<string, number>; groups: Array<{ areaId: string; area: string; documents: DocumentChange[] }> };
+  others: { items: number; cards: number; notes: number; bySession: Record<string, number>; groups: AreaGroups };
 }
 /** A flag's name on a row: its short label, else its text without a count that changes while the flag stays. */
 const flagName = (c: Check): string => c.label ?? c.text.replace(/（现在 \d+ 个）/, "");
@@ -511,22 +516,34 @@ function nameList(checks: readonly Check[]): string[] {
   for (const c of checks) counts.set(flagName(c), (counts.get(flagName(c)) ?? 0) + 1);
   return [...counts].map(([name, n]) => n > 1 ? `${name}×${n}` : name);
 }
-/** A new note or card, a note that gained a reply or changed state, a card whose status changed: someone is waiting on it. */
-function needsHandling(kind: "decision" | "note", before: unknown | null, after: unknown | null): boolean {
+/** A new note or card, a note that gained a reply or changed state, a card whose status changed: someone is waiting on it. A
+ * draft is not: nobody has it yet. A document an excluded session created is not new to the reader, so only what happened
+ * to it since counts, judged by how it ended up: a note with a reply, a card no longer open. */
+function needsHandling(kind: "decision" | "note", before: unknown | null, after: unknown | null, creationLeftOut: boolean): boolean {
   if (after === null) return false;
-  if (before === null) return true;
-  const a = before as Record<string, unknown>, b = after as Record<string, unknown>;
+  const b = after as Record<string, unknown>;
+  if (b.state === "draft") return false;
+  if (before === null) return !creationLeftOut || (kind === "note" ? b.reply !== undefined : b.status !== "open");
+  const a = before as Record<string, unknown>;
   return kind === "note" ? a.reply !== b.reply || a.state !== b.state : a.status !== b.status;
+}
+/** What a row says of a note or card: the summary of its change, or of how it ended up when its creation is left out. */
+function summaryOf(kind: "decision" | "note", before: unknown | null, after: unknown | null, creationLeftOut: boolean): string {
+  if (!creationLeftOut || before !== null) return describeChanges(before, after, kind);
+  return kind === "note" ? "new reply" : `status open→${(after as { status: string }).status}`;
 }
 /** The board as it was when the range began: the head board with each document the range wrote put back to the version
  * before it, those the range created taken away, those it deleted brought back, and the settings the range changed put back. */
-function boardBefore(store: Store, s: Snapshot, changed: readonly RangeDoc[], settings: Snapshot["board"] | null): Snapshot {
+function boardBefore(store: Store, s: Snapshot, changed: readonly RangeDoc[], settings: Snapshot["board"] | null): { board: Snapshot; unreadable: number } {
   const items: Record<string, unknown> = { ...s.items }, decisions: Record<string, unknown> = { ...s.decisions }, notes: Record<string, unknown> = { ...s.notes };
+  let unreadable = 0;
   for (const { doc, before } of changed) {
     const collection = doc.kind === "item" ? items : doc.kind === "decision" ? decisions : notes;
-    if (before === null) delete collection[doc.id]; else collection[doc.id] = store.earlier(doc.kind, doc.id, before);
+    if (before === null) { delete collection[doc.id]; continue; }
+    // A version that does not fit today's schema cannot be read into the old board: it counts as absent there, and the answer says so.
+    try { collection[doc.id] = store.earlier(doc.kind, doc.id, before); } catch (error) { if (!(error instanceof ValidationError)) throw error; delete collection[doc.id]; unreadable++; }
   }
-  return { ...s, board: settings ?? s.board, items: items as Snapshot["items"], decisions: decisions as Snapshot["decisions"], notes: notes as Snapshot["notes"] };
+  return { board: { ...s, board: settings ?? s.board, items: items as Snapshot["items"], decisions: decisions as Snapshot["decisions"], notes: notes as Snapshot["notes"] }, unreadable };
 }
 /** When the range began, in milliseconds: the time given, or the time of the commit given. */
 async function timeOf(store: Store, since: string): Promise<number> {
@@ -546,8 +563,9 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
   const writers = writersByItem(range.commits, file => itemOfFile(view, file, card => store.cardItem(card)));
   const created: CreatedRow[] = [], replies: ReplyRow[] = [], createdIds = new Set<string>();
   const others: ChangesReport["others"] = { items: 0, cards: 0, notes: 0, bySession: {}, groups: [] };
-  const grouped = new Map<string, ChangesReport["others"]["groups"][number]>();
-  for (const { doc, before, after } of range.changed) {
+  const otherCommits = new Map<RangeDoc, CommitInfo[]>();
+  for (const entry of range.changed) {
+    const { doc, before, after } = entry;
     const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = range.ownerOf(kind, doc.id), vr = range.rulesFor(owner);
     if (!inScope(vr, owner, f)) continue;
     const kept = doc.commits.filter(c => !dropped(c)), by = [...new Set(kept.map(sessionOf))];
@@ -556,19 +574,19 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
       if (!dropped(doc.commits[0]!)) { createdIds.add(doc.id); created.push({ id: doc.id, project: vr.projectOf(doc.id), title: s.items[doc.id]?.title ?? (after as { title: string }).title, by: sessionOf(doc.commits[0]!), flags: [] }); continue; }
     }
     if (!kept.length) continue;
-    if (doc.kind !== "item" && needsHandling(doc.kind, before, after)) { replies.push({ kind: doc.kind === "decision" ? "card" : "note", id: doc.id, item: owner, summary: describeChanges(before, after, doc.kind), by }); continue; }
+    if (doc.kind !== "item") {
+      const creationLeftOut = before === null && dropped(doc.commits[0]!);
+      if (needsHandling(doc.kind, before, after, creationLeftOut)) { replies.push({ kind: doc.kind === "decision" ? "card" : "note", id: doc.id, item: owner, summary: summaryOf(doc.kind, before, after, creationLeftOut), by }); continue; }
+    }
     if (doc.kind === "item") others.items++; else if (doc.kind === "decision") others.cards++; else others.notes++;
     for (const name of by) others.bySession[name] = (others.bySession[name] ?? 0) + 1;
-    if (o.detail) {
-      const meta = row(view, vr, kind, doc.id, owner), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
-      group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits: kept }); grouped.set(meta.areaId, group);
-    }
+    otherCommits.set(entry, kept);
   }
-  others.groups = [...grouped.values()];
+  if (o.detail) others.groups = groupByArea(range, f, entry => otherCommits.get(entry));
   // The board when the range began, and the flags that exist now but did not exist on it.
   const boardCommit = range.commits.find(c => c.files.includes("board.yaml"));
   const settings = boardCommit?.parents[0] ? await store.boardAt(boardCommit.parents[0]) : null;
-  const rOld = makeRules(boardBefore(store, s, range.changed, settings), await timeOf(store, since));
+  const old = boardBefore(store, s, range.changed, settings), rOld = makeRules(old.board, await timeOf(store, since));
   const flags: FlagRow[] = [], flagCounts: Record<string, number> = {};
   for (const id of Object.keys(s.items)) {
     if (!inScope(r, id, f)) continue;
@@ -581,7 +599,7 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
     for (const c of added) flagCounts[flagKind(c)] = (flagCounts[flagKind(c)] ?? 0) + 1;
   }
   flags.sort((a, b) => a.flags[0]!.localeCompare(b.flags[0]!) || a.item.localeCompare(b.item));
-  return { since, commits: { total: range.content.length, dropped: range.content.filter(dropped).length }, except, flags, flagCounts, created, replies, others };
+  return { since, commits: { total: range.commits.length, dropped: range.commits.filter(dropped).length }, except, unreadable: old.unreadable, flags, flagCounts, created, replies, others };
 }
 export async function history(store: Store, kind: DocKind, id: string, limit = 20): Promise<CommitInfo[]> {
   const commits = await store.log({ kind, id, limit: limit === 0 ? 1 : limit });

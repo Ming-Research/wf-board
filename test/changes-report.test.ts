@@ -147,6 +147,9 @@ test("the other changes are counted by kind and session, and never listed twice"
   assert.ok(r.others.groups.every(g => g.documents.every(d => d.commits.every(c => c.session !== undefined))), "the commits carry their sessions");
   // Without detail the groups are left out: the counts are all there is.
   assert.deepEqual((await report(store, since)).others.groups, []);
+  // The documents behind the counts are the document listing, from one and the same grouping.
+  const documents = await q.changes(store, store.snapshot(), since), shown = new Set(r.others.groups.flatMap(g => g.documents.map(d => d.id)));
+  assert.deepEqual(documents.map(g => ({ ...g, documents: g.documents.filter(d => shown.has(d.id)) })).filter(g => g.documents.length), r.others.groups);
 });
 
 test("scope filters reach every group, and the limit cuts each group with the rest counted", async t => {
@@ -233,6 +236,69 @@ test("the tool answers the compact form by default, the document listing with de
   assert.match(detail, /eng-1: write a/, "the commit line names the session");
   assert.doesNotMatch(detail, /item:eng-made/, "a created item is listed once, in its own group");
   assert.equal((await client.callTool({ name: "changes", arguments: { since, except: [""] } })).isError, true, "an empty session name is refused");
+});
+
+test("a range that only changes the board's settings still lists the flags it brought, through the tool", async t => {
+  const { store, op } = await board(t);
+  const since = store.snapshot().head, current = store.snapshot();
+  await store.commit({ author: "Architect", session: "架构师", message: "Approve a tag", board: { ...current.board, tags: [{ name: "测试", meaning: "Applies to tests", projects: ["Whitefoot"] }] } });
+  const mcp = createMcpServer({ store, ops: ops(store) }), client = new Client({ name: "Patrol", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await mcp.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await mcp.close(); });
+  const text = ((await client.callTool({ name: "changes", arguments: { since } })).content as Array<{ text: string }>)[0]!.text;
+  assert.match(text, /^自 .* 起 1 个提交/);
+  assert.match(text, /新标记 \d+ 条（缺标签 ×\d+）/);
+  assert.match(text, /  a · Whitefoot · 缺标签 · 改的人：范围内没人改它/);
+  void op;
+});
+
+test("a range with nothing to show says so, and one with only commits says there is nothing to handle", async t => {
+  const { store, op } = await board(t);
+  const since = store.snapshot().head;
+  assert.equal(formatReport(await report(store, since)), `自 ${since.slice(0, 12)} 起没有改动。`);
+  // A draft note is a change nobody has to handle.
+  await store.commit({ author, message: "draft", puts: [{ kind: "note", id: "draft-1", expectRev: null, doc: { target: "it:a", kind: "comment", text: "Not sent", at, state: "draft" } }] });
+  const r = await report(store, since);
+  assert.deepEqual(r.replies, []);
+  assert.equal(r.others.notes, 1, "counted with the other changes");
+  assert.match(formatReport(r), /起 1 个提交，没有要处理的行\n其它改动：留言 1 个/);
+  void op;
+});
+
+test("a card or note an excluded session wrote counts as new only to those who did not write it; what others did to it is a change", async t => {
+  const { store } = await board(t);
+  const since = store.snapshot().head, card = (question: string, status: string) => ({ item: "a", question, background: "Evidence", options: [{ key: "A", text: "A" }], status, at, updated: at });
+  const note = (text: string, extra: object = {}) => ({ target: "it:a", kind: "comment", text, at, sentAt: at, state: "sent", ...extra });
+  const putDoc = (session: string, kind: "decision" | "note", id: string, doc: object) => store.commit({ author, session, message: `write ${id}`, puts: [{ kind, id, expectRev: store.snapshot()[kind === "decision" ? "decisions" : "notes"][id]?.rev ?? null, doc }] });
+  await putDoc("PM", "decision", "pm-card", card("PM asks", "open"));
+  await putDoc("PM", "decision", "pm-ruled", card("PM asks again", "open"));
+  await putDoc("owner", "decision", "pm-ruled", card("PM asks again", "ruled"));
+  await putDoc("PM", "note", "pm-note", note("From PM"));
+  await putDoc("eng-1", "note", "pm-note", note("From PM", { reply: "Answered", repliedAt: at, repliedBy: "eng-1" }));
+  await putDoc("PM", "decision", "pm-edited", card("PM asks a third", "open"));
+  await putDoc("eng-1", "decision", "pm-edited", { ...card("PM asks a third", "open"), background: "More evidence" });
+  await putDoc("eng-2", "decision", "eng-card", card("Engineer asks", "open"));
+  const kept = await report(store, since, {}, { except: ["PM"] });
+  assert.deepEqual(kept.replies.map(x => [x.kind, x.id, x.by, x.summary]).sort(), [["card", "eng-card", ["eng-2"], "new card"], ["card", "pm-ruled", ["owner"], "status open→ruled"], ["note", "pm-note", ["eng-1"], "new reply"]]);
+  assert.equal(kept.others.cards, 1, "pm-edited: written by PM, changed by someone else, but nothing in it is waited on");
+  assert.deepEqual(kept.others.bySession, { "eng-1": 1 });
+  const all = await report(store, since);
+  assert.deepEqual(all.replies.map(x => x.id).sort(), ["eng-card", "pm-card", "pm-edited", "pm-note", "pm-ruled"]);
+});
+
+test("a version of a document from before the range that does not fit today's schema is taken as absent, and the answer says how many", async t => {
+  const { dir } = await board(t);
+  const base = Math.floor(Date.now() / 1000) + 60, iso = (sec: number) => new Date(sec * 1000).toISOString();
+  // old-shape has a field no schema knows, in the version the range starts from; the next commit writes it as today's.
+  await appendCommits(dir, [{ at: base, message: "Odd version", session: "seed", files: { "items/old-shape.yaml": { ...doc("旧版本"), rev: 1, retired_field: 1, updated: iso(base) } } }]);
+  const odd = (await Store.open(dir).catch(() => undefined));
+  assert.equal(odd, undefined, "a board whose head holds that version does not even open");
+  await appendCommits(dir, [{ at: base + 60, message: "Fixed", session: "eng-1", files: { "items/old-shape.yaml": { ...doc("旧版本", { head: "Fixed" }), rev: 2, updated: iso(base + 60) } } }]);
+  const store = await Store.open(dir), since = (await store.log({ at: store.snapshot().head, limit: 5 })).find(c => c.message === "Odd version")!.commit;
+  const r = await report(store, since);
+  assert.equal(r.unreadable, 1);
+  assert.match(formatReport(r), /1 个旧版本读不出，按没有算/);
+  assert.deepEqual(r.created, [], "it was not created in the range; its earlier version is only unreadable");
 });
 
 test("the old listing keeps showing the project when a commit has no session", () => {

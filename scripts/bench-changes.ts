@@ -15,7 +15,7 @@
 //   changes over the last 50 commits, any of the four branches: answers within 1 s, the heap grows by at most 100 MB
 //   the patrol read (changesReport, what `changes` answers by default) over the last 50 commits, the same limits; over about a
 //   day (2,400 commits) it is only reported. Each prints the characters its answer takes in the default form, with detail, and
-//   in the document listing it replaced (formatChanges, the cap of 40 documents lifted), so the size is on record
+//   in the document listing it replaced (formatChanges, with the cap of 40 documents lifted and as the old default had it), so the size is on record
 //   every case: the heap stays at or below half of the budget's line (the margin that lets a normal query pass the budget)
 //   diff with a time: within 1 s
 //
@@ -125,7 +125,9 @@ interface Context { store: any; q: any; history: any; mcp: any; git(...a: string
 const reportCase = (name: string, branch: string, since: (git: Context["git"]) => string): Case => ({ name, branch,
   run: ({ store, q, git }) => q.changesReport(store, store.snapshot(), since(git), {}, { detail: true }),
   size: async ({ store, q, mcp, git }, report) => ({ defaultChars: mcp.formatReport(report, {}).length, detailChars: mcp.formatReport(report, { detail: true, limit: 100000 }).length,
-    oldListingChars: mcp.formatChanges(await q.changes(store, store.snapshot(), since(git)), 100000).length }) });
+    oldListingChars: mcp.formatChanges(await q.changes(store, store.snapshot(), since(git)), 100000).length,
+    // What `changes` answered by default before: the same listing capped at 40 documents.
+    oldDefaultChars: mcp.formatChanges(await q.changes(store, store.snapshot(), since(git)), 40).length }) });
 
 /** The cases: a name, the branch it runs on, and the request it makes. */
 const CASES: Case[] = [
