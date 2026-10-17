@@ -19,7 +19,7 @@ export function testFiles(dir = "test"): string[] {
     .sort();
 }
 
-/** The shards, each a list of files: the files longest first, each into the shard with the least cost so far (the lowest number on a tie). */
+/** The shards, each a list of files: the files longest first, each into the shard with the least cost so far (the lowest number on a tie). The files of a shard are listed longest first too, since the runner starts them in that order, a few at a time. */
 export function assign(files: readonly string[], costs: Readonly<Record<string, number>>, shards: number): string[][] {
   const cost = (file: string) => costs[file] ?? DEFAULT_COST;
   const bins = Array.from({ length: shards }, () => ({ load: 0, files: [] as string[] }));
@@ -28,7 +28,7 @@ export function assign(files: readonly string[], costs: Readonly<Record<string, 
     lightest.load += cost(file);
     lightest.files.push(file);
   }
-  return bins.map(bin => bin.files.sort());
+  return bins.map(bin => bin.files);
 }
 
 if (import.meta.main) {
