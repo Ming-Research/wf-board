@@ -508,10 +508,14 @@ test("brief counts the items that only wait for their turn in their owner's plan
   // area's plan puts new1 and new2 behind its earlier open row; new2 also waits on another item of its own.
   for (const key of ["new1", "new2"]) await op.createItem({ ...asArchitect, key, owner: "area", title: key, head: "Stable", accept: "Result passes", plan: [{ id: "work", text: "Deliver result", state: "todo" }], links: [], data: "4 cases" });
   await op.setPlan({ author, id: "new2", rows: [{ item: "b", own: false, after: [] }, acceptance()] });
-  const s = store.snapshot(), r = rules(s), result = q.brief(s, r, author);
-  assert.deepEqual([r.statusOf("new1"), r.statusOf("new2")], ["blocked", "blocked"]);
+  // new3 also waits only for its turn, but a live session is on it: it is listed, so the session's work is not hidden.
+  await op.createItem({ ...asArchitect, key: "new3", owner: "area", title: "new3", head: "Stable", accept: "Result passes", plan: [{ id: "work", text: "Deliver result", state: "todo" }], links: [], data: "4 cases" });
+  await op.dispatchStart({ ...asArchitect, id: "new3", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
+  const s = store.snapshot(), r = rules(s, Date.parse(later)), result = q.brief(s, r, author);
+  assert.deepEqual([r.statusOf("new1"), r.statusOf("new2"), r.statusOf("new3")], ["blocked", "blocked", "blocked"]);
   const listed = result.progress.map(row => row.id);
   assert.ok(!listed.includes("new1"), "waiting only for its turn: counted, not listed");
   assert.ok(listed.includes("new2"), "blocked on another item too: listed with its plan");
+  assert.ok(listed.includes("new3"), "a session is on it: listed, not counted");
   assert.deepEqual(result.queued, [{ owner: "area", ...(s.items.area!.num === undefined ? {} : { num: s.items.area!.num }), title: s.items.area!.title, count: 1 }]);
 });

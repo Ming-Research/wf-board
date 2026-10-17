@@ -2568,8 +2568,8 @@ item's difficulty when it has one. `brief.progress` adds
 `{id, title, plan?, targets?}` rows for records and blocked items
 that are not already represented in the checks, WIP, TODO or
 outgoing rows, except blocked items that only wait for their turn in their
-owner's plan: `brief.queued` counts those per owner as `{owner, title, count}`
-It does not repeat those rows or add closed work and the TODO
+owner's plan and that nobody is working on: `brief.queued` counts those per
+owner as `{owner, num, title, count}`. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list holds the open items
 targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its

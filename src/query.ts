@@ -255,16 +255,19 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     tags: tagVocabulary(s, project),
   };
   const shown = new Set([...result.checks, ...result.wip, ...result.todo, ...result.paused, ...result.outgoing].map(item => item.id));
-  // An item blocked only because it waits for its turn in its owner's plan (rows before its row are open) is counted under
-  // its owner instead of listed with its plan: the owner's own plan says what comes first.
-  const queued = new Map<string, number>();
+  // An item blocked only because it waits for its turn in its owner's plan (rows before its row are open), and that nobody is
+  // working on, is counted under its owner instead of listed with its plan: the owner's own plan says what comes first.
   const waitsForTurn = (id: string) => {
     const p = r.progress(id);
-    return r.statusOf(id) === "blocked" && p.behind && !p.ask && !p.waiting.length;
+    return r.statusOf(id) === "blocked" && p.behind && !p.ask && !p.waiting.length && !r.held(id);
   };
-  const progress = ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))
-    .filter(id => { if (!waitsForTurn(id)) return true; const owner = r.parentOf(id)!; queued.set(owner, (queued.get(owner) ?? 0) + 1); return false; })
-    .map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
+  const queued = new Map<string, number>(), listed: string[] = [];
+  for (const id of ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))) {
+    if (!waitsForTurn(id)) { listed.push(id); continue; }
+    const owner = r.parentOf(id)!;
+    queued.set(owner, (queued.get(owner) ?? 0) + 1);
+  }
+  const progress = listed.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress, queued: [...queued].map(([owner, count]) => ({ owner, ...numOf(s.items[owner]!), title: s.items[owner]!.title, count })) };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */

@@ -208,3 +208,28 @@ test("status table: owned items each waiting on the other's earlier row stay blo
     assert.equal(derivePlanOracle(s).statusOf(id), "blocked", `oracle ${id}`);
   }
 });
+
+test("status table: a pause marker holds the item and what it owns in its project, and a paused part leaves its owner waiting", () => {
+  const paused = { reason: "Hold", at };
+  const owned = (item: string, extra: Partial<PlanRow> = {}): PlanRow => ({ id: item, item, own: true, after: [], ...extra } as PlanRow);
+  const work = (): PlanRow => ({ id: "work", text: "Work", state: "todo", after: [] });
+  const item = (group: string, plan: PlanRow[], extra: Partial<Item> = {}) => Item.parse({ title: "T", group, priority: "P1", updated: at, rev: 1, plan, ...extra });
+  const s: Snapshot = {
+    head: "0".repeat(40), board: { title: "Pause", projects: [{ name: "P" }, { name: "Q" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
+    items: {
+      top: item("P", [owned("held"), owned("freeKid"), acceptance()]),
+      held: item("P", [owned("heldKid"), owned("otherProject"), acceptance()], { paused }),
+      heldKid: item("P", [work(), acceptance()]),
+      otherProject: item("Q", [work(), acceptance()]),
+      freeKid: item("P", [work(), acceptance()]),
+      // Only ready row is a paused part: the owner waits.
+      waiter: item("P", [owned("pausedPart"), acceptance()]),
+      pausedPart: item("P", [work(), acceptance()], { paused }),
+    },
+  };
+  const expected: Record<string, Status> = { held: "paused", heldKid: "paused", otherProject: "todo", freeKid: "todo", top: "todo", waiter: "blocked", pausedPart: "paused" };
+  for (const [id, status] of Object.entries(expected)) {
+    assert.equal(rules(s).statusOf(id), status, `production ${id}`);
+    assert.equal(derivePlanOracle(s).statusOf(id), status, `oracle ${id}`);
+  }
+});

@@ -18,7 +18,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     const item=snapshot.items[row.item];if(!item)return "waiting";if(item.record)return "resolved";
     const status=walk(row.item,trail);
     if(status==="done"||row.own&&status==="cancelled")return "resolved";
-    if(!row.own||status==="blocked")return "waiting";
+    if(!row.own||status==="blocked"||status==="paused")return "waiting";
     return status==="wip"?"progress":"open";
   }
   const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":"item"in row&&row.own&&(snapshot.items[row.item]?.record===true||snapshot.items[row.item]?.status==="cancelled");
@@ -33,6 +33,17 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     return result;
   }
   function rows(id:string,trail:Set<string>) { return rowsOf(snapshot.items[id]?.plan??[],trail); }
+  // Paused: this item or an ancestor in its same-project ownership chain carries a pause marker. A record on the way has no
+  // status and its marker means nothing, and it does not interrupt the chain; shared rows never inherit a pause.
+  function paused(id:string):boolean {
+    const group=snapshot.items[id]?.group,seen=new Set<string>();
+    for(let cur:string|undefined=id;cur&&!seen.has(cur);cur=(owners.get(cur)??[])[0]){
+      seen.add(cur);const item=snapshot.items[cur];
+      if(!item||item.group!==group)return false;
+      if(!item.record&&item.paused)return true;
+    }
+    return false;
+  }
   // The session of a live dispatch wrote or was started within six hours of `now`, as the agent list reads it.
   const SIX_HOURS=6*3600*1000;
   function liveSession(id:string):boolean {
@@ -84,7 +95,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     const before=cycleHits;
     const active=new Set(trail);active.add(id);const plan=item.plan,values=rowsOf(plan,active);
     const frontier=values.filter(row=>row.ready);
-    const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":values.some(row=>row.state==="progress")?"wip"
+    const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":paused(id)?"paused":values.some(row=>row.state==="progress")?"wip"
       :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")||!ownerReady(id)?"blocked"
       :liveSession(id)?"wip":begun(id,values,plan,active)?"partial":"todo";
     if(cycleHits===before)targetStatuses.set(id,status);
