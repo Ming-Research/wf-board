@@ -31,8 +31,17 @@ jobs:
       - run: |
           git worktree add --detach "$RUNNER_TEMP/base" origin/main
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
-          echo "base $(git -C "$RUNNER_TEMP/base" rev-parse HEAD)"
-          PROBE_BASE="$RUNNER_TEMP/base" node --test test/e2e/${PROBE_FILE:-probe-contention}.e2e.ts
+          cd "$RUNNER_TEMP/base"
+          echo "base $(git rev-parse HEAD); nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
+          npm run -s build:web
+          for round in 1 2 3; do
+            echo "ROUND $round full suite, two files at a time"
+            node --test --test-concurrency=2 'test/e2e/*.e2e.ts' > "$RUNNER_TEMP/full-$round.log" 2>&1 || true
+            grep -E "press-n time \((quiet|writing)\): 30|✖ .*press|ok .*e2e.ts" "$RUNNER_TEMP/full-$round.log" | sed "s/^/FULL $round: /" | cut -c1-260
+            echo "ROUND $round press-n alone"
+            node --test test/e2e/press-n.e2e.ts > "$RUNNER_TEMP/alone-$round.log" 2>&1 || true
+            grep -E "press-n time \((quiet|writing)\): 30|✖ " "$RUNNER_TEMP/alone-$round.log" | sed "s/^/ALONE $round: /" | cut -c1-260
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
