@@ -1,6 +1,7 @@
 // Whether the sessions holding items are still there (docs/design.md, The wake streams, Liveness): when the board asks, when it
 // tells the PM, what counts as a sign of life, and what a restart keeps.
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -283,7 +284,8 @@ test("holders maps each session to the items it holds, in item order, by the one
 
 /** Make `item` ready as `prepare` says, dispatch an engineer on it, and let two hours pass without a sign from it: what the
  * session was asked, what the PM was told, and the item's status. */
-async function twoSilentHours(t: Parameters<typeof board>[0] & { mock: { timers: { enable(o: { apis: string[] }): void; tick(ms: number): void } } }, item: string, prepare: (op: Awaited<ReturnType<typeof server>>["op"]) => Promise<unknown>) {
+type Op = Awaited<ReturnType<typeof server>>["op"];
+async function twoSilentHours(t: TestContext, item: string, prepare: (op: Op) => Promise<unknown>) {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
   const { op, store } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000, timedWakeMs: 1e12 });
@@ -306,10 +308,10 @@ test("a session holding an item in progress is asked after 30 minutes and the PM
 });
 
 for (const [name, item, status, prepare] of [
-  ["paused", "a", "paused", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") }); await op.setPause({ ...asArchitect, id: "a", paused: true, reason: "测试" }); }],
+  ["paused", "a", "paused", async (op: Op) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") }); await op.setPause({ ...asArchitect, id: "a", paused: true, reason: "测试" }); }],
   ["blocked", "b", "blocked", async () => {}],
-  ["done", "a", "done", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("done") }); }],
-  ["cancelled", "a", "cancelled", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setStatus({ ...asArchitect, id: "a", status: "cancelled", log: "测试" }); }],
+  ["done", "a", "done", async (op: Op) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("done") }); }],
+  ["cancelled", "a", "cancelled", async (op: Op) => { await op.setStatus({ ...asArchitect, id: "a", status: "cancelled", log: "测试" }); }],
 ] as const) {
   test(`a session holding a ${name} item is neither asked nor told`, async t => {
     assert.deepEqual(await twoSilentHours(t, item, prepare), { status, asked: 0, told: 0 });
