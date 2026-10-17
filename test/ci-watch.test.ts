@@ -71,7 +71,7 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }, { eng
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "wf-board", repo: REPO }, { name: "Architect" }, { name: "PM" }] } });
   const op = ops(store);
-  await op.createItem({ ...asArchitect, key: "watch", group: "wf-board", priority: "P1", title: "Watch it", head: "**问题**：x\n\n## 改动\n\n[wf-board#23](https://github.com/Ming-Research/wf-board/pull/23)：a change", accept: "验收通过" });
+  await op.createItem({ ...asArchitect, key: "watch", group: "wf-board", title: "Watch it", head: "**问题**：x\n\n## 改动\n\n[wf-board#23](https://github.com/Ming-Research/wf-board/pull/23)：a change", accept: "验收通过" });
   if (engineer) await op.dispatchStart({ ...asArchitect, id: "watch", role: "工程师", level: 2, model: "Sonnet", agent: "watch-eng", agentId: "agent-1" });
   return { dir, store, op };
 }
@@ -183,7 +183,7 @@ test("nobody holds the item, or only a reviewer: nothing is sent; a closed or me
 
 test("a message goes to each session holding an item that names the PR, once", async t => {
   const fx = await fixture(t), gh = fakeGithub(), watch = watchOver(fx, gh);
-  await fx.op.createItem({ ...asArchitect, key: "twin", group: "wf-board", priority: "P1", title: "Twin", head: "## 改动\n\nMing-Research/wf-board#23", accept: "验收通过" });
+  await fx.op.createItem({ ...asArchitect, key: "twin", group: "wf-board", title: "Twin", head: "## 改动\n\nMing-Research/wf-board#23", accept: "验收通过" });
   await fx.op.dispatchStart({ ...asArchitect, id: "twin", role: "工程师", level: 2, model: "Sonnet", agent: "twin-eng", agentId: "agent-3" });
   gh.pulls.set(23, { commit: COMMIT, state: "open", draft: false, merged: false });
   gh.runs.set(COMMIT, [run("test", null)]);
@@ -213,7 +213,7 @@ test("the first look at a repository tells nothing of a round already over; one 
   await watchOver(fx, gh, { stateFile: file }).poll();
   assert.equal(messages(fx.store).length, 1, "and not told again by the next restart");
   // A PR that is new to a repository already looked at, and finished when first seen, is news.
-  await fx.op.createItem({ ...asArchitect, key: "later", group: "wf-board", priority: "P1", title: "Later", head: "## 改动\n\nMing-Research/wf-board#24", accept: "验收通过" });
+  await fx.op.createItem({ ...asArchitect, key: "later", group: "wf-board", title: "Later", head: "## 改动\n\nMing-Research/wf-board#24", accept: "验收通过" });
   await fx.op.dispatchStart({ ...asArchitect, id: "later", role: "工程师", level: 2, model: "Sonnet", agent: "later-eng", agentId: "agent-4" });
   gh.pulls.set(24, { commit: "c3d4e5f6a1b2", state: "open", draft: false, merged: false });
   gh.runs.set("c3d4e5f6a1b2", [run("test", "success")]);
