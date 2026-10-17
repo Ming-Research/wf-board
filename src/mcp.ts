@@ -142,7 +142,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
     // Every tool takes the session, reads too: a call from the architect's session is the receipt for what the board pushed it
-    // (docs/design.md, The wake stream), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
+    // (docs/design.md, The wake streams), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
     const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
     const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
@@ -158,7 +158,11 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "") }] };
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
+        // Another agent's call carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams, In a tool result).
+        const caller = credential?.ok ? (credential.who.access.role === "架构师" ? undefined : credential.who.session) : typeof args.session === "string" && !isArchitectSession(args.session) ? args.session.trim() : undefined;
+        const pushed = caller && wake ? wake.footer(caller) : "";
+        return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
       finally { timed?.(outcome, () => summarize(a)); }

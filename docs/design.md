@@ -70,8 +70,9 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process. It keeps no session:
    each request stands alone (see *MCP without a session*).
-3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
-   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
+3. **The wake streams** (WebSocket): `/wake` pushes the architect's session what
+   needs it (owner notes, stalled work, a timed wake, the results of deploys), and
+   `/wake/<session name>` pushes another agent what needs it (section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -510,7 +511,8 @@ wf-board-data/
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
-  state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/wake.jsonl        the architect's wake stream: events, receipts and marks (not a board document; excluded from git)
+  state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
@@ -1532,7 +1534,8 @@ coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-architect's session (`架构师`) is also a receipt for the wake stream (section 8).
+architect's session (`架构师`) is also a receipt for its wake stream, and another
+session's call carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
@@ -2124,15 +2127,34 @@ the background. Sending still waits for every pending draft save; a failed
 save prevents sending. A failed save or send restores the previous controls
 and draft text and shows the error; the committed snapshot stays authoritative.
 
-### The wake stream
+### The wake streams
 
-The wake stream is the board's one push channel. It has one listener, the
-architect, who is told only what needs it; every other session reads the board.
-What the architect does with an event, and how it listens, is in the
-architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
+The board pushes on one stream per recipient. The architect's stream, at
+`/wake`, carries what the architect must handle, and any call from its session
+answers it (Receipts, below). Every other agent the board pushes to (a session
+holding an item, later a reviewer or the observer) has its own stream at
+`/wake/<session name>` (Agents' streams, below), with its own numbers and
+retention and a record of how far it was delivered. What an agent does with a
+push, and how it listens, is in its rules and in `~/dev/wf/AGENTS.md`, section
+"Board".
 
-**What is pushed.** Twelve kinds, defined in one table (`WAKE_KINDS` in
-`src/wake.ts`; `push` refuses a kind or field set the table does not list):
+**Where a push goes.** The kinds table gives each kind `to`: `pm`, the
+architect's stream, or `{holder: <field>}`, the stream of the session holding
+the item that field names, and the architect's when nobody holds it. A session
+*holds* an item while an engineer dispatch record on the item (section 5)
+names it as `agent` and has not ended; when several have not ended, the newest
+start wins, so a takeover holds the item from its start (`holderOf` in
+`src/dispatch.ts`). The dispatch record is written by the script that starts
+the engineer and ended when it is finished, so holding needs no call of the
+engineer's own and is never forgotten. Rejected: a claim and a release tool the
+engineer calls, which adds two calls an engineer can forget and a second record
+that can disagree with the dispatch; inferring the holder from who last wrote an
+item with a step in progress (the agent list's inference), which another
+session's single write turns to the wrong session.
+
+**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
+`src/wake.ts`; `push` refuses a kind or field set the table does not list).
+All go to the architect except `item-done`, which goes to the holder:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
@@ -2152,7 +2174,9 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below).
+  deploy did not happen. The job asks through `POST /api/wake` (below);
+- an item that became done (`item-done`), to the session holding each open item
+  that waits on it.
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -2195,10 +2219,13 @@ the forms the server sends:
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the architect's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
-`connected` and `gap` carry no number and are not events.
+`connected` and `gap` carry no number and are not events. A frame on an
+agent's stream also carries `line`, the one line the agent is shown for it (Size,
+below); the architect's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
@@ -2207,20 +2234,71 @@ handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
 event missed or sent twice between replay and live. A client drops an event
 numbered at or below the one it remembers (a repeat); a gap frame sets that number
-first, as above. Without `after` the client gets live events only. Every connected client gets every event. The server pings every 25
+first, as above. Without `after` the client gets live events only. Every client connected to the architect's stream gets every event of it, and none of an agent's. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.
 
 **Receipts.** A call to any MCP tool whose `session` is `架构师` answers every
-event pushed before the call arrived; the call counts when its arguments pass
+event pushed to the architect's stream before the call arrived; the call counts when its arguments pass
 the tool's schema, whatever the tool then does. A receipt writes a line to the
 file only when it answers something new. The architect is expected to make such
 a call after handling a wake, which it does anyway by reading or writing the
 board. The timed wake comes every 30 minutes, so an architect that is running
 answers within the hour.
 
-**No receipt.** When the oldest unanswered event is one hour old (the limit is
+**Agents' streams.** A client opens a WebSocket to
+`ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
+Host and Origin rules are those of `/wake`. The server answers 400 for an empty
+name, one longer than 80 characters, one holding a slash or a control character,
+the architect's name (its stream is `/wake`), a name that does not decode, and
+any query string. The board, not the client, keeps how far the stream was
+delivered, so the client sends no number: it gets `connected`, then `gap` when
+events never delivered were dropped by retention (it reads the board for what
+it missed), then every kept event not yet delivered, then live events of this
+stream only. Once it has printed the events up to `n`, the client sends the
+text frame `{"ack": n}`; from then on they are delivered and never sent again,
+on any connection or in any tool result. An ack at or below the delivered
+number, above the newest, or not a whole number changes nothing; any other
+message is ignored. A client killed between printing and acking gets those
+events once more: a repeat, never a loss. An agent's stream keeps its newest
+200 events, at most 256 KiB, with the delivered number and the session name, in
+`state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
+SHA-256: a name of 80 Chinese characters would be 720 bytes percent-encoded,
+past the 255 a file name may hold, and two names that differ only in case would
+share one file on a disk that ignores case. Numbers and delivery survive a
+restart. A stream with everything delivered, no push or delivery for seven
+days, whose session holds no item and has no socket on it, is dropped with its
+file.
+
+Rejected, for agents: a per-event receipt the agent sends with a tool call after
+handling the event, resending every unanswered event on each connection
+(the resource agent's earlier design), because the same event would reach the
+agent's context several times and each event would cost a call; the
+architect's rule that any call answers everything, because an engineer calls
+the board all the time while it works, and would answer events it never saw.
+
+**In a tool result.** A session that is working is not running its wait script,
+so the board gives it its undelivered events in the next tool result it gets:
+any tool, read or write, whose caller is a session other than the architect's
+(the credential's session when the connection has one, else the `session` the
+call names, trimmed). After the tool's own text and a blank line come the line
+`【看板推送】` and one line per event, oldest first, at most five; more are
+counted by kind in one more line and wait for the next call. The events shown
+are delivered. Rejected: waiting for the wait script alone, which leaves an
+owner's change of direction unseen through hours of implementation; an inbox
+tool the agent must remember to call, which costs a call each time and is
+mostly empty.
+
+**Size.** Whatever the board pushes or returns stays in the receiving agent's
+context until it is compacted, so a push to an agent says what needs handling
+and leaves the details to a read. Its one line (`lineOf` in `src/wake.ts`) is
+the number, the kind's label and what it is about (an item or pull request
+with its project, a title, counts instead of lists), at most 200 characters,
+cut with … past that; the tests measure it for every kind with the longest
+fields. An event reaches an agent once (above).
+
+**No receipt.** When the oldest unanswered event on the architect's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「架构师 1 小时没响应」,
 naming that event. The architect has stopped: its session crashed, waits at a
 permission prompt, or no longer holds the Monitor that carries the stream.
