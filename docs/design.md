@@ -1614,7 +1614,8 @@ whose commits do not count.
   field since removed) cannot be put back: the document counts as absent from the old
   board, and the answer's first line says how many versions that was. The same holds for
   the board settings of before the range: the head's settings stand, and the version is
-  counted. A flag is the same
+  counted. The flags that settings change brings (a newly approved tag vocabulary, say)
+  are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
   flag on both boards when its short label (else its text without the count of the
   title-length flag) and the item or card it points at are equal. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
