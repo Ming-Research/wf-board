@@ -58,15 +58,21 @@ function button(text: string, title: string, click: () => void): HTMLButtonEleme
   return b;
 }
 
-/** The tool strip of a drawn diagram and the zoom and pan behind it. The plain wheel is left alone, so it scrolls the page. */
+/** The toolbar of a drawn diagram and the zoom and pan behind it. The plain wheel is left alone, so it scrolls the page. */
 function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLElement {
   const svg = fig.querySelector("svg")!;
   let zoom = 1;
-  /** Whether the box has more to show sideways: then it can be dragged, and says so; and on which sides there is more. */
+  /** How large the diagram is drawn, as a share of its own width. */
+  const percent = document.createElement("span");
+  percent.className = "mermaid-percent";
+  /** Whether the box has more to show sideways: then it can be dragged, and says so; and on which sides there is more. The percentage is read here too. */
   const refresh = () => {
     const room = fig.scrollWidth - fig.clientWidth;
     block.dataset.pan = room > 1 ? "yes" : "no";
     block.dataset.more = [fig.scrollLeft > 1 ? "left" : "", fig.scrollLeft < room - 1 ? "right" : ""].join(" ").trim();
+    // A diagram in a folded section has no width; its percentage is read again when the section opens (the box's size changes).
+    const drawn = svg.getBoundingClientRect().width, own = svg.viewBox.baseVal.width;
+    if (drawn && own) percent.textContent = Math.round(drawn / own * 100) + "%";
   };
   const remember = () => { if (zoom === 1 && fig.scrollLeft === 0) views.delete(source); else views.set(source, { zoom, left: fig.scrollLeft }); };
   /** Sets the zoom; the point of the diagram that is at `at` on the screen stays there. */
@@ -121,12 +127,13 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
   bar.className = "mermaid-tools";
   const hint = document.createElement("span");
   hint.className = "mermaid-hint";
-  hint.textContent = "可拖动";
+  hint.textContent = "双指缩放，拖动或滚动查看";
   bar.append(
-    hint,
     button("−", "缩小", () => set(zoom / STEP, middle())),
+    percent,
     button("+", "放大", () => set(zoom * STEP, middle())),
-    button("还原", "还原", () => { set(1, middle()); fig.scrollLeft = 0; }),
+    button("适应宽度", "适应宽度", () => { set(1, middle()); fig.scrollLeft = 0; }),
+    hint,
   );
   return bar;
 }

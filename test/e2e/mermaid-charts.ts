@@ -2,8 +2,8 @@
 
 /** A flowchart of the shape a role's flow chart on the board has: top to bottom, about thirty nodes, decisions, a rounded end, labelled and
  * dashed edges, a subgraph holding nine nodes in three columns, and a loop back. The text is a bakery taking an order, and each label is
- * as long as the label it stands for. With the library's own spacing the chart is tall and about as wide as the text column of the
- * page; the checks compare it with and without the compact settings. */
+ * as long as the label it stands for. The library draws it tall and wider than the text column of a window 1500 px wide, so the checks
+ * see a diagram that is shrunk to its box and has much to scroll to when enlarged. */
 export const PIPELINE = [
   "flowchart TD",
   '  N1["1 接到订单"] --> N2["2 备好所需食材"]',
