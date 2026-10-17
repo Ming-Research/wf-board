@@ -3749,10 +3749,11 @@ updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
-The full CI (`.github/workflows/ci.yml`: `test`, `e2e` and `no-tmp-workflow`)
-takes about 12 minutes with its queue, and a change under way is pushed many
-times. A push to a pull request branch therefore does not start it. The same
-file serves every project that adopts this scheme; only the test jobs differ.
+The full CI (`.github/workflows/ci.yml`: `no-tmp-workflow`, `test`, `e2e` and
+`result`) takes about 12 minutes with its queue, and a change under way is
+pushed many times. A push to a pull request branch therefore does not start it.
+A project that adopts this scheme copies `ci.yml` and `ci-mark.yml` and changes
+only the test jobs.
 
 - **While writing**, the engineer adds a temporary workflow
   `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
@@ -3761,7 +3762,10 @@ file serves every project that adopts this scheme; only the test jobs differ.
   push result is listed on the pull request like any push check. Wait for it
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
-  skeleton:
+  skeleton, whose setup steps are those of the `test` and `e2e` jobs of
+  `ci.yml`: keep each step the selected tests need and drop the others (the
+  regression witnesses of `test/e2e/regressions.e2e.ts` read fix commits, so
+  a job that runs them needs `fetch-depth: 0`):
 
   ```yaml
   name: tmp-quick
@@ -3782,12 +3786,16 @@ file serves every project that adopts this scheme; only the test jobs differ.
             node-version: 24
             cache: npm
         - run: npm ci
+        - run: npm run build:web
+        - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         # The test files the change touches.
         - run: node --test test/watch.test.ts
     e2e:
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
+          with:
+            fetch-depth: 0
         - uses: actions/setup-node@v5
           with:
             node-version: 24
@@ -3795,6 +3803,7 @@ file serves every project that adopts this scheme; only the test jobs differ.
         - run: npm ci
         # The browser steps of ci.yml's e2e job, from `id: playwright` through
         # `install-deps`, unchanged.
+        - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         - run: npm run build:web
         # The e2e cases the change touches, picked by test name.
         - run: node --test --test-name-pattern='the messages button' test/e2e/messages.e2e.ts
@@ -3814,22 +3823,34 @@ file serves every project that adopts this scheme; only the test jobs differ.
 - **Status `full-ci`**: a run started by hand is attached to the head commit
   (`gh run list --commit` and the commit's check-run list show it), but it is
   not among the checks a pull request lists, which is what `gh pr checks`, the
-  engineer's wait script and the board's watch read. Observed on a test pull
-  request (2026-10-17); not in GitHub's documentation. So the last job of the
-  full CI (`result`) writes the outcome of its jobs to the head commit as the
-  commit status `full-ci` (success or failure, linking to the run), and
-  `ci-mark.yml` writes `full-ci` as pending on every pull request push, unless
-  the commit already has one. A pull request therefore reads pending until a
-  full CI has run on its head commit, and the board does not push "can be
-  merged" for a commit that never had one. A newer status of the same name
-  replaces the older, so a rerun after a failure replaces the red.
+  engineer's wait script and the board's watch read. Observed on 2026-10-17
+  on a test pull request (wf-board#69, closed): the run started with
+  `gh workflow run ci.yml --ref <branch>` on a branch with an open pull
+  request had the pull request's head commit as its commit, and the checks it
+  wrote were absent from `gh pr checks` and from the GraphQL roll-up of both
+  the pull request and the commit, five minutes and more after the run ended.
+  GitHub's documentation does not say this. Reopen the choice if GitHub lists
+  such runs among a pull request's checks: `result` and `ci-mark.yml` would
+  then go, and the wait script and the board would read the run itself. The
+  last job of the full CI (`result`) writes the outcome of its jobs to the
+  head commit as the commit status `full-ci` (success or failure, linking to
+  the run), and `ci-mark.yml` writes `full-ci` as pending on every pull
+  request push, unless the commit already has one. A pull request therefore
+  reads pending until a full CI has run on its head commit, and the board
+  does not push "can be merged" for a commit that never had one, except in
+  the seconds between a push and the mark (about 8 seconds in the run seen,
+  against a look every five minutes), or when the mark job does not run
+  (queued, or Actions minutes used up): then only the checks that did run are
+  read and a commit without a full CI can be taken for passed. That gap is
+  accepted; whoever merges reads `full-ci` on the head commit. A newer status
+  of the same name replaces the older, so a rerun after a failure replaces
+  the red.
 - **The merge**: the run a pull request starts tests the branch merged with
   the main line as it was at that push; a run started by hand tests the branch
   head. The engineer merges the main line into the branch before starting it,
   so the head is what a merge would land. If the main line moves again without
   a conflict, the pull request is merged as it is and the main line's own run
-  covers the combination (two parallel merges, each green, went red together on
-  2026-10-17 and that run caught it).
+  covers the combination of the merged changes.
 
 Alternatives. The board reading the commit's check suites instead of a status:
 it would fix the board only, not `gh pr checks` or the wait script, whose pull
