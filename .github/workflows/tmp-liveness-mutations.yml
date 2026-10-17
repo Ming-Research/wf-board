@@ -45,6 +45,8 @@ jobs:
           ('footer-ask-undelivered', 'src/wake.ts', r'''if (!carried.length && !gap) { stream.deliver(frames.at(-1)!.n); return ""; }''', r'''if (!carried.length && !gap) { return ""; }'''),
           ('footer-gap-hidden', 'src/wake.ts', r'''if (!carried.length && !gap)''', r'''if (!carried.length)'''),
           ('footer-delivers-shown-only', 'src/wake.ts', r'''stream.deliver(rest.length ? shown.at(-1)!.n : frames.at(-1)!.n);''', r'''stream.deliver(shown.at(-1)!.n);'''),
+          ('prune-keeps-asks', 'src/wake.ts', r'''stream.pending().frames.some(mustBeGiven) ||''', r'''stream.pending().frames.length ||'''),
+          ('prune-drops-pending', 'src/wake.ts', r'''stream.pending().frames.some(mustBeGiven) ||''', r'''false ||'''),
           ('ask-to-pm', 'src/wake.ts', r'''to: { holder: "item" }, answeredByCall: true }''', r'''to: "pm", answeredByCall: true }'''),
           ('flag-missing', 'src/wake.ts', r'''to: { holder: "item" }, answeredByCall: true }''', r'''to: { holder: "item" } }'''),
           ('no-answer-to-holder', 'src/wake.ts', r'''fields: ["session", "item", "project", "title", "since"], to: "pm" }''', r'''fields: ["session", "item", "project", "title", "since"], to: { holder: "item" } }'''),

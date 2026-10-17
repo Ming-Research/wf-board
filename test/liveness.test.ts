@@ -11,7 +11,7 @@ import { board, server, agentSocket, asArchitect } from "./helpers.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { ASK_AFTER_MS, TELL_AFTER_MS } from "../src/liveness.ts";
-import { FOOTER_HEAD, FOOTER_LINES, Wake, WAKE_KINDS, lineOf } from "../src/wake.ts";
+import { AGENT_STREAM_IDLE_MS, FOOTER_HEAD, FOOTER_LINES, Wake, WAKE_KINDS, lineOf } from "../src/wake.ts";
 import type { Told } from "../src/wake.ts";
 import { holders } from "../src/dispatch.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -185,6 +185,17 @@ test("a tool result does not carry an ask but counts it delivered; other pushes 
   assert.equal(stream.deliveredUpTo(), 4 + FOOTER_LINES, "the one not shown, and the ask after it, wait");
   assert.deepEqual(wake.footer("eng").split("\n").length, 2, "the next call shows the one left and passes the ask");
   assert.equal(stream.pending().frames.length, 0);
+});
+
+test("a stream left with only an ask nobody read is dropped when it goes unused, one left with another push is kept", () => {
+  let clock = T0;
+  const wake = new Wake({ now: () => clock });
+  wake.agent("dead").push("ask-alive", { item: "it1", project: "Whitefoot", title: "t", since: iso(T0) });
+  wake.agent("away").push("item-done", { item: "c", project: "Whitefoot", title: "t", parent: "p" });
+  clock += AGENT_STREAM_IDLE_MS - 1; wake.prune(() => false);
+  assert.deepEqual(["dead", "away"].filter(name => wake.hasAgent(name)), ["dead", "away"], "not before it is unused for a week");
+  clock += 2; wake.prune(() => false);
+  assert.deepEqual(["dead", "away"].filter(name => wake.hasAgent(name)), ["away"]);
 });
 
 test("a gap is still told when only asks are pending", () => {

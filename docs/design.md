@@ -2274,7 +2274,9 @@ past the 255 a file name may hold, and two names that differ only in case would
 share one file on a disk that ignores case. Numbers and delivery survive a
 restart. A stream with everything delivered, no push or delivery for seven
 days, whose session holds no item and has no socket on it, is dropped with its
-file.
+file; an `ask-alive` left undelivered counts as delivered here, since a call
+answers it and a session that died with one pending would otherwise leave its
+stream for good.
 
 Rejected, for agents: a per-event receipt the agent sends with a tool call after
 handling the event, resending every unanswered event on each connection

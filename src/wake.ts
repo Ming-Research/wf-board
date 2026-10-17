@@ -34,6 +34,8 @@ export type WakeKind = keyof typeof WAKE_KINDS;
 export const CONTROL_FRAMES = { connected: ["latest"], gap: ["oldest", "latest"] } as const;
 
 export type WakeFrame = { n: number; at: string; event: WakeKind } & Record<string, unknown>;
+/** Whether a push is one its recipient has to be given: not a kind it answers by calling the board (`answeredByCall`). */
+const mustBeGiven = (frame: WakeFrame): boolean => !("answeredByCall" in WAKE_KINDS[frame.event]);
 
 /** The most characters one line of a push holds (docs/design.md, The wake streams, Size): what an agent's context takes per push. */
 export const LINE_LIMIT = 200;
@@ -409,7 +411,7 @@ export class Wake extends NumberedLog {
     if (!stream) return "";
     const { frames, gap } = stream.pending();
     if (!frames.length) return "";
-    const carried = frames.filter(f => !("answeredByCall" in WAKE_KINDS[f.event]));
+    const carried = frames.filter(mustBeGiven);
     if (!carried.length && !gap) { stream.deliver(frames.at(-1)!.n); return ""; }
     const shown = carried.slice(0, FOOTER_LINES), rest = carried.slice(FOOTER_LINES);
     const lines = [FOOTER_HEAD];
@@ -426,10 +428,11 @@ export class Wake extends NumberedLog {
   }
 
   /** Drop the streams nobody uses: everything delivered, unused for AGENT_STREAM_IDLE_MS, and not a session `keep` names (one
-   * holding an item, or one whose wait script is connected). */
+   * holding an item, or one whose wait script is connected). An ask left undelivered counts as delivered: it is answered by a
+   * call, and a session that died with one pending would otherwise leave its stream for good. */
   prune(keep: (name: string) => boolean): void {
     for (const [name, stream] of this.agents) {
-      if (keep(name) || stream.pending().frames.length || stream.idleFor() < AGENT_STREAM_IDLE_MS) continue;
+      if (keep(name) || stream.pending().frames.some(mustBeGiven) || stream.idleFor() < AGENT_STREAM_IDLE_MS) continue;
       stream.remove(); this.agents.delete(name);
     }
   }
