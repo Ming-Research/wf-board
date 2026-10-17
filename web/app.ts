@@ -2152,8 +2152,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
     }
     // The blue line marks what m on this item reads: its own new content. New sub-items carry their own line, and a
-    // parent with nothing new of its own shows them only in its 新 chip.
-    if (ownFresh) box.classList.add("fresh");
+    // parent with nothing new of its own shows them only in its 新 chip. The detail column's line beside the headline
+    // marks only a changed title (a new item already has one above), so a changed body does not mark the headline.
+    const titleChanged = !!before && before.title !== it.title;
+    if (ownFresh && (!detail || titleChanged)) box.classList.add("fresh");
     // A head click selects the item whose detail is displayed.
     head.addEventListener("click", ev => {
       ev.stopPropagation(); selectItem(it.id); setCurrent(itemBox(it.id));
