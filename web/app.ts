@@ -2046,11 +2046,25 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The baseline is a document; status and priority are derived. Restore that document and use the same current reference
   // targets for comparison. The derivation walks the whole board, and the tree row and the detail both ask, so it is kept
   // for as long as the data and the baseline stay.
-  function baselineDerived(id: string, before: Item) {
-    const kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined; priority: string } | undefined;
+  // Fields of an item that neither its status nor its priority is derived from (src/rules.ts reads record, status, plan, paused,
+  // group, ask and priority for them). A baseline that differs from the item in these alone has the item's own status and
+  // priority and needs no derivation; a field not listed here is taken to matter.
+  const TEXT_ONLY_FIELDS = new Set(["id", "log", "head", "title", "updated", "links", "tags", "data", "dispatches", "num", "rev", "difficulty", "targets", "order"]);
+  function sameForRules(a: Item, b: Item) {
+    const x = a as unknown as Record<string, unknown>, y = b as unknown as Record<string, unknown>;
+    return [...new Set([...Object.keys(x), ...Object.keys(y)])].every(k => TEXT_ONLY_FIELDS.has(k) || sameValue(x[k], y[k]));
+  }
+  function baselineDerived(it: ViewItem, before: Item) {
+    const id = it.id, kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined; priority: string } | undefined;
     if (kept && kept.before === before) return kept;
-    const r = rules({ ...snapshot, items: { ...snapshot.items, [id]: before } });
-    return (dataMemo["baseline:" + id] = { before, status: r.statusOf(id), priority: r.priorityOf(id) }) as { before: Item; status: string | undefined; priority: string };
+    let made: { before: Item; status: string | undefined; priority: string };
+    if (sameForRules(before, it)) made = { before, status: statusOf(it), priority: priorityOf(it) };
+    else {
+      countEvent("board:baseline");
+      const r = rules({ ...snapshot, items: { ...snapshot.items, [id]: before } });
+      made = { before, status: r.statusOf(id), priority: r.priorityOf(id) };
+    }
+    return (dataMemo["baseline:" + id] = made);
   }
   function itemNode(it: ViewItem, headerOnly = false, boxOnly = false, detail = false) {
     const m = mount;
@@ -2076,7 +2090,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const head = el("button", "item-head");
     head.type = "button";
 
-    const beforeDerived = before ? baselineDerived(it.id, before) : undefined;
+    const beforeDerived = before ? baselineDerived(it, before) : undefined;
     const beforeStatus = beforeDerived?.status ?? (before ? "record" : undefined);
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     const pr = priorityOf(it);

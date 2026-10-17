@@ -1391,6 +1391,18 @@ test("n to an item under a folded row draws twice at most and neither builds the
   assert.equal(count("board:filter-counts")-was.filters,0,"no new snapshot, so the counts stay");
 });
 
+test("an item's baseline derives its own status and priority only when it differs in what they are derived from", async t => {
+  const baselines: Array<[string,(it:Item)=>Item,number]> = [
+    ["head text alone", it => ({...it,head:"Old body"}), 0],
+    ["a step the item no longer has", it => ({...it,plan:planWork([sharedRow("area"),planStep("work","Work","todo",{after:[]})])}), 1],
+  ];
+  for (const [name,before,derivations] of baselines) await t.test(name, async () => {
+    const s=nativeSnapshot(); s.items.area!.plan=planWork([]); s.items.child!.head="New body";
+    const p=await page(s,unread(),before(s.items.child!)); await expand(p);
+    assert.equal(p.marks.get("board:baseline") ?? 0,derivations,"derivations of a baseline's rules");
+  });
+});
+
 test("a write builds the board's rules and counts the filters once, however many draws follow", async () => {
   const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush();
   const count=(name:string)=>p.marks.get(name) ?? 0, was={rules:count("board:rules"),filters:count("board:filter-counts")};
