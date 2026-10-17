@@ -674,7 +674,8 @@ export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
 /** The blocks of an item's detail that had a maximum width of 78 characters (76 for the paragraphs of a card). */
 export const FULL_WIDTH_BLOCKS = [".note", ".log", ".rich", ".editor", ".body p", ".ask", ".checks", ".deplists", ".card p", ".refpop"] as const;
 export interface BlockBox { item: string; sel: string; at: number; x: number; w: number; parentW: number; maxWidth: string; fills: boolean }
-export interface ColumnBox { item: string; body: number; column: number; detailScroll: number; detailClient: number }
+/** The column's content, the item's box in it (a bordered box with padding) and its content, and the body inside that. */
+export interface ColumnBox { item: string; column: number; box: number; boxContent: number; body: number; detailScroll: number; detailClient: number }
 /** Items that between them show every block in FULL_WIDTH_BLOCKS: the one with listed comments (and a head, a log), the one with
  * code in its head, items with an ask, with checks, with dependents, and the home of a card no plan names. */
 function widthProbes(o: Oracle, w: BoardServer["gen"]["witness"]): string[] {
@@ -719,15 +720,15 @@ export async function measureBlocks(bp: BoardPage, o: Oracle): Promise<{ blocks:
         const shrinks = (pcs.display.includes("flex") && pcs.flexDirection.startsWith("row")) || getComputedStyle(e).display.startsWith("inline");
         seen.push({ item: item!, sel, at, x: rect.x, w: rect.width, parentW: content(parent), maxWidth: getComputedStyle(e).maxWidth, fills: !shrinks });
       });
-      const body = detail.querySelector<HTMLElement>(".item > .body");
-      return { seen, column: { item: item!, body: body ? content(body) : -1, column: content(detail), detailScroll: detail.scrollWidth, detailClient: detail.clientWidth } };
+      const box = detail.querySelector<HTMLElement>(":scope > .item"), body = box?.querySelector<HTMLElement>(":scope > .body");
+      return { seen, column: { item: item!, column: content(detail), box: box ? box.getBoundingClientRect().width : -1, boxContent: box ? content(box) : -1, body: body ? content(body) : -1, detailScroll: detail.scrollWidth, detailClient: detail.clientWidth } };
     }, [FULL_WIDTH_BLOCKS as readonly string[], id] as const);
     blocks.push(...got.seen); columns.push(got.column);
   }
   return { blocks, columns, doc: await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth] as [number, number]) };
 }
 /** In a window 2400, 1500 and 700px wide the blocks of an item's detail have no maximum width and fill the column: each
- * is as wide as the box that holds it, the item's body is as wide as the column's content, and neither the page nor
+ * is as wide as the box that holds it, the item's box is as wide as the column's content and its body as wide as the box's content, and neither the page nor
  * the column scrolls sideways. Violations open with `full-width <block>:`. */
 export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
   const v: string[] = [], o = await oracle(bp.board.store);
@@ -741,7 +742,8 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
       else if (b.fills && b.w < b.parentW - 3) v.push(`full-width ${b.sel}: at ${width}px a ${b.sel} in ${b.item} is ${Math.round(b.w)}px wide, its box ${Math.round(b.parentW)}px`);
     }
     for (const c of columns) {
-      if (Math.abs(c.body - c.column) > 3) v.push(`full-width column: at ${width}px the body of ${c.item} is ${Math.round(c.body)}px wide, the column's content ${Math.round(c.column)}px`);
+      if (Math.abs(c.box - c.column) > 3) v.push(`full-width column: at ${width}px the box of ${c.item} is ${Math.round(c.box)}px wide, the column's content ${Math.round(c.column)}px`);
+      if (Math.abs(c.body - c.boxContent) > 3) v.push(`full-width column: at ${width}px the body of ${c.item} is ${Math.round(c.body)}px wide, the content of its box ${Math.round(c.boxContent)}px`);
       if (width >= 1500 && c.detailScroll > c.detailClient + 1) v.push(`full-width scroll: at ${width}px the column of ${c.item} scrolls sideways (${c.detailScroll}px in ${c.detailClient}px)`);
     }
     if (doc[0] > doc[1] + 1) v.push(`full-width scroll: at ${width}px the page is ${doc[0]}px wide in a window of ${doc[1]}px`);
