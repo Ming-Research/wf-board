@@ -9,6 +9,7 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
+import type { Liveness } from "./liveness.ts";
 import type { Resolved } from "./credentials.ts";
 import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
@@ -122,7 +123,7 @@ const links = z.array(Link).describe("Relevant links as {label, url}; use qualif
  * self-reported writes; a refusal when it carried one that is not valid, which refuses every call.
  * `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one.
  */
-export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
+export function createMcpServer({ store, ops, now, wake, liveness, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; liveness?: Liveness; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -157,10 +158,11 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
         // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
+        // Another agent's call is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
+        const caller = credential?.ok ? (credential.who.access.role === "架构师" ? undefined : credential.who.session) : typeof args.session === "string" && !isArchitectSession(args.session) ? args.session.trim() : undefined;
+        if (caller) liveness?.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
         const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
-        // Another agent's call carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams, In a tool result).
-        const caller = credential?.ok ? (credential.who.access.role === "架构师" ? undefined : credential.who.session) : typeof args.session === "string" && !isArchitectSession(args.session) ? args.session.trim() : undefined;
         const pushed = caller && wake ? wake.footer(caller) : "";
         return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }

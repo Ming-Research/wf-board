@@ -1,0 +1,264 @@
+// Whether the sessions holding items are still there (docs/design.md, The wake streams, Liveness): when the board asks, when it
+// tells the PM, what counts as a sign of life, and what a restart keeps.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { board, server, agentSocket, asArchitect } from "./helpers.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
+import { ASK_AFTER_MS, Liveness, TELL_AFTER_MS } from "../src/liveness.ts";
+import { FOOTER_HEAD, FOOTER_LINES, Wake, WAKE_KINDS, lineOf } from "../src/wake.ts";
+import type { Told } from "../src/wake.ts";
+import { createMcpServer } from "../src/mcp.ts";
+import type { Resolved } from "../src/credentials.ts";
+
+const T0 = Date.parse("2026-10-17T00:00:00Z"), MIN = 60_000;
+const iso = (ms: number) => new Date(ms).toISOString();
+async function scratch(t: { after(fn: () => void | Promise<void>): void }) {
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-liveness-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+const about = (item: string) => ({ project: "Whitefoot", title: "标题 " + item });
+
+/** A wake, a clock and the sessions holding items, which the tests move; `check` is one round of the minute timer. */
+function rig(options: { file?: string; clock?: { now: number } } = {}) {
+  const clock = options.clock ?? { now: T0 };
+  const wake = new Wake({ now: () => clock.now });
+  const held = new Map<string, string[]>([["eng", ["it1"]]]);
+  wake.routeBy(item => [...held].find(([, items]) => items.includes(item))?.[0]);
+  const make = () => new Liveness({ wake, now: () => clock.now, file: options.file });
+  const liveness = make();
+  const at = (minutes: number) => { clock.now = T0 + minutes * MIN; };
+  const check = (connected: (name: string) => boolean = () => false) => liveness.check(held, connected, about);
+  const asks = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
+  const told = () => wake.since(0).frames.filter(f => f.event === "no-answer");
+  return { clock, wake, held, liveness, make, at, check, asks, told };
+}
+
+test("the times are 30 minutes to the ask and 30 more to the PM, and the kinds go where the design says", () => {
+  assert.equal(ASK_AFTER_MS, 30 * MIN);
+  assert.equal(TELL_AFTER_MS, 30 * MIN);
+  assert.deepEqual(WAKE_KINDS["ask-alive"].to, { holder: "item" });
+  assert.equal(WAKE_KINDS["no-answer"].to, "pm");
+});
+
+test("a silent holder is asked in its own stream after 30 minutes and the PM is told 30 minutes later, each once", () => {
+  const r = rig();
+  r.check();
+  r.at(29); r.check();
+  assert.equal(r.asks().length, 0, "29 minutes is not yet silence enough");
+  r.at(30); r.check();
+  assert.deepEqual(r.asks().map(f => [f.item, f.project, f.title, f.since]), [["it1", "Whitefoot", "标题 it1", iso(T0)]]);
+  assert.deepEqual(r.wake.since(0).frames, [], "the ask is the holder's, not the PM's");
+  for (const m of [31, 45, 59]) { r.at(m); r.check(); }
+  assert.equal(r.told().length, 0, "the PM is told only 30 minutes after the ask");
+  r.at(60); r.check();
+  assert.deepEqual(r.told().map(f => [f.session, f.item, f.project, f.title, f.since]), [["eng", "it1", "Whitefoot", "标题 it1", iso(T0)]]);
+  for (let m = 61; m <= 600; m += 30) { r.at(m); r.check(); }
+  assert.equal(r.asks().length, 1, "one silence is asked once");
+  assert.equal(r.told().length, 1, "and told once");
+});
+
+test("a sign ends the silence: the ask is answered, and the next silence is asked and told on its own", () => {
+  const r = rig();
+  r.check(); r.at(30); r.check();
+  assert.equal(r.asks().length, 1);
+  r.at(40); r.liveness.see("eng");
+  r.at(69); r.check();
+  assert.equal(r.told().length, 0, "the call answered the ask, so 30 minutes after it nobody is told");
+  r.at(70); r.check();
+  assert.equal(r.asks().length, 2, "30 minutes after the sign it is asked again");
+  r.at(100); r.check();
+  assert.equal(r.told().length, 1);
+  r.at(110); r.liveness.see("eng");
+  r.at(139); r.check();
+  assert.equal(r.asks().length, 2);
+  r.at(140); r.check();
+  assert.deepEqual([r.asks().length, r.told().length], [3, 1], "after a told silence a sign starts everything over");
+});
+
+test("a sign before the ask moves the ask 30 minutes on", () => {
+  const r = rig();
+  r.check(); r.at(29); r.liveness.see("eng"); r.at(58); r.check();
+  assert.equal(r.asks().length, 0);
+  r.at(59); r.check();
+  assert.equal(r.asks().length, 1);
+});
+
+test("a connected wait script is a sign at every round, and the silence counts from the last round that saw it", () => {
+  const r = rig();
+  r.check(() => true);
+  for (let m = 1; m <= 180; m++) { r.at(m); r.check(() => true); }
+  assert.equal(r.asks().length, 0, "three hours connected, never asked");
+  r.at(209); r.check();
+  assert.equal(r.asks().length, 0);
+  r.at(210); r.check();
+  assert.equal(r.asks().length, 1, "30 minutes after the last round that saw the script connected");
+});
+
+test("a session holding nothing is not watched, and what the board knew of it is forgotten", () => {
+  const r = rig();
+  r.liveness.see("reviewer");
+  r.at(300); r.check();
+  assert.equal(r.wake.hasAgent("reviewer"), false, "a session that holds nothing is neither asked nor given a stream");
+  assert.deepEqual(r.wake.since(0).frames, []);
+  // eng gave its last sign at minute 0, stopped holding at minute 1 and holds again at minute 120: its old sign is gone, so
+  // the silence starts at 120 and not at 0 (which would ask it at once).
+  const r2 = rig();
+  r2.liveness.see("eng");
+  r2.at(1); r2.liveness.check(new Map(), () => false, about);
+  r2.at(120); r2.check();
+  r2.at(149); r2.check();
+  assert.equal(r2.asks().length, 0);
+  r2.at(150); r2.check();
+  assert.equal(r2.asks().length, 1);
+});
+
+test("the asked and told marks survive a restart: a restart repeats nothing, and a session asked before it has its whole time after it", async t => {
+  const file = join(await scratch(t), "liveness.json");
+  const r = rig({ file });
+  r.check(); r.at(30); r.check();
+  assert.equal(r.asks().length, 1);
+  r.at(40);
+  const restarted = r.make();
+  r.at(69); restarted.check(r.held, () => false, about);
+  assert.equal(r.told().length, 0, "the silence starts anew at the restart, so 30 minutes after the ask is not yet 30 after the restart");
+  assert.equal(r.asks().length, 1, "and the restart does not ask again");
+  r.at(70); restarted.check(r.held, () => false, about);
+  assert.equal(r.told().length, 1, "30 minutes after the restart the PM is told");
+  r.at(500);
+  const again = r.make();
+  again.check(r.held, () => false, about);
+  r.at(900); again.check(r.held, () => false, about);
+  assert.deepEqual([r.asks().length, r.told().length], [1, 1], "a told silence stays told through a restart");
+  again.see("eng");
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {}, "a sign takes the marks out of the file");
+  const third = r.make();
+  third.check(r.held, () => false, about);
+  r.at(931); third.check(r.held, () => false, about);
+  assert.equal(r.asks().length, 2, "a new silence after the sign is asked");
+});
+
+test("a session that stops holding its item loses its marks, so holding again starts a silence from nothing", async t => {
+  const file = join(await scratch(t), "liveness.json");
+  const r = rig({ file });
+  r.check(); r.at(30); r.check();
+  assert.ok(JSON.parse(await readFile(file, "utf8")).eng.asked);
+  r.at(31); r.liveness.check(new Map(), () => false, about);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {});
+  r.at(100); r.check();
+  r.at(129); r.check();
+  assert.deepEqual([r.asks().length, r.told().length], [1, 0], "no immediate tell from the earlier ask");
+  r.at(130); r.check();
+  assert.equal(r.asks().length, 2);
+});
+
+test("a marks file that cannot be read starts every silence at the start", async t => {
+  const file = join(await scratch(t), "liveness.json");
+  await writeFile(file, "not json");
+  const r = rig({ file });
+  r.check(); r.at(29); r.check();
+  assert.equal(r.asks().length, 0);
+  r.at(30); r.check();
+  assert.equal(r.asks().length, 1);
+});
+
+test("a tool result does not carry an ask but counts it delivered; other pushes are shown around it", () => {
+  const wake = new Wake({ now: () => T0 }), stream = wake.agent("eng");
+  const ask = { item: "it1", project: "Whitefoot", title: "t", since: iso(T0) };
+  const done = (c: string) => ({ item: c, project: "Whitefoot", title: "子条目", parent: "p" });
+  stream.push("ask-alive", ask);
+  assert.equal(wake.footer("eng"), "", "an ask alone shows nothing");
+  assert.equal(stream.deliveredUpTo(), 1);
+  stream.push("item-done", done("c1")); stream.push("ask-alive", ask); stream.push("item-done", done("c2"));
+  assert.equal(wake.footer("eng"), [FOOTER_HEAD, lineOf(stream.since(1).frames[0]!), lineOf(stream.since(3).frames[0]!)].join("\n"));
+  assert.equal(stream.deliveredUpTo(), 4);
+  for (let i = 0; i < FOOTER_LINES + 1; i++) stream.push("item-done", done("d" + i));
+  stream.push("ask-alive", ask);
+  const first = wake.footer("eng").split("\n");
+  assert.equal(first.length, 1 + FOOTER_LINES + 1);
+  assert.equal(first.at(-1), "另有 1 条没送到（子条目做完 1）：再调一次看板，或挂等待脚本取");
+  assert.equal(stream.deliveredUpTo(), 4 + FOOTER_LINES, "the one not shown, and the ask after it, wait");
+  assert.deepEqual(wake.footer("eng").split("\n").length, 2, "the next call shows the one left and passes the ask");
+  assert.equal(stream.pending().frames.length, 0);
+});
+
+test("a gap is still told when only asks are pending", () => {
+  const wake = new Wake({ now: () => T0 }), stream = wake.agent("eng");
+  for (let i = 0; i < 201; i++) stream.push("ask-alive", { item: "it1", project: "Whitefoot", title: "t", since: iso(T0) });
+  assert.equal(wake.footer("eng"), `${FOOTER_HEAD}\n有推送没送到就被丢了（看板只留到 #2）：去看板读最近的变化`);
+  assert.equal(stream.deliveredUpTo(), 201);
+  assert.equal(wake.footer("eng"), "");
+});
+
+test("the lines of the two kinds name the item, the time of the last sign and, for the PM, the session", () => {
+  const ask = new Wake({ now: () => T0 }).agent("eng").push("ask-alive", { item: "it1", project: "Whitefoot", title: "t", since: iso(T0) });
+  assert.equal(lineOf(ask), "#1 问一句 · it:it1（Whitefoot） · 最后一次动静 2026-10-17T00:00Z，调一次看板就算在");
+  const none = new Wake({ now: () => T0 }).push("no-answer", { session: "eng", item: "it1", project: "Whitefoot", title: "做某事", since: iso(T0) });
+  assert.equal(lineOf(none), "#1 没回应 · it:it1（Whitefoot） · 会话 eng · 最后一次动静 2026-10-17T00:00Z · 做某事");
+});
+
+test("a no-answer the PM leaves unanswered for an hour tells the owner, and a click opens its item", () => {
+  let clock = T0;
+  const wake = new Wake({ now: () => clock }), notices: Told[] = [];
+  wake.onTell(told => notices.push(told));
+  wake.push("no-answer", { session: "eng", item: "it1", project: "Whitefoot", title: "做某事", since: iso(T0) });
+  clock += wake.receiptLimitMs; wake.checkReceipts();
+  assert.deepEqual(notices, [{ title: "架构师 1 小时没响应", message: "最早没回执的是 #1：没回应：做某事", target: { kind: "item", key: "it1" } }]);
+});
+
+test("a tool call is a sign of life for the session it is made as: the credential's, else the name the call gives, never the PM's", async t => {
+  const { store, op } = await board(t);
+  const seen: string[] = [], liveness = { see: (name: string) => { seen.push(name); } } as unknown as Liveness;
+  const call = async (args: Record<string, unknown>, credential?: Resolved) => {
+    const mcp = createMcpServer({ store, ops: op, liveness, credential }), client = new Client({ name: "Sign", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(st); await client.connect(ct);
+    t.after(async () => { await client.close(); await mcp.close(); });
+    return client.callTool({ name: "projects", arguments: args });
+  };
+  await call({ session: "eng" });
+  await call({ session: " eng-2 " });
+  await call({});
+  await call({ session: ARCHITECT_SESSION });
+  assert.deepEqual(seen, ["eng", "eng-2"], "a read counts, the name is trimmed, no name and the PM count for no one");
+  const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
+  await call({ session: "eng" }, credential);
+  const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
+  await call({ session: "eng" }, architect);
+  assert.deepEqual(seen, ["eng", "eng-2", "cred-eng"], "the credential's session, not the one the call names; the PM's credential is no one's sign");
+});
+
+/** A Liveness that remembers who gave a sign, so a test can wait for the server to have heard one. */
+class Watched extends Liveness {
+  signs: string[] = [];
+  override see(name: string): void { this.signs.push(name); super.see(name); }
+}
+
+test("on the server a connected wait script is a sign and its end starts the silence; a silent holder is asked, then the PM is told, with the item's project and title", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const clock = { now: T0 }, wake = new Wake({ now: () => clock.now }), liveness = new Watched({ wake, now: () => clock.now });
+  const { url, op } = await server(t, { wake, liveness, now: () => clock.now, checkIntervalMs: 1000 });
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
+  const tick = async () => { t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve)); };
+  const asked = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
+  const script = await agentSocket(t, url, "eng");
+  await tick();
+  clock.now += 120 * MIN; await tick();
+  assert.equal(asked().length, 0, "connected for two hours, never asked");
+  const before = liveness.signs.length;
+  script.socket.close();
+  for (let i = 0; i < 400 && liveness.signs.length === before; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(liveness.signs.length, before + 1, "the end of the connection is a sign too");
+  clock.now += 29 * MIN; await tick();
+  assert.equal(asked().length, 0);
+  clock.now += 2 * MIN; await tick();
+  assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["b", "Whitefoot", "阻塞证据"]], "30 minutes after the connection ended");
+  clock.now += 29 * MIN; await tick();
+  assert.equal(wake.since(0).frames.filter(f => f.event === "no-answer").length, 0);
+  clock.now += 1 * MIN; await tick();
+  assert.deepEqual(wake.since(0).frames.filter(f => f.event === "no-answer").map(f => [f.session, f.item, f.project, f.title]), [["eng", "b", "Whitefoot", "阻塞证据"]]);
+});

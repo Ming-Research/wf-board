@@ -7,8 +7,9 @@ import { dirname, join } from "node:path";
 export type WakeRoute = "pm" | { holder: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
- * besides n, at and event, `to` says whose stream it goes to, and `external` marks a kind another process may ask for through
- * POST /api/wake (the deploy job, which runs beside the daemon and cannot call push). push() refuses another kind or field
+ * besides n, at and event, `to` says whose stream it goes to, `external` marks a kind another process may ask for through
+ * POST /api/wake (the deploy job, which runs beside the daemon and cannot call push), and `answeredByCall` marks a kind the
+ * session it goes to answers by calling the board, so a tool result does not carry it. push() refuses another kind or field
  * set, and the design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
@@ -24,7 +25,9 @@ export const WAKE_KINDS = {
   deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], to: "pm", external: true },
   deployFailed: { label: "部署失败", fields: ["version", "running", "reason"], to: "pm", external: true },
   "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent" } },
-} as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: true }>;
+  "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
+  "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
+} as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: true; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
 export const CONTROL_FRAMES = { connected: ["latest"], gap: ["oldest", "latest"] } as const;
@@ -49,6 +52,8 @@ const short = (v: unknown) => str(v).slice(0, 7);
 const count = (v: unknown) => Array.isArray(v) ? v.reduce((n: number, e) => n + (e && typeof e === "object" && typeof (e as { more?: unknown }).more === "number" ? (e as { more: number }).more : 1), 0) : 0;
 const it = (item: unknown, project: unknown) => `it:${str(item)}（${str(project)}）`;
 const pr = (f: Record<string, unknown>) => `${str(f.repo)}#${str(f.number)}`;
+/** A time given as an ISO string, to the minute. */
+const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 
 /** What each kind says after its label: the subject first (an item or PR with its project), then a few words. Details are
  * read from the board when needed, so a line carries no list and no body text. */
@@ -66,6 +71,8 @@ const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   deployed: f => `${short(f.version)}，${count(f.changes)} 个改动${f.restarted ? "，重启了" : ""}`,
   deployFailed: f => `${short(f.version) || "版本不明"} · ${str(f.reason)}`,
   "item-done": f => `${it(f.item, f.project)} · ${str(f.title)} · 等它的：it:${str(f.parent)}`,
+  "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
+  "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
 };
 
 /** The one line an agent is given for a push: its number, label and what it is about, at most LINE_LIMIT characters. */
@@ -76,9 +83,10 @@ export function lineOf(frame: WakeFrame): string {
 /** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
 export interface Told { title: string; message: string; target?: { kind: "card" | "item"; key: string } }
 
-/** The card or item a frame is about, for a click to open: a stalled item, or the item or card a note is on. Other frames have none. */
+/** The card or item a frame is about, for a click to open: a stalled item, the item of a session that gave no answer, or the item
+ * or card a note is on. Other frames have none. */
 function targetOf(frame: WakeFrame): Told["target"] {
-  if (frame.event === "stalled" && typeof frame.item === "string") return { kind: "item", key: frame.item };
+  if ((frame.event === "stalled" || frame.event === "no-answer") && typeof frame.item === "string") return { kind: "item", key: frame.item };
   if (frame.event === "note" && typeof frame.target === "string") {
     if (frame.target.startsWith("it:")) return { kind: "item", key: frame.target.slice(3) };
     if (frame.target.startsWith("q:")) return { kind: "card", key: frame.target.slice(2) };
@@ -386,14 +394,17 @@ export class Wake extends NumberedLog {
   /**
    * The pushes a tool result carries for the agent `name` (docs/design.md, The wake streams, In a tool result): the oldest
    * undelivered ones, one line each, at most FOOTER_LINES, then a line counting the rest by kind. What is shown is delivered;
-   * the rest waits for the next call or the wait script. Empty when nothing is undelivered.
+   * the rest waits for the next call or the wait script. A kind marked `answeredByCall` is not shown, since this very call
+   * answers it, but counts as delivered. Empty when nothing is shown.
    */
   footer(name: string): string {
     const stream = this.agents.get(name);
     if (!stream) return "";
     const { frames, gap } = stream.pending();
     if (!frames.length) return "";
-    const shown = frames.slice(0, FOOTER_LINES), rest = frames.slice(FOOTER_LINES);
+    const carried = frames.filter(f => !("answeredByCall" in WAKE_KINDS[f.event]));
+    if (!carried.length && !gap) { stream.deliver(frames.at(-1)!.n); return ""; }
+    const shown = carried.slice(0, FOOTER_LINES), rest = carried.slice(FOOTER_LINES);
     const lines = [FOOTER_HEAD];
     if (gap) lines.push(`有推送没送到就被丢了（看板只留到 #${stream.oldest()}）：去看板读最近的变化`);
     lines.push(...shown.map(lineOf));
@@ -402,7 +413,8 @@ export class Wake extends NumberedLog {
       for (const f of rest) kinds.set(WAKE_KINDS[f.event].label, (kinds.get(WAKE_KINDS[f.event].label) ?? 0) + 1);
       lines.push(`另有 ${rest.length} 条没送到（${[...kinds].map(([label, n]) => `${label} ${n}`).join("、")}）：再调一次看板，或挂等待脚本取`);
     }
-    stream.deliver(shown.at(-1)!.n);
+    // Everything up to the last line shown is delivered, the answered kinds among it; with nothing left over, everything pending is.
+    stream.deliver(rest.length ? shown.at(-1)!.n : frames.at(-1)!.n);
     return lines.join("\n");
   }
 

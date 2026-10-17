@@ -2152,9 +2152,9 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Fifteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
-All go to the architect except `item-done`, which goes to the holder:
+All go to the architect except `item-done` and `ask-alive`, which go to a holder:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
@@ -2177,6 +2177,9 @@ All go to the architect except `item-done`, which goes to the holder:
   deploy did not happen. The job asks through `POST /api/wake` (below);
 - an item that became done (`item-done`), to the session holding each open item
   that waits on it.
+- a session holding an item that has given no sign of life for 30 minutes
+  (`ask-alive`), to that session; and one that has given none for 30 minutes
+  after being asked (`no-answer`), to the architect (Liveness, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -2220,6 +2223,8 @@ the forms the server sends:
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the architect's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item` gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) of its last sign, or of the board's start or of the first time the board saw it holding an item, when that is later. One per silence |
+| `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item it holds, `since` the time of its last sign, as above. One per silence |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -2285,10 +2290,39 @@ any tool, read or write, whose caller is a session other than the architect's
 call names, trimmed). After the tool's own text and a blank line come the line
 `【看板推送】` and one line per event, oldest first, at most five; more are
 counted by kind in one more line and wait for the next call. The events shown
-are delivered. Rejected: waiting for the wait script alone, which leaves an
+are delivered. A kind the table marks `answeredByCall` (`ask-alive`) is not
+shown: the call that would carry it is its answer, so a line would only add to
+the agent's context. It counts as delivered, and a wait script prints it. Rejected: waiting for the wait script alone, which leaves an
 owner's change of direction unseen through hours of implementation; an inbox
 tool the agent must remember to call, which costs a call each time and is
 mostly empty.
+
+**Liveness.** The board asks whether a session holding an item is still there
+(`src/liveness.ts`, from the server's minute timer). A *sign of life* is a call
+to any tool as that session (the same name the tool result uses), a connection
+of its wait script to its stream, and the end of such a connection; while the
+script is connected, each tick counts as a sign. A session holding an item
+(above) that gives no sign for 30 minutes is asked: an `ask-alive` goes into its
+stream, and any sign answers it. If it gives none for another 30 minutes,
+`no-answer` goes to the architect with the session, item, project and the time
+of its last sign. A sign ends the silence; the next one starts over, so one
+silence is asked once and told once. If the architect does not answer
+`no-answer`, the no-receipt alert below tells the owner an hour later, with the
+item as its target. A session holding no item (a reviewer, the observer) is not
+watched. The marks of a silence that was asked or told are kept in
+`state/liveness.json` beside the board (git excludes it): after a restart every
+silence starts anew at the restart, since the board was not there to hear a
+sign, and a told one stays told until a sign, so a restart repeats no push.
+
+The 30 and 30 minutes are a provisional choice. The architect then knows within
+an hour of a session's last sign, about when Claude Code stops an idle
+background session. On 2026-10-16, over thirteen sessions at work, a session was
+more than 30 minutes past its last board write 0.2 % of the time (15 minutes:
+11 %); only writes were counted, and reads now count too. Rejected: 15 and 15
+minutes, which would call the architect to engineers at work; 60 and 30 minutes,
+which leaves a stopped session unknown for an hour and a half. Reopen if more
+than a tenth of the `no-answer` pushes of the first week come while the session
+was working.
 
 **Size.** Whatever the board pushes or returns stays in the receiving agent's
 context until it is compacted, so a push to an agent says what needs handling
@@ -2322,8 +2356,8 @@ the deploy job's notice on the Mac (section 4, Deploying) is the only one that r
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
-or card of its oldest unanswered event: a `stalled` event's item, or the item or
-card a `note` event is on; a `timed` event names neither, so its notice has no
+or card of its oldest unanswered event: the item of a `stalled` or `no-answer`
+event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
 target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude

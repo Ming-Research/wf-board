@@ -13,6 +13,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Wake } from "../src/wake.ts";
+import type { Liveness } from "../src/liveness.ts";
 import type { GithubWatch } from "../src/watch.ts";
 import type { UsageWatch } from "../src/usage-watch.ts";
 import type { Credentials } from "../src/credentials.ts";
@@ -47,10 +48,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; liveness?: Liveness; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, liveness: extra.liveness, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, liveness: extra.liveness, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -70,6 +71,18 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   socket.on("message", data => frames.push(JSON.parse(data.toString())));
   await once(socket, "open");
   // The server sends its connected frame in the same step as the upgrade; ping/pong is the wire-order barrier after it.
+  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
+  await sync();
+  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
+}
+
+/** A socket on an agent's stream, `/wake/<name>`, with what it received. */
+export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
+  t.after(() => socket.terminate());
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  await once(socket, "open");
   const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
   await sync();
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
