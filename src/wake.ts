@@ -13,7 +13,7 @@ export type WakeRoute = "pm" | { holder: string };
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "actions"], to: "pm" },
+  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "actions"], to: "pm" },
   "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url"], to: "pm" },
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"], to: "pm" },
   "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"], to: "pm" },
@@ -55,7 +55,7 @@ const pr = (f: Record<string, unknown>) => `${str(f.repo)}#${str(f.number)}`;
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${count(f.working)} 条，Architect 项目开着 ${count(f.architect)} 条`,
+  timed: f => `变了 ${count(f.changed)} 条，在做 ${count(f.working)} 条，Architect 项目开着 ${count(f.architect)} 条，PM 项目开着 ${count(f.pm)} 条`,
   "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败`,
   "pr-red": f => `${pr(f)} · ${count(f.failed)} 项检查失败 · ${str(f.title)}`,
   "pr-ready": f => `${pr(f)} · ${str(f.title)}`,

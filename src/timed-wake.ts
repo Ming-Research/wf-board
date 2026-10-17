@@ -1,4 +1,4 @@
-import { ARCHITECT, answersPushes } from "./model.ts";
+import { ARCHITECT, PM_AUTHOR, answersPushes } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import { itemOfFile, writersByItem } from "./query.ts";
@@ -15,6 +15,7 @@ export interface TimedFields {
   changed: Array<ChangedItem | { more: number }>;
   working: Array<WorkingItem | { more: number }>;
   architect: Array<WorkingItem | { more: number }>;
+  pm: Array<WorkingItem | { more: number }>;
   /** The Actions usage line (src/usage-watch.ts); empty where no usage watch runs. */
   actions: string;
 }
@@ -24,7 +25,7 @@ function capped<T>(rows: T[]): Array<T | { more: number }> {
 }
 
 /** What one timed wake carries: the items changed since the last one (not those only the PM or the architect itself wrote,
- * which it already knows), the items being worked on, and every open item of the Architect project, each with its status, and the Actions
+ * which it already knows), the items being worked on, and every open item of the Architect project and of the PM project, each in a column of its own with its status, and the Actions
  * usage line. `since` is the last timed wake's mark; without one, the daemon's start. */
 export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, actions = ""): Promise<TimedFields> {
   const from = since?.at ?? started;
@@ -40,8 +41,9 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   return {
     since: from,
     changed: capped(changed),
-    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.statusOf(id) === "wip" && doing(id)).map(entry)),
+    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.projectOf(id) !== PM_AUTHOR && r.statusOf(id) === "wip" && doing(id)).map(entry)),
     architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT).map(entry)),
+    pm: capped(open.filter(id => r.projectOf(id) === PM_AUTHOR).map(entry)),
     actions,
   };
 }

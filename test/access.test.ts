@@ -206,7 +206,7 @@ test("a credential speaks for the PM by its role, whatever author and session it
   // role is not the PM's, so it has no right over another project's items (`a` belongs to Whitefoot).
   const engineerAsPM = { ...asPM, access: { role: "工程师" as const, project: "PM", roots: ["a"] } };
   await assert.rejects(op.appendLog({ ...engineerAsPM, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
-  await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item\.create: a 工程师 credential may not write/.test(e.message));
+  await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item n: outside the subtree of a, the only items a 工程师 credential writes for item\.create/.test(e.message));
   assert.equal(store.snapshot().head, head);
   // The PM's own credential does, with other names than the PM's.
   await op.appendLog({ author: "Whitefoot", session: "other-name", access: { role: "PM" as const, project: "PM", roots: [] }, id: "a", text: "from the PM" });

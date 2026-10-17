@@ -138,7 +138,7 @@ test("the limit can be set shorter, and the alert names it in minutes", () => {
   let clock = T0;
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
   wake.onTell(notice => told.push(notice.title));
-  wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [], actions: "" });
+  wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [], pm: [], actions: "" });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["PM 10 分钟没响应"]);
 });
@@ -265,17 +265,18 @@ async function restart(t: Parameters<typeof board>[0], store: Awaited<ReturnType
   return { url: `http://127.0.0.1:${address.port}` };
 }
 
-test("the timed wake lists what changed since the last one without the architect's and the PM's own writes, the items being worked on and the Architect project's items; the last one's time survives a restart", async t => {
+test("the timed wake lists what changed since the last one without the architect's and the PM's own writes, the items being worked on, and the items of the Architect project and of the PM project each in a column of their own; the last one's time survives a restart", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const dir = await scratch(t), file = join(dir, "wake.jsonl"), half = 30 * 60_000;
   let clock = T0;
   const wake = new Wake({ file, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
-  // One item of the Architect project (the fixture board has it), and an item with a step being worked on.
+  // One item of the Architect project (the fixture board has it), one of the PM project with a step being worked on, and an item with a step being worked on.
   // Both are rated, so neither carries 缺难度 and the flags stay empty.
   const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
+    { kind: "item", id: "pmwork", expectRev: null, doc: doc("PM 的条目", "PM", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
   ] });
   wake.markTimed({ at: iso(T0), head: store.snapshot().head });
@@ -299,7 +300,8 @@ test("the timed wake lists what changed since the last one without the architect
   assert.deepEqual(by, { a: ["owner"], b: ["工程师"], other: ["工程师"] });
   assert.deepEqual(names(frame.working), ["work"], "the item with a step being done, outside the Architect project");
   assert.deepEqual(frame.working, [{ item: "work", project: "Whitefoot", title: "在做的条目", status: "wip", flags: [] }]);
-  assert.deepEqual(frame.architect, [{ item: "arch", project: "Architect", title: "架构师的条目", status: "todo", flags: [] }]);
+  assert.deepEqual(frame.architect, [{ item: "arch", project: "Architect", title: "架构师的条目", status: "todo", flags: [] }], "the PM project's item is not in the architect's column");
+  assert.deepEqual(frame.pm, [{ item: "pmwork", project: "PM", title: "PM 的条目", status: "wip", flags: [] }], "the PM project's open items, as the architect's column lists the Architect project's, and not in the working column though a step is being done");
   assert.deepEqual(wake.lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(file)).filter(l => l.timed).at(-1), { timed: wake.lastTimed });
   t.mock.timers.tick(5000); await setImmediate();
@@ -496,7 +498,7 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   // The board's own kinds, with exactly their own fields: the daemon is their only source.
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
-  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [], actions: "" });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [], pm: [], actions: "" });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
   await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes });
@@ -569,7 +571,7 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
-  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok", actions: "" });
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok", pm: [], actions: "" });
   clock += 60_000; third.checkReceipts();
   assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
 });
