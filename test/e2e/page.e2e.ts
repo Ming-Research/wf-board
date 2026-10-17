@@ -66,7 +66,7 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
     await bp.reset(openAll(board));
     none(await checkDifficultyChip(bp, await oracle(board.store)));
   });
-  await t.test("part-done items read 待续 and every open item's detail shows its progress line", async () => {
+  await t.test("part-done items read 停滞 and every open item's detail shows its progress line", async () => {
     await bp.reset(openAll(board));
     none(await checkProgress(bp, await oracle(board.store)));
   });

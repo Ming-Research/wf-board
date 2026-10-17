@@ -15,7 +15,7 @@ export interface ProgressNames {
 export interface ProgressLine { kind: "next" | "blocked" | "doing"; text: string }
 
 export function progressLine(status: Status | undefined, p: Progress, names: ProgressNames): ProgressLine | undefined {
-  if (status === "todo" || status === "partial") {
+  if (status === "todo" || status === "stalled") {
     if (!p.total) return undefined;
     return { kind: "next", text: `做完 ${p.done}/${p.total}${p.next ? `，下一步：${p.next.text}` : ""}` };
   }

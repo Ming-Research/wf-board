@@ -65,7 +65,7 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
 
 /** Every category the generated board must contain at least once. */
 export const REQUIRED_SHAPES = [
-  "status done", "status cancelled", "status wip", "status partial", "status blocked", "status todo", "status paused", "status record",
+  "status done", "status cancelled", "status wip", "status stalled", "status blocked", "status todo", "status paused", "status record",
   "explicit pause", "inherited pause", "pending ask", "answered ask", "provisional plan", "targets",
   "two or more tags", "difficulty 1–5", "difficulty 架构师做", "missing difficulty", "depth 5 or more", "more than 10 owned children", "owned under a record", "named by a shared row",
   "shared across projects", "parallel plan rows", "dropped step", "doing step", "plan over 10 rows",

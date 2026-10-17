@@ -215,7 +215,7 @@ export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
     const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name);
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
-      openItems: Object.fromEntries((["todo", "partial", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])) };
+      openItems: Object.fromEntries((["todo", "stalled", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])) };
   });
 }
 function sentNotes(s: Snapshot, r: Rules) {

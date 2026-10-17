@@ -308,7 +308,7 @@ export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
   return v;
 }
 
-const STATUS_LABELS: Record<string, string> = { 进行中: "wip", 卡住: "blocked", 暂停: "paused", 待续: "partial", 未开始: "todo", 完成: "done", 取消: "cancelled" };
+const STATUS_LABELS: Record<string, string> = { 进行中: "wip", 卡住: "blocked", 暂停: "paused", 停滞: "stalled", 未开始: "todo", 完成: "done", 取消: "cancelled" };
 /** Each project's filter buttons: the number on a button counts its matches in that project; pressed, the tree shows
  * every match whose owners are in the project, undimmed, and dims or hides everything else of the project. */
 export async function checkFilters(bp: BoardPage, o: Oracle): Promise<string[]> {
@@ -600,13 +600,13 @@ export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<str
   return v;
 }
 
-/** The 待续 status and the progress line (docs/design.md, Status; How the page shows a plan). For an open item of each live
+/** The 停滞 status and the progress line (docs/design.md, Status; How the page shows a plan). For an open item of each live
  * status the detail box and its chip carry the status as their class and the chip has a background of its own; the line
  * under the title says what its status promises, and a finished item has none; every project with part-done items has a
- * 待续 button counting them. Violations start with "partial-status" or "progress-line". */
+ * 停滞 button counting them. Violations start with "stalled-status" or "progress-line". */
 export async function checkProgress(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page, ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
-  for (const status of ["todo", "partial", "wip", "blocked"]) {
+  for (const status of ["todo", "stalled", "wip", "blocked"]) {
     const id = ids.find(x => o.r.statusOf(x) === status);
     if (!id) { v.push(`progress-line: the board has no item with status ${status}`); continue; }
     await bp.select(id);
@@ -617,9 +617,9 @@ export async function checkProgress(bp: BoardPage, o: Oracle): Promise<string[]>
         lineTop: line ? line.getBoundingClientRect().top : null, titleBottom: title ? title.getBoundingClientRect().bottom : null,
       };
     });
-    if (!got.box.split(" ").includes(status)) v.push(`partial-status: ${id} (${status}) has the box classes ${JSON.stringify(got.box)}`);
-    if (!got.chip.split(" ").includes(status)) v.push(`partial-status: ${id} (${status}) has the chip classes ${JSON.stringify(got.chip)}`);
-    if (got.background === "rgba(0, 0, 0, 0)" || got.background === "") v.push(`partial-status: the chip of ${id} (${status}) has no background of its own`);
+    if (!got.box.split(" ").includes(status)) v.push(`stalled-status: ${id} (${status}) has the box classes ${JSON.stringify(got.box)}`);
+    if (!got.chip.split(" ").includes(status)) v.push(`stalled-status: ${id} (${status}) has the chip classes ${JSON.stringify(got.chip)}`);
+    if (got.background === "rgba(0, 0, 0, 0)" || got.background === "") v.push(`stalled-status: the chip of ${id} (${status}) has no background of its own`);
     const ratio = o.r.planRatio(id), want = status === "wip" ? /在做/ : status === "blocked" ? /^卡在：/ : new RegExp(`^做完 ${ratio.done}/${ratio.total}`);
     const kind = status === "wip" ? "doing" : status === "blocked" ? "blocked" : "next";
     if (got.line === null) { v.push(`progress-line: ${id} (${status}) shows no line under its title`); continue; }
@@ -633,10 +633,10 @@ export async function checkProgress(bp: BoardPage, o: Oracle): Promise<string[]>
     if (await page.locator("#item-detail > .item > .progress-line").count()) v.push(`progress-line: ${done} is done and still shows a line`);
   }
   for (const { name: g } of o.s.board.projects) {
-    const n = ids.filter(x => o.s.items[x]!.group === g && o.r.statusOf(x) === "partial").length, section = page.locator(`#areas section.group[data-group="${q(g)}"]`);
+    const n = ids.filter(x => o.s.items[x]!.group === g && o.r.statusOf(x) === "stalled").length, section = page.locator(`#areas section.group[data-group="${q(g)}"]`);
     if (!n || !await section.count()) continue;
     const labels = await section.locator(".grp-filters .sbtn").allTextContents();
-    if (!labels.includes(`待续 ${n}`)) v.push(`partial-status: ${g} has ${n} part-done items, its filter buttons read ${JSON.stringify(labels)}`);
+    if (!labels.includes(`停滞 ${n}`)) v.push(`stalled-status: ${g} has ${n} part-done items, its filter buttons read ${JSON.stringify(labels)}`);
   }
   return v;
 }

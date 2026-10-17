@@ -15,7 +15,7 @@ import type { SlowOps } from "./slow-ops.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 
-export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", partial: "PARTIAL", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
+export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", stalled: "STALLED", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 export function formatRow(it: Pick<q.Row, "id" | "status" | "title"> & Partial<q.Row>): string {

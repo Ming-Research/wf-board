@@ -839,7 +839,7 @@ log:
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
   dispatched. "Can be dispatched" is defined once, as `canStart`: the status is
-  todo or partial, an unpaused root needs the item, and one of its ready steps
+  todo or stalled, an unpaused root needs the item, and one of its ready steps
   (every step before it done) is a todo text step with no `waits` text. The
   next-task list (`brief.todo`) lists what `canStart` allows and has a rating;
   the check asks for the rating of what `canStart` allows and has none. A step
@@ -1011,7 +1011,7 @@ Each row is in one derived state, which status and display use:
 | Row | resolved | in progress | waiting | open |
 |---|---|---|---|---|
 | step | done, or dropped with its reason | doing | — | todo |
-| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or partial |
+| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or stalled |
 | shared item | target done | — | target open (any status) | — |
 | card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
 | owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
@@ -1062,7 +1062,7 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    agent list agree on which sessions are on an item. A session that has gone
    quiet for the window no longer holds it. The records are read by
    `openDispatches`, the one reading of an item's unfinished dispatches.
-7. `partial` when nobody holds the item and part of its own work is done: a
+7. `stalled` when nobody holds the item and part of its own work is done: a
    step of its own is done, or an item it owns is done, or an open item it owns
    has begun in this same sense (a dropped step, a cancelled owned item and an
    owned record do not count). What others finished does not count: a shared
@@ -1072,7 +1072,7 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
 8. `todo` otherwise: nothing is done and nobody holds the item.
 
 The three live states answer three different questions: `wip` says someone is on
-it, `partial` says work was done and nobody is on it now, `todo` says nothing
+it, `stalled` says work was done and nobody is on it now, `todo` says nothing
 was done. How far an item is and what it waits on is not a status; the page
 shows it as a line under the title (How the page shows a plan).
 
@@ -1087,7 +1087,7 @@ conversion). The checks that existed only because status was set by hand go
 away: 卡住了，但没写在等什么, 可解除阻塞：等的都已完成 and 标为进行中，但还在等别的.
 
 Every work item has a plan with at least one acceptance step, so no work item
-has a stored `todo`, `partial`, `wip`, `blocked` or `done` any more. An item with an
+has a stored `todo`, `stalled`, `wip`, `blocked` or `done` any more. An item with an
 empty plan (none exists after conversion; the schema allows it only on a
 record) shows the check 没有计划：至少要有一个验收步骤.
 
@@ -1277,7 +1277,7 @@ write-time refusals in the last column still apply to it:
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
 | 验收过早 (label `验收过早`: an acceptance step is done while a row it comes after, through `after` or the previous-row default and then back through theirs, is not resolved; it flags only and refuses nothing, so the usual order of work, acceptance, then delivery raises none) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or partial, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or stalled, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1383,7 +1383,7 @@ plan rows, read from `Rules.progress`; the tree rows do not change. Status says
 whether someone is on the item; the line says how far it is and what holds it,
 in one of three forms by status:
 
-- todo or partial: `做完 5/7，下一步：<text of the first ready row>`;
+- todo or stalled: `做完 5/7，下一步：<text of the first ready row>`;
 - blocked: `卡在：<what it waits on>`, the titles of the shared items and
   cards the ready rows wait on, `等主人` for an unanswered request, and
   `上级计划里排在它前面的行没做完` when the row that owns it comes after
@@ -1394,10 +1394,10 @@ in one of three forms by status:
 A paused, done or cancelled item shows no line.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
-the project's filter buttons all carry 待续 as a status of its own: the filter
+the project's filter buttons all carry 停滞 as a status of its own: the filter
 reads "做完了一部分、现在没人在做的条目" and 未开始 reads "什么都还没做、也没人在做的条目".
 Its colour is a blue between the grey of 未开始 and the amber of 进行中, the tokens
-`--partial`, `--partial-soft` and `--bar-partial`, defined for both themes.
+`--stalled`, `--stalled-soft` and `--bar-stalled`, defined for both themes.
 
 The plan's look, row by row. One line per row, a 16-pixel gutter on the left
 carries the row's glyph in its state colour, the same colours as the status
@@ -1636,7 +1636,7 @@ instructions within the limit and free of rule text.
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions the architect started done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or partial), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or stalled), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
@@ -1758,7 +1758,7 @@ tags as small neutral grey chips (never a status colour; the tooltip is the tag'
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-A tree row's right-hand counts show only open parts (todo, partial, in progress,
+A tree row's right-hand counts show only open parts (todo, stalled, in progress,
 blocked, paused); done and cancelled parts are not counted there, and a cancelled
 item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
@@ -2561,7 +2561,7 @@ start with the schema's own error, so nothing is read and silently discarded.
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items someone holds (a doing step of their own or a live session),
-the next ten items rated 1–5 that `canStart` allows (status todo or partial), by priority,
+the next ten items rated 1–5 that `canStart` allows (status todo or stalled), by priority,
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds

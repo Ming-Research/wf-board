@@ -269,15 +269,15 @@ const WITNESSES: Witness[] = [
     run: async bp => checkFullWidth(bp),
   })),
   {
-    bug: "an item with part done and nobody on it was counted and filtered as 未开始, with no 待续 filter (owner, 2026-10-16)",
-    // The project's 待续 button is gone, so part-done items fall back under 未开始 alone.
-    reverts: [{ file: "web/app.ts", edit: "the 待续 filter", find: "    [\"partial\", \"待续\", \"做完了一部分、现在没人在做的条目\", it => statusOf(it) === \"partial\"],\n", replace: "" }], family: "partial-status",
+    bug: "an item with part done and nobody on it was counted and filtered as 未开始, with no 停滞 filter (owner, 2026-10-16)",
+    // The project's 停滞 button is gone, so part-done items fall back under 未开始 alone.
+    reverts: [{ file: "web/app.ts", edit: "the 停滞 filter", find: "    [\"stalled\", \"停滞\", \"做完了一部分、现在没人在做的条目\", it => statusOf(it) === \"stalled\"],\n", replace: "" }], family: "stalled-status",
     run: async (bp, b) => checkProgress(bp, await oracle(b.store)),
   },
   {
     bug: "the chip of a part-done item had no colour of its own, so it read as nothing (owner, 2026-10-16)",
     // Without its background rule the chip is bare text beside the coloured chips of the other statuses.
-    reverts: [{ file: "web/index.html", edit: "the background of a part-done chip", find: ".st.partial { background: var(--partial-soft); }\n", replace: "" }], family: "partial-status",
+    reverts: [{ file: "web/index.html", edit: "the background of a part-done chip", find: ".st.stalled { background: var(--stalled-soft); }\n", replace: "" }], family: "stalled-status",
     run: async (bp, b) => checkProgress(bp, await oracle(b.store)),
   },
   {

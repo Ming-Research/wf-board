@@ -7,7 +7,7 @@ const names = { item: (id: string) => `item ${id}`, card: (key: string) => `card
 const progress = (fields: Partial<Progress> = {}): Progress => ({ done: 2, total: 5, waiting: [], ask: false, behind: false, doing: [], sessions: [], ...fields });
 
 test("a todo or part-done item reads how far it is and the first step ready to start", () => {
-  assert.deepEqual(progressLine("partial", progress({ next: { id: "c", text: "Write the check" } }), names), { kind: "next", text: "做完 2/5，下一步：Write the check" });
+  assert.deepEqual(progressLine("stalled", progress({ next: { id: "c", text: "Write the check" } }), names), { kind: "next", text: "做完 2/5，下一步：Write the check" });
   assert.equal(progressLine("todo", progress({ done: 0, next: { id: "a", text: "Start" } }), names)!.text, "做完 0/5，下一步：Start");
   assert.equal(progressLine("todo", progress({ done: 0 }), names)!.text, "做完 0/5", "no step ready to start: the ratio alone");
   assert.equal(progressLine("todo", progress({ done: 0, total: 0 }), names), undefined, "an item with no plan rows has nothing to say");

@@ -97,7 +97,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     const frontier=values.filter(row=>row.ready);
     const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":paused(id)?"paused":values.some(row=>row.state==="progress")?"wip"
       :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")||!ownerReady(id)?"blocked"
-      :liveSession(id)?"wip":begun(id,values,plan,active)?"partial":"todo";
+      :liveSession(id)?"wip":begun(id,values,plan,active)?"stalled":"todo";
     if(cycleHits===before)targetStatuses.set(id,status);
     return status;
   }

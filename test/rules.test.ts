@@ -136,7 +136,7 @@ test("status derives from all plan rows and distinguishes the frontier from late
     legacyAsk: { ask: { text: "Approve" } }, record: { record: true, plan: [own("todo")] },
   });
   const r = rules(s);
-  for (const [id, expected] of Object.entries({ todo: "todo", doing: "wip", done: "done", cancelled: "cancelled", blocked: "blocked", canMove: "todo", ownsDoing: "wip", sharesDoing: "blocked", acceptanceOnly: "todo", completedParts: "partial", legacyAsk: "blocked" })) assert.equal(r.statusOf(id), expected, id);
+  for (const [id, expected] of Object.entries({ todo: "todo", doing: "wip", done: "done", cancelled: "cancelled", blocked: "blocked", canMove: "todo", ownsDoing: "wip", sharesDoing: "blocked", acceptanceOnly: "todo", completedParts: "stalled", legacyAsk: "blocked" })) assert.equal(r.statusOf(id), expected, id);
   assert.equal(r.statusOf("record"), undefined);
   assert.deepEqual(r.planRows("blocked").map(row => row.ready), [true, false, false]);
   assert.deepEqual(r.planRows("canMove").map(row => row.ready), [true, true, false]);
@@ -284,7 +284,7 @@ test("completed acceptance before delivery does not complete the item or raise a
   const s = snapshot({ a: {} });
   s.items.a!.plan = [step("work", "done"), accept("done"), step("merge")];
   const r = rules(s);
-  assert.equal(r.statusOf("a"), "partial");
+  assert.equal(r.statusOf("a"), "stalled");
   assert.deepEqual(r.planRatio("a"), { done: 2, total: 3 });
   assert.deepEqual(r.checks("a"), []);
   s.items.a!.plan[2] = step("merge", "done");
@@ -720,7 +720,7 @@ test("a done acceptance row with an unfinished row before it gets the 验收过�
   // An acceptance row not yet done is not early.
   assert.deepEqual(early([step("work"), accept("todo")]), []);
   // The check flags only: the item stays open and the plan is kept.
-  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "partial");
+  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "stalled");
 });
 
 test("the next-task definition is written once: todo or part way, needed, rated, and a step with no waits", () => {
@@ -735,7 +735,7 @@ test("the next-task definition is written once: todo or part way, needed, rated,
   const r = rules(s);
   const expected: Record<string, [string, boolean, boolean]> = {
     fresh: ["todo", true, true], unrated: ["todo", true, false], held: ["wip", false, false],
-    waits: ["todo", false, false], later: ["partial", true, true], finished: ["done", false, false],
+    waits: ["todo", false, false], later: ["stalled", true, true], finished: ["done", false, false],
   };
   for (const [id, [status, canStart, startable]] of Object.entries(expected)) assert.deepEqual([r.statusOf(id), r.canStart(id), r.startable(id)], [status, canStart, startable], id);
 });

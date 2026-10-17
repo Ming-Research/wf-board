@@ -281,7 +281,7 @@ export interface Rules {
   sessionsOf(id: string): string[];
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
-  /** Work an agent could be started on now, apart from its rating: status todo or partial, an unpaused root needs it, and
+  /** Work an agent could be started on now, apart from its rating: status todo or stalled, an unpaused root needs it, and
    * a step ready to start that waits on nothing. The one definition the next-task list and the 缺难度 check both read. */
   canStart(id: string): boolean;
   /** `canStart` and rated 1–5: what the next-task list offers. */
@@ -887,7 +887,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       : rows.some(row => row.state === "progress") ? "wip"
       : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id) ? "blocked"
       : liveSessions(id).length ? "wip"
-      : anyBegun(rows) ? "partial" : "todo";
+      : anyBegun(rows) ? "stalled" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
     return status;
   }
@@ -909,7 +909,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function canStart(id: string): boolean {
     const st = statusOf(id);
-    return (st === "todo" || st === "partial") && neededSet().has(id) && nextStep(id) !== undefined;
+    return (st === "todo" || st === "stalled") && neededSet().has(id) && nextStep(id) !== undefined;
   }
   function startable(id: string): boolean { return canStart(id) && dispatchable(item(id)?.difficulty); }
   function progress(id: string): Progress {
