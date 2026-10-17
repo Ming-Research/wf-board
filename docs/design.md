@@ -3029,7 +3029,7 @@ start with the schema's own error, so nothing is read and silently discarded.
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items someone is working on (a doing step of their own or a live session),
-the next ten items rated 1–5 that `canStart` allows (status todo or idle), ended items last, then by `order` where an item has one and otherwise in the board's item order,
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), ended items last, then by `order` (an item without one counts as 0, and equal items keep the board's item order),
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
@@ -3495,24 +3495,26 @@ the clearing as bookkeeping.
 
 The live board's files hold `priority` on every root (section 5, Priority).
 `Store.open(dir, { clearPriority: true })` reads those files without the field
-and writes one commit, `clear_priority N items`, in which each such item loses
-it and gains one log line, `优先级：<value> → 去掉，理由：迁移：…`; a board that
-holds the field and is opened without the option refuses to start and names the
-files. The daemon opens with the option, so the first start after the deploy
-clears the field by itself (a refusal there would only make the deploy job roll
-back) and prints the report to its log: the totals by value, then one line per
-item with its key, project and the value it held. Each item's own log line keeps
-the value it held, the daemon's report lists every one, and git history keeps the
-old versions. `npm run migrate:priority -- --data DIR` does the same
-offline on a copy of the data and prints the same report, which is how the run
-is rehearsed before the live one. The commit is bookkeeping, not work on
-the items: historical comparison omits the field from old versions, so unread
-shows nothing for it, and activity and the timed wake leave the commit out, so
-no item's last-change time or no-progress clock restarts and the wake lists
-nothing it wrote. A second start writes nothing. The command, its module, its
-test, the npm script, the start option and the daemon's use of it are deleted
-after the run on the live board; what stays is the omission of the field from
-old versions in historical comparison.
+and writes one commit, `clear_priority N items`, which rewrites each such file
+without it. A board that holds the field and is opened without the option
+refuses to start and names the files. The daemon opens with the option, so the
+first start after the deploy clears the field by itself (a refusal there would
+only make the deploy job roll back) and prints the report to its log: the totals
+by value, then one line per item with its key, project and the value it held.
+The commit sets no `updated` and adds no log line to the items, so no item looks
+changed. The value each item held stays in git history, as the lines the commit
+removed, and in that report. `npm run migrate:priority -- --data DIR` does the
+same offline on a copy of the data and prints the same report, which is how the
+run is rehearsed before the live one.
+
+The commit is bookkeeping, not work on the items: historical comparison omits the
+field from old versions, so unread shows nothing for it, and activity and the
+timed wake leave the commit out, so no item's last-change time or no-progress
+clock restarts and the wake lists nothing it wrote. A second start writes
+nothing. The command, its module, its test, the npm script, the start option, the
+daemon's use of it and the two checks that leave the commit out of activity and
+the timed wake are deleted after the run on the live board; what stays is the
+omission of the field from old versions in historical comparison.
 
 ### Owner-wide rules to change
 

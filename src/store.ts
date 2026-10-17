@@ -15,7 +15,7 @@ import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummar
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
-import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing, priorityClearedItem } from "./migrate-priority.ts";
+import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing } from "./migrate-priority.ts";
 import type { ClearedPriority } from "./migrate-priority.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
@@ -32,8 +32,9 @@ import { ReadCache } from "./read-cache.ts";
 export type DocKind = "item" | "decision" | "note" | "glossary" | "message";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
-/** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
-export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
+/** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. `rewrite` (the one-time
+ * clearing of the retired priority only) writes each put although it changes nothing in memory: the documents were read without a field their files still hold. */
+export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true; rewrite?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 /** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
@@ -579,11 +580,11 @@ export class Store {
   /** The items cleared of the retired priority by this start (src/migrate-priority.ts), with the value each held; none when the data held none. */
   clearedPriority: readonly ClearedPriority[] = [];
 
-  /** Clear the retired priority from the items that held it, in one commit: each logs the value it held. */
+  /** Clear the retired priority from the items that held it, in one commit. The documents in memory were read without it, so the
+   * commit rewrites their files as they are: no `updated`, no log line (the value stays in git history and in the report). */
   private async clearPriority(held: ReadonlyArray<{ id: string; priority: unknown }>): Promise<void> {
-    const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    await this.commit({ author: "wf-board", message: `${CLEAR_PRIORITY_MESSAGE} ${held.length} items`,
-      puts: held.map(({ id, priority }) => { const doc = this.state.items[id]!; return { kind: "item" as const, id, doc: priorityClearedItem(doc, priority, at), expectRev: doc.rev }; }) });
+    await this.commit({ author: "wf-board", message: `${CLEAR_PRIORITY_MESSAGE} ${held.length} items`, rewrite: true,
+      puts: held.map(({ id }) => { const doc = this.state.items[id]!; return { kind: "item" as const, id, doc, expectRev: doc.rev }; }) });
     this.clearedPriority = held.map(({ id, priority }) => ({ id, group: this.state.items[id]!.group, priority: String(priority) }));
   }
 
@@ -963,7 +964,7 @@ export class Store {
           else if (before === null || txn.numberExisting) input.num = nextNum++;
         }
         const after = frozen(validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path));
-        if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
+        if (before && !txn.rewrite && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
           continue;
         }

@@ -3,10 +3,10 @@
 // in history hold it too, which historical comparison omits as it omits the other retired fields (section 9). A board
 // whose files still hold it refuses to start unless Store.open is given { clearPriority: true }; the daemon gives it, so
 // the first start with this code clears the field in one commit, and the command in migrate-priority-cli.ts does the same
-// offline on a copy. Delete this file, the command, its test, the npm script, the start option in store.ts and main.ts and
-// the design paragraph once it has run on the live board. What stays is store.ts's omission of the field from old versions.
-
-import type { Item } from "./model.ts";
+// offline on a copy. The commit is bookkeeping: it sets no `updated` and adds no log line, so no item looks changed; the value
+// each item held stays in git history and in the report. Delete this file, the command, its test, the npm script, the start
+// option in store.ts and main.ts, the commit's bookkeeping checks in store.ts and timed-wake.ts and the design paragraph once it
+// has run on the live board. What stays is store.ts's omission of the field from old versions.
 
 /** What the refusal to start says about an item file that still holds the field. */
 export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer exists; start with the migration, or clear it once with the daemon stopped: npm run migrate:priority -- --data DIR";
@@ -14,16 +14,9 @@ export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer e
 export const CLEAR_PRIORITY_MESSAGE = "clear_priority";
 /** Whether a commit message is the clearing commit: bookkeeping, not work on the items, so activity and the timed wake leave it out. */
 export const isPriorityClearing = (message: string): boolean => message.startsWith(`${CLEAR_PRIORITY_MESSAGE} `);
-/** The log line of an item that held a priority, in the form of the other migration lines (from → to, and why). */
-export const clearedPriorityLog = (was: unknown): string => `优先级：${String(was)} → 去掉，理由：迁移：先做什么改由架构师定，必须先做的用依赖表达`;
 
 /** An item file that holds the field, and its value. */
 export interface ClearedPriority { id: string; group: string; priority: string }
-
-/** The item as the migration leaves it: no priority (the file has been read without it), one log line more. */
-export function priorityClearedItem(item: Item, was: unknown, at: string): Item {
-  return { ...item, updated: at, log: [...item.log, { at, by: "wf-board", text: clearedPriorityLog(was) }] };
-}
 
 /** The report the command and the daemon's log print: one line per item (key, project, the value it held), the totals by value first. */
 export function priorityReport(cleared: readonly ClearedPriority[]): string[] {

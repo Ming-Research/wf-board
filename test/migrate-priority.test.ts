@@ -11,7 +11,8 @@ import { parse, stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { unreadSteps } from "../src/history.ts";
 import { timedWake } from "../src/timed-wake.ts";
-import { clearedPriorityLog, priorityReport } from "../src/migrate-priority.ts";
+import { ActivityIndex } from "../src/rules.ts";
+import { priorityReport } from "../src/migrate-priority.ts";
 import { board } from "./helpers.ts";
 
 const exec = promisify(execFile);
@@ -52,17 +53,18 @@ test("opening with the migration clears the priority from every item that holds 
   assert.equal(commit!.message, "clear_priority 2 items");
   assert.deepEqual(commit!.files.sort(), IDS.map(id => `items/${id}.yaml`).sort());
   const s = store.snapshot();
-  for (const [id, value] of Object.entries(HELD)) {
+  for (const id of IDS) {
     const it = s.items[id]!;
     assert.equal(Object.hasOwn(it, "priority"), false, `${id} stores no priority`);
     assert.equal(it.rev, before[id]!.rev + 1);
-    assert.deepEqual(it.log.slice(0, -1), before[id]!.log, "the log keeps every earlier line");
-    assert.deepEqual([it.log.at(-1)!.by, it.log.at(-1)!.text], ["wf-board", `优先级：${value} → 去掉，理由：迁移：先做什么改由架构师定，必须先做的用依赖表达`]);
-    assert.equal(it.log.at(-1)!.text, clearedPriorityLog(value));
+    // Nothing else moves: no log line, no new `updated`, so the item does not look changed.
+    assert.deepEqual(it.log, before[id]!.log); assert.equal(it.updated, before[id]!.updated);
     assert.doesNotMatch(await readFile(join(dir, `items/${id}.yaml`), "utf8"), /priority/);
   }
+  // The value stays in git history, as the commit removed it.
+  for (const [id, value] of Object.entries(HELD)) assert.match(await git("show", "--format=", "HEAD", "--", `items/${id}.yaml`), new RegExp(`^-priority: ${value}$`, "m"));
   assert.deepEqual(s.items.a, before.a, "an item that held none is untouched");
-  // The report keeps the value each item held, whatever the log says later.
+  // The report keeps the value each item held as well.
   assert.deepEqual(store.clearedPriority, [{ id: "area", group: "Whitefoot", priority: "P1" }, { id: "other", group: "Firn", priority: "P2" }]);
   assert.deepEqual(priorityReport(store.clearedPriority), ["Cleared the retired priority of 2 items (P1 1, P2 1)", "area · Whitefoot · P1", "other · Firn · P2"]);
   // History keeps the value as written, and comparison reads the old version without it, so the owner sees nothing new.
@@ -82,6 +84,10 @@ test("the clearing is bookkeeping: it restarts no clock, starts no active time a
   const s = store.snapshot();
   for (const id of IDS) assert.equal(s.activity!.items[id], held!.at, `${id}'s last change is still the earlier commit's`);
   assert.equal(s.activity!.writes.at(-1), held!.at, "the clearing starts no active time");
+  // What the rules read is that index and the items' own times: the clock of each root is still the earlier commit's, and no active window opens at the clearing.
+  const index = ActivityIndex.build(s), now = Date.now();
+  for (const id of IDS) assert.equal(index.changedAt(id, now), Date.parse(held!.at), `${id}'s change clock is not restarted`);
+  assert.ok(index.intervals(now).every(([start]) => start < Date.parse(clearing!.at)), "no active window opens at the clearing");
   const fields = await timedWake(store, s, store.derived.rules(s, Date.now()), { at: held!.at, head: heldHead }, held!.at);
   assert.deepEqual(fields.changed, [], "and the timed wake lists nothing the clearing wrote");
 });
