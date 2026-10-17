@@ -172,7 +172,7 @@ const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing",
 
 test("a step in progress on an item a session touched does not make it running; an unfinished live dispatch does, whatever the state word", () => {
   const names = ["working", "stopped", "waiting", "longWait", "nothing"];
-  // Finished records: each name wrote later on an item, but holds nothing alive. Open records: the same names, alive.
+  // Finished records: each name wrote later on an item, but works on nothing alive. Open records: the same names, alive.
   const finished = item([], { dispatches: names.map(name => dispatch(`done-${name}`, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
   const open = item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
   // Each name wrote this many minutes ago on this item.
@@ -206,10 +206,10 @@ test("a session with an unfinished dispatch that is alive is running, an enginee
     mixedB: item(done, { dispatches: [dispatch("mixed", minutesAgo(300), { role: "审查" })] } as Partial<Item>),
   }, { over: wrote(["over", 5]), rowsDone: wrote(["rowsDone", 250]), mixed: wrote(["mixedA", 5]), r300: wrote(["r300", 200]) });
   const running = (name: string) => row(s, name)!.running;
-  assert.deepEqual([row(s, "fresh")!.state, running("fresh")], ["none", true], "just started, no row marked yet: it holds the item");
-  assert.deepEqual([row(s, "rowsDone")!.state, running("rowsDone")], ["none", true], "every row done and waiting for the merge: still holds it, 5 hours after the start");
-  assert.deepEqual([row(s, "over")!.state, running("over")], ["none", false], "its dispatch ended: it holds nothing, though it wrote again afterwards");
-  assert.equal(running("moved"), true, "a new dispatch under the name of an ended one holds the item");
+  assert.deepEqual([row(s, "fresh")!.state, running("fresh")], ["none", true], "just started, no row marked yet: it works on the item");
+  assert.deepEqual([row(s, "rowsDone")!.state, running("rowsDone")], ["none", true], "every row done and waiting for the merge: still works on it, 5 hours after the start");
+  assert.deepEqual([row(s, "over")!.state, running("over")], ["none", false], "its dispatch ended: it works on nothing, though it wrote again afterwards");
+  assert.equal(running("moved"), true, "a new dispatch under the name of an ended one works on the item");
   assert.equal([running("r10"), running("r40"), running("r300")].join(), "true,true,true", "an unfinished review is running at 10 minutes, at 40 and at 5 hours: no shorter bound than the window");
   assert.equal(row(s, "r10")!.state, "none", "and it gets no state word");
   assert.equal(running("mixed"), true, "an unfinished review record under the name is alive for status too");

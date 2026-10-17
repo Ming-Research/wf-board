@@ -4041,7 +4041,7 @@ test("an owner notice from the stream shows one browser notice; its click opens 
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
-/** A dispatch record from long ago, unfinished: the session wrote since, so it is alive and running. `longEnded` is the same record finished: the session is listed by its later writes and holds nothing. */
+/** A dispatch record from long ago, unfinished: the session wrote since, so it is alive and running. `longEnded` is the same record finished: the session is listed by its later writes and works on nothing. */
 const longOpen = (agent: string) => ({ agentId: agent, agent, role: "工程师" as const, level: 2, model: "Sonnet", started: minutesAgo(400) });
 const longEnded = (agent: string) => ({ ...longOpen(agent), finish: { ended: minutesAgo(300), result: "一次通过" as const, reports: 0, kickbacks: 0, signals: [], usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0 } });
 /** The page's fixture with a session list: `child` has a step in progress. A session is running only while it has an unfinished dispatch record,

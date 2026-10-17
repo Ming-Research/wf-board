@@ -2195,17 +2195,18 @@ level, and whether that someone is working, waiting or has gone quiet.
   (the choice is kept in the browser like the list's own fold). The heading
   counts the running rows. A row is running when the session has an unfinished
   dispatch record, of either role, and is alive, meaning it started or wrote
-  within the list's window (`liveDispatches`, the one reading item status uses
-  for a live session, see Status). So an engineer just started or waiting for
-  the merge with every row done, and a review still being read, are running
-  although they marked no step, and 「可能停了」 stays expanded, being the exception
-  the owner most needs to see. Nothing else makes a row running. A session with
-  no dispatch record (the observer, one opened by hand) or whose dispatch has
-  ended is folded, even when the items it touched have a step in progress: those
-  steps are another session's, and its state word is still read from them. A
-  review is not given a shorter bound than the window, so a review nobody closed
-  out stays expanded until six hours after its last activity, which is when
-  Status stops counting its record as holding the item too. Rejected: hiding the
+  within the list's window (`liveDispatches`, the reading that rule 6 of Status
+  uses for a session working on an item, either role and the same window, not
+  the push's holder). So an engineer just started or waiting for the merge with
+  every row done, and a review still being read, are running although they
+  marked no step, and 「可能停了」 stays expanded, being the exception the owner most
+  needs to see. Nothing else makes a row running. A session with no dispatch
+  record (the observer, one opened by hand) or whose dispatch has ended is
+  folded, even when the items it touched have a step in progress: those steps
+  are another session's, and its state word is still read from them. A review is
+  not given a shorter bound than the window, so a review nobody closed out stays
+  expanded until six hours after its last activity, which is when Status stops
+  counting its record as a session working on the item too. Rejected: hiding the
   other rows, because a session that finished but was never closed out could
   then not be found, and the owner would not notice the unclosed record; telling
   running by the time since the last write alone, because a session waiting for
