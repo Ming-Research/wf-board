@@ -259,6 +259,8 @@ test("importExport writes the read state, then one commit per changed document i
   assert.match(await store.diff("item", "old", asReadCommit, currentCommit), /New #12/);
   assert.equal(store.snapshot().notes.reply!.rev, 2);
   assert.equal(store.snapshot().decisions.card!.rev, 1);
+  assert.deepEqual(store.snapshot().decisions.card!.options, [{ key: "A", text: "", detail: "First", recommended: true }, { key: "B", text: "", detail: "Second" }], "the old option text is the option's detail");
+  assert.deepEqual(store.snapshot().decisions.card!.legacy, { background: "Why" });
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
   assert.ok((await readFile(join(dir, "state/owner.yaml"), "utf8")).includes(asReadCommit));
 });

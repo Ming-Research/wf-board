@@ -785,19 +785,21 @@ log:
   one the owner only should know goes in the architect's journal. Notice files
   in history still count as content writes. The one commit that deleted them
   is not a write, and activity skips it.
-- A decision file holds its status, item, confidence, time and options in the
-  front matter, and background and ruling as body sections. `confidence`
-  becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
+- A decision card (see [Decision cards](#decision-cards)) holds its `item`,
+  `question`, options (a name and a detail each), confidence, status and times,
+  and the owner's ruling once ruled. Cards converted from the earlier form
+  also keep their old background in `legacy`.
 - Each fact is stored once. The export shows what duplication costs: 27 cards
   whose `item` names an item whose `qs` omits them, 572 items carrying both
   `parent` and `area`, 13 notes whose stored title went stale. So a card's
   place is its `item` alone (an item's cards are derived), an item's place is
   the one plan row that owns it (its owner is derived), and a note's title is
   derived from its target.
-- A plan row may name a decision card as well as an item. Four blocked items
-  in the export waited on an open card, which the model before card
-  dependencies could not express; a card row makes such an item blocked by
-  derivation (see [Item plans](#item-plans)).
+- A card that blocks is a row of its own item's plan, so an item waiting on
+  it is blocked by derivation (see [Item plans](#item-plans)); a card that does
+  not block has no row, because the work goes on without it. Four blocked
+  items in the export waited on an open card, which the model before card
+  dependencies could not express.
 - Empty strings are absent fields (`ask: ""` on 117 items, `parent: ""` on
   161).
 - A note keeps its original id, so ids that sessions recorded and anchors
@@ -887,10 +889,10 @@ log:
   its own. An item's head shows one 新 chip counting the items with something
   new in its subtree, itself included; a card shows no chip of its own unless
   no item holds it. The header total and the kind buttons count the same way.
-  `n` walks page order, top to bottom: an item, each card its plan unfolds
-  (in plan order) with that card's comments, the item's comments, then each of
-  its other cards and that card's comments, with documents the page does not place last,
-  oldest first. Inside a changed item it visits each new place in turn (a
+  `n` walks page order, top to bottom: an item, then each of its cards in the
+  order the body shows them (the cards the head places, then the others in
+  plan order) with that card's comments, then the item's comments, with
+  documents the page does not place last, oldest first. Inside a changed item it visits each new place in turn (a
   changed status, title or body block, a new or changed plan or target row, an
   added link); a new item is one stop at its start. After `m`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
@@ -909,7 +911,9 @@ log:
   blue line on their left, like the one beside an item's headline, and no colour of
   their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
-  plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
+  plan row, link, target row, ask or card option. A changed recommendation
+  marks the option; a changed question and the closing of a card mark the
+  question and the 已裁定 tag. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
   status and priority rows, and added or changed link rows, are not
   coloured either.
@@ -991,7 +995,7 @@ is one of four kinds:
 | step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were; `waits` belongs on a doing step, and a todo step carrying it gets the 在等文字 check |
 | owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
 | shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
-| card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
+| card | `id` = `card`, `card`, `after?` | A decision card of this item; never owned, never another item's card |
 | acceptance | `id`, `accept: true`, `text`, `state`, `reason?`, server dates | A number or check that decides completion, placed where that check happens. It is an ordinary step with the acceptance marker |
 
 - **Ids.** A step's or acceptance step's `id` is caller-chosen and follows the
@@ -1037,7 +1041,7 @@ Each row is in one derived state, which status and display use:
 | step | done, or dropped with its reason | doing | — | todo |
 | owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or idle |
 | shared item | target done | — | target open (any status) | — |
-| card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
+| card | card not open (ruled or withdrawn) | — | card open | — |
 | owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
 
 A shared row whose target is cancelled is not resolved: someone else dropped
@@ -1396,14 +1400,14 @@ The detail column of a selected item reads, top to bottom:
    tree already shows the owner, so the detail has no ownership line;
    under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
-3. 计划和进展, the plan, with the cards it names unfolded under their rows;
-4. the head (问题 / 为什么 / 做法) and the `data` line;
+3. 计划和进展, the plan;
+4. the head (问题 / 为什么 / 做法), with each card the head places inside it
+   (see Decision cards), and the `data` line;
 5. 被依赖: the items holding a shared row for this item (the owner is
    already on line 1, so it is not repeated);
 6. the item's comment entry and comment list (see Comments below);
 7. 日志, folded as today;
-8. the ask, the open and shown ruled cards its plan does not name, checks and
-   references.
+8. the ask, checks and references.
 
 The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
@@ -1441,22 +1445,16 @@ follow the existing tokens with no new colours:
   own ratio `2/5`, on one line; there is no status chip and no second line.
 - **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
   link, on one line; there is no owner or project line under it.
-- **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
-  show today) and the question. In any item's plan, whichever item holds the
-  card, clicking the question unfolds the whole card right under the row and
-  keeps the shown item selected (background,
-  options and their choice buttons, confidence, the ruling when ruled, its
-  comment list and comment button) and selects it, so `c` and `m` act on it;
-  a second click folds it. It starts folded, and each card's fold is
-  remembered in browser localStorage like other folds, so it is the same card
-  with the same choices, comments and unread state wherever it unfolds. Only
-  the shown item's body is drawn, and a card its own item's plan names is not
-  drawn again in that item's card list at the end of the body, so it exists
-  once on the page. Any route to the card (the 等你 row, `n`/`N`, a reference
-  or the item's 决策 buttons) unfolds it under the shown item's row when that
-  item's plan names it, and otherwise opens the card's own item and unfolds
-  it there. A card whose own item no longer exists stays a link to the card
-  list.
+- **Card row.** ⏸ or ✓ (a withdrawn card counts as ✓), the card tag (阻塞
+  purple, 决策卡 red, 已裁定 or 已撤回) and the question's first line as a link.
+  A ruled card's row adds the pick: `· 选 B：<option name>`. A click on the
+  link or anywhere on the row goes to the card in the item's body (selecting
+  it, so `c` and `m` act on it) and keeps the shown item selected; a link
+  inside the row keeps its own action. The card is always drawn in the body,
+  never under its row, so it exists once on the page and has no fold state.
+  Any route to the card (the 等你 row, `n`/`N`, a reference or the item's 决策
+  buttons) opens the card's own item and goes to the card there. A card row
+  whose card is missing stays a link showing the key.
 - **Acceptance row.** Placed where its check happens, labelled 验收 in a
   small tag, full text (it may wrap), with the same glyphs as a step
   (○ ● ✓ ✗). It has no extra separator or spacing; the tag identifies it.
@@ -1534,6 +1532,99 @@ bracket narrows to 1 pixel, and the 16-pixel gutter stays so glyphs align.
 Unread changed rows carry the existing blue bar to the left of the gutter.
 The tree row of an item shows its plan ratio (`1/7`) where the steps ratio
 was; leaf counts count owned descendants that own no work items, by status.
+
+#### Decision cards
+
+A decision card asks the owner one question and lays out the ways to answer
+it, each with its grounds, so the owner decides where the head gives the
+reasoning. Every decision a design makes is one card, standing in the head
+where the design reaches it.
+
+- **Shape.** `item`, `question` (one line, one bold sentence in the head),
+  `options` (at least one; a check flags an open card with fewer than three), `confidence`, `status`, `blocks?`, `choice?`, `ruling?`,
+  `ruledAt?`, times and `num`. An option is `{key, text, detail?,
+  recommended?}`: the board assigns the keys A, B, C… in order; `text` is the
+  option's name, one line of at most 20 characters (spaces not counted); `detail`
+  says what the option does, its cost and risks, and why it is or is not
+  recommended, with no length limit. At most one option is recommended.
+  `confidence` is `{score?, reason}`: a score from 1 to 5 (5: the evidence
+  settles it; 1: judgment only) and the reason, with what could overturn it. A
+  status is `open`, `ruled` or `withdrawn`. `write_card` requires a name and a
+  detail for every option and a confidence on a new card, and refuses
+  anything else, naming the field and the fix. A card has no background: the
+  head is the background.
+- **Where it lives.** A card is stored once in `decisions/<key>.yaml` with its
+  `item`. Only a card that blocks (`blocks`) is also a row of that item's plan,
+  because the work goes on without any other card. `write_card` writes both in
+  one commit: the row goes before the plan row named by `before` (default: the
+  first acceptance step, which then also waits for the card, keeping the rows
+  it already waited for), after the rows named by `after`. Setting `blocks` on a
+  revision adds the row in the same way; clearing it removes the row, and rows
+  that waited for it wait for what it waited for. The plan tools refuse to add
+  or remove a card row, `create_item` refuses card rows, and a row for another
+  item's card is refused. The check 卡和计划对不上 reports an open blocking card
+  without a row, an open card that does not block but has one, and a row for
+  a card of another item; only a write that bypasses the tools can raise it. A
+  closed card keeps the row it had, which counts as resolved.
+- **Placement.** The head places a card with a line holding only `[[q:key]]`
+  (outside a code fence): the card is drawn there, inside the head. A key inside
+  a sentence stays a link. The check 卡没标位置 flags an open card the head does
+  not place. A placement is a convention of the head's text, not a stored field,
+  so a rewritten head can move it with no card write; a revision of the head
+  that drops a decision drops its card (`withdraw_card`).
+- **Cards with no place.** A card the head does not place (a new card written
+  without its line, which raises 卡没标位置, or a closed card whose line a
+  rewrite of the head dropped, which the check does not flag) is still drawn
+  once in the body, after the head, under a line saying it has no place there
+  and how to give it one: add the line, or, for an open card only, withdraw it,
+  since `withdraw_card` refuses a card that is not open. Every card is drawn once, in the body: its plan row, its 决策 button and
+  any link go to that card, wherever it stands, and nothing expands under a
+  row. A closed card is one folded line wherever it stands.
+- **Ruling.** The owner's pick on the page is recorded by the board itself:
+  sending a choice note sets `status: ruled`, `choice` and `ruledAt` (the send
+  time) on the open card in the same commit, so no session has to rule it
+  afterwards and a pick can no longer sit sent but unrecorded. `rule_card(key,
+  choice?, ruling?)` is for a decision the owner made in chat: it takes the
+  option chosen, the owner's own words, or both, and the words are kept in
+  `ruling` for the design log's approval line. A card ruled in words alone has
+  no `choice`.
+- **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
+  any more: the status becomes `withdrawn`, the log text goes to the item's
+  log, and a row counts as resolved. It is the one way to retire a card;
+  nothing deletes one.
+- **Legacy text.** Cards converted from the earlier form (see
+  [Card conversion](#card-conversion)) keep their old `background` in
+  `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
+  and search covers it. An open card's fold starts open, because its reader
+  decides from the background; a closed card's starts folded. Their options
+  have no name: the old option text is the detail, and the page shows its
+  first line where it needs a name.
+- **Closed cards.** A ruled or withdrawn card is one line in the body: its
+  tag, its question and its pick (the name of the chosen option, or the first
+  line of its detail; the ruling when the owner answered in words). The
+  options with their details, the confidence, the ruling and the legacy fold
+  open under the line on a click; the open state is remembered per card like a
+  参考 section, and going to a card from a plan row or a reference opens it.
+  Hundreds of converted cards each carry long text, and an item with a dozen of
+  them filled the page. Open cards, their checks and the comment block are
+  always shown. Rejected: folding all of an item's closed cards under one
+  heading (a click to see one card's pick, and the plan row and reference
+  could not open a single card); shortening what the migration stores
+  (nothing the owner wrote is dropped).
+- **Blocking.** A card with `blocks` is blocking: the owner is told on the
+  Mac, the page shows it purple and the item waits on its row.
+
+Rejected: keeping the grounds in a long background on the card and only
+names in the options (the owner decides where the head gives the reasoning,
+and each option's cost belongs beside its name); a stored placement field or an
+index per card (the head already says where each question belongs, and a
+stored index could disagree with it); a separate decisions section on the page
+(a card outside its item is read without the text that asks it); a row in the
+plan of every item that waits on the card (a card of another item is a shared
+dependency of the item that owns it; migration removed the 73 such rows, all
+pointing at ruled cards); a row in the plan for every card (a card that does
+not block would hold the item's status for a question the work does not wait
+on).
 
 #### Comments
 
@@ -1647,7 +1738,7 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (an open card whole, with its `rev`; a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
@@ -1729,7 +1820,8 @@ whose commits do not count.
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
 `<glyph>` as on the page (✓ ● ○ ⏸ ◌ ✗); an item row adds `[own]` or
 `[shared @<owner key>]`, the target's title and status, and for an owned item
-its current doing step; a card row adds the card's status; `‖` marks rows of
+its current doing step; a card row adds the card's status and, once ruled, the
+pick; `‖` marks rows of
 a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成` for
 done rows (including owned records) and `✗ M 项已放弃` for dropped steps
 and cancelled owned items. Plans
@@ -1777,8 +1869,9 @@ author `总管` is refused by every tool.
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
 | `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because the PM and the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
-| `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
-| `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
+| `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
+| `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
+| `withdraw_card(key, log)` | Closes an open card nobody needs; the reason goes to the item's log | The card is open and not answered |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is the PM or the architect, who run the process and replace any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by the PM and the architect |
 | `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or the architect; the main line has no whitespace; order: only the PM and the architect |
@@ -1850,8 +1943,7 @@ items; the counts leave out cancelled ones and
 show numbers in their status color, with status names in accessibility labels. They shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
-The separate decisions section
-and send box remain available.
+The send box remains available.
 
 In tree rows, the blue new-content chip, the filled dark purple chip (blocking
 waits in the item and below it, asks included) and the filled dark red chip
@@ -1899,9 +1991,8 @@ project links wrap.
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
-目标, 计划和进展 with its unfolded cards, head text and data,
-被依赖, the comment entry and comment list, collapsed 日志, ask, the open and
-shown ruled cards the plan does not name, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
+目标, 计划和进展, head text with its cards and data,
+被依赖, the comment entry and comment list, collapsed 日志, ask, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
 the tree highlight and the detail selection and collapses the right column.
 Clicks on controls or the divider and drags that select text preserve selection.
 All change marks, fresh lines, notes and
@@ -1925,8 +2016,7 @@ selection, j/k followed by Enter or an unread/wait jump opens detail again.
 `n`, `N` and 新 chips select the stop's item and open its detail. When its
 tree node is visible, they unfold its ancestors and bring that row into view;
 closed-item stops do not change the filters or require a tree node. They then
-scroll the right column to the exact fresh mark, card or note. A card held by no item keeps its existing
-navigation behavior in the separate decisions section. Dependency links,
+scroll the right column to the exact fresh mark, card or note. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
 
@@ -2024,9 +2114,9 @@ affected subtree and summaries; unrelated cards keep their DOM elements.
 These same scoped render paths update the selected item's
 detail in place and preserve its scroll position. Unrelated changes do not
 rebuild the detail column.
-Scoped card updates also reconcile membership and order: an unread reply can
-reveal a ruled card, and clearing unread state hides a card that was open only
-by that default. Explicit owner choices to open or fold it remain in effect.
+A card of the shown item is replaced in place when it changes; a card added to
+or removed from the item redraws the item's body, and the plan order moves the
+cards without rebuilding the others.
 The header counts and send box update with the affected content. Unread
 refreshes are debounced across each burst, and superseded results cannot
 replace newer state. Rendering preserves the editor's focus and caret and
@@ -2108,9 +2198,9 @@ library's `dark` theme when the page shows its dark colors (the owner's
 `data-theme` attribute on the root element, else the system's) and `default` otherwise,
 and are drawn again when either changes.
 
-Glossary links. In item heads, steps and log entries, card questions, backgrounds,
-options and rulings, and note texts and replies, a glossary term links to its
-definition. The page has no glossary section. Titles are not linked. Terms
+Glossary links. In item heads, steps and log entries, card questions, option names
+and details, a card's ruling and legacy text, and note texts and replies, a glossary
+term links to its definition. The page has no glossary section. Titles are not linked. Terms
 match as plain substrings, the longest at each position; the text's own
 project's glossary wins over another project's for the same term. Text inside
 code, code blocks and links is never matched. Only the first occurrence of each
@@ -2307,7 +2397,9 @@ All go to the PM except `item-done` and `ask-alive`, which go to a holder,
 and `message`, which goes to its recipient:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
-  owner's comments on an engineer's item reach the PM too;
+  owner's comments on an engineer's item reach the PM too. A sent choice
+  note also rules its open card in the same commit (see Decision cards), so the
+  PM does not rule it afterwards;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
 - the timed wake, every 30 minutes, with a line of the month's Actions usage;
@@ -2966,6 +3058,10 @@ the writer from it.
     of the subtree owns it, so an engineer cannot make a top item. Without a credential,
     creating an item and rating one stay the architect's alone (the old way, until the
     old tools are removed).
+    `write_card` names `card.write`, `item.plan` (a blocking card is also a row of its
+    item's plan) and `item.log` (clearing `blocks` on a revision logs the removed row);
+    `withdraw_card` names `card.write` and `item.log` (the reason goes to the item's log);
+    `rule_card` is `card.rule`, which an engineer lacks.
   - A review writes the log of its subtree.
   - Every role sends messages (`message.send`, section 8, Messages). Its scope is `own`: a
     message changes no item, so no project or subtree bounds it, and it does not make a role
@@ -3370,6 +3466,54 @@ the board.
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
 
+### Card conversion
+
+The card shape of section 5 (Decision cards) replaces cards whose option text
+was long, whose background, confidence and ruling were text of the same kind,
+and plans that named cards of other items. `npm run migrate:cards -- --data
+DIR [--apply]` converts a data directory in one commit, `Migrate decision cards
+into item plans`. It is a one-time offline command, not a startup step: it
+reads the raw files (the current schemas refuse the old cards), prints a
+report without `--apply`, and with `--apply` writes only when the working tree
+is clean, the daemon is stopped and the report has no error. A commit with this
+message is not work on the items: activity and the owner's unread list skip
+it, as they skip the numbering commit. The command is deleted once it has run
+on the live board.
+
+- Each card keeps `item`, `question`, `status`, `blocks`, `choice`, `ruledAt`,
+  `confidence`, `ruling`, `num` and times. Each option's text becomes its
+  `detail` and its name stays empty. The old `background` moves to `legacy`;
+  `order` is dropped. A status other than open and ruled is an error.
+- An open card whose owner pick was already sent closes with that pick and the
+  send time as `ruledAt`.
+- Only a card that blocks has a row. An open blocking card with no row gets
+  one before the first acceptance step, which then also waits for it. An open
+  card that has a row but no `blocks` becomes a blocking card: in the old plans
+  a card's row made the step after it wait, so `blocks` names that step (the row
+  waiting for the card, else the row after it; a step's text, an item's title or
+  a card's question) and the row stays. No item changes status because of it,
+  and the report lists these cards. A closed card keeps the row it has and gets
+  none: the row records the step that once waited for it.
+- A row for a card of another item is dropped (an open one is an error: place
+  it by hand). Every such card was ruled, so the row was resolved. Each
+  affected item's log gets one entry naming the card and what was chosen. A
+  dropped id is removed from later rows' `after`, and a row that implicitly
+  followed a dropped row gets `after: []`, so it was ready before and stays ready.
+- The head of every item with cards the head does not place gets a section at
+  its end, before its first 参考 section: the bold line **以前的决定**, then
+  one line `[[q:key]]` per card, in the order the cards were written, so the
+  converted cards show in the body without the reader having to ask for them.
+  A card the head already places keeps its line and is not listed again.
+- The report lists every item whose status, priority or ready rows differ
+  between the board before and after, both read with the same current rules,
+  and prints the text of one section it added. The expected differences are an
+  item that waits on an open blocking card it never named (that card now has its
+  row) and an item whose answered card now closes; anything else is a fault in
+  the conversion.
+- Open cards the head does not place are placed by the section above, so the
+  conversion raises no 卡没标位置. Cards written afterwards are placed by the
+  head that asks the question.
+
 ## 11. Testing
 
 - Unit tests for the rules module, the file format round trip, `rev`
@@ -3433,12 +3577,17 @@ generated board. The categories come from a survey of the real board on
 ownership up to six levels deep, 27 items owning more than ten; 119 items
 owned under a record; 272 items named by shared rows, 151 of them across
 projects; 707 plans with parallel rows; 596 cards (83 open, 24 open and
-blocking), 6 named by two plans and 8 by three, 66 named by a done item's
-plan, 19 named only by other items' plans, 8 open cards no plan names (one on
-a record), 2 open cards on done items; 754 notes (603 on cards, 201 with
+blocking), 2 open cards on done items, one on a record; 754 notes (603 on cards, 201 with
 replies, 23 anchored); 257 heads with code blocks; 28 tags, every item
-tagged. Shapes the real board lacks today but the schema allows and the page
-handles (pending asks) are generated too.
+tagged. The generated cards have the shape of section 5 (Decision cards),
+which the real board has once the card conversion has run: options with a name
+and a detail and a confidence; a row in the plan only for a card that blocks (and
+for some closed cards that had one); some cards placed in the head, the converted
+old cards in a section at its end, and some not placed at all; some ruled by an
+option, some in words, some with a nameless option and a legacy background, some
+withdrawn. Shapes the real
+board lacks today but the schema allows and the page handles (pending asks) are
+generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
@@ -3449,8 +3598,15 @@ server's unread history:
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
-  unfolds that card right under the row and keeps the selected item; a step
-  row selects the step and keeps the item;
+  names its question (and the pick once ruled) and goes to that card in the
+  body, never drawing it under the row, keeping the selected item; a step row
+  selects the step and keeps the item;
+- each card shows once in its item's body with its question once, its option
+  names and details (the recommended one marked) and its confidence or, once
+  closed, one line with its pick and the rest folded under it, its old
+  background folded (open on an open card), and at the line of the head that
+  places it; a card the head does not place follows the head under a line that
+  says so;
 - each 被依赖 row goes to its dependent and 返回 comes back;
 - the purple and red numbers after a title equal the blocking and other waits
   in the item's owned subtree, and clicking a number as often as it says

@@ -108,18 +108,18 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
     async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ ...asArchitect, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
+      // The card's row joins its item's plan in the same commit; the item then waits for it while it is open.
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
-      await op.writeCard({ author: group, key, item: id, question: "Which?", background: "b", options: [{ key: "A", text: "a", recommended: true }, { key: "B", text: "b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
-      const waiter = pick(itemsOf(s, group));
-      return op.setPlan({ author: group, id: waiter, row: { card: key } });
+      return op.writeCard({ author: group, key, item: id, question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
     },
     async s => {
       const open = Object.entries(s.decisions).filter(([, d]) => d.status === "open");
       if (!open.length) return;
-      const [key, card] = pick(open), group = s.items[card.item]!.group;
-      // A revision may move the card to another item of the project: its notes then reset that item's clock.
-      if (rand() < 0.5) return op.writeCard({ author: group, key, rev: card.rev, item: pick(itemsOf(s, group)), question: card.question, background: card.background, options: card.options });
-      return op.ruleCard({ author: group, key, choice: "A", ruling: "A it is" });
+      const [key, card] = pick(open), group = s.items[card.item]!.group, action = rand();
+      // A revision keeps the card's item and row; a ruling or a withdrawal resolves the row.
+      if (action < 0.4) return op.writeCard({ author: group, key, rev: card.rev, item: card.item, question: "Which now?", options: card.options.map(o => ({ text: o.text, detail: o.detail ?? "detail", ...(o.recommended ? { recommended: true } : {}) })) });
+      if (action < 0.8) return op.ruleCard({ author: group, key, choice: "A" });
+      return op.withdrawCard({ author: group, key, log: "not needed" });
     },
     async s => { const id = pick(itemsOf(s)); return op.setPause({ ...asArchitect, id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
     async s => {

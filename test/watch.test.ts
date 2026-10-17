@@ -188,12 +188,15 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   await op.createItem({ ...asArchitect, key: "bold", group: author, priority: "P1", title: "Bold", head: heads.bold, accept: "验收通过" });
   await op.createItem({ ...asArchitect, key: "gone", group: author, priority: "P1", title: "Cancelled", head: heads.gone, accept: "验收通过" });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "not needed" });
-  const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, background: "见正文", options: [{ key: "A", text: "是" }, { key: "B", text: "否" }], ...(blocks ? { blocks } : {}) });
+  const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, confidence: { reason: "判断" }, options: [{ text: "是", detail: "是" }, { text: "否", detail: "否" }], ...(blocks ? { blocks } : {}) });
   await card("approval", "合入停着"); await card("stop", "发布停着"); await card("plain"); await card("settled", "旧的");
   await op.ruleCard({ author, key: "settled", choice: "A", ruling: "同意" });
   await op.setPlan({ author, id: "watch", rows: [
     { id: "impl", text: "实现", state: "done" },
     { card: "approval", after: ["impl"] },
+    // The other cards that block or blocked have their rows too; the merge row does not follow them.
+    { card: "stop", after: ["impl"] },
+    { card: "settled", after: ["impl"] },
     { id: "merge", text: "合入 Ming-Research/wf-board#23", state: "todo", after: ["approval"] },
     { ...accept, after: ["impl"] },
   ] });
@@ -298,8 +301,10 @@ test("a ruling on the approval card shows in the next push", async t => {
 
 test("approval cards are found through the rows the merge row follows, and a row with no after follows the one before it", async t => {
   const { store, op, author } = await fixture(t);
-  await op.writeCard({ author, key: "late", item: "watch", question: "late?", background: "x", options: [{ key: "A", text: "a" }] });
+  await op.writeCard({ author, key: "late", item: "watch", question: "late?", blocks: "x", confidence: { reason: "x" }, options: [{ text: "a", detail: "a" }] });
   await op.setPlan({ author, id: "watch", rows: [
+    { card: "stop", after: [] },
+    { card: "settled", after: [] },
     { card: "approval", after: [] },
     { id: "impl", text: "实现", state: "done", after: ["approval"] },
     { card: "late" },

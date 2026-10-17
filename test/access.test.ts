@@ -79,8 +79,9 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   moveItem: [{ parts: ["item.move"], args: { id: "a" } }],
   moveItemProject: [{ parts: ["item.move-project"], args: { id: "a", project: "Firn" } }],
   clearAsk: [{ parts: ["item.ask"], args: { id: "a", log: "l" } }],
-  writeCard: [{ parts: ["card.write"], args: { key: "k", item: "a", question: "q", background: "b", options: [{ key: "A", text: "t" }] } }],
+  writeCard: [{ parts: ["card.write", "item.plan", "item.log"], args: { key: "k", item: "a", question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] } }],
   ruleCard: [{ parts: ["card.rule"], args: { key: "choice", ruling: "r" } }],
+  withdrawCard: [{ parts: ["card.write", "item.log"], args: { key: "choice", log: "l" } }],
   replyNote: [{ parts: ["note.reply"], args: { id: "note-1", reply: "r" } }],
   setTerm: [{ parts: ["term"], args: { term: "词", definition: "d" } }],
   deleteTerm: [{ parts: ["term"], args: { term: "词" } }],
@@ -130,7 +131,7 @@ test("an engineer's credential writes inside its subtree only", async t => {
 test("a card is written inside the subtree only, and a write that reaches another item through its effects is refused", async t => {
   const { op, store } = await board(t);
   const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
-  const card = { key: "q-new", question: "q", background: "b", options: [{ key: "A", text: "t" }] };
+  const card = { key: "q-new", question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] };
   await op.writeCard({ ...who, ...card, item: "a" });
   assert.equal(store.snapshot().decisions["q-new"]!.item, "a");
   await assert.rejects(op.writeCard({ ...who, ...card, key: "q-other", item: "b" }), (e: unknown) => e instanceof OpError && /item b: outside the subtree/.test(e.message));
@@ -313,6 +314,9 @@ test("an engineer replies to the notes on its subtree and no others, and cannot 
   // note-1 is the owner's comment on item a.
   await assert.rejects(op.replyNote({ ...who(["b"]), id: "note-1", reply: "不是我的" }), outside("a", "b"));
   assert.equal(store.snapshot().notes["note-1"]!.reply, undefined);
+  // note-2 is on the card choice, which belongs to item b: a note on a card is in scope when the card's item is.
+  await assert.rejects(op.replyNote({ ...who(["a"]), id: "note-2", reply: "x", replace: true }), outside("b", "a"));
+  assert.equal(store.snapshot().notes["note-2"]!.reply, "中文回复");
   await op.replyNote({ ...who(["a"]), id: "note-1", reply: "改好了" });
   const note = store.snapshot().notes["note-1"]!;
   assert.deepEqual([note.state, note.reply, note.repliedBy], ["done", "改好了", "Whitefoot"]);
@@ -345,18 +349,19 @@ test("an engineer cannot rate the item it was started on, only the items below i
 
 test("a reply is replaced only by the author who wrote it, or by the PM or the architect", async t => {
   const { op, store } = await board(t);
+  // note-1 is on item a and note-2 on the card choice, which belongs to item b: the engineer's subtree holds both.
   const engineerOf = (roots: string[]) => ({ author: "Whitefoot", session: "eng", access: engineer(roots) });
   const wrote = (id: string) => [store.snapshot().notes[id]!.reply, store.snapshot().notes[id]!.repliedBy];
   const notOwn = (by: string) => (e: unknown) => e instanceof OpError && new RegExp(`already replied by ${by} at .*replaced only by its author`).test(e.message);
   // The architect answered note-1; an engineer of the subtree may not overwrite that, with or without replace.
   await op.replyNote({ ...asArchitect, id: "note-1", reply: "架构师的回复" });
-  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-1", reply: "改掉", replace: true }), notOwn("Architect"));
-  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-1", reply: "改掉" }), notOwn("Architect"));
+  await assert.rejects(op.replyNote({ ...engineerOf(["a", "b"]), id: "note-1", reply: "改掉", replace: true }), notOwn("Architect"));
+  await assert.rejects(op.replyNote({ ...engineerOf(["a", "b"]), id: "note-1", reply: "改掉" }), notOwn("Architect"));
   // note-2 carries a reply by Whitefoot already: the same author is told how to replace their own reply.
-  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-2", reply: "再答" }), /already replied by Whitefoot at .*use replace: true/);
+  await assert.rejects(op.replyNote({ ...engineerOf(["a", "b"]), id: "note-2", reply: "再答" }), /already replied by Whitefoot at .*use replace: true/);
   assert.deepEqual(wrote("note-1"), ["架构师的回复", "Architect"]);
   // An engineer's own reply is replaced by the same project's author.
-  await op.replyNote({ ...engineerOf(["a"]), id: "note-2", reply: "更正", replace: true });
+  await op.replyNote({ ...engineerOf(["a", "b"]), id: "note-2", reply: "更正", replace: true });
   assert.deepEqual(wrote("note-2"), ["更正", "Whitefoot"]);
   // Without a credential the same rule holds: the author is the project.
   await assert.rejects(op.replyNote({ author: "Whitefoot", id: "note-1", reply: "覆盖架构师", replace: true }), notOwn("Architect"));
@@ -377,7 +382,7 @@ test("a reply is replaced only by the author who wrote it, or by the PM or the a
   };
   for (const [id, by] of [["note-1", undefined], ["note-2", "总管"]] as const) {
     await seed(id, by);
-    await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id, reply: "改", replace: true }), /already replied by .* at .*replaced only by its author/);
+    await assert.rejects(op.replyNote({ ...engineerOf(["a", "b"]), id, reply: "改", replace: true }), /already replied by .* at .*replaced only by its author/);
     for (const [who, name] of [[asArchitect, "Architect"], [asPM, "PM"]] as const) {
       await seed(id, by);
       await op.replyNote({ ...who, id, reply: "接手", replace: true });
