@@ -43,7 +43,7 @@ jobs:
             --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
-        run: if [ -f test-times.md ]; then cat test-times.md >> "$GITHUB_STEP_SUMMARY"; fi
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
   result:
     if: ${{ !cancelled() }}
     needs: [check, test]

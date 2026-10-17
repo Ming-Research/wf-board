@@ -81,7 +81,7 @@ jobs:
             --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
-        run: if [ -f test-times.md ]; then cat test-times.md >> "$GITHUB_STEP_SUMMARY"; fi
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
   # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
   # commits, so the checkout carries history; the browser is cached by Playwright version.
   e2e:
