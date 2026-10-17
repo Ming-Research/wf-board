@@ -266,6 +266,26 @@ test("the affected walk reaches work that a paused root stops needing, past a ra
   assert.equal(affectedItems(rb, ra, ["r-root"]).has("r-leaf"), true, "so the page re-signs it now, not at the next full scan");
 });
 
+test("the affected walk reaches what an owner's status moves for, though the paused item between them keeps its own", async t => {
+  const { store, op } = await board(t);
+  const work = (title: string, fields: object, rows: object[] = []) => ({ title, group: author, plan: [...rows, { id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
+  // The top item waits on a leaf and owns a paused item, which owns the item that gets its first step done. The paused item
+  // stays paused, so its own summary does not move, yet the top item turns from todo to idle because work below it has begun.
+  await store.commit({ author: "Fixture", message: "Seed a chain", puts: [
+    { kind: "item", id: "b-top", expectRev: null, doc: work("Top", { difficulty: 2 }, [{ id: "ready", text: "ready", state: "todo" }, { id: "b-leaf", item: "b-leaf", own: false }, { id: "b-mid", item: "b-mid", own: true }]) },
+    { kind: "item", id: "b-mid", expectRev: null, doc: work("Middle", { difficulty: 2, paused: { reason: "wait", at } }, [{ id: "b-inner", item: "b-inner", own: true }]) },
+    { kind: "item", id: "b-inner", expectRev: null, doc: work("Inner", { difficulty: 2 }, [{ id: "step", text: "work", state: "todo" }]) },
+    { kind: "item", id: "b-leaf", expectRev: null, doc: work("Leaf", { difficulty: 2 }) },
+  ] });
+  const before = store.snapshot();
+  await op.setPlan({ author, id: "b-inner", row: { id: "step", text: "work", state: "done" } });
+  const after = store.snapshot(), rb = rules(before), ra = rules(after);
+  assert.deepEqual([rb.statusOf("b-mid"), ra.statusOf("b-mid")], ["paused", "paused"], "the paused item between them keeps its status");
+  assert.deepEqual([rb.statusOf("b-top"), ra.statusOf("b-top")], ["todo", "idle"], "the owner's status moves");
+  assert.notEqual(presentationSignature(rb, before.decisions, "b-leaf"), presentationSignature(ra, after.decisions, "b-leaf"), "the leaf paints the status of the item waiting on it");
+  assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
+});
+
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {
   const rand = random(7), { store } = await synthetic(t, rand, Date.now() - 60 * MINUTE);
   const s = store.snapshot(), at = Math.floor(Date.now() / MINUTE) * MINUTE;

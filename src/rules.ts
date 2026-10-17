@@ -325,6 +325,8 @@ export interface Rules {
   /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
    * wrote or was started within the agent list's window). Not inherited from the items it owns. */
   workedOn(id: string): boolean;
+  /** Whether something of the item's own is done (a step, an owned item done, or an owned item that has begun): what tells `idle` from `todo`, and what its owner reads. */
+  begun(id: string): boolean;
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
   /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
@@ -640,7 +642,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
     return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
-      parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.checks(id)]);
+      parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.begun(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
   const examined = new Set<string>(), queue: string[] = [];
@@ -1176,7 +1178,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id),
+    isLeaf, isStatusLeaf, statusOf, workedOn, begun: begunOf, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id),
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

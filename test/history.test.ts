@@ -662,6 +662,10 @@ test("historical comparison omits retired fields from an old version already in 
   for (const key of ["short", "agent", "priority"]) assert.ok(!Object.hasOwn(past.items.work!, key));
   // Raw history still holds them as written.
   assert.deepEqual(await reopened.show("item", "work", held), { ...work, priority: "P1", short: "W", agent: "p-session" });
+  // The owner's comparison omits them too, so the version that held them and the commit that dropped them differ in nothing it reads.
+  const pair = await reopened.comparisonDocuments("item", "work", held, reopened.snapshot().head);
+  assert.equal((pair.before as { title: string }).title, "Work");
+  for (const key of ["short", "agent", "priority"]) assert.ok(!Object.hasOwn(pair.before as object, key), `the compared old version holds no ${key}`);
 });
 
 test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {
@@ -756,7 +760,7 @@ test("legacy record-to-work history stays raw, while omitted-plan native records
     const record = legacy ? LegacyItem.parse({ ...common, record: true }) : { ...common, record: true };
     await writeFile(join(dir, "items/work.yaml"), stringify(record));
     const cursor = await commit("Record before work");
-    const work = legacy ? LegacyItem.parse({ ...common, status: "todo", priority: "P1", rev: 2 })
+    const work = legacy ? LegacyItem.parse({ ...common, status: "todo", rev: 2 })
       : { ...common, rev: 2, plan: [{ id: "accept", text: "Checks pass", accept: true, state: "todo" }] };
     await writeFile(join(dir, "items/work.yaml"), stringify(work));
     const changed = await commit("Record becomes work");
