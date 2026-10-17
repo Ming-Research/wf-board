@@ -335,7 +335,7 @@ test("concurrent commits serialize, retain distinct writes and reject stale over
 
 test("revision map distinguishes documents with the same id across kinds", async t => {
   const { store } = await setup(t);
-  const card = { item: "shared", question: "Choose", background: "Why", options: [{ key: "A", text: "A" }], status: "open", updated: at };
+  const card = { item: "shared", question: "Choose", options: [{ key: "A", text: "A" }], status: "open", updated: at };
   await store.commit({ author: "a", message: "Create both", puts: [put("shared", item()), { kind: "decision", id: "shared", doc: card, expectRev: null }] });
   await store.commit({ author: "a", message: "Update card", puts: [{ kind: "decision", id: "shared", doc: { ...card, question: "Changed" }, expectRev: 1 }] });
   const result = await store.commit({ author: "a", message: "Update both", puts: [put("shared", item("Changed"), 1), { kind: "decision", id: "shared", doc: { ...card, question: "Again" }, expectRev: 2 }] });
@@ -563,7 +563,7 @@ test("R1 case aliases are refused before disk writes, including aliases in a sin
   const { store, dir } = await setup(t);
   const documents = {
     item: item(),
-    decision: { item: "A", question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at },
+    decision: { item: "A", question: "Q", options: [{ key: "A", text: "A" }], status: "open", updated: at },
     note: { target: "it:A", kind: "comment", text: "N", at, state: "sent" },
   } as const;
   for (const kind of ["item", "decision", "note"] as const) {
@@ -620,7 +620,7 @@ test("activity retains every content revision and deletion across restart, but e
   const createdAt = "2026-10-12T01:00:00.000Z", noteAt = "2026-10-12T01:10:00.000Z", moveAt = "2026-10-12T01:20:00.000Z";
   const deleteAt = "2026-10-12T01:30:00.000Z", deleteNoteAt = "2026-10-12T01:40:00.000Z";
   await content({ author: "Fixture", message: "Create activity witnesses", puts: [put("constructor", item()), put("b", item()),
-    { kind: "decision", id: "card", expectRev: null, doc: { item: "constructor", question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at } },
+    { kind: "decision", id: "card", expectRev: null, doc: { item: "constructor", question: "Q", options: [{ key: "A", text: "A" }], status: "open", updated: at } },
     { kind: "note", id: "note", expectRev: null, doc: { target: "q:card", kind: "comment", text: "N", at, state: "draft" } },
   ] }, createdAt);
   const note = store.snapshot().notes.note!;
@@ -834,7 +834,7 @@ test("live pause indexing accepts conversion inputs with no plan and no pause wi
   assert.deepEqual(activity, { writes: [at], items: { work: at } });
 });
 
-const card = (item: string, fields: object = {}) => ({ item, question: "Choose?", background: "Evidence", options: [{ key: "A", text: "A" }], status: "open", updated: at, ...fields });
+const card = (item: string, fields: object = {}) => ({ item, question: "Choose?", options: [{ key: "A", text: "A" }], status: "open", updated: at, ...fields });
 const putCard = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "decision" as const, id, doc, expectRev });
 
 test("items and cards share one increasing number sequence that survives restart and is never reassigned", async t => {
@@ -895,7 +895,7 @@ test("startup numbers documents written before numbers existed once, oldest firs
     put("late", { ...item("Late"), created: "2026-10-11T03:00:00Z" }), put("early", { ...item("Early"), created: "2026-10-11T01:00:00Z" }),
     put("b-tie", { ...item("Tie"), created: "2026-10-11T02:00:00Z" }), put("a-tie", { ...item("Tie"), created: "2026-10-11T02:00:00Z" }),
     put("undated", { ...item("Undated"), updated: "2026-10-11T00:30:00Z" }),
-    putCard("card", card("early", { at: "2026-10-11T01:30:00Z" })), putCard("ruled", card("early", { status: "ruled", ruling: "Done", updated: "2026-10-11T04:00:00Z" })),
+    putCard("card", card("early", { at: "2026-10-11T01:30:00Z" })), putCard("ruled", card("early", { status: "ruled", choice: "A", updated: "2026-10-11T04:00:00Z" })),
   ] });
   const strip = async (path: string) => writeFile(join(dir, path), (await readFile(join(dir, path), "utf8")).replace(/^num: \d+\n/m, ""));
   for (const id of ["late", "early", "b-tie", "a-tie", "undated"]) await strip(`items/${id}.yaml`);

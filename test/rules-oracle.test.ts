@@ -7,11 +7,11 @@ import { derivePlanOracle } from "../src/plan-conversion-oracle.ts";
 
 const at = "2026-10-13T00:00:00Z";
 const acceptance = (state: "todo" | "done" = "todo"): PlanRow => ({ id: "accept", accept: true, text: "The independent check passes", state, ...(state === "done" ? { doneAt: at } : {}) });
-function fixture(plan: PlanRow[], target: Partial<Item> = {}, cardStatus: "open" | "ruled" | "withtree" | "elsewhere" = "open"): Snapshot {
+function fixture(plan: PlanRow[], target: Partial<Item> = {}, cardStatus: "open" | "ruled" | "withdrawn" = "open"): Snapshot {
   return {
     head: "0".repeat(40), board: { title: "Plan oracle", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {},
     items: { subject: Item.parse({ title: "Subject", group: "P", priority: "P1", plan, updated: at, rev: 1 }), target: Item.parse({ title: "Target", group: "P", plan: [acceptance()], updated: at, rev: 1, ...target }) },
-    decisions: { q: Decision.parse({ item: "target", question: "Proceed?", background: "Independent evidence", options: [{ key: "A", text: "Proceed" }], status: cardStatus, updated: at, rev: 1 }) },
+    decisions: { q: Decision.parse({ item: "subject", question: "Proceed?", options: [{ key: "A", text: "Proceed" }], status: cardStatus, updated: at, rev: 1 }) },
   };
 }
 
@@ -19,7 +19,7 @@ function fixture(plan: PlanRow[], target: Partial<Item> = {}, cardStatus: "open"
 // per-project priority rules. These tables instead transcribe the approved row
 // state and frontier rules; expected answers never call the implementation.
 test("independent row-state table covers normal, cancelled, record and missing targets", () => {
-  const cases: Array<{ row: PlanRow; target?: Partial<Item>; card?: "open" | "ruled" | "withtree" | "elsewhere"; expected: [string, string, boolean, boolean, Status] }> = [
+  const cases: Array<{ row: PlanRow; target?: Partial<Item>; card?: "open" | "ruled" | "withdrawn"; expected: [string, string, boolean, boolean, Status] }> = [
     { row: { id: "x", text: "X", state: "todo" }, expected: ["open", "○", false, false, "todo"] },
     { row: { id: "x", text: "X", state: "doing", since: at }, expected: ["progress", "●", false, false, "wip"] },
     { row: { id: "x", text: "X", state: "done", doneAt: at }, expected: ["resolved", "✓", false, false, "idle"] },
@@ -39,7 +39,7 @@ test("independent row-state table covers normal, cancelled, record and missing t
     { row: { id: "gone", item: "gone", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "q", card: "q" }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", card: "gone" }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    ...(["ruled", "withtree", "elsewhere"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "todo"] as [string, string, boolean, boolean, Status] })),
+    ...(["ruled", "withdrawn"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "todo"] as [string, string, boolean, boolean, Status] })),
   ];
   for (const c of cases) {
     const r = rules(fixture([c.row, acceptance()], c.target, c.card)), first = r.planRows("subject")[0]!;

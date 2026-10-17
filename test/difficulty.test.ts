@@ -276,11 +276,11 @@ test("brief lists as startable only rated items, and carries the difficulty on i
 
 test("every section of brief carries the difficulty, and only an item a root needs is startable", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
-  // wip: a doing step. paused: an explicit pause. progress: a blocked item (its card has three options, so the item carries no
-  // option check and is not listed under checks instead) and a record cannot carry one.
+  // wip: a doing step. paused: an explicit pause. progress: a blocked item (its card has three options and its place in the head,
+  // so the item carries no check and is not listed under checks instead) and a record cannot carry one.
   await unrated("working"); await op.setPlan({ author, id: "working", row: { id: "go", text: "进行", state: "doing" } });
   await unrated("held"); await op.setPause({ ...asArchitect, id: "held", paused: true, reason: "先放一放" });
-  await unrated("waits"); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", background: "背景", options: [{ key: "A", text: "甲" }, { key: "B", text: "乙" }, { key: "C", text: "丙" }], blocks: "停着" });
+  await unrated("waits", { head: "选哪个在这里问。\n\n[[q:wait-card]]" }); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", confidence: { reason: "判断" }, options: [{ text: "甲", detail: "做甲" }, { text: "乙", detail: "做乙" }, { text: "丙", detail: "做丙" }], blocks: "停着" });
   await op.setPlan({ author, id: "waits", row: { card: "wait-card", after: [] } });
   await unrated("todo-one"); await unrated("paused-need"); await unrated("live-need");
   for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ ...asArchitect, key, group: "Firn", priority: "P2", title: key, accept: "通过" });

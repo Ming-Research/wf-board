@@ -87,7 +87,7 @@ async function history(store: Store, dir: string) {
   await pause("root", stamp(2, "125"), true, "s-a");
   await pause("child", stamp(3, "250"), true, "s-a");
   await commit({ author: "Fixture", session: "s-b", message: "Card and notes", puts: [
-    { kind: "decision", id: "card", expectRev: null, doc: { item: "root", question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at } },
+    { kind: "decision", id: "card", expectRev: null, doc: { item: "root", question: "Q", options: [{ key: "A", text: "A" }], status: "open", updated: at } },
     { kind: "note", id: "note-q", expectRev: null, doc: { target: "q:card", kind: "comment", text: "N", at, state: "draft" } },
     { kind: "note", id: "note-it", expectRev: null, doc: { target: "it:child", kind: "comment", text: "N", at, state: "draft" } },
   ] });
@@ -364,7 +364,7 @@ async function bulkBoard(t: { after(fn: () => Promise<void>): void }, items: num
   await store.commit({ author: "Fixture", message: "Seed", puts: [
     put("i0", { ...item("Item 0"), plan: [owns("i1"), owns("i2"), ...item().plan] }),
     ...Array.from({ length: items - 1 }, (_, i) => put(`i${i + 1}`, item(`Item ${i + 1}`))),
-    ...Array.from({ length: 20 }, (_, i) => ({ kind: "decision" as const, id: `card${i}`, expectRev: null, doc: { item: `i${i + 1}`, question: "Q", background: "B", options: [{ key: "A", text: "A" }], status: "open", updated: at } })),
+    ...Array.from({ length: 20 }, (_, i) => ({ kind: "decision" as const, id: `card${i}`, expectRev: null, doc: { item: `i${i + 1}`, question: "Q", options: [{ key: "A", text: "A" }], status: "open", updated: at } })),
     ...Array.from({ length: 30 }, (_, i) => ({ kind: "note" as const, id: `n${i}`, expectRev: null, doc: { target: `q:card${i % 20}`, kind: "comment", text: "N", at, state: "draft" } })),
   ] });
   const s = store.snapshot(), current: Record<string, unknown> = {};
