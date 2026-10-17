@@ -1,7 +1,7 @@
 // The permission table (model ACCESS) and its enforcement in ops.run: what each role may write, and where.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ACCESS, PARTS, PROCESS_WRITERS, PROCESS_WRITERS_ZH, ROLES, writesAnyProject } from "../src/model.ts";
+import { ACCESS, ARCHITECT_WRITER, PARTS, PROCESS_WRITERS, PROCESS_WRITERS_ZH, ROLES, writesAnyProject } from "../src/model.ts";
 import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
@@ -29,9 +29,9 @@ test("the writes the code reserves are the parts the table withholds from the ob
   const legacy = { author: "Whitefoot", session: "someone" };
   const reserved: Array<[Part, RegExp, () => Promise<unknown>]> = [
     ["item.create", rx`only ${PROCESS_WRITERS}`, () => op.createItem({ ...legacy, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" })],
-    ["journal", /only Architect with session 架构师 may write the journal/, () => op.journalEntry({ ...legacy, text: "x" })],
+    ["journal", rx`only ${ARCHITECT_WRITER} may write the journal`, () => op.journalEntry({ ...legacy, text: "x" })],
     ["item.difficulty", rx`only ${PROCESS_WRITERS}`, () => op.setDifficulty({ ...legacy, id: "a", difficulty: 2, reason: "r" })],
-    ["tag-vocab", /only Architect with session 架构师 may change the tag vocabulary/, () => op.setTag({ ...legacy, name: "标签", meaning: "m" })],
+    ["tag-vocab", rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`, () => op.setTag({ ...legacy, name: "标签", meaning: "m" })],
     ["item.pause", rx`only ${PROCESS_WRITERS}`, () => op.setPause({ ...legacy, id: "a", paused: true, reason: "r" })],
     ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
     ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],

@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
-import { PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
+import { ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
 import { board, author, architect, asArchitect, later, rx } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
@@ -387,7 +387,7 @@ test("MCP set_pause is Architect-only and paused status works in list and overvi
 test("MCP names the PM and Architect on the tools it reserves, lets them write another project's item, and refuses 总管 with the tool error", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   for (const name of ["create_item", "set_status", "set_difficulty", "set_difficulty_many", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${PROCESS_WRITERS}`, name);
-  for (const name of ["set_tag", "rename_tag", "remove_tag", "journal_entry"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session 架构师/, `${name}: still the architect's alone`);
+  for (const name of ["set_tag", "rename_tag", "remove_tag", "journal_entry"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${ARCHITECT_WRITER}`, `${name}: still the architect's alone`);
   assert.match(tools.find(tool => tool.name === "update_item")!.description!, rx`Only author ${PROCESS_WRITERS} may change the title, and turn a cancelled item into a record`);
   assert.doesNotMatch(tools.map(tool => tool.description).join("\n"), /only author 总管|Only author 总管|Only 总管|总管 only|总管 may/, "no tool still names 总管 as the one who may");
   const written = await client.callTool({ name: "append_log", arguments: { ...asArchitect, id: "other", text: "Architect evidence" } });

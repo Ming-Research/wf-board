@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, PROCESS_SESSIONS, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -109,7 +109,7 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
 interface Writer { author: string; session?: string; access?: Access }
 /** What the board reserves for the architect alone: every other writer, the PM included, is refused, and `what` names the operation in the message. */
 function onlyArchitect(who: Writer, what: string): void {
-  if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may ${what}`);
+  if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT_WRITER} may ${what}`);
 }
 /** What the board reserves for the process, which the PM does and the architect may do too: every other writer is refused, and `what` names the operation in the message. */
 function onlyProcess(who: Writer, what: string): void {
@@ -512,7 +512,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, "project.update", s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
+      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT_WRITER} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
       if (a.repo === undefined && a.mainline === undefined && a.after === undefined) throw new OpError("repo: provide repo, mainline or after");
       // `mainline: null` clears the branch, so the repository's default branch counts again.
       const { mainline: current, ...rest } = project, mainline = a.mainline === undefined ? current : a.mainline ?? undefined;

@@ -7,7 +7,7 @@ import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
+import { ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
 import { board, at, later, author, architect, asArchitect, asPM, rx } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
@@ -248,7 +248,7 @@ test("a project's mainline is set, kept when only the repo changes, cleared by n
   await op.updateProject({ ...asArchitect, name: "Whitefoot", mainline: "trunk" });
   assert.equal(project().mainline, "trunk");
   const before = store.snapshot();
-  await assert.rejects(op.updateProject({ author: "Firn", name: "Whitefoot", mainline: "other" }), /only that project or Architect with session 架构师 may update its mainline/);
+  await assert.rejects(op.updateProject({ author: "Firn", name: "Whitefoot", mainline: "other" }), rx`only that project or ${ARCHITECT_WRITER} may update its mainline`);
   await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot", mainline: "has space" }), /whitespace/);
   await assert.rejects(op.updateProject({ author: "Whitefoot", name: "Whitefoot" }), /provide repo, mainline or after/);
   assert.deepEqual(store.snapshot(), before);
@@ -292,7 +292,7 @@ test("project after rejects every author but Architect, unknown projects and sel
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
     [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
-    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or Architect with session 架构师 may update its repo/],
+    [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), rx`only that project or ${ARCHITECT_WRITER} may update its repo`],
     [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), /author 总管: this identity is retired; write as Architect/],
@@ -973,7 +973,7 @@ test("only Architect from session PM or 架构师 creates items, cancels or reop
     [() => op.removeTag({ ...who, name: tag.name }), only("change the tag vocabulary")],
     [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), only("move an item to another project")],
     [() => op.createProject({ ...who, name: "New", after: "Firn" }), rx`^after: only ${PROCESS_WRITERS} may reorder projects`],
-    [() => op.updateProject({ ...who, name: "总管", repo: "Org/Changed" }), /^project 总管: only that project or Architect with session 架构师 may update its repo$/],
+    [() => op.updateProject({ ...who, name: "总管", repo: "Org/Changed" }), rx`^project 总管: only that project or ${ARCHITECT_WRITER} may update its repo$`],
   );
   // Even the Architect project's own item is out of reach of these operations without the session.
   for (const who of [{ author: architect }, { author: architect, session: "engineer" }]) cases.push(
@@ -1018,10 +1018,10 @@ test("Architect from session PM does what the process needs in any project, and 
   // What stays the architect's alone: the tag vocabulary, and a repository or mainline of a project that is not the writer's.
   const before = store.snapshot(), count = (await store.log()).length;
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
-    [() => op.setTag({ ...asPM, name: "新标签", meaning: "测试用" }), /^author: only Architect with session 架构师 may change the tag vocabulary/],
-    [() => op.renameTag({ ...asPM, name: "新标签", to: "改名" }), /^author: only Architect with session 架构师 may change the tag vocabulary/],
-    [() => op.removeTag({ ...asPM, name: "新标签" }), /^author: only Architect with session 架构师 may change the tag vocabulary/],
-    [() => op.updateProject({ ...asPM, name: "Whitefoot", repo: "Org/Changed" }), /^project Whitefoot: only that project or Architect with session 架构师 may update its repo$/],
+    [() => op.setTag({ ...asPM, name: "新标签", meaning: "测试用" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
+    [() => op.renameTag({ ...asPM, name: "新标签", to: "改名" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
+    [() => op.removeTag({ ...asPM, name: "新标签" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
+    [() => op.updateProject({ ...asPM, name: "Whitefoot", repo: "Org/Changed" }), rx`^project Whitefoot: only that project or ${ARCHITECT_WRITER} may update its repo$`],
   ];
   for (const [call, message] of cases) {
     await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });

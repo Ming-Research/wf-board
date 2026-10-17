@@ -336,6 +336,8 @@ export const ARCHITECT_ROLE = "架构师";
 export const PM_ROLE = "PM";
 /** The sessions that do the process, as an error text or a tool description names them: the one definition every such text is built from. */
 export const PROCESS_SESSIONS = `${PM_SESSION} or ${ARCHITECT_SESSION}`;
+/** The architect alone, as an error text or a tool description names it (ops `onlyArchitect`, the journal and tag tools). */
+export const ARCHITECT_WRITER = `${ARCHITECT} with session ${ARCHITECT_SESSION}`;
 /** The writers that do the process, in English (ops `onlyProcess`, the tool descriptions, the errors that say who may). */
 export const PROCESS_WRITERS = `${ARCHITECT} with session ${PROCESS_SESSIONS}`;
 /** The same for the owner reading the page. */

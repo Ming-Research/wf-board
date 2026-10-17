@@ -9,6 +9,8 @@ import { ops, OpError } from "../src/ops.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { Store } from "../src/store.ts";
+import { ARCHITECT_WRITER } from "../src/model.ts";
+import { rx } from "./helpers.ts";
 
 const architect = "Architect";
 /** The architect writes as author Architect from the session 架构师; the journal takes no other writer. */
@@ -106,14 +108,14 @@ test("each write marks the record new for the owner: it is among the unread step
 
 test("only the architect writes the journal; another project is refused with the reason", async t => {
   const { op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
-  await assert.rejects(() => op.journalEntry({ author: "Whitefoot", text: "别人的" }), (error: unknown) => error instanceof OpError && /^author: only Architect with session 架构师 may write the journal under architect-notes$/.test(error.message));
+  await assert.rejects(() => op.journalEntry({ author: "Whitefoot", text: "别人的" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
 });
 
 test("the journal is the architect's: Architect without the session 架构师, the PM included, is refused, and nothing is written", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const before = store.snapshot();
   for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }]) {
-    await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && /^author: only Architect with session 架构师 may write the journal under architect-notes$/.test(error.message));
+    await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
     assert.deepEqual(store.snapshot(), before);
   }
 });
@@ -159,7 +161,7 @@ test("journal_entry over MCP: a call from the architect writes the entry, and an
 
   const refused = await client.callTool({ name: "journal_entry", arguments: { author: "Whitefoot", text: "别人的" } });
   assert.equal(refused.isError, true);
-  assert.match(JSON.stringify(refused.content), /author: only Architect with session 架构师 may write the journal under architect-notes/);
+  assert.match(JSON.stringify(refused.content), rx`author: only ${ARCHITECT_WRITER} may write the journal under architect-notes`);
 });
 
 test("a journal entry sent again by the same session within a minute is not written twice, for the day's first entry and for a later one, though the time of day in the head has moved on", async t => {
