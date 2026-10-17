@@ -41,6 +41,11 @@ export function splitHead(head: string): HeadSection[] {
   return sections;
 }
 
+// The line the summary writes where it cut a section short.
+const CUT_LINE = /^ {2}… \d+ more characters \(section "[^"\n]*"\)[ \t]*$/m;
+/** The mark of a summary in a text, if the text holds one: a head that carries it was copied from a cut answer, and is not a head. */
+export function summaryMark(text: string): string | undefined { return CUT_LINE.exec(text)?.[0].trim(); }
+
 /** A 参考 section is a long table or derivation, shown by its title alone. */
 const isReference = (title: string): boolean => title.startsWith("参考");
 

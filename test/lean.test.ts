@@ -7,7 +7,7 @@ import { createMcpServer, formatContext, formatOverview } from "../src/mcp.ts";
 import { LEAD_LIMIT, PREAMBLE, selectSections, splitHead, summarizeHead } from "../src/head-sections.ts";
 import * as q from "../src/query.ts";
 import { rules as makeRules } from "../src/rules.ts";
-import { board, author } from "./helpers.ts";
+import { board, author, asArchitect } from "./helpers.ts";
 
 async function connected(t: Parameters<typeof board>[0]) {
   const { store, op } = await board(t, { sharedProjects: true }), server = createMcpServer({ store, ops: op });
@@ -26,7 +26,7 @@ test("every tool, given a parameter it does not have, answers with its parameter
     const body = text(reply);
     assert.match(body, /arguments not accepted/, tool.name);
     assert.match(body, /unknown parameter "not_a_parameter"/, tool.name);
-    for (const parameter of Object.keys(tool.inputSchema.properties ?? {})) assert.ok(body.includes(parameter), `${tool.name}: the table names ${parameter}`);
+    for (const parameter of Object.keys(tool.inputSchema.properties ?? {})) assert.match(body, new RegExp(`^ {2}${parameter} \\(`, "m"), `${tool.name}: the table has a row for ${parameter}`);
     const example = /^Example: (\S+) (.*)$/m.exec(body);
     assert.ok(example && example[1] === tool.name, `${tool.name}: an example call`);
     // The example gets past validation; a write is then refused only because the example names no author.
@@ -233,6 +233,55 @@ test("context with a section answers with that section of the head, exactly as w
   assert.equal(onCard.isError, true); assert.match(text(onCard), /only an item has sections/);
 });
 
+test("a head that is context's summary is refused when it is written back, and the whole head is not", async t => {
+  const { client, text, store } = await richItem(t);
+  const summary = summarizeHead(STUDY_HEAD).text;
+  assert.match(summary, /more characters \(section "/, "the summary carries its marks");
+  const before = store.snapshot();
+  const refused = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: before.items.a!.rev, head: summary, reason: "edited the summary" } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /holds the line "… \d+ more characters \(section "[^"]*"\)"/); assert.match(text(refused), /context section: "all"/);
+  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "fresh", title: "新条目", head: summary, accept: "通过", group: author, priority: "P1" } });
+  assert.equal(created.isError, true); assert.match(text(created), /context section: "all"/);
+  assert.deepEqual(store.snapshot(), before, "nothing was written");
+  // The whole head, changed, is written.
+  const ok = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: before.items.a!.rev, head: `${STUDY_HEAD}\n追加一行`, reason: "added a line" } });
+  assert.equal(ok.isError, undefined, text(ok)); assert.ok(store.snapshot().items.a!.head!.endsWith("追加一行"));
+});
+
+test("acceptance rows stay in the plan, done or not, and every fold says how to get the rest", async t => {
+  const { client, text, store } = await richItem(t);
+  const a = store.snapshot().items.a!;
+  await store.commit({ author, message: "An acceptance row done", puts: [{ kind: "item", id: "a", expectRev: a.rev, doc: { ...a, plan: [{ id: "accepted", accept: true, text: "验收做完了", state: "done", doneAt: "2026-10-11T01:02:03Z" }, ...a.plan] } }] });
+  const lean = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  assert.match(lean, /^ {2}L\d+ ✓ accepted \[验收\] 验收做完了/m, "a done acceptance row is listed");
+  assert.match(lean, /^ {2}✓ 3 项已完成$/m); assert.doesNotMatch(lean, /做完的一步/);
+  assert.match(lean, /\(finished rows are folded into a count; full: true lists them\)/);
+  assert.match(lean, /\(handled notes are cut to 160 characters; full: true or the notes tool has them whole\)/);
+  assert.match(lean, /entries over 240 characters are cut; log: N gets the last N whole/);
+  assert.match(lean, /… 7 more \(prs tool\)$/m);
+  const card = text(await client.callTool({ name: "context", arguments: { id: "card-1" } }));
+  assert.doesNotMatch(card, /characters in all/, "a card read on its own has its notes whole");
+});
+
+test("an open card says what it leaves out: option grounds, and the background an old card kept", async t => {
+  const { client, text, store } = await connected(t);
+  const at = "2026-10-11T01:02:03Z";
+  await store.commit({ author, message: "An old card", puts: [{ kind: "decision", id: "old", expectRev: null, doc: { item: "a", question: "旧卡？", options: [{ key: "A", text: "", detail: "第一行\n第二行说明" }], status: "open", legacy: { background: "旧的背景" }, at, updated: at } }] });
+  const lean = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  assert.match(lean, /^ {2}A: 第一行$/m); assert.doesNotMatch(lean, /第二行说明|旧的背景/);
+  assert.match(lean, /\(grounds and legacy background left out; context old has them\)/);
+});
+
+test("a read tool ignores an author it is given, and a write tool that lacks reason refuses it with its parameters", async t => {
+  const { client, text, store } = await connected(t);
+  const rows = await client.callTool({ name: "dispatches", arguments: { author, id: "a" } });
+  assert.equal(rows.isError, undefined, text(rows)); assert.match(text(rows), /^note: author ignored: this tool takes none; id read as filters\.id$/m);
+  const before = store.snapshot();
+  const moved = await client.callTool({ name: "move_item", arguments: { author, id: "b", owner: "area", reason: "tidy" } });
+  assert.equal(moved.isError, true); assert.match(text(moved), /unknown parameter "reason"/); assert.match(text(moved), /^ {2}owner \(/m);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 // --- overview --------------------------------------------------------------------------------------------------------
 
 test("overview lists, under a project's counts, only the areas with something to handle and caps their rows; detail lists everything", () => {
@@ -245,8 +294,8 @@ test("overview lists, under a project's counts, only the areas with something to
   assert.match(lean, /^Empty · 0 areas · owner waiting 0 · blocked 0 · checks 0$/m);
   // Only the busy area is listed; its rows stop at five and say how many more there are; blocked rows are counted, not listed.
   assert.match(lean, /^ {2}busy · TODO/m); assert.doesNotMatch(lean, /calm/);
-  assert.equal(lean.split("\n").filter(l => l.startsWith("    owner: ")).length, 5); assert.match(lean, /^ {4}… 2 more owner rows$/m);
-  assert.equal(lean.split("\n").filter(l => l.startsWith("    check: ")).length, 5); assert.match(lean, /^ {4}… 1 more check rows$/m);
+  assert.equal(lean.split("\n").filter(l => l.startsWith("    owner: ")).length, 5); assert.match(lean, /^ {4}… 2 more owner rows \(detail: true\)$/m);
+  assert.equal(lean.split("\n").filter(l => l.startsWith("    check: ")).length, 5); assert.match(lean, /^ {4}… 1 more check rows \(detail: true\)$/m);
   assert.doesNotMatch(lean, /busy-b0/);
   assert.match(lean, /^ {2}2 other areas have no owner waiting and no checks$/m);
   assert.match(lean, /detail: true lists every area/);

@@ -134,6 +134,8 @@ export function readNames(tool: string, json: Json, given: Record<string, unknow
   for (const [name, value] of Object.entries(given)) if (top.has(name)) args[name] = value;
   for (const [name, value] of Object.entries(given)) {
     if (top.has(name)) continue;
+    // Writes need an author and reads take none; a read given one is not worth a refusal.
+    if (name === "author") { notes.push("author ignored: this tool takes none"); continue; }
     const place = by(name).find(candidate => (top.has(candidate) && !(candidate in args)) || (mayFilter && inner.has(candidate) && !(candidate in filters)));
     if (place === undefined) args[name] = value;
     else if (top.has(place)) { args[place] = value; notes.push(`${name} read as ${place}`); }

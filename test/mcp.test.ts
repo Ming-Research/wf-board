@@ -236,11 +236,8 @@ test("MCP exposes acceptance anywhere, several scenarios and first-acceptance ro
   const inserted = await client.callTool({ name: "set_plan", arguments: { author, id: "a", row: { id: "prepare", text: "Prepare release", state: "todo", after: [] } } });
   assert.equal(inserted.isError, undefined, text(inserted));
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["prepare", "scenario-a", "scenario-b", "merge"]);
-  // The default answer folds finished rows into a count; full keeps every row, scenario A's among them.
-  const context = text(await client.callTool({ name: "context", arguments: { id: "a", full: true } }));
+  const context = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
   assert.match(context, /验收.*Scenario A passes/); assert.match(context, /验收.*Scenario B passes/); assert.match(context, /Merge into main/);
-  const folded = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
-  assert.match(folded, /✓ 1 项已完成/); assert.doesNotMatch(folded, /Scenario A passes/); assert.match(folded, /验收.*Scenario B passes/);
 });
 
 test("writes answer with their produced plan state; refusals and context identify open owned parts", async t => {

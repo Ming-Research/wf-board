@@ -42,7 +42,8 @@ function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "quest
   if (lean && card.status === "open") {
     // An open card in a list: the question, the option names and the recommendation; the grounds are read from the card itself.
     for (const o of card.options ?? []) lines.push(`  ${o.key}${o.recommended ? " (recommended)" : ""}: ${q.optionName(o) ?? ""}`);
-    if ((card.options ?? []).some(o => o.text && o.detail)) lines.push(`  (grounds left out; context ${key} has them)`);
+    const left = [...(card.options ?? []).some(o => o.detail) ? ["grounds"] : [], ...card.legacy?.background !== undefined ? ["legacy background"] : []];
+    if (left.length) lines.push(`  (${left.join(" and ")} left out; context ${key} has them)`);
     if (card.confidence) lines.push(`confidence ${card.confidence.score === undefined ? "" : card.confidence.score + "/5："}${cut(card.confidence.reason, REASON_CUT)}`);
     return lines.join("\n");
   }
@@ -66,7 +67,8 @@ export function formatContext(result: ReturnType<typeof q.context>, view: Contex
   const noteLine = (n: Parameters<typeof formatNote>[0]) => formatNote(n, view.lean && n.state === "done" ? NOTE_CUT : undefined);
   if (result.kind === "card") {
     if (view.section !== undefined) throw new Error(`section ${view.section}: only an item has sections; a card is read whole`);
-    return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(noteLine)].join("\n");
+    // A card read on its own is the detail view: its notes are whole.
+    return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(n => formatNote(n))].join("\n");
   }
   if (!("ancestors" in result)) throw new Error("Invalid item context");
   const it = result.item as Snapshot["items"][string];
@@ -89,6 +91,7 @@ export function formatContext(result: ReturnType<typeof q.context>, view: Contex
     else lines.push(`head: ${it.head}`);
   }
   if (result.plan.length) lines.push("plan:", ...result.plan.map(line => `  ${line}`));
+  if (view.lean && result.plan.some(line => /^[✓✗] \d+ 项/.test(line))) lines.push("  (finished rows are folded into a count; full: true lists them)");
   for (const warning of result.planWarnings) lines.push(`plan warning: ${warning}`);
   if (result.targets.length) lines.push("targets:", ...result.targets.map(line => `  ${line}`));
   if (it.data) lines.push(`data: ${it.data}`);
@@ -99,6 +102,7 @@ export function formatContext(result: ReturnType<typeof q.context>, view: Contex
   }
   for (const card of result.cards) lines.push(formatCard(card.key, card, view.lean));
   for (const note of result.notes) lines.push(noteLine(note));
+  if (view.lean && result.notes.some(n => noteLine(n) !== formatNote(n))) lines.push(`  (handled notes are cut to ${NOTE_CUT} characters; full: true or the notes tool has them whole)`);
   for (const check of result.checks) lines.push(`check: ${check.text}${check.target ? ` ${check.target.kind}:${check.target.id}` : ""}`);
   for (const link of result.links) lines.push(`link: ${link.label} · ${link.url}`);
   const refs = [...result.prs.qualified.map(p => `${p.repo}#${p.number}`), ...result.prs.unknown.map(n => `#${n} (repository unknown)`)];
@@ -181,9 +185,9 @@ export function formatOverview(projects: ReturnType<typeof q.overview>, detail =
     for (const area of needing) {
       out.push(`  ${formatRow(area)}`, `    ${[...counts(area.counts), ...handle(area)].join(" · ")}`);
       out.push(...area.ownerActions.slice(0, OVERVIEW_ROWS).map(it => `    owner: ${short(it)}`));
-      if (area.ownerActions.length > OVERVIEW_ROWS) out.push(`    … ${area.ownerActions.length - OVERVIEW_ROWS} more owner rows`);
+      if (area.ownerActions.length > OVERVIEW_ROWS) out.push(`    … ${area.ownerActions.length - OVERVIEW_ROWS} more owner rows (detail: true)`);
       out.push(...area.checks.slice(0, OVERVIEW_ROWS).map(it => `    check: ${short(it)} · ${[...new Set(it.checks.map(checkLabel))].join("、")}`));
-      if (area.checks.length > OVERVIEW_ROWS) out.push(`    … ${area.checks.length - OVERVIEW_ROWS} more check rows`);
+      if (area.checks.length > OVERVIEW_ROWS) out.push(`    … ${area.checks.length - OVERVIEW_ROWS} more check rows (detail: true)`);
     }
     if (project.areas.length > needing.length) out.push(`  ${project.areas.length - needing.length} other areas have no owner waiting and no checks`);
   }
