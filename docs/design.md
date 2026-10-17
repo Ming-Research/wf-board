@@ -3855,8 +3855,9 @@ only the jobs it lists.
   in the run seen, against a look every five minutes), or when the mark job
   does not run (queued, or Actions minutes used up): then only the checks that
   did run are read and a commit without a full CI can be taken for passed.
-  That gap is accepted; the status on the head commit shows whether a full CI
-  ran.
+  The main line has no branch protection and no required checks, so `full-ci`
+  does not stop a merge by itself: whoever merges reads `full-ci` on the head
+  commit first and merges only when it is `success`.
 - **The merge**: the run a pull request starts tests the branch merged with
   the main line as it was at that push; a run started by hand tests the branch
   head. The engineer merges the main line into the branch before starting it,
