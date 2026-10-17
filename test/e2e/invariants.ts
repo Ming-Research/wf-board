@@ -786,7 +786,10 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
 // (so the colour at any point is the colour that point has across the row), and no band on the other rows. Both colour
 // schemes (docs/design.md, How the page shows a plan).
 export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], page = bp.page, ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
+  const v: string[] = [], page = bp.page;
+  // Only items whose tree row is rendered: a row under a folded parent is not in the page.
+  const shown = new Set(await page.evaluate(() => [...document.querySelectorAll('[id^="it-"]')].map(e => e.id.slice(3))));
+  const ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && shown.has(id));
   const withStatus = (status: string) => ids.find(id => o.r.statusOf(id) === status);
   const part = withStatus("wip"), idle = withStatus("idle"), todo = withStatus("todo");
   if (!part) v.push("progress-band: the board has no item in progress");
