@@ -1356,7 +1356,8 @@ The detail column of a selected item reads, top to bottom:
 
 1. the head row: status, priority, title, ratio, chips (unchanged); the left
    tree already shows the owner, so the detail has no ownership line;
-   under it the progress line (below) and then the difficulty and tag chips;
+   under it the difficulty and tag chips, and under them the progress line
+   (below);
 2. 目标, the target-number table (unchanged), when the item has targets;
 3. 计划和进展, the plan, with the cards it names unfolded under their rows;
 4. the head (问题 / 为什么 / 做法) and the `data` line;
@@ -1370,7 +1371,7 @@ The detail column of a selected item reads, top to bottom:
 The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
 
-The progress line is one line of text under the title of an open item that has
+The progress line is one line of text under the title and chips of an open item that has
 plan rows, read from `Rules.progress`; the tree rows do not change. Status says
 whether someone is on the item; the line says how far it is and what holds it,
 in one of three forms by status:
@@ -1384,6 +1385,12 @@ in one of three forms by status:
   just `在做：<rows>`.
 
 A paused, done or cancelled item shows no line.
+
+The status chip, the tree's left bar, the parent's counts, the status bar and
+the project's filter buttons all carry 待续 as a status of its own: the filter
+reads "做完了一部分、现在没人在做的条目" and 未开始 reads "什么都还没做、也没人在做的条目".
+Its colour is a blue between the grey of 未开始 and the amber of 进行中, the tokens
+`--partial`, `--partial-soft` and `--bar-partial`, defined for both themes.
 
 The plan's look, row by row. One line per row, a 16-pixel gutter on the left
 carries the row's glyph in its state colour, the same colours as the status

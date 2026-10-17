@@ -3125,10 +3125,11 @@ test("record labels render in the page and stay outside status counts", async ()
   assert.ok(row.querySelectorAll(".st").some(e => e.innerHTML === "记录"));
   assert.ok(!row.querySelectorAll(".st").some(e => /TODO|WIP/.test(e.innerHTML)));
   const counts = summaryText(p).find(e => e.className === "sum-stats")!.children.map(e => e.innerHTML);
-  assert.equal(counts.length, 3);
+  assert.equal(counts.length, 4);
   assert.match(counts[0]!, /进行中 0$/);
-  assert.match(counts[1]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
-  assert.match(counts[2]!, /完成 0$/);
+  assert.match(counts[1]!, /待续 0$/);
+  assert.match(counts[2]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
+  assert.match(counts[3]!, /完成 0$/);
 });
 
 // Records each item the page signs (rules presentationSignature) as a render entry "sign:<id>".
@@ -4356,4 +4357,47 @@ test("a saved draft being edited holds the reload until the edit is saved", asyn
   typeDraftEdit(p, "d", "Edited"); await noteButton(p, "d", "保存")!.click(); await p.flush();
   await sleep(RECHECK_MS + 200);
   assert.equal(p.reloads, 1);
+});
+
+test("an item with part done and nobody on it is 待续: its chip, the parent's count, the status bar and its own filter", async () => {
+  const s=nativeSnapshot();
+  s.items.part={...s.items.child!,title:"Part",plan:planWork([planStep("one","One","done"),planStep("two","Two")])};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("part")]);
+  const p=await page(s,[]); await expand(p,"area");
+  assert.ok(rowOf(p,"part").querySelector(".item-head .st")!.classList.contains("partial"), "the chip takes the partial colour");
+  const counts=rowOf(p,"area").querySelector(".counts")!;
+  assert.deepEqual(counts.children.map(e=>e.className),["st partial","st wip"], "a parent counts the part-done leaf before the one in progress");
+  assert.equal(counts.children[0]!.attributes["aria-label"],"PARTIAL 1");
+  const bar=summaryText(p).find(e=>e.className === "sum-stats")!.children.map(e=>e.innerHTML);
+  assert.ok(bar.some(t=>/待续 1$/.test(t)), "the status bar counts it apart from 未开始: "+bar.join(" | "));
+  assert.ok(bar.some(t=>/未开始 0$/.test(t)));
+  const button=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("待续 "))!;
+  assert.equal(button.innerHTML,"待续 1");
+  await button.click(); await p.flush(); await expand(p,"area");
+  assert.ok(rowOf(p,"part"), "the filter keeps the part-done item");
+  assert.equal(rowOf(p,"child"), undefined, "and drops the one in progress");
+});
+
+test("the detail's progress line says how far a todo or part-done item is, what a blocked one waits on and who is on a wip one", async () => {
+  const s=nativeSnapshot();
+  const base=s.items.child!;
+  s.items.part={...base,title:"Part",plan:planWork([planStep("one","One","done"),planStep("two","Second step")])};
+  s.items.fresh={...base,title:"Fresh",plan:planWork([planStep("one","First step")])};
+  s.decisions.wait=card();
+  s.items.block={...base,title:"Blocked",plan:planWork([cardRow("wait")])};
+  s.items.live={...base,title:"Live",plan:planWork([planStep("work","Write the parser","doing")]),dispatches:[{agentId:"a1",agent:"eng",role:"工程师",level:2,model:"Sonnet",started:new Date().toISOString()}]};
+  s.items.quiet={...base,title:"Quiet",plan:planWork([planStep("one","One","done"),planStep("two","Second step")]),dispatches:[{agentId:"a2",agent:"eng2",role:"工程师",level:2,model:"Sonnet",started:new Date().toISOString()}]};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("part"),ownedRow("fresh"),ownedRow("block"),ownedRow("live"),ownedRow("quiet")]);
+  const p=await page(s,[]);
+  const line=async (id: string) => { await expand(p,id); return item(p,id).querySelector(".progress-line"); };
+  const part=await line("part");
+  assert.equal(part!.innerHTML,"做完 1/3，下一步：Second step"); assert.ok(part!.classList.contains("next"));
+  assert.equal((await line("fresh"))!.innerHTML,"做完 0/2，下一步：First step", "a todo item reads the same way");
+  const blocked=await line("block");
+  assert.equal(blocked!.innerHTML,"卡在："+s.decisions.wait!.question); assert.ok(blocked!.classList.contains("blocked"));
+  const live=await line("live");
+  assert.equal(live!.innerHTML,"eng 在做：Write the parser"); assert.ok(live!.classList.contains("doing"));
+  assert.equal((await line("quiet"))!.innerHTML,"eng2 在做", "a live session with no row marked still shows who is on it");
+  assert.equal(rowOf(p,"part").querySelector(".progress-line"), null, "the tree row shows no progress line");
+  assert.equal(item(p,"quiet").children.filter(c=>c.classList.contains("progress-line")).length, 1);
 });
