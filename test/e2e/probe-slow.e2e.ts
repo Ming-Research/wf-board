@@ -6,9 +6,6 @@ import { writeFile, mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
-import { rules, reuseStats } from "../../src/rules.ts";
-import type { Rules } from "../../src/rules.ts";
-import type { Item, Snapshot } from "../../src/model.ts";
 import type { Browser, CDPSession } from "playwright";
 import { prng } from "./board-gen.ts";
 import { launch, BoardPage, serveBoard, ROOT } from "./harness.ts";
@@ -156,7 +153,7 @@ async function slowCell(browser: Browser, board: BoardServer, rate: number): Pro
 test("probe: base, twin and candidate pages at the runner's speed and throttled twice", { timeout: 80 * 60_000 }, async t => {
   const board = await startLiveBoard(t), browser = await launch(t);
   const base = process.env.PROBE_BASE!;
-  const served = { base: await serveBoard(t, board, await pageOf(base)), twin: await serveBoard(t, board, await pageOf(base)), cand: await serveBoard(t, board, await pageOf(ROOT)) };
+  const served = { base: await serveBoard(t, board, await pageOf(base)), twin: await serveBoard(t, board, await pageOf(base)), cand: await serveBoard(t, board, await pageOf(process.env.PROBE_CAND ?? ROOT)) };
   const variants = ["base", "twin", "cand"] as const, rates = (process.env.PROBE_RATES ?? "1,2").split(",").map(Number);
   const PAIRS = Number(process.env.PROBE_PAIRS ?? 4);
   const runs: Array<Record<string, Cell>> = [];
