@@ -10,28 +10,30 @@ import { answersPushes } from "./model.ts";
 export type WakeRoute = "pm" | { holder: string } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
- * besides n, at and event, `to` says whose stream it goes to, `external` marks a kind another process may ask for through
- * POST /api/wake (the deploy job, which runs beside the daemon and cannot call push), and `answeredByCall` marks a kind the
+ * besides n, at and event, `to` says whose stream it goes to, `external` lists the fields of the request by which another process may ask
+ * for a kind through POST /api/wake (the deploy job, which runs beside the daemon and cannot call push; the daemon turns the
+ * request into pushes with `fields`), and `answeredByCall` marks a kind the
  * session it goes to answers by calling the board, so a tool result does not carry it. push() refuses another kind or field
  * set, and the design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
   timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "actions"], to: "pm" },
-  "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url"], to: "pm" },
+  review: { label: "要审查", fields: ["item", "project", "title", "level"], to: "pm" },
+  finished: { label: "条目做完", fields: ["item", "project", "title", "session"], to: "pm" },
+  "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url", "item", "pr"], to: { holder: "item" } },
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"], to: "pm" },
-  "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"], to: "pm" },
   "pr-orphan": { label: "PR 没挂在条目上", fields: ["repo", "number", "project", "title", "url", "draft"], to: "pm" },
   "slow-op": { label: "操作太慢", fields: ["op", "ms", "limitMs", "params"], to: "pm" },
   "backup-behind": { label: "备份落后", fields: ["commits", "lastSuccess", "reason"], to: "pm" },
   "actions-usage": { label: "Actions 用量", fields: ["org", "reason", "level", "month", "day", "used", "included", "today", "budget", "text"], to: "pm" },
-  deployed: { label: "部署成功", fields: ["version", "previous", "changes", "restarted"], to: "pm", external: true },
-  deployFailed: { label: "部署失败", fields: ["version", "running", "reason"], to: "pm", external: true },
-  "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent" } },
+  deployed: { label: "部署成功", fields: ["version", "restarted", "item", "project", "title", "pr"], to: { holder: "item", only: true }, external: ["version", "previous", "changes", "restarted", "repo"] },
+  deployFailed: { label: "部署失败", fields: ["version", "running", "reason", "item", "project", "title", "pr"], to: { holder: "item" }, external: ["version", "running", "reason", "changes", "repo"] },
+  "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent", only: true } },
   "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
   "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
   message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
-} as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: true; answeredByCall?: true }>;
+} as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: readonly string[]; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
 export const CONTROL_FRAMES = { connected: ["latest"], gap: ["oldest", "latest"] } as const;
@@ -69,16 +71,17 @@ const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${count(f.working)} 条，Architect 项目开着 ${count(f.architect)} 条，PM 项目开着 ${count(f.pm)} 条`,
-  "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败`,
+  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${f.actions ? `，${str(f.actions)}` : ""}`,
+  review: f => `${it(f.item, f.project)} · ${f.level ? `${str(f.level)} 级` : "级别没写"} · ${str(f.title)}`,
+  finished: f => `${it(f.item, f.project)} · 拿着它的会话 ${str(f.session)} · ${str(f.title)}`,
+  "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败${f.item ? ` · 交付它的 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""}`,
   "pr-red": f => `${pr(f)} · ${count(f.failed)} 项检查失败 · ${str(f.title)}`,
-  "pr-ready": f => `${pr(f)} · ${str(f.title)}`,
   "pr-orphan": f => `${pr(f)}${f.draft ? "（草稿）" : ""} · ${str(f.title)}`,
   "slow-op": f => `${str(f.op)} 用了 ${str(f.ms)} 毫秒，限 ${str(f.limitMs)}`,
   "backup-behind": f => `远端缺 ${str(f.commits)} 个提交`,
   "actions-usage": f => `${str(f.org)} · ${str(f.text)}`,
-  deployed: f => `${short(f.version)}，${count(f.changes)} 个改动${f.restarted ? "，重启了" : ""}`,
-  deployFailed: f => `${short(f.version) || "版本不明"} · ${str(f.reason)}`,
+  deployed: f => `${short(f.version)}${f.restarted ? "，重启了" : ""} · 含 ${it(f.item, f.project)} PR #${str(f.pr)}`,
+  deployFailed: f => `${short(f.version) || "版本不明"}${f.item ? ` · 含 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""} · ${str(f.reason)}`,
   "item-done": f => `${it(f.item, f.project)} · ${str(f.title)} · 等它的：it:${str(f.parent)}`,
   "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
   "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
@@ -96,10 +99,12 @@ export function lineOf(frame: WakeFrame): string {
 /** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
 export interface Told { title: string; message: string; target?: { kind: "card" | "item"; key: string } }
 
-/** The card or item a frame is about, for a click to open: a stalled item, the item of a session that gave no answer, or the item
- * or card a note is on. Other frames have none. */
+/** The kinds that are about one item the PM has to act on: a click on a notice about one opens the item. */
+const ITEM_EVENTS = new Set<WakeKind>(["stalled", "no-answer", "review", "finished"]);
+/** The card or item a frame is about, for a click to open: an item the PM has to act on (stalled, offered for starting, to be
+ * reviewed, finished, or whose session gave no answer), or the item or card a note is on. Other frames have none. */
 function targetOf(frame: WakeFrame): Told["target"] {
-  if ((frame.event === "stalled" || frame.event === "no-answer") && typeof frame.item === "string") return { kind: "item", key: frame.item };
+  if (ITEM_EVENTS.has(frame.event) && typeof frame.item === "string") return { kind: "item", key: frame.item };
   if (frame.event === "note" && typeof frame.target === "string") {
     if (frame.target.startsWith("it:")) return { kind: "item", key: frame.target.slice(3) };
     if (frame.target.startsWith("q:")) return { kind: "card", key: frame.target.slice(2) };
@@ -161,9 +166,11 @@ abstract class NumberedLog {
       let record: Record<string, unknown>;
       try { record = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
       if (typeof record.event === "string" && typeof record.n === "number") {
+        this.counter = Math.max(this.counter, record.n);
+        // A kind the table no longer has (a retired one) is not kept: nothing could say what it is about.
+        if (!Object.hasOwn(WAKE_KINDS, record.event)) continue;
         this.frames.push({ frame: record as WakeFrame, bytes: Buffer.byteLength(line) });
         this.total += Buffer.byteLength(line);
-        this.counter = Math.max(this.counter, record.n);
       } else if (typeof record.latest === "number") this.counter = Math.max(this.counter, record.latest);
       else this.loadState(record);
     }
@@ -373,6 +380,8 @@ export class Wake extends NumberedLog {
 
   /** How a holder-routed push finds its session: the session holding an item, or none. */
   routeBy(holder: (item: string) => string | undefined): void { this.holder = holder; }
+  /** The session holding an item, or none: what a push for a holder alone asks before it is made. */
+  holds(item: string): string | undefined { return this.holder(item); }
 
   /** The stream of an agent other than the PM, made on first use. Its file is written only once something happens on it. */
   agent(name: string): AgentStream {
@@ -403,13 +412,17 @@ export class Wake extends NumberedLog {
       const named = "session" in to ? fields[to.session] : fields[to.holder];
       const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
       if (name !== undefined && !answersPushes({ session: name })) return this.agent(name).push(event, fields);
+      // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
+      if ("only" in to && name === undefined) throw new Error(`Wake ${event} is for the session holding ${String(named)}, and nobody does`);
     }
     return this.add(event, fields);
   }
 
-  /** Whether `event` is a kind another process may push: one the table marks external, and no other. */
-  static isExternal(event: unknown): event is WakeKind {
-    return typeof event === "string" && Object.hasOwn(WAKE_KINDS, event) && "external" in WAKE_KINDS[event as WakeKind];
+  /** The fields of the request by which another process may ask for `event`: the kinds the table marks external, and no other. */
+  static externalFields(event: unknown): readonly string[] | undefined {
+    if (typeof event !== "string" || !Object.hasOwn(WAKE_KINDS, event)) return undefined;
+    const spec = WAKE_KINDS[event as WakeKind] as { external?: readonly string[] };
+    return spec.external;
   }
 
   /**

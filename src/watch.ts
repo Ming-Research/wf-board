@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { PlanRow, PlanStep, Snapshot } from "./model.ts";
+import type { PlanStep, Snapshot } from "./model.ts";
 import { changesSection, mergeRowDone } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
+import { deliveries, tellFirst } from "./merges.ts";
 import { knownRepos, mergeRowPulls, prKey, pullsIn } from "./query.ts";
 import type { PrId } from "./query.ts";
 import type { GithubSource, RepoState } from "./github.ts";
@@ -43,46 +44,34 @@ export function mergeRows(s: Snapshot, r: Rules): MergeRow[] {
   return out;
 }
 
-/** The cards a merge row waits on, directly or through the rows before it, and whether each has a ruling. */
-function cardsBefore(s: Snapshot, itemId: string, rowId: string): Array<{ card: string; question: string; ruled: boolean }> {
-  const rows = s.items[itemId]!.plan, byId = new Map(rows.map(row => [row.id, row] as const)), seen = new Set<string>(), cards: PlanRow[] = [];
-  const visit = (row: PlanRow, index: number) => {
-    const before = row.after === undefined ? rows.slice(Math.max(0, index - 1), index) : row.after.flatMap(key => byId.get(key) ?? []);
-    for (const prior of before) {
-      if (seen.has(prior.id)) continue;
-      seen.add(prior.id);
-      if ("card" in prior) cards.push(prior);
-      visit(prior, rows.indexOf(prior));
-    }
-  };
-  const index = rows.findIndex(row => row.id === rowId);
-  if (index >= 0) visit(rows[index]!, index);
-  return cards.flatMap(row => "card" in row && s.decisions[row.card] ? [{ card: row.card, question: s.decisions[row.card]!.question, ruled: s.decisions[row.card]!.status !== "open" }] : []);
-}
-
-export type PushEvent = "main-red" | "pr-red" | "pr-ready" | "pr-orphan";
+export type PushEvent = "main-red" | "pr-red" | "pr-orphan";
 export interface Push { event: PushEvent; /** What makes it the same push again: it is sent once per key. */ key: string; fields: Record<string, unknown> }
 /** The key of a push, or none for a frame that is not one of these. A main line is told once per commit, a PR once per kind and head commit. */
 export function pushKey(event: string, f: Record<string, unknown>): string | undefined {
   if (event === "main-red") return `${event} ${f.repo} ${f.branch} ${f.commit}`;
-  if (event === "pr-red" || event === "pr-ready") return `${event} ${f.repo}#${f.number} ${f.commit}`;
+  if (event === "pr-red") return `${event} ${f.repo}#${f.number} ${f.commit}`;
   // Once per pull request: whether an open item names it does not depend on its commit.
   if (event === "pr-orphan") return `${event} ${f.repo}#${f.number}`;
   return undefined;
 }
 
-/** What to tell the PM now, from what GitHub says: a red main line; a red non-draft PR an open item names; a non-draft PR
- * an open item names whose checks all passed and which can merge, with the open blocking cards of those items and the cards the
- * item's merge row waits on; an open PR no open item names (drafts too). A draft PR's checks are never told. */
 /** How old an open PR must be before it is told as an orphan: the engineer writes its 改动 section right after opening it. */
 export const ORPHAN_AFTER_MS = 10 * 60_000;
+/** What to tell now, from what GitHub says: a red main line, to the session holding the item that delivered its newest commit,
+ * else to the PM; a red non-draft PR an open item names, to the PM; an open PR no open item names (drafts too), to the PM. A
+ * draft PR's checks are never told, and neither is a PR that can merge: an engineer merges its own once its checks pass. */
 export function decide(s: Snapshot, r: Rules, states: readonly RepoState[], now = Date.now()): Push[] {
-  const watched = watchedPulls(s, r), merges = mergeRows(s, r), pushes: Push[] = [];
+  const watched = watchedPulls(s, r), pushes: Push[] = [];
   for (const state of states) {
     const project = s.board.projects.find(p => p.repo?.toLowerCase() === state.repo.toLowerCase())?.name ?? "";
     if (state.main?.checks.state === "failure") {
-      const { branch, commit, checks } = state.main;
-      pushes.push({ event: "main-red", key: pushKey("main-red", { repo: state.repo, branch, commit })!, fields: { repo: state.repo, project, branch, commit, failed: checks.failed, url: `https://github.com/${state.repo}/commit/${commit}` } });
+      const { branch, commit, checks, subject } = state.main;
+      // The newest commit names the pull request whose merge the red is told of; the session holding its item is the one to fix it.
+      const delivery = tellFirst(s, deliveries(s, state.repo, [subject]))[0];
+      pushes.push({ event: "main-red", key: pushKey("main-red", { repo: state.repo, branch, commit })!, fields: {
+        repo: state.repo, project, branch, commit, failed: checks.failed, url: `https://github.com/${state.repo}/commit/${commit}`,
+        item: delivery?.item ?? null, pr: delivery?.pr ?? null,
+      } });
     }
     for (const pull of state.pulls) {
       const key = prKey({ repo: state.repo, number: pull.number }), entry = watched.get(key);
@@ -96,14 +85,6 @@ export function decide(s: Snapshot, r: Rules, states: readonly RepoState[], now 
       const item = (id: string) => ({ item: id, title: s.items[id]!.title, project: r.projectOf(id) });
       if (pull.checks.state === "failure") {
         pushes.push({ event: "pr-red", key: pushKey("pr-red", common)!, fields: { ...common, failed: pull.checks.failed, items: entry.items.map(item) } });
-      } else if (pull.checks.state === "success" && pull.mergeable === "MERGEABLE") {
-        const items = entry.items.map(id => ({
-          ...item(id),
-          // Open cards that stop work on the item, and the cards its merge row for this PR waits on.
-          blocking: r.cardsOf(id).filter(card => r.cardBlocking(card)).map(card => ({ card, question: s.decisions[card]!.question, blocks: s.decisions[card]!.blocks })),
-          approval: merges.filter(row => row.item === id && row.prs.some(p => prKey(p) === key)).flatMap(row => cardsBefore(s, id, row.step.id)),
-        }));
-        pushes.push({ event: "pr-ready", key: pushKey("pr-ready", common)!, fields: { ...common, base: pull.base, items } });
       }
     }
   }
@@ -137,6 +118,10 @@ export interface WatchStatus { polledAt?: string; /** Repositories whose last lo
 /** Looks at GitHub on a timer and acts on it: pushes to the PM and marks merge rows done. */
 export class GithubWatch {
   private readonly announced = new Set<string>();
+  /** The repositories (lowercase) looked at at least once, and the open PRs that were found at the first look of theirs and
+   * not told as orphans: they were opened before the board watched, so no engineer could have named them. Kept in the state file. */
+  private readonly looks = new Set<string>();
+  private readonly baseline = new Set<string>();
   private readonly problems = new Map<string, string>();
   private readonly now: () => number;
   private readonly session: string;
@@ -155,8 +140,11 @@ export class GithubWatch {
     // A state file that cannot be read costs one early look, never the watch.
     if (o.stateFile) {
       try {
-        const last = Date.parse((JSON.parse(readFileSync(o.stateFile, "utf8")) as { polledAt?: string }).polledAt ?? "");
+        const saved = JSON.parse(readFileSync(o.stateFile, "utf8")) as { polledAt?: string; looked?: unknown; baseline?: unknown };
+        const last = Date.parse(saved.polledAt ?? "");
         if (Number.isFinite(last)) this.looked = last;
+        for (const repo of Array.isArray(saved.looked) ? saved.looked : []) if (typeof repo === "string") this.looks.add(repo);
+        for (const key of Array.isArray(saved.baseline) ? saved.baseline : []) if (typeof key === "string") { this.baseline.add(key); this.announced.add(key); }
       } catch { /* no file, or not ours */ }
     }
   }
@@ -186,11 +174,14 @@ export class GithubWatch {
   }
   private remember(at: number): void {
     this.looked = at;
+    this.persist();
+  }
+  private persist(): void {
     if (!this.o.stateFile) return;
     const temporary = this.o.stateFile + ".tmp";
     try {
       mkdirSync(dirname(this.o.stateFile), { recursive: true });
-      writeFileSync(temporary, JSON.stringify({ polledAt: new Date(at).toISOString() }) + "\n");
+      writeFileSync(temporary, JSON.stringify({ ...(this.looked !== undefined ? { polledAt: new Date(this.looked).toISOString() } : {}), looked: [...this.looks], baseline: [...this.baseline] }) + "\n");
       renameSync(temporary, this.o.stateFile);
     } catch (error) { console.error("github watch state not written", error); }
   }
@@ -221,11 +212,22 @@ export class GithubWatch {
       if (this.stopped) return;
       // The board may have changed while GitHub answered: decide on what it is now.
       const s = store.snapshot(), r = store.derived.rules(s, this.now());
+      // The first look at a repository tells nothing of the PRs already open: they are the board's backlog of old PRs, not news.
+      const first = new Set(states.map(state => state.repo.toLowerCase()).filter(repo => !this.looks.has(repo)));
       for (const push of decide(s, r, states, this.now())) {
         if (this.announced.has(push.key)) continue;
-        this.o.wake.push(push.event, push.fields);
         this.announced.add(push.key);
+        if (push.event === "pr-orphan" && first.has(String(push.fields.repo).toLowerCase())) { this.baseline.add(push.key); continue; }
+        this.o.wake.push(push.event, push.fields);
       }
+      // A baselined PR that is no longer open is forgotten, so the file holds only what is open; a look that did not read every PR forgets nothing.
+      for (const state of states) {
+        if (state.truncated) continue;
+        const open = new Set(state.pulls.map(pull => pushKey("pr-orphan", { repo: state.repo, number: pull.number })));
+        for (const key of this.baseline) if (key.startsWith(`pr-orphan ${state.repo}#`) && !open.has(key)) this.baseline.delete(key);
+      }
+      for (const repo of first) this.looks.add(repo);
+      this.persist();
       for (const merged of mergedRows(s, r, states)) await this.markMerged(s, merged);
     } catch (error) { console.error("github watch failed", error); }
     finally { this.polling = false; }

@@ -6,7 +6,9 @@ import type { Notify } from "./notify.ts";
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
 export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
 
-/** A push to the PM, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
+/** A request for a push, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and the fields its `external` lists. `repo` is
+ * the repository as `Owner/Name` (null when it cannot be told) and `changes` the main-line commits the deploy concerns, as
+ * `<short hash> <subject>`: the board finds the pull requests they name and the sessions whose items deliver them. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
 
 /** A deploy that began and did not end, or a rollback that did not finish: the commit to go back to. The next run finishes it
@@ -99,11 +101,25 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   }
   async function tell(push: Push) { state.outbox.push(push); save(); await flush(); }
   /** Push a standing problem once: `key` says which of its kind it is. True when it was pushed now. */
-  async function tellOnce(kind: ToldKind, key: string, push: Push): Promise<boolean> {
+  async function tellOnce(kind: ToldKind, key: string, push: () => Promise<Push>): Promise<boolean> {
     const told = state.told ??= {};
     if (told[kind] === key) return false;
-    told[kind] = key; await tell(push);
+    told[kind] = key; await tell(await push());
     return true;
+  }
+  /** The repository as `Owner/Name`, from the remote's address, or null when it cannot be read. */
+  async function repoName(): Promise<string | null> {
+    try { return /[:/]([^:/]+\/[^/]+?)(?:\.git)?\/?$/.exec(line(await d.git(["remote", "get-url", d.remote])))?.[1] ?? null; } catch { return null; }
+  }
+  /** The first-parent commits after `from` up to `to`, as `<short hash> <subject>`, at most MAX_CHANGES and then how many more. */
+  async function commitsBetween(from: string, to: string): Promise<Array<string | { more: number }>> {
+    const commits = (await d.git(["log", "--first-parent", "--format=%h %s", `${from}..${to}`])).split("\n").filter(Boolean);
+    return commits.length > MAX_CHANGES ? [...commits.slice(0, MAX_CHANGES), { more: commits.length - MAX_CHANGES }] : commits;
+  }
+  /** A deploy that did not happen, as a request: the commits `from..version` it concerns, none when `version` or `from` is not known or git cannot say. */
+  async function failedPush(version: string | null, running: string | null, reason: string, from: string | null): Promise<Push> {
+    const changes = version && from ? await commitsBetween(from, version).catch(() => []) : [];
+    return { event: "deployFailed", version, running, reason, changes, repo: await repoName() };
   }
   /** A run that ends with nothing wrong (the board is current, or just deployed): a problem that comes back is news again. A run
    * that ends with another problem forgets nothing, or two problems that come and go in turn would be pushed every time. */
@@ -156,7 +172,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   }
   async function wentBack(pending: Pending, reason: string): Promise<DeployOutcome> {
     delete state.pending; state.healthy = pending.to; save();
-    await tell({ event: "deployFailed", version: pending.target, running: pending.to, reason });
+    await tell(await failedPush(pending.target, pending.to, reason, pending.to));
     return "rolledBack";
   }
   /** Going back did not finish. Whether the daemon answers decides whether the owner is told on the Mac, since a daemon that does
@@ -165,7 +181,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     const serving = await answers(SETTLE_MS);
     const why = `${reason}; going back to ${pending.to} failed: ${reasonOf(failure)}; the daemon ${serving ? "still answers" : "is not answering"}, and the job tries again on its next run`;
     d.log(why);
-    const news = await tellOnce("stuck", `${pending.target}:${serving}`, { event: "deployFailed", version: pending.target, running: null, reason: why });
+    const news = await tellOnce("stuck", `${pending.target}:${serving}`, () => failedPush(pending.target, null, why, pending.to));
     if (news && !serving) await alarm(`部署 ${pending.target.slice(0, 7)} 失败，退回 ${pending.to.slice(0, 7)} 也没做完：${reasonOf(failure)}`);
     return serving ? "stuck" : "down";
   }
@@ -199,7 +215,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       delete state.pending; save();
       const up = await answers(SETTLE_MS);
       d.log(`${pending.target} was unfinished and the checkout was changed by hand (${why}): taking over from what it holds`);
-      await tell({ event: "deployFailed", version: pending.target, running: null, reason: `the checkout was changed by hand while ${pending.target} was unfinished (${why}); the job took over from what it holds now and reset nothing` });
+      await tell(await failedPush(pending.target, null, `the checkout was changed by hand while ${pending.target} was unfinished (${why}); the job took over from what it holds now and reset nothing`, pending.to));
       if (!up) await alarm(`检出被手动改过（${why}），看板没有答，部署任务没有动检出`);
     }
 
@@ -217,7 +233,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       catch (error) {
         if (attempt < FETCH_TRIES) { await d.sleep(d.fetchRetryMs); continue; }
         d.log(`fetch failed: ${reasonOf(error)}`);
-        await tellOnce("fetch", "fetch", { event: "deployFailed", version: null, running, reason: `could not fetch ${ref}: ${reasonOf(error)}` });
+        await tellOnce("fetch", "fetch", () => failedPush(null, running, `could not fetch ${ref}: ${reasonOf(error)}`, null));
         return "unreachable";
       }
     }
@@ -228,7 +244,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     // The refusals are about the checkout, not the commit: someone's edit or commit there is not ours to move or undo.
     async function refuse(id: string, reason: string): Promise<DeployOutcome> {
       d.log(`not deploying ${target}: ${reason}`);
-      await tellOnce("refuse", `${id}@${target}`, { event: "deployFailed", version: target, running, reason });
+      await tellOnce("refuse", `${id}@${target}`, () => failedPush(target, running, reason, head));
       return "refused";
     }
     const branch = await d.git(["symbolic-ref", "--short", "HEAD"]).then(line, () => "");
@@ -240,8 +256,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
 
     const changed = (await d.git(["diff", "--no-renames", "--name-only", head, target])).split("\n").filter(Boolean);
     const restart = !up || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
-    const commits = (await d.git(["log", "--first-parent", "--format=%h %s", `${head}..${target}`])).split("\n").filter(Boolean);
-    const changes = commits.length > MAX_CHANGES ? [...commits.slice(0, MAX_CHANGES), { more: commits.length - MAX_CHANGES }] : commits;
+    const changes = await commitsBetween(head, target);
 
     d.log(`deploying ${target} over ${head}${restart ? ", restarting" : ", without a restart"}`);
     const pending: Pending = { target, to: rollbackTo, restarted: false, heads: [head, target] };
@@ -262,7 +277,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       return wentBack(pending, reason);
     }
     delete state.pending; delete state.failed; state.healthy = target; calm(); save();
-    await tell({ event: "deployed", version: target, previous: head, changes, restarted: restart });
+    await tell({ event: "deployed", version: target, previous: head, changes, restarted: restart, repo: await repoName() });
     return "deployed";
   }
 
@@ -270,7 +285,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   catch (error) {
     // Whatever the job could not do, the PM hears of it once; it would otherwise stop deploying with only a log to show.
     d.log(`the deploy job failed: ${reasonOf(error)}`);
-    await tellOnce("error", reasonOf(error), { event: "deployFailed", version: null, running: null, reason: `the deploy job itself failed: ${reasonOf(error)}` })
+    await tellOnce("error", reasonOf(error), () => failedPush(null, null, `the deploy job itself failed: ${reasonOf(error)}`, null))
       .catch(failure => d.log(`could not tell: ${reasonOf(failure)}`));
     return "error";
   }

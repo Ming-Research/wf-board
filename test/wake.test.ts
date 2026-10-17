@@ -9,7 +9,7 @@ import { request } from "node:http";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, author, later, server, wakeSocket } from "./helpers.ts";
+import { board, author, later, server, wakeSocket, asArchitect } from "./helpers.ts";
 import { Item } from "../src/model.ts";
 import { Wake, WAKE_KINDS, CONTROL_FRAMES } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
@@ -138,7 +138,7 @@ test("the limit can be set shorter, and the alert names it in minutes", () => {
   let clock = T0;
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
   wake.onTell(notice => told.push(notice.title));
-  wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [], pm: [], actions: "" });
+  wake.push("timed", { since: iso(T0), changed: [], working: 0, architect: 0, pm: 0, actions: "" });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["PM 10 分钟没响应"]);
 });
@@ -265,7 +265,7 @@ async function restart(t: Parameters<typeof board>[0], store: Awaited<ReturnType
   return { url: `http://127.0.0.1:${address.port}` };
 }
 
-test("the timed wake lists what changed since the last one without the architect's and the PM's own writes, the items being worked on, and the items of the Architect project and of the PM project each in a column of their own; the last one's time survives a restart", async t => {
+test("the timed wake lists what changed since the last one without the architect's and the PM's own writes, and counts the items being worked on and the open ones of the Architect and PM projects; the last one's time survives a restart", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const dir = await scratch(t), file = join(dir, "wake.jsonl"), half = 30 * 60_000;
   let clock = T0;
@@ -301,10 +301,11 @@ test("the timed wake lists what changed since the last one without the architect
   assert.deepEqual(names(frame.changed), ["b", "other"], "b is listed for the owner's comment on its card and for the engineer, other for the engineer; the architect's and the PM's own writes are not why (area, written only by the PM, is not listed)");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
   assert.deepEqual(by, { b: ["owner", "工程师"], other: ["工程师"] });
-  assert.deepEqual(names(frame.working), ["held", "work"], "the items someone holds, outside the Architect and PM projects: a step being done, or a live session; not a parent in progress only through its part");
-  assert.deepEqual((frame.working as Array<{ item: string }>).find(e => e.item === "work"), { item: "work", project: "Whitefoot", title: "在做的条目", status: "wip", flags: [] });
-  assert.deepEqual(frame.architect, [{ item: "arch", project: "Architect", title: "架构师的条目", status: "todo", flags: [] }], "the PM project's item is not in the architect's column");
-  assert.deepEqual(frame.pm, [{ item: "pmwork", project: "PM", title: "PM 的条目", status: "wip", flags: [] }], "the PM project's open items, as the architect's column lists the Architect project's, and not in the working column though a step is being done");
+  assert.equal(frame.working, 2, "the items someone holds, outside the Architect and PM projects: a step being done, or a live session; not a parent in progress only through its part");
+  assert.equal(frame.pm, 1, "the PM project's open items, and not among the working ones though a step is being done");
+  assert.ok(Number.isInteger(frame.architect) && (frame.architect as number) >= 1, "the Architect project's open items, counted");
+  assert.equal(frame.actions, "", "nothing from the usage watch needs handling");
+  for (const column of ["working", "architect", "pm"]) assert.equal(typeof frame[column], "number", `${column} is a count, not the list that repeats from one wake to the next`);
   assert.deepEqual(wake.lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(file)).filter(l => l.timed).at(-1), { timed: wake.lastTimed });
   t.mock.timers.tick(5000); await setImmediate();
@@ -465,28 +466,46 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
 });
 
-// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake streams).
-const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: ["abc1234 Add a thing (#1)", { more: 2 }], restarted: true };
-const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
+// POST /api/wake is how the deploy job, which runs beside the daemon, asks for a push (docs/design.md, The wake streams).
+const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: ["abc1234 Merge pull request #1 from Ming-Research/thing", { more: 2 }], restarted: true, repo: "Ming-Research/Whitefoot" };
+const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy", changes: ["abc1234 Merge pull request #1 from Ming-Research/thing"], repo: "Ming-Research/Whitefoot" };
 
-test("only the deploy kinds are marked as ones another process may push", () => {
+test("only the deploy kinds are marked as ones another process may push, each with the fields of its request", () => {
   const external = Object.entries(WAKE_KINDS).filter(([, spec]) => "external" in spec).map(([kind]) => kind);
   assert.deepEqual(external, ["deployed", "deployFailed"]);
-  for (const kind of Object.keys(WAKE_KINDS)) assert.equal(Wake.isExternal(kind), external.includes(kind), kind);
-  for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, undefined, {}]) assert.equal(Wake.isExternal(other), false, String(other));
+  assert.deepEqual(Wake.externalFields("deployed"), ["version", "previous", "changes", "restarted", "repo"]);
+  assert.deepEqual(Wake.externalFields("deployFailed"), ["version", "running", "reason", "changes", "repo"]);
+  for (const kind of Object.keys(WAKE_KINDS)) assert.equal(Wake.externalFields(kind) !== undefined, external.includes(kind), kind);
+  for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, undefined, {}]) assert.equal(Wake.externalFields(other), undefined, String(other));
 });
 
-test("POST /api/wake sends the deploy pushes as numbered frames to every listener, and keeps them", async t => {
-  const { url, api } = await server(t);
-  const star = await wakeSocket(t, url);
-  assert.deepEqual(await api("/api/wake", deployed), { status: 200, data: { n: 1 } });
-  assert.deepEqual(await api("/api/wake", deployFailed), { status: 200, data: { n: 2 } });
-  await star.sync();
-  assert.deepEqual(star.events().map(({ at, ...frame }) => frame), [{ n: 1, ...deployed }, { n: 2, ...deployFailed }]);
-  assert.ok(star.events().every(f => typeof f.at === "string" && !Number.isNaN(Date.parse(f.at))));
-  // Kept like any event: a client that connects later and asks from the start gets both.
-  const late = await wakeSocket(t, url, 0);
-  assert.deepEqual(late.events().map(f => f.n), [1, 2]);
+test("POST /api/wake makes the deploy pushes: to the session holding the item that delivers a pull request the commits name, else for a failure to the PM, and says how many", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, api, store, op } = await server(t, { wake });
+  const pm = await wakeSocket(t, url);
+  // Pull request 1 of Whitefoot is delivered by item `a`, which the board's fixture has with its own 改动 section.
+  const a = store.snapshot().items.a!;
+  await store.commit({ author, message: "name the pull request", puts: [{ kind: "item", id: "a", expectRev: a.rev, doc: { ...a, head: `${a.head}\n\n**改动**\n\nMing-Research/Whitefoot#1` } }] });
+  // Nobody holds it yet: a deploy that happened is told to nobody, one that failed to the PM.
+  assert.deepEqual(await api("/api/wake", deployed), { status: 200, data: { pushed: 0 } });
+  assert.deepEqual(await api("/api/wake", deployFailed), { status: 200, data: { pushed: 1 } });
+  await pm.sync();
+  assert.deepEqual(pm.events().map(({ n, at, ...f }) => f), [{ event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy", item: "a", project: "Whitefoot", title: "中文检查", pr: 1 }]);
+  // An engineer holds it: both go to its stream, and the PM gets nothing more.
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-a" });
+  assert.deepEqual(await api("/api/wake", deployed), { status: 200, data: { pushed: 1 } });
+  assert.deepEqual(await api("/api/wake", deployFailed), { status: 200, data: { pushed: 1 } });
+  await pm.sync();
+  assert.equal(pm.events().length, 1, "the PM hears of neither once an engineer holds the item");
+  const frames = wake.agent("a-worker").pending().frames;
+  assert.deepEqual(frames.map(f => [f.event, f.item, f.pr]), [["deployed", "a", 1], ["deployFailed", "a", 1]]);
+  assert.deepEqual({ version: frames[0]!.version, restarted: frames[0]!.restarted }, { version: "a".repeat(40), restarted: true });
+  // A deploy that names no pull request an item delivers, or whose repository is not told: the same.
+  assert.deepEqual(await api("/api/wake", { ...deployed, changes: ["abc1234 Merge pull request #99 from x"] }), { status: 200, data: { pushed: 0 } });
+  assert.deepEqual(await api("/api/wake", { ...deployed, repo: null }), { status: 200, data: { pushed: 0 } });
+  assert.deepEqual(await api("/api/wake", { ...deployFailed, repo: null }), { status: 200, data: { pushed: 1 } });
+  await pm.sync();
+  assert.deepEqual(pm.events().map(f => [f.event, f.item]), [["deployFailed", "a"], ["deployFailed", null]]);
 });
 
 test("POST /api/wake refuses every other kind, every other field set and every bad body, and sends nothing", async t => {
@@ -501,28 +520,42 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   // The board's own kinds, with exactly their own fields: the daemon is their only source.
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
-  await refused("timed", { event: "timed", since: "s", changed: [], working: [], architect: [], pm: [], actions: "" });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, actions: "" });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
-  await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes });
+  await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes, restarted: fields.restarted });
   await refused("an extra field", { ...deployed, extra: 1 });
+  await refused("the frame's fields in place of the request's", { event, version: "v", restarted: true, item: "a", project: "Whitefoot", title: "t", pr: 1 });
   await refused("another kind's fields", { ...deployFailed, event });
   await refused("oversize", { ...deployFailed, reason: "x".repeat(20 * 1024) });
   for (const body of [[], null, "deployed", 5]) await refused(`body ${JSON.stringify(body)}`, body);
   const raw = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not json" });
   assert.equal(raw.status, 400);
   // Only a program on this machine may ask: the same Host and Origin rules as every other write.
-  const foreign = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://evil.example" }, body: JSON.stringify(deployed) });
+  const foreign = await fetch(url + "/api/wake", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://evil.example" }, body: JSON.stringify(deployFailed) });
   assert.equal(foreign.status, 403);
   const hostStatus = (host: string) => new Promise<number>((resolve, reject) => {
     const req = request(url + "/api/wake", { method: "POST", headers: { Host: host, "Content-Type": "application/json" } }, res => { res.resume(); resolve(res.statusCode!); });
-    req.on("error", reject); req.end(JSON.stringify(deployed));
+    req.on("error", reject); req.end(JSON.stringify(deployFailed));
   });
   assert.equal(await hostStatus("evil.example"), 403);
   assert.equal(await hostStatus(`localhost:${port}`), 200, "the control: the same request with the right Host is taken");
   assert.equal((await fetch(url + "/api/wake")).status, 404, "it only takes a POST");
   await star.sync();
-  assert.deepEqual(star.events().map(f => f.n), [1], "only the control request was sent");
+  assert.deepEqual(star.events().map(f => f.n), [1], "only the control request was sent (a failed deploy no item explains goes to the PM)");
+});
+
+test("a kept file that holds a kind the table no longer has loses that event and keeps its number", async t => {
+  const file = join(await scratch(t), "wake.jsonl");
+  const first = new Wake({ file, now: () => T0 });
+  first.push("note", noteFields("n1"));
+  // The earlier table pushed these kinds; a board started over their file must neither fail on them nor reuse their numbers.
+  await writeFile(file, [...(await lines(file)), { n: 2, at: iso(T0), event: "pr-ready", repo: "o/r", number: 1 }, { n: 3, at: iso(T0), event: "note", ...noteFields("n3") }].map(l => JSON.stringify(l) + "\n").join(""));
+  const again = new Wake({ file, now: () => T0 });
+  assert.deepEqual(again.since(0).frames.map(f => [f.n, f.event]), [[1, "note"], [3, "note"]]);
+  assert.equal(again.latest(), 3);
+  assert.equal(again.push("note", noteFields("n4")).n, 4);
+  assert.doesNotThrow(() => again.checkReceipts());
 });
 
 test("a told notice goes to each listener with its card or item; a listener added later gets none of the earlier ones", () => {
@@ -574,7 +607,19 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
-  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: [], architect: "ok", pm: [], actions: "" });
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: 0, architect: 1, pm: 0, actions: "" });
   clock += 60_000; third.checkReceipts();
   assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
+  // What the PM is to act on for an item opens that item.
+  const pushes: Array<[Parameters<Wake["push"]>[0], Record<string, unknown>]> = [
+    ["review", { item: "a", project: "Whitefoot", title: "中文检查", level: 3 }],
+    ["finished", { item: "a", project: "Whitefoot", title: "中文检查", session: "a-worker" }],
+  ];
+  for (const [event, fields] of pushes) {
+    const wake = new Wake({ now: () => clock, receiptLimitMs: 60_000 }), opened: unknown[] = [];
+    wake.onTell(notice => opened.push(notice.target));
+    wake.push(event, fields);
+    clock += 60_000; wake.checkReceipts();
+    assert.deepEqual(opened, [{ kind: "item", key: "a" }], event);
+  }
 });

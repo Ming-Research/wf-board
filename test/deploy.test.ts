@@ -17,10 +17,12 @@ import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { server, wakeSocket } from "./helpers.ts";
+import { agentSocket, asArchitect, author, server, wakeSocket } from "./helpers.ts";
 import { fakeSsh } from "./fake-ssh.ts";
 
 const BRANCH = "main";
+/** The repository the origin stands for: the job reads it from the last two parts of the remote's address. */
+const REPO = "Ming-Research/Whitefoot";
 const identity = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }).trim();
 type After = { after(fn: () => void | Promise<void>): void };
@@ -29,7 +31,7 @@ type After = { after(fn: () => void | Promise<void>): void };
 async function repos(t: After) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-deploy-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const origin = join(dir, "origin.git"), seed = join(dir, "seed"), checkout = join(dir, "checkout");
+  const origin = join(dir, `${REPO}.git`), seed = join(dir, "seed"), checkout = join(dir, "checkout");
   sh(dir, "init", "-q", "--bare", "-b", BRANCH, origin);
   sh(dir, "clone", "-q", origin, seed);
   sh(seed, "checkout", "-q", "-B", BRANCH);
@@ -39,7 +41,7 @@ async function repos(t: After) {
   const land = (files: Record<string, string>, message: string) => { write(seed, files); return publish(message); };
   const first = land({ "src/main.ts": "run", "web/index.html": "page", "docs/design.md": "doc", "test/a.test.ts": "test", "package-lock.json": "lock 1", "README.md": "readme" }, "first");
   sh(dir, "clone", "-q", "-b", BRANCH, origin, checkout);
-  return { dir, origin, seed, checkout, first, land, publish, write, head: () => sh(checkout, "rev-parse", "HEAD"), short: (sha: string) => sh(seed, "rev-parse", "--short", sha) };
+  return { dir, origin, repo: REPO, seed, checkout, first, land, publish, write, head: () => sh(checkout, "rev-parse", "HEAD"), short: (sha: string) => sh(seed, "rev-parse", "--short", sha) };
 }
 
 /** The deploy's outside world: npm, launchd and the daemon are fakes that record what they were asked and read the checkout to
@@ -99,7 +101,7 @@ test("a merged change is moved to, built, the daemon restarted once it is health
   assert.equal(r.head(), sha);
   assert.deepEqual(w.builds, [{ args: BUILD, head: sha }], "built after the checkout moved");
   assert.equal(w.restarts, 1);
-  assert.deepEqual(w.posts, [{ event: "deployed", version: sha, previous: r.first, changes: [`${r.short(sha)} Add more (#1)`], restarted: true }]);
+  assert.deepEqual(w.posts, [{ event: "deployed", version: sha, previous: r.first, changes: [`${r.short(sha)} Add more (#1)`], restarted: true, repo: r.repo }]);
   assert.equal(w.saved.healthy, sha);
   assert.deepEqual(w.saved.outbox, []);
   // The next run finds nothing to do.
@@ -113,7 +115,7 @@ test("changes merged between two runs are one deploy: one restart, one push list
   assert.equal(await deploy(), "deployed");
   assert.equal(w.restarts, 1);
   assert.equal(w.builds.length, 1);
-  assert.deepEqual(w.posts, [{ event: "deployed", version: b, previous: r.first, changes: [`${r.short(b)} B (#2)`, `${r.short(a)} A (#1)`], restarted: true }]);
+  assert.deepEqual(w.posts, [{ event: "deployed", version: b, previous: r.first, changes: [`${r.short(b)} B (#2)`, `${r.short(a)} A (#1)`], restarted: true, repo: r.repo }]);
 });
 
 test("a long list of changes is cut and the rest counted", async t => {
@@ -184,7 +186,7 @@ test("a daemon that does not come up is rolled back: the code and the page go ba
   assert.equal(w.restarts, 2);
   assert.equal(w.daemon.ok, true, "the daemon serves again");
   assert.ok(w.clock >= 90_000, "it waited out the limit before giving up");
-  assert.deepEqual(w.posts, [{ event: "deployFailed", version: bad, running: r.first, reason: w.posts[0]!.reason }]);
+  assert.deepEqual(w.posts, [{ event: "deployFailed", version: bad, running: r.first, reason: w.posts[0]!.reason, changes: [`${r.short(bad)} Break the daemon (#2)`], repo: r.repo }]);
   assert.match(String(w.posts[0]!.reason), /not healthy/);
   assert.deepEqual([w.saved.failed, w.saved.healthy, w.saved.pending], [bad, r.first, undefined], "the rollback is finished, so nothing is pending");
   assert.equal(w.notices.length, 0, "the owner is told only when the board cannot be brought back");
@@ -645,8 +647,12 @@ test("the page files are read from disk on each request, so a rebuilt page needs
 
 test("scripts/deploy.ts end to end: real git, the health check, launchd's pid and the pushes through the daemon's own route", async t => {
   const r = await repos(t);
-  const { url, port } = await server(t);
-  const star = await wakeSocket(t, url);
+  const { url, port, store, op } = await server(t);
+  // The deploys are told to the engineer holding the item whose 改动 section names the pull requests the commits carry.
+  const a = store.snapshot().items.a!;
+  await store.commit({ author, message: "name the pull requests", puts: [{ kind: "item", id: "a", expectRev: a.rev, doc: { ...a, head: `${a.head}\n\n**改动**\n\n${REPO}#1 ${REPO}#2 ${REPO}#3` } }] });
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-a" });
+  const star = await agentSocket(t, url, "a-worker");
   const bin = join(r.dir, "bin"), calls = join(r.dir, "calls.log"), pidFile = join(r.dir, "pid"), stateFile = join(r.dir, "state/deploy.json");
   mkdirSync(bin); writeFileSync(pidFile, "100"); writeFileSync(calls, "");
   // A state file that does not parse must not stop every run: the job sets it aside and starts empty.
@@ -671,7 +677,7 @@ esac
     return stdout.trim().split("\n").at(-1)!.replace(/^\S+ /, "");
   };
   const calledLines = async () => (await readFile(calls, "utf8")).split("\n").filter(l => l && !l.startsWith("launchctl list"));
-  const frames = () => star.events().map(({ at, ...frame }) => frame);
+  const frames = () => star.events().map(({ at, line, ...frame }) => frame);
 
   assert.equal(await run(), "current");
   assert.deepEqual(await calledLines(), []);
@@ -681,14 +687,15 @@ esac
   assert.equal(await run(), "deployed");
   assert.equal(r.head(), sha);
   assert.deepEqual(await calledLines(), ["npm run -s build:web", `launchctl kickstart -k gui/${process.getuid!()}/test.label`]);
-  assert.deepEqual(frames(), [{ n: 1, event: "deployed", version: sha, previous: r.first, changes: [`${r.short(sha)} Add a (#1)`], restarted: true }]);
+  const delivered = { item: "a", project: "Whitefoot", title: "中文检查" };
+  assert.deepEqual(frames(), [{ n: 1, event: "deployed", version: sha, restarted: true, ...delivered, pr: 1 }]);
   assert.equal(JSON.parse(await readFile(stateFile, "utf8")).healthy, sha);
 
   // A page-only change builds and pushes without a restart.
   const page = r.land({ "web/index.html": "new page" }, "New page (#2)");
   assert.equal(await run(), "deployed");
   assert.deepEqual((await calledLines()).slice(2), ["npm run -s build:web"]);
-  assert.deepEqual(frames().at(-1), { n: 2, event: "deployed", version: page, previous: sha, changes: [`${r.short(page)} New page (#2)`], restarted: false });
+  assert.deepEqual(frames().at(-1), { n: 2, event: "deployed", version: page, restarted: false, ...delivered, pr: 2 });
 
   // A checkout with someone's edit is left alone, and the refusal reaches the architect through the same route.
   writeFileSync(join(r.checkout, "README.md"), "edit");
@@ -696,7 +703,7 @@ esac
   assert.equal(await run(), "refused");
   assert.equal(r.head(), page);
   assert.equal(frames().at(-1)!.event, "deployFailed");
-  assert.deepEqual({ ...frames().at(-1), reason: undefined }, { n: 3, event: "deployFailed", version: blocked, running: page, reason: undefined });
+  assert.deepEqual({ ...frames().at(-1), reason: undefined }, { n: 3, event: "deployFailed", version: blocked, running: page, reason: undefined, ...delivered, pr: 3 });
   assert.equal(await run(), "refused");
   assert.equal(star.events().length, 3, "the same refusal is not pushed again");
 });

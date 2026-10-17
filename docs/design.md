@@ -2426,7 +2426,8 @@ does with a push, and how it listens, is in its rules and in
 
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
 PM's stream; `{holder: <field>}`, the stream of the session holding
-the item that field names, and the PM's when nobody holds it; or
+the item that field names, and the PM's when nobody holds it or the field is null (`only: true` on it: a push
+for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it); or
 `{session: <field>}`, the stream of the session that field names, the
 PM's when it names the PM or the architect. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
@@ -2442,10 +2443,12 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Sixteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
-All go to the PM except `item-done` and `ask-alive`, which go to a holder,
-and `message`, which goes to its recipient:
+Each is something one session has to act on, as the PM rules (main flow 9–15)
+and the engineer rules say. All go to the PM except `main-red`, `deployed`,
+`deployFailed`, `item-done` and `ask-alive`, which go to a holder, and `message`,
+which goes to its recipient:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the PM too. A sent choice
@@ -2453,11 +2456,20 @@ and `message`, which goes to its recipient:
   PM does not rule it afterwards;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
-- the timed wake, every 30 minutes, with a line of the month's Actions usage;
+- the timed wake, every 30 minutes, with what changed since the last one and
+  counts, never a standing list (Size, below);
+- a review is needed (`review`): the item's review step, the plan step whose id is `review`,
+  such as 「审查（3 级）」, became in progress, and no reviewer is on the item yet. The
+  push carries the level the step's text names; the pull request and the range to
+  review are in the item's log, where the engineer writes them. A reviewer already
+  on the item is resumed by the engineer and does not come to the PM;
+- an item finished (`finished`): an item that a session holds became done. It tells
+  the PM which session to stop;
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
-  failed (`pr-red`), one whose checks all passed and which can merge
-  (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+  failed (`pr-red`), and an open pull request no open item names (`pr-orphan`).
+  A pull request that can merge is not pushed: an engineer merges its own once
+  its checks pass;
 - a page request or tool call that took longer than its time limit (`slow-op`,
   section 4, Time limits), once per operation per hour;
 - a remote copy of the board's data that has stayed behind for an hour
@@ -2467,9 +2479,10 @@ and `message`, which goes to its recipient:
   all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below);
+  deploy did not happen. The job asks through `POST /api/wake` (below), and the
+  board makes the pushes (Deploys and the red main line, below);
 - an item that became done (`item-done`), to the session holding each open item
-  that waits on it;
+  that waits on it; when nobody holds that item nothing is pushed;
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
@@ -2478,6 +2491,20 @@ and `message`, which goes to its recipient:
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
+
+**Deploys and the red main line.** A pull request's merge to the main line is made by the
+engineer that holds its item, so what the merge did to the main line is told to that
+session. The deploy job sends the commits its deploy concerns as `<short hash> <subject>`
+with the repository as `Owner/Name`; the look at GitHub reads the subject of the newest commit
+of the main line. A subject names a pull request in the forms `Merge pull request #N …` and
+`… (#N)` (`pullNumbers` in `src/merges.ts`); the item that delivers it is the item whose
+改动 section names that pull request in that repository, done or not, since its session
+stays until the PM finishes it (`deliveries`). `deployed` is pushed to each session holding
+such an item, one push per item, and to nobody when none does. `deployFailed` and `main-red` are
+pushed the same way and, when no delivering item is held, to the PM, naming the first delivering
+item if there is one. Rejected: pushing every deploy to the PM to forward, which hands
+the PM a message it can only pass on; telling the engineer of the last commit only, which
+misses the others a deploy carried.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -2488,15 +2515,19 @@ command-line client sends no `Origin`. A `session` parameter, which the earlier
 per-project filter took, is ignored.
 
 **Pushing from outside.** The deploy job runs in its own process, so it cannot
-call `push`; it posts `{event, ...fields}` to `POST /api/wake` and gets `{n}`
-back. Only a kind the table marks `external` is taken (`deployed` and
-`deployFailed`); the board's own kinds are not, whatever fields come with them.
-Another kind, a field set that is not exactly the kind's, a body that is not a
-JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
-Host and Origin rules are those of every other write, so only a program on this
-machine can ask. A `deployed` or `deployFailed` push also makes the daemon read the
-page files again and tell the open pages if their version changed (section 4,
-Deploying).
+call `push`; it posts `{event, ...fields}` to `POST /api/wake`. Only a kind the
+table gives an `external` list is taken (`deployed` and `deployFailed`), with exactly the
+fields that list names, which are not the frame's: `deployed` takes `version`, `previous`,
+`changes` (the commits as `<short hash> <subject>`), `restarted` and `repo`
+(`Owner/Name`, null when the job cannot read it); `deployFailed` takes `version`, `running`,
+`reason`, `changes` and `repo`. The board turns the request into the pushes of the sessions
+it concerns (Deploys and the red main line) and answers `{pushed}`, how many it made, which is
+0 for a deploy that happened and concerns no held item. The board's own kinds are not taken,
+whatever fields come with them. Another kind, a field set that is not exactly the kind's, a body
+that is not a JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
+Host and Origin rules are those of every other write, so only a program on this machine can
+ask. A request also makes the daemon read the page files again and tell the open pages if
+their version changed (section 4, Deploying), whether or not a push was made.
 
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all
@@ -2506,17 +2537,18 @@ the forms the server sends:
 |---|---|
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect, pm, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. `working` lists the open items outside the Architect and PM projects that someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is left out), `architect` every open item of the Architect project and `pm` every open item of the PM project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
-| `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
+| `{n, at, event:"timed", since, changed, working, architect, pm, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `actions` is a sentence from the Actions usage watch when it needs handling (the billing cannot be read, or has a runner name the account does not know), else empty |
+| `{n, at, event:"review", item, project, title, level}` | The item's review step (id `review`) became in progress and no reviewer has an open dispatch on the item. `level` is the review level the step's text names (`（N 级）`), null when it names none |
+| `{n, at, event:"finished", item, project, title, session}` | An item that a session holds became done. `session` is the session holding it, which the PM stops |
+| `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the PM's when nobody does (Deploys and the red main line) |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
-| `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
 | `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
-| `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
-| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
-| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the PM's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
+| `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such item that a session holds, to that session; when none is held, one to the PM, naming the first |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's or the architect's session |
@@ -2656,7 +2688,10 @@ the number, the kind's label and what it is about (an item or pull request
 with its project, a title, counts instead of lists), at most 200 characters,
 cut with … past that; the tests measure it for every kind with the longest
 fields. A message's line cuts only what comes before its text (Messages,
-below). An event reaches an agent once (above).
+below). An event reaches an agent once (above). The PM's frames are printed whole by its
+script, so the PM's pushes carry no list that repeats from one to the next: the timed wake
+once carried the lists of every open item of two projects each time, 74% of the characters pushed over a day
+(measured on 2026-10-16 and 17: 198,000 of 266,000), and now carries what changed and counts.
 
 **No receipt.** When the oldest unanswered event on the PM's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「PM 1 小时没响应」,
@@ -2682,8 +2717,8 @@ the deploy job's notice on the Mac (section 4, Deploying) is the only one that r
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
-or card of its oldest unanswered event: the item of a `stalled` or `no-answer`
-event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
+or card of its oldest unanswered event: the item of a `stalled`, `no-answer`, `dispatch`, `review`
+or `finished` event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
 target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
@@ -2750,8 +2785,8 @@ keeps a second place to read messages from and a job that moves them.
 ### Watching GitHub
 
 The board looks at GitHub itself and does with the answer what the PM
-would otherwise do by hand on each round: it tells the PM when a pull
-request can merge or the checks went red, and it marks the merge row of a
+would otherwise do by hand on each round: it tells when the checks went red on
+the main line or on a pull request, and when an open pull request is named by no item, and it marks the merge row of a
 merged pull request done (`src/watch.ts`, `src/github.ts`).
 
 **The look.** Every five minutes, and not oftener, because every session on the
@@ -2806,14 +2841,16 @@ to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
 runs no pull request check for a pull request with a merge conflict, and a
 commit nobody has run yet looks the same.
 
-**The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
-requests; a draft's checks are the engineer's. `pr-red`: the checks say
-failure. `pr-ready`: the checks say success and GitHub reports the pull request
-mergeable (not conflicting; still being computed counts as not yet). A pull
-request whose checks are pending or none, or that cannot merge, is told nothing.
-`main-red`: the checks of the main line's newest commit say failure. A push is
-made once per key: `main-red` per branch and commit, `pr-red` and `pr-ready` per
-pull request and newest commit, `pr-orphan` per pull request.
+**The pushes about checks.** `pr-red` is about non-draft pull requests; a
+draft's checks are the engineer's. `pr-red`: the checks say failure, to the PM,
+who forwards it. A pull request whose checks are pending or none, or that
+cannot merge, is told nothing, and so is one that can: an engineer merges its own
+once its checks pass, and watches them itself. `main-red`: the checks of the main
+line's newest commit say failure; it goes to the session holding the item that
+delivers the pull request the commit's subject names, the PM's when none does
+(Deploys and the red main line): the red is usually a combination of merges
+that only the main line's own checks catch. A push is made once per key: `main-red` per branch and
+commit, `pr-red` per pull request and newest commit, `pr-orphan` per pull request.
 The keys of the events still kept are read again at start, so a restart neither
 repeats a push nor loses one (an event the log dropped may be told once more).
 
@@ -2823,7 +2860,13 @@ and commits, so a draft nobody names is told too: nothing else reports it. A pul
 request is told only once it is ten minutes old (GitHub's creation time), so the
 engineer has time to write its 改动 section after opening it; one an item names
 within those ten minutes is never told. A pull request an item names after it has
-been told is no orphan any more; the push is not taken back.
+been told is no orphan any more; the push is not taken back. The first look at a
+repository tells nothing of the pull requests already open and unnamed (ten minutes old
+or more): they were open before the board watched for orphans, and 111 of the 121 orphan pushes
+of the first day were that: all 111 made within 30 milliseconds, by the first look after the
+orphan push was deployed (the look five minutes before made none). They are kept as told (`baseline` in
+`state/github-watch.json`, dropped once the pull request is no longer open), so a restart
+does not tell them either.
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
@@ -2858,7 +2901,7 @@ its repository list with visibility, its usage report for the UTC month
 repository list is `404` is a personal account and is skipped without a problem:
 its billing needs a `user` token scope, so the minutes of repositories there
 (`agents_config` today) are not counted. Any other failure is a reason kept per
-owner (`/health` `usage.problems`, the timed wake line) and logged once while it
+owner (`/health` `usage.problems`, the timed wake) and logged once while it
 lasts; the other owners go on, and nothing is told on a failed look.
 
 **The account.** The usage report gives each repository's minutes but not
@@ -2898,11 +2941,13 @@ at or over the included minutes and an Actions budget of exactly 0 (the CI of th
 private repositories is stopped, or billed from the first extra minute when the budget is
 not set to stop); no budget set is not a budget of 0 and tells nothing.
 
-**The line.** `Actions 本月已用 N / 3000（从 MM-DD 起记账），今天 M，预算 X` in each
-timed wake, `X` being `0 美元，到上限就拦`, an amount, or `未设`; with several organizations each
-line starts with its organization, and `；有不认识的计费项：<names>` follows when the
-account met a runner name it does not know. When the billing cannot be read it is
-`Actions 用量读不到：<reason>`; before the first look `Actions 用量还没读到`.
+**The line.** `Actions 本月已用 N / 3000（从 MM-DD 起记账），今天 M，预算 X`, `X` being
+`0 美元，到上限就拦`, an amount, or `未设`; with several organizations each line starts with
+its organization, and `；有不认识的计费项：<names>` follows when the account met a runner name it
+does not know. When the billing cannot be read it is `Actions 用量读不到：<reason>`; before the
+first look `Actions 用量还没读到`. The timed wake carries it only when it needs handling: the
+billing cannot be read, or a runner name is unknown (`alert` in `src/usage-watch.ts`); a line of
+figures that are fine would repeat itself every half hour.
 
 ## 9. Project responsibility
 
