@@ -339,6 +339,8 @@ export interface Rules {
   isNeeded(id: string): boolean;
   /** A root's stored priority, otherwise the highest of open work dependents. */
   priorityOf(id: string): Priority | "";
+  /** How many open, unpaused work items hold a row (owned or shared) for it: the ones that wait for it. */
+  openDependents(id: string): number;
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
   dependents(id: string): Array<{ id: string; own?: boolean }>;
   cardDependents(key: string): Array<{ id: string; own?: boolean }>;
@@ -371,6 +373,8 @@ export interface Rules {
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
+  /** The default order of the candidates list, for reading and not a choice: higher priority first; at equal priority more open dependents first; then the earlier item number. */
+  compareCandidates(a: string, b: string): number;
 }
 
 type Dependency = ReturnType<Rules["depsOf"]>[number];
@@ -1017,6 +1021,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
+  function openDependents(id: string): number { return cached("openDependents", id, () => waiters(id).filter(w => isOpenWork(w) && !isPaused(w)).length); }
   // The reach of the unpaused roots, by the same walk as the priorities: up from every root along the open, unpaused rows.
   function neededSet(): Set<string> {
     return cached("needed", "", () => {
@@ -1193,7 +1198,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf, openDependents,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
@@ -1202,5 +1207,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
     refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
+    // An item without a number (written before numbers) sorts after the numbered; the key settles what is left.
+    compareCandidates: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || openDependents(b) - openDependents(a)
+      || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),
   };
 }
