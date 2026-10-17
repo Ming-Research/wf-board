@@ -2,7 +2,7 @@
 // sessions itself. docs/design.md, section 6, "The next-work read", gives the reasons for each rule.
 
 import { openDispatches, holderOf } from "./dispatch.ts";
-import type { Difficulty, Dispatch, PlanStep, Priority, Snapshot } from "./model.ts";
+import type { Difficulty, Dispatch, Priority, Snapshot } from "./model.ts";
 import { isReviewStep } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
@@ -67,7 +67,7 @@ function waiting(s: Snapshot, r: Rules, id: string, agent: string): boolean {
   const status = r.statusOf(id);
   if (status !== "wip" && status !== "todo" && status !== "idle") return true;
   const rows = r.planRows(id);
-  const doing = rows.flatMap(entry => "text" in entry.row && entry.row.state === "doing" ? [entry.row as PlanStep] : []);
+  const doing = rows.flatMap(entry => "text" in entry.row && entry.row.state === "doing" ? [entry.row] : []);
   if (doing.length) return doing.every(step => step.waits !== undefined || isReviewStep(step));
   return rows.some(entry => entry.ready && entry.state === "progress" && "item" in entry.row && heldElsewhere(s, r, entry.row.item, agent));
 }
