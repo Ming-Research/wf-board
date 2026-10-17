@@ -1414,7 +1414,8 @@ cancelled 1, wip or idle ½, anything else 0, and its own rows are not counted.
 The band's gradient runs from `--prog-from` to `--prog-to` across the full
 row width, so a short band shows only the start colour: the colour at any
 point of the band is the colour that point has in the whole row. Items of
-other statuses draw no band. The owner asked for this on the board, so the
+other statuses draw no band. A tree row that draws a band shows no `done/total`
+count, since the band already shows the share; the detail keeps its ratio. The owner asked for this on the board, so the
 left list shows how far each open item is without opening it.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and

@@ -818,12 +818,18 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
         const from = getComputedStyle(probe).backgroundColor; probe.remove();
         const style = band ? getComputedStyle(band) : null;
         return {
-          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from,
+          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from, count: !!row?.querySelector(".steps-ratio"),
           band: band && style ? { width: band.getBoundingClientRect().width, image: style.backgroundImage, size: style.backgroundSize } : null,
         };
       }, id);
       if (!got.row) { v.push(`progress-band (${scheme}): ${id} has no tree row`); continue; }
-      if (status !== "wip" && status !== "idle") { if (got.band) v.push(`progress-band (${scheme}): ${id} (${status}) carries a band`); continue; }
+      // A row with a band shows no count of its done rows; a row without one keeps the count, where it has a plan.
+      if (status !== "wip" && status !== "idle") {
+        if (got.band) v.push(`progress-band (${scheme}): ${id} (${status}) carries a band`);
+        if (o.s.items[id]!.plan.length && !got.count) v.push(`progress-band (${scheme}): ${id} (${status}) has no count of its rows`);
+        continue;
+      }
+      if (got.count) v.push(`progress-band (${scheme}): ${id} (${status}) shows a count next to its band`);
       if (!got.band) { v.push(`progress-band (${scheme}): ${id} (${status}) carries no band`); continue; }
       const want = o.r.progressShare(id), ratio = got.band.width / got.rowWidth;
       if (Math.abs(ratio - want) > 0.01) v.push(`progress-band (${scheme}): ${id} is ${(ratio * 100).toFixed(1)}% of the row wide, not the plan's ${(want * 100).toFixed(1)}%`);

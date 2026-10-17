@@ -3290,7 +3290,7 @@ test("plan steps show all states, elapsed days and acceptance; prose precedes co
   const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
   assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","●","○","✗","○"]);
   assert.match(markup(planRow(p,"child","done")),/Deliver parser #42 · 10-06/); assert.match(markup(planRow(p,"child","doing")),/Validate replies · 6 天 · 等 CI/); assert.match(markup(planRow(p,"child","drop")),/Old approach · Superseded/);
-  assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/4"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
+  assert.equal(rowOf(p).querySelector(".steps-ratio"),null,"a tree row in progress shows its band, not the count"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
   const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), comments=body.children.findIndex(e=>e.className === "item-comments"), prose=body.children.findIndex(e=>e.className === "rich"), logs=body.children.findIndex(e=>e.className === "log");
   // Owner, 2026-10-13: plan, then the head, then the item's comments, then the log.
   assert.ok(progress>=0 && prose === progress+1 && comments === prose+1 && logs === comments+1);
@@ -4409,4 +4409,5 @@ test("a tree row in progress carries a band as wide as its plan's share, behind 
   const share = parseFloat((band as unknown as { style: Record<string, string> }).style["--p"]!);
   assert.ok(share > 0 && share <= 1, "the band's width is the plan's share, 0 to 1");
   assert.equal(rowOf(p, "area").querySelector(".progress-band"), null, "the area row is not in progress: no band");
+  assert.equal(rowOf(p, "child").querySelector(".steps-ratio"), null, "the band replaces the count on the tree row");
 });
