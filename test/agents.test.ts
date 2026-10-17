@@ -166,12 +166,13 @@ test("a dispatch is live while its session started or wrote within the window, a
 // --- which rows are running ------------------------------------------------------------------------------------------
 
 // The oracle is this table, written from the rule in docs/design.md ("Who is expanded"), not computed by the code under test.
-const ended = { finish: { ended: minutesAgo(300), result: "一次通过" } } as unknown as Partial<Dispatch>;
+// A finish ten minutes after the dispatch started `startedAgo` minutes ago.
+const endedAfter = (startedAgo: number) => ({ finish: { ended: minutesAgo(startedAgo - 10), result: "一次通过" } }) as unknown as Partial<Dispatch>;
 const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }]);
 
 test("a session with a dispatch record is running when it has a step in progress on an item it touched", () => {
   // Each name has a dispatch record that ended long ago and wrote after: listed, holding nothing alive, so the step decides.
-  const old = item([], { dispatches: ["working", "stopped", "waiting", "longWait", "nothing"].map(name => dispatch(name, minutesAgo(400), ended)) } as Partial<Item>);
+  const old = item([], { dispatches: ["working", "stopped", "waiting", "longWait", "nothing"].map(name => dispatch(name, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
   const s = snap({ old, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, {
     working: wrote(["run", 5]), stopped: wrote(["run", 31]), waiting: wrote(["wait", 5]), longWait: wrote(["wait", 61]), nothing: wrote(["idle", 3]),
   });
@@ -195,11 +196,11 @@ test("a session with an unfinished dispatch that is alive is running, an enginee
   const s = snap({
     fresh: item([], { dispatches: [dispatch("fresh", minutesAgo(3))] } as Partial<Item>),
     rowsDone: item(done, { dispatches: [dispatch("rowsDone", minutesAgo(300))] } as Partial<Item>),
-    over: item(done, { dispatches: [dispatch("over", minutesAgo(120), ended)] } as Partial<Item>),
-    moved: item(done, { dispatches: [dispatch("moved", minutesAgo(200), ended), dispatch("moved", minutesAgo(100))] } as Partial<Item>),
+    over: item(done, { dispatches: [dispatch("over", minutesAgo(120), endedAfter(120))] } as Partial<Item>),
+    moved: item(done, { dispatches: [dispatch("moved", minutesAgo(200), endedAfter(200)), dispatch("moved", minutesAgo(100))] } as Partial<Item>),
     r10: review("r10", 10), r40: review("r40", 40), r300: review("r300", 300),
     // One name: an engineer dispatch that ended, and an older review dispatch still unfinished on another item.
-    mixedA: item(done, { dispatches: [dispatch("mixed", minutesAgo(100), ended)] } as Partial<Item>),
+    mixedA: item(done, { dispatches: [dispatch("mixed", minutesAgo(100), endedAfter(100))] } as Partial<Item>),
     mixedB: item(done, { dispatches: [dispatch("mixed", minutesAgo(300), { role: "审查" })] } as Partial<Item>),
   }, { over: wrote(["over", 5]), rowsDone: wrote(["rowsDone", 250]), mixed: wrote(["mixedA", 5]), r300: wrote(["r300", 200]) });
   const running = (name: string) => row(s, name)!.running;

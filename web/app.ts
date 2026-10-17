@@ -1727,7 +1727,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function agentOthers(rows: AgentRow[]) {
     const box = el("li", "agent-others"), toggle = el("button", "agents-others-toggle", (othersOpen ? "▾ " : "▸ ") + "其他 " + rows.length + " 个");
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(othersOpen));
-    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：最近 6 小时写过看板，但手上没有进行中的行，也没有拿着条目；做完了还没收尾的会话也在这里";
+    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的会话（碰过的条目上有进行中的行也算），和派活已收尾或超过 6 小时没动静、碰过的条目上又没有进行中的行的会话";
     toggle.addEventListener("click", () => { othersOpen = !othersOpen; try { localStorage.setItem("board-agents-others", othersOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     box.appendChild(toggle);
     if (othersOpen) { const list = el("ul", "agent-list"); rows.forEach(r => list.appendChild(agentRow(r))); box.appendChild(list); }

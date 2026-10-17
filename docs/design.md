@@ -2105,32 +2105,32 @@ level, and whether that someone is working, waiting or has gone quiet.
   seen silent for longer. The word is
   inferred from declarations, so the list says so on its face and every row
   carries the time since the session wrote.
-- **Who is expanded.** Listed is not drawn: on 2026-10-16 at 20:40 UTC the
-  list held 37 rows, many of them finished sessions nobody had closed out, and
-  the running ones were hard to find. Only running rows are drawn in full; the
-  others are one last line, 「其他 N 个」, that opens them in the same order and
-  form (the choice is kept in the browser like the list's own fold). The
-  heading counts the running rows. A row is running when the session has a
-  dispatch record under its name and either of these holds: it has an
-  unfinished dispatch record, of either role, and is alive, meaning it started
-  or wrote within the list's window (`liveDispatches`, the one reading item
-  status uses for a live session, see Status), so an engineer just started or
-  waiting for the merge with every row done, and a review still being read, are
-  running although they marked no step; or it has a step in progress on an item
-  it touched, whatever the state word says, so 「可能停了」 stays expanded,
-  being the exception the owner most needs to see. A session with no dispatch
-  record (the observer, one opened by hand) is never running: as far as the
-  board can tell it holds no item, and a step on the items it touched is another
-  session's. A review is not given a shorter bound than the window, so a review
-  nobody closed out stays expanded as long as its item stays `wip` in Status,
-  at most six hours. Rejected: hiding the other rows, because a session that
-  finished but was never closed out could then not be found, and the owner would
-  not notice the unclosed record; telling running by the time since the last
-  write alone, because a session waiting for CI or for the architect writes
-  nothing for an hour and is running; a bound of 30 minutes since the last
-  write for a review, because no review run was measured, a review writes
-  nothing until its report, and a second definition of alive would disagree
-  with Status about the same record; folding 「可能停了」 with the rest,
+- **Who is expanded.** Listed is not drawn: on 2026-10-16 at 20:40 UTC the list
+  held 37 rows, many of them finished sessions nobody had closed out, and the
+  running ones were hard to find. Only running rows are drawn in full; the
+  others are one last line, 「其他 N 个」, that opens them in the same order and form
+  (the choice is kept in the browser like the list's own fold). The heading
+  counts the running rows. A row is running when the session has a dispatch
+  record under its name and either of these holds: it has an unfinished dispatch
+  record, of either role, and is alive, meaning it started or wrote within the
+  list's window (`liveDispatches`, the one reading item status uses for a live
+  session, see Status), so an engineer just started or waiting for the merge
+  with every row done, and a review still being read, are running although they
+  marked no step; or it has a step in progress on an item it touched, whatever
+  the state word says, so 「可能停了」 stays expanded, being the exception the owner
+  most needs to see. A session with no dispatch record (the observer, one opened
+  by hand) is never running: as far as the board can tell it holds no item, and
+  a step on the items it touched is another session's. A review is not given a
+  shorter bound than the window, so a review nobody closed out stays expanded
+  until six hours after its last activity, which is when Status stops counting
+  its record as holding the item too. Rejected: hiding the other rows, because a
+  session that finished but was never closed out could then not be found, and
+  the owner would not notice the unclosed record; telling running by the time
+  since the last write alone, because a session waiting for CI or for the
+  architect writes nothing for an hour and is running; a bound of 30 minutes
+  since the last write for a review, because no review run was measured, a
+  review writes nothing until its report, and a second definition of alive would
+  disagree with Status about the same record; folding 「可能停了」 with the rest,
   because it holds a step in progress and is the case the list exists to show.
 - **Reading a row with the tree.** Each item cell has the status chip and
   number, the title (a click selects the item and shows its detail), the time
