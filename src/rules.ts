@@ -279,6 +279,16 @@ export function placedCards(head: string | undefined): string[] {
   }
   return out;
 }
+const placedByItem = new WeakMap<object, readonly string[]>();
+/** `placedCards` of an item's head, kept for as long as that version of the item lives (an item is never changed in place; a
+ * write makes a new object). Without it every write scans all the heads again, to build the board's checks and the cards' order,
+ * which on the live board's 15 MB of heads costs the page tens of milliseconds per write. */
+export function placedCardsOf(it: { head?: string } | undefined): readonly string[] {
+  if (!it) return [];
+  let out = placedByItem.get(it);
+  if (!out) placedByItem.set(it, out = placedCards(it.head));
+  return out;
+}
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
@@ -600,6 +610,18 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
   const sessions = base.sessions || Object.keys(delta.sessions ?? {}).length ? { ...base.sessions, ...delta.sessions } : undefined;
   const agents = base.agents || Object.keys(delta.agents ?? {}).length ? { ...base.agents, ...delta.agents } : undefined;
   return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
+}
+
+/** The fields of an item that the status and the priority of every item are derived from: the plan and the owner's ask, a
+ * cancellation, a pause, the project (a pause stops at the project's edge), a record, a root's stored priority, the order
+ * of the top items, which the index sorts as it is built, and the dispatch records (a live session makes an item worked on).
+ * The test in test/derived.test.ts records which fields the two derivations read and fails when this list and that set
+ * differ. */
+export const STATUS_PRIORITY_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "priority", "order", "dispatches"];
+/** Whether two versions of one item give the same status and priority on the same board. Versions that differ in some other
+ * field (the text, the log, the tags) do; one that differs in a listed field may not, which only costs the caller a derivation. */
+export function sameStatusAndPriority(a: Item, b: Item): boolean {
+  return STATUS_PRIORITY_FIELDS.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }
 
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
@@ -1145,7 +1167,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       const apart = [...own.filter(key => cardBlocking(key) && !rowCards.includes(key)).map(key => `${key} 挡事，却没有计划行`), ...own.filter(key => cardWaiting(key) && !cardBlocking(key) && rowCards.includes(key)).map(key => `${key} 不挡事，却有计划行`),
         ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
       if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
-      const placed = placedCards(it.head);
+      const placed = placedCardsOf(it);
       for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });
       if (cycles().has(id)) out.push({ text: "依赖成环" });
       if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });

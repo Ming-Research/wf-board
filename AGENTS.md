@@ -46,8 +46,9 @@ matches what the artifact board offered.
   `src/model.ts`; design section 9.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
   index of the last two items written is advanced, and the rows (who is listed,
-  the state word, the level) derived from it, the steps in progress and the
-  dispatch records. Imported by the server and bundled into the page.
+  who is running, the state word, the level) derived from it, the steps in
+  progress and the dispatch records. Imported by the server and bundled into
+  the page.
 - `src/candidates.ts`: the items an engineer could be started on and the two pools of engineer slots, read from the whole
   board (the `candidates` tool, and what the push that says work can be handed out reads): the board lists, the architect
   chooses (design section 6, The candidates read).
@@ -86,7 +87,8 @@ matches what the artifact board offered.
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
-  headless Chromium) and the click invariants.
+  headless Chromium) and the click invariants; `live-board.ts` makes a board of the live board's weight, and
+  `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand

@@ -2165,6 +2165,28 @@ refreshes are debounced across each burst, and superseded results cannot
 replace newer state. Rendering preserves the editor's focus and caret and
 the reading position.
 
+A draw starts from the rules of the snapshot the page already holds. The page builds
+`rules(snapshot)` again only when its input changes: a snapshot, a live change, or the
+minute tick (elapsed times move with the clock). A click, a fold, a filter, an unread
+mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
+indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
+until the data changes: the counts on every project's filter buttons are made in one pass
+over the board, where each button once passed over it, and the cards each head places are
+found once for each version of an item (a write makes a new object), so a write does not scan
+all the heads again. A navigation (n, a number on an
+item, a link) unfolds the rows above the item, selects it and opens its cards and
+comments in one draw, and draws once more when the baselines it needs have loaded. The
+rows that first draw paints around the target ask for their own baselines too, and the
+navigation waits for those with its own, 100 ms at most: their marks then come in that
+second draw and not one draw for each row. A baseline that is slower than that, or never
+comes, holds the landing for 100 ms and draws its row when it arrives. After
+the owner marks something read the page asks for the unread list, which carries the new
+cursor and the steps still unread, and not for the board, which a read does not change
+(15 MB on the live board). The page leaves a performance mark for each draw, each build
+of the rules and each count of the filters (`board:render`, `board:rules`,
+`board:filter-counts`) and clears it at once, so the browser test can count them
+(section 11) and a page left open for days piles up nothing.
+
 After a jump, the page holds the target at its landing position through
 subsequent renders, including baseline loads and unrelated live changes.
 The owner's scrolling, key press or click ends that pin; a new jump establishes
@@ -2323,6 +2345,37 @@ level, and whether that someone is working, waiting or has gone quiet.
   seen silent for longer. The word is
   inferred from declarations, so the list says so on its face and every row
   carries the time since the session wrote.
+- **Who is expanded.** Listed is not drawn: on 2026-10-16 at 20:40 UTC the list
+  held 37 rows, many of them finished sessions nobody had closed out, and the
+  running ones were hard to find. Only running rows are drawn in full; the
+  others are one last line, 「其他 N 个」, that opens them in the same order and form
+  (the choice is kept in the browser like the list's own fold). The heading
+  counts the running rows. A row is running when the session has an unfinished
+  dispatch record, of either role, and is alive, meaning it started or wrote
+  within the list's window (`liveDispatches`, the reading that rule 6 of Status
+  uses for a session working on an item, either role and the same window, not
+  the push's holder). So an engineer just started or waiting for the merge with
+  every row done, and a review still being read, are running although they
+  marked no step, and 「可能停了」 stays expanded, being the exception the owner most
+  needs to see. Nothing else makes a row running. A session with no dispatch
+  record (the observer, one opened by hand) or whose dispatch has ended is
+  folded, even when the items it touched have a step in progress: those steps
+  are another session's, and its state word is still read from them. A review is
+  not given a shorter bound than the window, so a review nobody closed out stays
+  expanded until six hours after its last activity, which is when Status stops
+  counting its record as a session working on the item too. Rejected: hiding the
+  other rows, because a session that finished but was never closed out could
+  then not be found, and the owner would not notice the unclosed record; telling
+  running by the time since the last write alone, because a session waiting for
+  CI or for the architect writes nothing for an hour and is running; inferring
+  it from a step in progress on the items it touched, because a session whose
+  dispatch ended and that wrote a later log on an item another session holds
+  would be taken for running, the board having no way to tell whose step it is;
+  a bound of 30 minutes since the last write for a review, because no review run
+  was measured, a review writes nothing until its report, and a second
+  definition of alive would disagree with Status about the same record; folding
+  「可能停了」 with the rest, because it holds a step in progress and is the case the
+  list exists to show.
 - **Reading a row with the tree.** Each item cell has the status chip and
   number, the title (a click selects the item and shows its detail), the time
   it was touched, an arrow and 「在树中」. The arrow unfolds the item's
@@ -3697,6 +3750,33 @@ runs on a page with the one part it protects taken out by an edit applied while 
 bundled, where it must report the part's absence in a line that says what the check was
 waiting for and what the page held (a diagram that never appears can only be observed by
 waiting, so the wait is short), not a bare timeout or a page that did not start.
+
+Time limits have their own file, `test/e2e/press-n.e2e.ts`, on a board of the live
+board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a
+15 MB snapshot and 330 unread commits; the default board has 176 items, on which one
+press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
+(board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
+press that lands on another item builds the board's rules no time, counts the filters no
+time and draws at most twice, read from the page's performance marks: every draw from the
+key until the page is quiet counts, those of the rows around the target included. The
+draws depend on when the baselines of the rows around the target answer, because the
+navigation waits for them 100 ms at most, so the test sets that time and does not leave
+it to the machine or the server: it delivers the answers it recorded on a first walk of
+the board, those of the rows around the target after 60 ms and the others after 20 ms,
+and the landing draws twice at most; it delivers the first after 300 ms, and the landing
+draws exactly three times, the last for the rows alone. The page without the wait, and the page with a wait that has no limit, must be
+reported by the first and the second. Time:
+over 30 landings, the main thread's busy time from the key until the page is quiet
+is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
+quiet and with sessions writing three times a second, each run made once. The time
+layer depends on the runner: the same page measured at the median 142 to 205 ms with
+sessions writing in four CI runs, and the speed of a hosted runner differs by up to a
+factor of two between jobs. While sessions write, a press also carries the page's
+handling of the writes that fall into it (about 50 ms for each, the board's rules built
+again), which leaves the limits close. Each change that the counts protect is taken out
+in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
+stands for the time layer; each must be reported. After n and m, the page asks for the
+unread list and does not fetch the board.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix
