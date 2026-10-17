@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
@@ -271,6 +271,17 @@ export function glossary(s: Snapshot, project?: string) {
   return s.board.projects.filter(p => project === undefined ? s.glossaries[p.name]?.terms.length : p.name === project)
     .map(p => ({ project: p.name, terms: s.glossaries[p.name]?.terms ?? [] }));
 }
+/** `since` inclusive and `until` exclusive, as full UTC times. */
+export interface MessageFilters { to?: string; from?: string; item?: string; since?: string; until?: string; limit?: number }
+/** The messages between agents that match every filter given, newest first, at most `limit` (default 50). */
+export function messages(s: Snapshot, f: MessageFilters = {}): Message[] {
+  const since = f.since === undefined ? -Infinity : Date.parse(f.since), until = f.until === undefined ? Infinity : Date.parse(f.until);
+  return Object.values(s.messages ?? {}).flatMap(day => day.messages)
+    .filter(m => (f.to === undefined || m.to === f.to) && (f.from === undefined || m.from === f.from) && (f.item === undefined || m.item === f.item) && Date.parse(m.at) >= since && Date.parse(m.at) < until)
+    // Ids begin with the time sent, so they order two messages of one second.
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+    .slice(0, f.limit ?? 50);
+}
 export function followups(s: Snapshot, r: Rules, { minutes }: { minutes: number }, now = new Date().toISOString()) {
   if (!Number.isFinite(minutes) || minutes < 0) throw new Error("minutes: provide a nonnegative age");
   const cutoff = Date.parse(now) - minutes * 60000;
@@ -410,7 +421,7 @@ export function writersByItem(commits: readonly CommitInfo[], itemOf: (file: str
 /** A commit the caller asked to leave out: it carries one of the named sessions. A commit without a session is never left out. */
 const droppedBy = (except: readonly string[] = []) => (commit: CommitInfo): boolean => commit.session !== undefined && except.includes(commit.session);
 
-interface RangeDoc { doc: { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }
+interface RangeDoc { doc: { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }
 /** What a range of commits wrote, read once for both answers `changes` gives (the document listing and the report). */
 interface Range {
   /** Every commit of the range, oldest first. */
@@ -431,7 +442,7 @@ async function readRange(store: Store, s: Snapshot, since: string, f: Scope, hea
   const listed = await store.log({ since, at: s.head });
   allowRange(listed.length);
   const commits = listed.filter(c => !/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since)).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;

@@ -640,7 +640,9 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else return null;
+    }
+    // A message changes no item, card or note, so it reaches no rule; any other kind (the board, owner state, a glossary) may reach every item.
+    else if (doc.kind !== "message") return null;
   }
   return seeds;
 }

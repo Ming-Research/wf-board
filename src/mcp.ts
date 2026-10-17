@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Key, Time, Status, Priority, Link, NOTE_KINDS, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, isArchitectSession, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
+import { Key, Time, Status, Priority, Link, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, isArchitectSession, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
@@ -233,6 +233,13 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("notes", "What did the owner say? Find notes by state, kind, subtree or time, with project replies, before handling or replying to them.", {
     filters: z.object({ under: scope.under, state: z.array(z.enum(["draft", "sent", "done"])).describe("Include these note states; sent finds unhandled owner messages.").optional(), kind: z.array(z.enum(NOTE_KINDS)).describe("Include these kinds of owner note.").optional(), since: Time.describe("Notes sent, created or replied to at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Narrow owner notes to relevant messages.").optional(),
   }, a => q.notes(read().snapshot, a.filters).map(formatNote).join("\n") || "No notes.");
+  register("messages", "Who told whom what? Lists the messages agents sent each other through the board, newest first, one per line: time, sender (its project) → recipient, the item, the text. A message only says which item to read and what is awaited; the content is on the item. since is inclusive, until exclusive.", {
+    filters: z.object({ to: text("Only messages to this session.").optional(), from: text("Only messages from this session.").optional(), item: Key.describe("Only messages about this item.").optional(), since: dispatchTime("Only messages sent at or after this UTC time.").optional(), until: dispatchTime("Only messages sent before this UTC time.").optional(), limit: limit(50) }).strict().describe("Narrow the messages listed.").optional(),
+  }, a => {
+    const f = a.filters ?? {};
+    return q.messages(read().snapshot, { ...f, since: f.since && normalizeTime(f.since), until: f.until && normalizeTime(f.until) })
+      .map(m => `${m.at} · ${m.from}（${m.project}）→ ${m.to}${m.item ? ` · it:${m.item}` : ""}：${m.text}`).join("\n") || "No messages.";
+  });
   register("glossary", "What does a word a project coined mean? Lists glossary terms with their definitions: one project's, or every project's that has terms.", {
     project: text("Exact configured project name; omit for every project.").optional(),
   }, a => q.glossary(read().snapshot, a.project).map(g => [`${g.project}:${g.terms.length ? "" : " no terms"}`, ...g.terms.map(t => `  ${t.term}: ${oneLine(t.definition)}`)].join("\n")).join("\n") || "No terms.");
@@ -333,5 +340,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     author, session, term: text("The coined word exactly as board text writes it, on one line; occurrences are matched as plain substrings."), definition: text("What the word means, in plain Chinese that a reader outside the project understands."),
   }, a => glossaryResult(ops.setTerm(a)), true);
   register("delete_term", "Remove a term from your own project's glossary, such as a word no longer used or an industry-standard term added by mistake.", { author, session, term: text("Existing term in your project's glossary.") }, a => glossaryResult(ops.deleteTerm(a)), true);
+  register("send_message", `Ring another agent's doorbell through the board. to: the architect (架构师), a session with an open dispatch, or the session of a long-lived credential; another name is refused with the names that work. text: at most ${MESSAGE_TEXT_LIMIT} characters on one line, saying which item to read and what you wait for; write the content on the item. The recipient gets it as one push line: at once when its wait script is connected, else in the result of its next board call. Every message stays on the board (messages lists them).`, {
+    author, session, to: text("The receiving session's name."), text: text(`At most ${MESSAGE_TEXT_LIMIT} characters on one line: which item to read and what you wait for.`), item: Key.describe("The item the message is about, if there is one.").optional(),
+  }, async a => { const res = await ops.sendMessage(a); return `${res.summary} · commit ${res.commit}`; }, true);
   return server;
 }

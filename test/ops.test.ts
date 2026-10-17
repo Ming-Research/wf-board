@@ -1215,6 +1215,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     replyNote: () => op.replyNote({ author: retired, id: "note-1", reply: "Answer" }),
     setTerm: () => op.setTerm({ author: retired, term: "术语", definition: "定义" }),
     deleteTerm: () => op.deleteTerm({ author: retired, term: "术语" }),
+    sendMessage: () => op.sendMessage({ author: retired, session: "s", to: "架构师", text: "看 a" }),
   };
   for (const [name, call] of Object.entries(calls)) {
     await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, /^author 总管: this identity is retired; write as Architect$/, name); return true; });
