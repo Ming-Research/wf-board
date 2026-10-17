@@ -10,8 +10,8 @@ import { ops } from "../src/ops.ts";
 import { rules, isReviewStep, REVIEW_STEP } from "../src/rules.ts";
 import { brief } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { nextWork, nextWorkText, nextUnder, POOLS, GROUP_OVER } from "../src/next.ts";
-import type { NextGroup, NextItem } from "../src/next.ts";
+import { candidates, candidatesText, candidatesUnder, POOLS, GROUP_OVER } from "../src/candidates.ts";
+import type { CandidateGroup, Candidate } from "../src/candidates.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import { seedBoard } from "./e2e/seed.ts";
 import { asArchitect, asPM } from "./helpers.ts";
@@ -21,7 +21,7 @@ const STALE = "2026-10-01T00:00Z";
 
 /** A board with no items, so a test sees only what it creates. Items are created in the order written: their numbers follow it. */
 async function empty(t: { after(fn: () => void | Promise<void>): void }) {
-  const dir = await mkdtemp(join(tmpdir(), "wf-board-next-"));
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-cand-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "Architect" }, { name: "PM" }] } });
   const op = ops(store, NOW);
@@ -38,13 +38,13 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
     return `eng-${agents}`;
   };
   const snapshot = () => store.snapshot();
-  const view = () => { const s = snapshot(); return nextWork(s, rules(s)); };
+  const view = () => { const s = snapshot(); return candidates(s, rules(s)); };
   const pool = (name: string) => view().pools.find(p => p.pool === name)!;
   return { store, op, item, child, root, engineer, snapshot, view, pool };
 }
-const ids = (rows: Array<NextItem | NextGroup>) => rows.map(x => "id" in x ? x.id : x.parent);
+const ids = (rows: Array<Candidate | CandidateGroup>) => rows.map(x => "id" in x ? x.id : x.parent);
 
-test("items of every project are ranked by priority, then by the open items waiting on them, then by item number", async t => {
+test("candidates of every project are listed by priority, then by the open items waiting on them, then by item number", async t => {
   const b = await empty(t);
   // y1 is the oldest and has two waiters, yet a P1 item comes after every P0 item.
   await b.root("r1", "P1"); await b.child("y1", "r1");
@@ -55,10 +55,10 @@ test("items of every project are ranked by priority, then by the open items wait
   const s = b.snapshot(), r = rules(s);
   // The owner holds a row for each item it owns, and every row that points at an item counts.
   assert.deepEqual([r.openDependents("x2"), r.openDependents("x1"), r.openDependents("y1")], [3, 1, 3]);
-  assert.deepEqual(["y1", "x1", "x3", "x2"].sort(r.compareNext), ["x2", "x3", "x1", "y1"], "x2 (most waiters) first, then x3 before x1 by number, then the P1 item");
-  assert.deepEqual(ids(b.pool("2+").next), ["x2", "x3", "x1"], "the first three rows");
-  assert.equal(b.pool("2+").more, 1, "y1 is startable and not listed");
-  const row = b.pool("2+").next[0] as NextItem;
+  assert.deepEqual(["y1", "x1", "x3", "x2"].sort(r.compareCandidates), ["x2", "x3", "x1", "y1"], "x2 (most waiters) first, then x3 before x1 by number, then the P1 item");
+  assert.deepEqual(ids(b.pool("2+").listed), ["x2", "x3", "x1", "y1"], "listed in that order");
+  assert.equal(b.pool("2+").more, 0);
+  const row = b.pool("2+").listed[0] as Candidate;
   assert.deepEqual({ project: row.project, priority: row.priority, difficulty: row.difficulty, waiters: row.waiters }, { project: "Whitefoot", priority: "P0", difficulty: 2, waiters: 3 });
 });
 
@@ -71,23 +71,23 @@ test("a waiter that is paused or finished does not count, and an item in another
   await b.op.setPause({ ...asArchitect, id: "w2", paused: true, reason: "先放一放" });
   const s = b.snapshot(), r = rules(s);
   assert.equal(r.openDependents("x2"), 2, "the owner and w1 count, the paused w2 does not");
-  assert.deepEqual(ids(b.pool("2+").next), ["x2", "x1", "f1"], "x2 has the most waiters; f1 of Firn is newest");
-  assert.equal((b.pool("2+").next[2] as NextItem).project, "Firn");
+  assert.deepEqual(ids(b.pool("2+").listed), ["x2", "x1", "f1"], "x2 has the most waiters; f1 of Firn is newest");
+  assert.equal((b.pool("2+").listed[2] as Candidate).project, "Firn");
 });
 
-test("more than three startable items under one parent are listed as the parent and a count; three are listed one by one", async t => {
+test("more than three candidates under one parent are listed as the parent and a count; three are listed one by one", async t => {
   const b = await empty(t);
   await b.root("r", "P0");
   await b.child("g", "r"); for (const k of ["g1", "g2", "g3", "g4"]) await b.child(k, "g");
   await b.child("h", "r"); for (const k of ["h1", "h2", "h3"]) await b.child(k, "h");
   assert.equal(GROUP_OVER, 3);
-  const [first, ...rest] = b.pool("2+").next;
+  const [first, ...rest] = b.pool("2+").listed;
   assert.deepEqual(first, { parent: "g", num: b.snapshot().items.g!.num, project: "Whitefoot", title: "g", count: 4 }, "four under g: one row for g, at the place of its best item");
-  assert.deepEqual(ids(rest), ["h1", "h2"], "three under h are items; the pool shows three rows");
-  assert.equal(b.pool("2+").more, 1, "seven startable items; the rows listed stand for 4 + 1 + 1");
-  const under = nextUnder(b.snapshot(), rules(b.snapshot()), "g");
+  assert.deepEqual(ids(rest), ["h1", "h2", "h3"], "three under h are items");
+  assert.equal(b.pool("2+").more, 0, "seven candidates; the rows listed stand for 4 + 1 + 1 + 1");
+  const under = candidatesUnder(b.snapshot(), rules(b.snapshot()), "g");
   assert.deepEqual(under.rows.map(x => x.id), ["g1", "g2", "g3", "g4"], "under=g gives them one by one");
-  assert.throws(() => nextUnder(b.snapshot(), rules(b.snapshot()), "nope"), /choose an existing item/);
+  assert.throws(() => candidatesUnder(b.snapshot(), rules(b.snapshot()), "nope"), /choose an existing item/);
 });
 
 test("the pools take items by level and count the engineers that are working, not those that wait", async t => {
@@ -95,15 +95,15 @@ test("the pools take items by level and count the engineers that are working, no
   await b.root("r", "P0");
   await b.child("low", "r", { difficulty: 1 }); await b.child("mid", "r", { difficulty: 3 }); await b.child("high", "r", { difficulty: 5 });
   assert.deepEqual(POOLS.map(p => [p.pool, p.limit]), [["1", 10], ["2+", 6]]);
-  assert.deepEqual(ids(b.pool("1").next), ["low"], "level 1 is the first pool");
-  assert.deepEqual(ids(b.pool("2+").next), ["mid", "high"], "levels 3 and 5 are the second");
+  assert.deepEqual(ids(b.pool("1").listed), ["low"], "level 1 is the first pool");
+  assert.deepEqual(ids(b.pool("2+").listed), ["mid", "high"], "levels 3 and 5 are the second");
   // Engineers of level 3. working: a step in progress that waits on nothing.
   await b.child("w1", "r", { difficulty: 3, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("w1", 3);
   // waiting on CI: the step in progress writes waits.
   await b.child("w2", "r", { difficulty: 3, plan: [{ id: "ci", text: "等 CI", state: "doing", waits: "CI" }] }); await b.engineer("w2", 3);
   // waiting on a review: the review step is in progress.
   await b.child("w3", "r", { difficulty: 3, plan: [{ id: REVIEW_STEP, text: "审查（2 级）", state: "doing" }] }); await b.engineer("w3", 3);
-  // blocked: its only next row is an item that is paused.
+  // blocked: its only open row is an item that is paused.
   await b.child("dep", "r"); await b.op.setPause({ ...asArchitect, id: "dep", paused: true, reason: "先放一放" });
   await b.child("w4", "r", { difficulty: 3, plan: [{ item: "dep", own: false }] }); await b.engineer("w4", 3);
   // waiting on a sub-item that another session works; that session is working.
@@ -117,22 +117,22 @@ test("the pools take items by level and count the engineers that are working, no
   const two = b.pool("2+"), one = b.pool("1");
   assert.deepEqual([two.limit, two.working, two.free], [6, 3, 3], "w1, c5 and w6 work; w2 w3 w4 w5 wait");
   assert.deepEqual([one.limit, one.working, one.free], [10, 1, 9]);
-  assert.deepEqual(ids(two.next), ["mid", "high"], "a held item is never offered again");
+  assert.deepEqual(ids(two.listed), ["mid", "high"], "a held item is not a candidate");
 });
 
-test("a pool with no free slot lists nothing and counts what could start; free is never below zero", async t => {
+test("a pool with no free slot lists no rows and counts its candidates", async t => {
   const b = await empty(t);
   await b.root("r", "P0");
   for (let k = 1; k <= 7; k++) { await b.child(`w${k}`, "r", { plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer(`w${k}`, 2); }
   await b.child("p", "r"); await b.child("q", "r");
   const two = b.pool("2+");
-  assert.deepEqual([two.working, two.free, two.next, two.more], [7, 0, [], 2], "seven working over the limit of six: no slot, no rows, two to start");
-  const text = nextWorkText(b.view());
+  assert.deepEqual([two.working, two.free, two.listed, two.more], [7, 0, [], 2], "seven working over the limit of six: no slot, no rows, two candidates");
+  const text = candidatesText(b.view());
   assert.match(text, /2 级以上：上限 6，在干活 7，空 0/);
   assert.match(text, /还有 2 条能开工没列出/);
 });
 
-test("an item nobody works on is offered only when a root needs it, it is rated, and nothing holds it", async t => {
+test("an item is a candidate only when a root needs it, it can start, it is rated, and nothing holds it", async t => {
   const b = await empty(t);
   await b.root("r", "P1");
   await b.child("ok", "r");
@@ -149,18 +149,18 @@ test("an item nobody works on is offered only when a root needs it, it is rated,
   const s = b.snapshot(), r = rules(s);
   assert.equal(r.statusOf("stale"), "todo", "no live session, so the board shows it as todo");
   assert.equal(r.startable("stale"), true, "and startable by the rules of status alone");
-  assert.deepEqual(ids(b.pool("2+").next), ["ok"], "only ok");
+  assert.deepEqual(ids(b.pool("2+").listed), ["ok"], "only ok");
   assert.equal(b.pool("2+").more, 0);
 });
 
-test("a backlog item (owned by a record) is not offered", async t => {
+test("a backlog item (owned by a record) is not a candidate", async t => {
   const b = await empty(t);
   await b.op.createItem({ ...asArchitect, key: "rec", group: "Whitefoot", title: "待选", record: true } as Parameters<typeof b.op.createItem>[0]);
   await b.item("later", { owner: "rec" });
   await b.root("r", "P1"); await b.child("ok", "r");
   const r = rules(b.snapshot());
   assert.equal(r.isBacklog("later"), true);
-  assert.deepEqual(ids(b.pool("2+").next), ["ok"]);
+  assert.deepEqual(ids(b.pool("2+").listed), ["ok"]);
 });
 
 test("the review step is the plan step whose id is review", () => {
@@ -177,31 +177,31 @@ test("brief.todo follows the same order", async t => {
   assert.deepEqual(brief(s, rules(s), "Whitefoot").todo.map(x => x.id), ["x2", "x1"], "the item with a waiter first");
 });
 
-test("next_work answers a few lines, under= answers one parent's items, and an unknown parent is an error", async t => {
+test("candidates answers a few lines, under= answers one parent's items, and an unknown parent is an error", async t => {
   const b = await empty(t);
   await b.root("r", "P0"); await b.child("g", "r"); for (const k of ["g1", "g2", "g3", "g4"]) await b.child(k, "g");
   await b.child("solo", "r", { difficulty: 1 });
   const server = createMcpServer({ store: b.store, ops: b.op });
   const client = new Client({ name: "t", version: "1" }); const [c, sv] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
-  const text = async (args: object) => ((await client.callTool({ name: "next_work", arguments: args })).content as Array<{ text: string }>)[0]!.text;
+  const text = async (args: object) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
-  assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+ · 等它 1\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，next_work under=g 看逐条$/);
+  assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+ · 等它 1\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
   assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+ · 等它 1\n  g2 /);
-  const bad = await client.callTool({ name: "next_work", arguments: { under: "nope" } });
+  const bad = await client.callTool({ name: "candidates", arguments: { under: "nope" } });
   assert.equal(bad.isError, true);
 });
 
 test("on a board of the live board's shape the answer stays short", async t => {
-  const dir = await mkdtemp(join(tmpdir(), "wf-board-next-gen-"));
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-cand-gen-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const { store } = await seedBoard(dir, generateBoard(1));
-  const s = store.snapshot(), r = rules(s), text = nextWorkText(nextWork(s, r));
+  const s = store.snapshot(), r = rules(s), text = candidatesText(candidates(s, r));
   const items = Object.keys(s.items).length;
   assert.ok(items > 100, `a board of ${items} items`);
-  assert.ok(text.length <= 800, `the answer is ${text.length} characters`);
-  // The rows brief lists as todo are the same startable items, which that answer does not repeat.
+  assert.ok(text.length <= 1500, `the answer is ${text.length} characters`);
+  // The rows brief lists as todo are the same candidates, with their plans.
   const projects = s.board.projects.map(p => p.name);
   const briefTodo = projects.reduce((n, p) => n + JSON.stringify(brief(s, r, p).todo).length, 0);
-  assert.ok(text.length < briefTodo || briefTodo === 0, `next_work ${text.length} characters, brief todo lists ${briefTodo}`);
+  assert.ok(text.length < briefTodo || briefTodo === 0, `candidates ${text.length} characters, brief todo lists ${briefTodo}`);
 });

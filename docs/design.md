@@ -1749,8 +1749,8 @@ instructions within the limit and free of rule text.
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `next_work`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
-| `next_work(under?)` | What should be started next, and how many engineers may work? | Every project's startable items nobody holds, ranked together, and the two engineer pools with their limits, working engineers and free slots (below) |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
+| `candidates(under?)` | Which items could an engineer be started on, and how many engineers may work? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their limits, working engineers and free slots (below) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -1816,18 +1816,20 @@ whose commits do not count.
 - The timed wake and this read share one function that tells who wrote to each item in a
   list of commits.
 
-**The next-work read.** `next_work` tells the PM which item to start next and how many
-engineers may work, so the PM neither ranks items nor counts sessions. `nextWork` in
-`src/next.ts` is the one function; the tool prints it, and the push that says work can be handed
-out reads it too.
+**The candidates read.** `candidates` lists the items an engineer could be started on and how
+many engineers may work, so the PM neither collects the items nor counts sessions. It lists; it
+does not choose. Which candidate to start is the architect's decision (the PM asks the architect,
+who gives the reason), so the order below is only the default order of the rows, and no row is
+called the next one. `candidates` in `src/candidates.ts` is the one function; the tool prints it,
+and the push that says work can be handed out reads it too.
 
-- *What is offered.* An item that `startable` allows (the one definition above: rated 1–5,
+- *What is a candidate.* An item that `startable` allows (the one definition above: rated 1–5,
   `canStart`) and that nobody holds. It is held when an engineer dispatch is open on it, even
-  when that session has gone quiet: the PM takes such an item over, and offering it again
+  when that session has gone quiet: the PM takes such an item over, and listing it again
   would start a second engineer beside a stopped one.
-- *Order.* One comparison, `compareNext`, over all projects: higher priority first; at equal
-  priority, the item more open, unpaused work items hold a row for (owned or shared) first;
-  then the earlier item number. `brief`'s todo list is ordered by it too, so there is one order.
+- *Default order.* One comparison, `compareCandidates`, over all projects: higher priority first;
+  at equal priority, the item more open, unpaused work items hold a row for (owned or shared)
+  first; then the earlier item number. `brief`'s todo list uses the same order, so there is one.
 - *Pools.* Level 1 holds at most 10 engineers, level 2 and above at most 6; the owner sets
   the numbers (`POOLS`). An item belongs to the pool of its difficulty, an engineer to the pool
   of its dispatch's level.
@@ -1842,13 +1844,13 @@ out reads it too.
 - *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
   knows this). The review that waits for a reviewer is that step in progress.
 - *Answer.* Per pool: the limit, the engineers working, the free slots; while a slot is free,
-  the first rows in order (as many as there are free slots, at most 3), then the number of
-  startable items not listed. More than 3 startable items of a pool under one parent are one
-  row naming the parent and the count, at the place of the best of them; `under=<parent>`
-  lists the parent's items one by one (at most 10). The answer is a few lines of text. Measured
-  on the two generated boards of 176 items (`generateBoard`, seeds 1 and 2; 28 and 34 startable
-  items, all slots free): 421 and 443 characters, where the todo lists of `brief` over the
-  five projects are 8316 and 10199 characters of JSON. `test/next.test.ts` bounds it at 800.
+  the first 10 rows in the default order, then the number of candidates not listed. More than 3
+  candidates of a pool under one parent are one row naming the parent and the count, at the place
+  of the best of them; `under=<parent>` lists the parent's candidates one by one (at most 10).
+  The answer is a few lines of text. Measured on the two generated boards of 176 items
+  (`generateBoard`, seeds 1 and 2; 28 and 34 startable items, all slots free): 1259 and 1112
+  characters, where the todo lists of `brief` over the five projects are 8316 and 10199
+  characters of JSON. `test/candidates.test.ts` bounds it at 1500.
 
 ### Changing things
 
