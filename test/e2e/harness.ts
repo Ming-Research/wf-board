@@ -33,13 +33,17 @@ export async function startBoard(t: Hooks, opts: { seed?: number; webDir?: strin
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(opts.seed ?? 1);
   const { store } = await seedBoard(dir, gen);
-  const op = ops(store), webDir = opts.webDir ?? join(ROOT, "web");
+  return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, opts.webDir ?? join(ROOT, "web"));
+}
+/** The board served at an address of its own with the page from `webDir`: one board can be read through several pages. */
+export async function serveBoard(t: Hooks, board: BoardServer, webDir: string): Promise<BoardServer> {
+  const { store } = board, op = ops(store);
   const server: Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir, createMcp: () => createMcpServer({ store, ops: op }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("no address");
-  return { url: `http://127.0.0.1:${address.port}`, store, gen, dir, webDir };
+  return { ...board, url: `http://127.0.0.1:${address.port}`, webDir };
 }
 
 export async function launch(t: Hooks): Promise<Browser> {
@@ -63,11 +67,13 @@ const INSTRUMENT = `(() => {
 export class BoardPage {
   readonly page: Page; readonly context: BrowserContext; readonly board: BoardServer;
   constructor(page: Page, context: BrowserContext, board: BoardServer) { this.page = page; this.context = context; this.board = board; }
-  static async open(browser: Browser, board: BoardServer, storage: Record<string, unknown> = {}): Promise<BoardPage> {
+  /** `init`: a script that runs before the page's own on every load. */
+  static async open(browser: Browser, board: BoardServer, storage: Record<string, unknown> = {}, init?: string): Promise<BoardPage> {
     const context = await browser.newContext({ viewport: { width: 1500, height: 1000 }, reducedMotion: "reduce", colorScheme: "light" });
     // The page's web fonts come from Google; the tests read declared font stacks and stay offline.
     await context.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
     await context.addInitScript({ content: INSTRUMENT });
+    if (init) await context.addInitScript({ content: init });
     // A click that cannot land fails within seconds and is reported as a violation, rather than stalling the walk.
     context.setDefaultTimeout(5_000);
     const bp = new BoardPage(await context.newPage(), context, board);

@@ -41,7 +41,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const docs = step.docs.filter(doc => docKinds(doc).length > 0 && !pendingReadCovers(doc.kind + ":" + doc.id, step));
       return docs.length ? [{ ...step, docs }] : [];
     });
-    invalidate();
+    // The unread steps are not an input of the board's rules.
+    invalidateView();
   }
   let shownStop: string | null = null;
   // Where the last stop n showed sits on the page, so the walk continues after it once m has read it.
@@ -124,7 +125,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function bodyShown(id: string) { return selectedItem === id; }
   function itemBox(id: string) { return get("detail-it-" + id); }
-  function selectItem(id: string) {
+  // `drawNow` false: the caller draws the item's detail with the rest of what it changes, in one draw.
+  function selectItem(id: string, drawNow = true) {
     if (!snapshot.items[id]) return;
     if (selectedItem !== id) {
       get("it-" + selectedItem)?.classList.remove("selected");
@@ -132,7 +134,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       get("item-detail").scrollTop = 0;
     }
     get("it-" + id)?.classList.add("selected");
-    if (detailDirty) renderNow("detail");
+    if (detailDirty) { if (drawNow) renderNow("detail"); else scheduleRender("detail"); }
   }
 
   function esc(s: unknown) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)); }
@@ -224,10 +226,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function plain(s: unknown) { return String(s == null ? "" : s).replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*`]/g, ""); }
   function day(iso: string | undefined) { return iso ? String(iso).slice(0, 16).replace("T", " ") : ""; }
 
-  // Rendering indexes adapt the shared rules' ids into page view objects.
+  // Rendering indexes adapt the shared rules' ids into page view objects. Two caches: `memo` holds what a draw reads and
+  // follows the view too (selection, folds, filters, the unread steps), so every draw starts it empty; `dataMemo` holds what
+  // depends on the board's data alone and is dropped only when the data or the minute changes.
   let memo: Record<string, unknown> = {};
-  function invalidate() { memo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
+  let dataMemo: Record<string, unknown> = {};
+  // The browser tests count these (test/e2e/press-n.e2e.ts): a performance mark each time the page draws, builds the
+  // board's rules again or counts the filters again. The mark is cleared at once, so a page left open for days piles up
+  // nothing; an observer in the test has seen it.
+  function countEvent(name: string) { performance.mark(name); performance.clearMarks(name); }
+  // The data changed (a snapshot, a minute that moves the rules): the board's rules are built again, and both caches go.
+  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
+  // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
+  function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
+  function dataCached<T>(name: string, make: () => T): T { return name in dataMemo ? dataMemo[name] as T : (dataMemo[name] = make()) as T; }
   function index() {
     return cached("index", () => {
       const byId = new Map(state.items.map(i => [i.id, i]));
@@ -375,29 +388,46 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return { hit, anc, keep: new Set([...hit, ...anc]) };
     });
   }
-  function filterCount(list: Filter[], key: string, g: string) { const f = list.find(x => x[0] === key); return state.items.filter(it => groupOf(it) === g && f![3](it)).length; }
+  // What each filter button of a project counts, every project's in one pass over the board: the counts depend on the data
+  // alone, so they are kept until it changes and a draw only reads them.
+  function filterCounts() {
+    return dataCached("filterCounts", () => {
+      countEvent("board:filter-counts");
+      const all = [...STATUS_FILTERS, ...DEP_FILTERS], byGroup = new Map<string, { filters: Map<string, number>; tags: Map<string, number> }>();
+      for (const it of state.items) {
+        const g = groupOf(it);
+        let counts = byGroup.get(g);
+        if (!counts) byGroup.set(g, counts = { filters: new Map(), tags: new Map() });
+        for (const [key, , , test] of all) if (test(it)) counts.filters.set(key, (counts.filters.get(key) ?? 0) + 1);
+        for (const tag of new Set(it.tags ?? [])) counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + 1);
+      }
+      return byGroup;
+    });
+  }
+  function filterCount(key: string, g: string) { return filterCounts().get(g)?.filters.get(key) ?? 0; }
+  function tagCount(name: string, g: string) { return filterCounts().get(g)?.tags.get(name) ?? 0; }
   function passes(it: ViewItem) { return filtering(groupOf(it)) ? filterMatches().keep.has(it.id) : visible(it); }
-  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
+  function saveFilters() { rulePresentationDirty=true; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidateView(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }
   function toggleStatusFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status.includes(key) ? f.status.filter(k => k !== key) : f.status.concat(key), dep: f.dep, tags: f.tags }; saveFilters(); }
   // Tag filters keep items carrying any selected tag.
   function toggleTagFilter(g: string, name: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep, tags: f.tags.includes(name) ? f.tags.filter(t => t !== name) : f.tags.concat(name) }; saveFilters(); }
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key, tags: f.tags }; saveFilters(); }
-  function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidate(); }
+  function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidateView(); }
   // The filter row under a project heading: the status filters with their counts in that project, then the dependency ones it has.
   function filterRow(g: string) {
     const row = el("div", "sum-row grp-filters");
     const f = groupFilter(g);
     const btn = (on: boolean, text: string, title: string, fn: () => void) => { const b = el("button", "sbtn s-plain" + (on ? " s-on" : ""), text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", fn); return b; };
     STATUS_FILTERS.forEach(([key, label, title]) => {
-      const n = filterCount(STATUS_FILTERS, key, g), on = f.status.includes(key);
+      const n = filterCount(key, g), on = f.status.includes(key);
       if (n || on) row.appendChild(btn(on, label + " " + n, title + "（可多选）", () => toggleStatusFilter(g, key)));
     });
     DEP_FILTERS.forEach(([key, label, title]) => {
-      const n = filterCount(DEP_FILTERS, key, g), on = f.dep === key;
+      const n = filterCount(key, g), on = f.dep === key;
       if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
     });
     (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
-      const n = state.items.filter(it => groupOf(it) === g && it.tags?.includes(t.name)).length, on = f.tags.includes(t.name);
+      const n = tagCount(t.name, g), on = f.tags.includes(t.name);
       if (n || on) { const b = btn(on, esc(t.name) + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
     });
     if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
@@ -531,10 +561,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A card the shown item's plan names is reached there, unfolded under its row, rather than in the card's own item.
     if (target.card && selectedItem && inlineHost(target.card) === selectedItem) target={...target,item:selectedItem};
     const it=target.item && index().byId.get(target.item);
+    let unfolded=false;
     if (it) {
       if (!ended(it) && !passes(it)) clearFilters(groupOf(it));
-      openPath(it.id);
-      selectItem(it.id);
+      // Unfolding the rows above, selecting and the cards and comments below are one draw, then one more once the diffs are in.
+      unfolded = openPath(it.id, false);
+      selectItem(it.id, false);
     }
     if (target.card) {
       const d=index().decById.get(target.card);
@@ -545,7 +577,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const comments=target.notes || (target.card ? "q:"+target.card : target.item ? "it:"+target.item : undefined);
     if (comments) { notesOpen[comments]=true; try { localStorage.setItem("board-notes",JSON.stringify(notesOpen)); } catch {} }
     scheduleRender(...(target.card ? ["card:"+target.card] : []),...(comments ? ["notes:"+comments] : []));
-    if (it && !get("it-"+it.id)) scheduleRender("group:"+groupOf(it));
+    // The unfolding draw brings the row; a row that is not drawn even so is the group's to draw.
+    if (it && !unfolded && !get("it-"+it.id)) scheduleRender("group:"+groupOf(it));
     await rendered();
     if (!active()) return;
     let required=navigationBaselines(target);
@@ -669,7 +702,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (shownStop && !allFreshIndex().position.has(shownStop)) shownStop = null;
       // A GET begun before acknowledgement must not supply the authoritative read result.
       unreadGeneration++; unreadFlight = undefined;
-      void refreshOwner().catch(showError);
+      void refreshReads().catch(showError);
       return true;
     } catch (e) {
       if (pendingReads.get(doc) === overlay) {
@@ -682,7 +715,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   async function readThrough(step: string) {
     if (!steps.some(s => s.id === step)) return false;
     freshNavigation++;
-    try { await api("/api/read", { through: step }); shownStop = null; void refreshOwner().catch(showError); return true; } catch (e) { showError(e); return false; }
+    try { await api("/api/read", { through: step }); shownStop = null; void refreshReads().catch(showError); return true; } catch (e) { showError(e); return false; }
   }
   // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
@@ -1043,12 +1076,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (item || card || note) { void navigate({id:name,item,card,note,selection:e?.dataset.sel,notes:note ? snapshot.notes[note]?.target : undefined}); return; }
     if (e) { glideToTarget(e); setCurrent(e.closest<HTMLElement>(".card, .item")); }
   }
-  function openPath(id: string) {
+  // Unfolds the rows above an item. `drawNow` false: the caller draws them with the rest of what it changes, in one draw;
+  // the result says whether a draw was asked for, and that draw brings the item's own row.
+  function openPath(id: string, drawNow = true): boolean {
     let it = index().byId.get(id);
     let outer:string | undefined;
     if (it) ancestors(it).forEach(p => { if (!isOpen(p)) { manual[p.id] = true; outer=p.id; } });
     saveManual();
-    if (outer) renderNow(get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer));
+    if (!outer) return false;
+    const scope = get("it-"+outer) ? "tree:"+outer : "group:"+derived.groupOf(outer);
+    if (drawNow) renderNow(scope); else scheduleRender(scope);
+    return true;
   }
   function reveal(id: string) { jump("it-" + id); }
   // Following a dependency remembers where the reader was; Backspace, [ or the 返回 button goes back.
@@ -1373,7 +1411,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         return true;
       } catch (e) { showError(e); return false; }
       finally {
-        if (optimistic.get(key) === overlay) { optimistic.delete(key); invalidate(); patchDraft(target,kind); if (changed) scheduleRender("notes:"+target); else renderSend(); }
+        if (optimistic.get(key) === overlay) { optimistic.delete(key); invalidateView(); patchDraft(target,kind); if (changed) scheduleRender("notes:"+target); else renderSend(); }
       }
     })();
     overlay.promise=operation;
@@ -2309,14 +2347,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const watchdog=setTimeout(() => run(performance.now()),100);
     raf=requestAnimationFrame(run);
   }
+  // A draw changes nothing the board's rules read: callers whose change does (a snapshot, the minute) call invalidate first.
   function scheduleRender(...scope:string[]) {
-    invalidate(); scope.forEach(s => dirty.add(s));
+    invalidateView(); scope.forEach(s => dirty.add(s));
     if (renderQueued) return;
     renderQueued = true; frame(() => { renderQueued=false; flushRender(); });
   }
   function flushRender() { if (dirty.size) { const scope=new Set(dirty); dirty.clear(); renderPage(scope); } renderWaiters.splice(0).forEach(resolve => resolve()); }
   function rendered() { return dirty.size ? new Promise<void>(resolve => { renderWaiters.push(resolve); if (!renderQueued) scheduleRender(); }) : Promise.resolve(); }
-  function renderNow(...scope:string[]) { invalidate(); scope.forEach(s => dirty.add(s)); flushRender(); }
+  function renderNow(...scope:string[]) { invalidateView(); scope.forEach(s => dirty.add(s)); flushRender(); }
   function renderAll() { renderNow("all"); }
   function scopedHeads(id:string,scope:Set<string>) { scope.add("head:"+id); derived.ancestors(id).forEach(p => scope.add("head:"+p)); }
   // Compare with the last painted state once per frame, including transitive derived consumers.
@@ -2416,6 +2455,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     detailDirty=false;
   }
   function renderPage(scope:Set<string>) {
+    countEvent("board:render");
     presentationScopes(scope);
     // Live updates rebuild the page; a text field being typed in keeps its focus and caret.
     const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
@@ -2686,11 +2726,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (unreadQueued) return; unreadQueued=true;
     frame(() => { unreadQueued=false; if (active()) void refreshUnread(active,signal).catch(() => { if (active()) serverDown(expected); }); });
   }
-  async function refreshOwner() {
+  // After the server took a read: the unread list carries the new cursor and the steps still unread, and the board itself
+  // did not change, so it is not fetched again (it is 15 MB on the live board).
+  async function refreshReads() {
     const expected = source, signal = connectionAbort?.signal;
     const active = () => expected !== undefined && source === expected && connected && !signal?.aborted;
     if (!active()) return;
-    try { await loadSnapshot(active,signal); if (active()) await refreshUnread(active,signal); }
+    try { await refreshUnread(active,signal); }
     catch (e) { if (active()) throw e; }
   }
   function baselineKey(step:Step,doc:Step["docs"][number]) { return JSON.stringify([step.id,step.parent ?? null,doc.kind,doc.id]); }
@@ -2978,7 +3020,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     });
   }
   // Active time and doing-step day counts can advance without another board write.
-  setInterval(() => { rulePresentationDirty = true; scheduleRender("header"); }, 60_000);
+  setInterval(() => { invalidate(); rulePresentationDirty = true; scheduleRender("header"); }, 60_000);
   void connect();
   watchMermaid();
 

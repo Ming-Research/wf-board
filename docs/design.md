@@ -1898,6 +1898,22 @@ refreshes are debounced across each burst, and superseded results cannot
 replace newer state. Rendering preserves the editor's focus and caret and
 the reading position.
 
+A draw starts from the rules of the snapshot the page already holds. The page builds
+`rules(snapshot)` again only when its input changes: a snapshot, a live change, or the
+minute tick (elapsed times move with the clock). A click, a fold, a filter, an unread
+mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
+indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
+until the data changes: the counts on every project's filter buttons are made in one pass
+over the board, where each button once passed over it. A navigation (n, a number on an
+item, a link) unfolds the rows above the item, selects it and opens its cards and
+comments in one draw, and draws once more when the baselines it needs have loaded. After
+the owner marks something read the page asks for the unread list, which carries the new
+cursor and the steps still unread, and not for the board, which a read does not change
+(15 MB on the live board). The page leaves a performance mark for each draw, each build
+of the rules and each count of the filters (`board:render`, `board:rules`,
+`board:filter-counts`) and clears it at once, so the browser test can count them
+(section 11) and a page left open for days piles up nothing.
+
 After a jump, the page holds the target at its landing position through
 subsequent renders, including baseline loads and unrelated live changes.
 The owner's scrolling, key press or click ends that pin; a new jump establishes
@@ -3112,6 +3128,21 @@ runs on a page with the one part it protects taken out by an edit applied while 
 bundled, where it must report the part's absence in a line that says what the check was
 waiting for and what the page held (a diagram that never appears can only be observed by
 waiting, so the wait is short), not a bare timeout or a page that did not start.
+
+Time limits have their own file, `test/e2e/press-n.e2e.ts`, on a board of the live
+board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a
+15 MB snapshot and 330 unread commits; the default board has 176 items, on which one
+press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
+(board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
+press that lands on another item draws at most twice, builds the board's rules no
+time and counts the filters no time, read from the page's performance marks. Time:
+over 30 landings, the main thread's busy time from the key until the page is quiet
+is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
+quiet and with sessions writing three times a second. The time layer depends on
+the runner (jobs differ by about a quarter), so it is asserted on the CI runner
+only. Each change that the counts protect is taken out in turn, and a draw made
+150 ms slower stands for the time layer; each must be reported. After n and m, the
+page asks for the unread list and does not fetch the board.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix

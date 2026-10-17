@@ -122,6 +122,8 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   const calls: Array<{path: string; body?: unknown}> = [];
   const measurements: Array<{id:string;top:number;height:number}> = [], scrolls: number[] = [], detailScrolls: number[] = [];
   const renders:unknown[]=[]; let scrollPosition=0, selected=false;
+  // The performance marks the page leaves for the browser tests (countEvent in web/app.ts), counted by name.
+  const marks=new Map<string,number>();
   const frame = options.frames?.request ?? ((fn:(now:number)=>void)=> { void setImmediate().then(()=>fn(performance.now())); return 1; });
   const windowListeners=new Map<string,Array<(event:unknown)=>unknown>>();
   const listeners = new Map<string,Array<{fn:(event:unknown)=>unknown;capture:boolean}>>();
@@ -166,7 +168,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     innerHeight: 1000, get scrollY() { return scrollPosition; }, localStorage: { getItem: (key:string) => { if(options.storageUnavailable) throw new Error("Unavailable storage"); return storage.get(key) ?? (key === "board-notes" && options.notesOpen ? JSON.stringify(options.notesOpen) : null); }, setItem(key:string,value:string) { if(options.storageUnavailable) throw new Error("Unavailable storage"); storage.set(key,value); } },
     matchMedia: (query:string) => ({matches:query.includes("prefers-reduced-motion") && options.reducedMotion !== false}),
     recordRender:(scope:unknown)=>renders.push(scope),
-    performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now()}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
+    performance:{now:()=>options.stalledFrames ? options.clock!.now : options.frames?.now ?? performance.now(), mark:(name:string)=>{ marks.set(name,(marks.get(name) ?? 0)+1); }, clearMarks:(_name:string)=>{}}, setTimeout: options.clock?.setTimeout ?? setTimeout, clearTimeout: options.clock?.clearTimeout ?? clearTimeout, ...options.noFrames ? {} : {requestAnimationFrame:frame,cancelAnimationFrame:(_id:number)=>{}},
     addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]),
     window: { innerWidth: 1200, get scrollY() { return scrollPosition; }, focus() {}, addEventListener:(kind:string,fn:(event:unknown)=>unknown)=>windowListeners.set(kind,[...windowListeners.get(kind) ?? [],fn]), scrollBy(_x:number,y:number) { scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,scrollPosition+y)); programmaticScroll(); }, scrollTo(_x:number,y:number) { scrolls.push(y); scrollPosition=Math.max(0,Math.min((options.scrollHeight?.() ?? 10000)-1000,y)); programmaticScroll(); } },
     fetch: async (path: string, init?: {body?: string; method?: string; signal?:AbortSignal}) => {
@@ -233,7 +235,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   const change = async (commit: string,changed:unknown[]=[]) => { emit(commit,changed); await setImmediate(); };
   // The page's stream announces the version of the page the server serves now (src/http.ts).
   const announce = (version: string) => sources.at(-1)!.handlers.get("page")!({ data: JSON.stringify({ version }) });
-  return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders,flush, storage, session, announce,
+  return { roots, all, calls, document, wrap, change, emit, intervals, measurements, scrolls, detailScrolls, sources, renders, marks, flush, storage, session, announce,
     get reloads() { return reloads; },
     // Every scroll either pane was asked to make.
     get scrollCount() { return scrolls.length + detailScrolls.length; },
@@ -1254,20 +1256,34 @@ test("all mutating requests time out at eight seconds and recover their controls
   });
 });
 
-test("successful read releases confirmation even when snapshot or unread refresh stalls", async t => {
-  for (const path of ["/api/snapshot","/api/unread"]) await t.test(path, async () => {
-    const clock=new FakeClock(), hold=deferred<FakeResponse>(); let written=false;
-    const p=await page(snapshot(),unread(),null,undefined,{clock,response:(url)=> {
-      if (url === "/api/read") { written=true; return; }
-      if (written && url === path) return hold.promise;
-    }});
-    await button(p,"全部已阅").click(); const confirm=button(p,"确认"); let completed=false;
-    const pending=confirm.click().then(()=> { completed=true; });
-    await settle(); clock.advance(8000); await settle();
-    assert.equal(confirm.disabled,false,"a successful write cannot keep the control waiting for GET refresh");
-    assert.equal(completed,true,"the click handler settles when the write settles");
+test("successful read releases confirmation even when the unread refresh stalls", async () => {
+  const clock=new FakeClock(), hold=deferred<FakeResponse>(); let written=false;
+  const p=await page(snapshot(),unread(),null,undefined,{clock,response:(url)=> {
+    if (url === "/api/read") { written=true; return; }
+    if (written && url === "/api/unread") return hold.promise;
+  }});
+  await button(p,"全部已阅").click(); const confirm=button(p,"确认"); let completed=false;
+  const pending=confirm.click().then(()=> { completed=true; });
+  await settle(); clock.advance(8000); await settle();
+  assert.equal(confirm.disabled,false,"a successful write cannot keep the control waiting for GET refresh");
+  assert.equal(completed,true,"the click handler settles when the write settles");
+  assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1);
+  hold.resolve(reply({steps:[]})); await pending;
+});
+
+test("a read fetches the unread list again and not the board", async t => {
+  const readers: Array<[string,(p:Awaited<ReturnType<typeof page>>)=>Promise<void>]> = [
+    ["the m key", async p => { await expand(p); p.key("m"); await p.flush(); }],
+    ["all read", async p => { await button(p,"全部已阅").click(); await button(p,"确认").click(); await p.flush(); }],
+  ];
+  for (const [name,read] of readers) await t.test(name, async () => {
+    const p=await page(snapshot(),unread(),null,undefined,{frames:new Frames()});
+    const boards=p.calls.filter(c=>c.path === "/api/snapshot").length, lists=p.calls.filter(c=>c.path === "/api/unread").length;
+    await read(p);
     assert.equal(p.calls.filter(c=>c.path === "/api/read").length,1);
-    hold.resolve(reply(path === "/api/snapshot" ? snapshot() : {steps:[]})); await pending;
+    assert.equal(p.calls.filter(c=>c.path === "/api/unread").length-lists,1,"the page asks for the unread list once after the read");
+    assert.equal(p.calls.filter(c=>c.path === "/api/snapshot").length-boards,0,"a read changes nothing on the board, so the page does not fetch it");
+    assert.ok(!p.all().some(e => e.className.includes("newtag")),"nothing is left unread on the page");
   });
 });
 
@@ -1305,20 +1321,24 @@ test("writes remain unavailable before initial SSE open and reload", async () =>
   await p.sources[0]!.onopen!(); await settle(); assert.equal(p.roots.get("server-banner")!.hidden,true);
 });
 
-test("owner refresh from an obsolete connection cannot replace snapshot or report a late error", async t => {
-  for (const late of ["snapshot","error"]) await t.test(late,async () => {
+test("unread refresh from an obsolete connection cannot bring back a read step or report a late error", async t => {
+  for (const late of ["steps","error"]) await t.test(late,async () => {
     const s=snapshot(), clock=new FakeClock(), hold=deferred<FakeResponse>(); let written=false, holding=true;
     const p=await page(s,unread(),null,undefined,{clock,response:path=> {
       if (path === "/api/read") { written=true; return; }
-      if (written && holding && path === "/api/snapshot") return hold.promise;
+      if (written && holding && path === "/api/unread") return hold.promise;
     }});
+    const unreadChips=()=>p.all().filter(e=>e.className.includes("newtag")).length;
+    assert.ok(unreadChips() > 0,"the step is unread before the read");
     await button(p,"全部已阅").click(); await button(p,"确认").click(); await settle();
     p.sources[0]!.onerror!(); holding=false; clock.advance(5000); await p.sources[1]!.onopen!(); await settle();
     assert.equal(p.roots.get("server-banner")!.hidden,true);
-    if (late === "snapshot") hold.resolve(reply({...s,board:{...s.board,title:"Obsolete owner refresh"}}));
+    assert.equal(unreadChips(),0,"the new connection's list has no unread step");
+    // The old connection's request answers late, with the list as it stood before the read.
+    if (late === "steps") hold.resolve(reply({steps:unread()}));
     else hold.reject(new Error("Obsolete owner refresh failed"));
     await settle();
-    assert.equal(p.roots.get("goal-title")!.textContent,s.board.title,"old owner reload cannot replace the current snapshot");
+    assert.equal(unreadChips(),0,"the old connection's list cannot bring the read step back");
     assert.equal(p.roots.get("server-banner")!.hidden,true,"old owner reload cannot report a disconnect after reconnect");
     assert.ok(p.roots.get("hint")!.hidden || !p.roots.get("hint")!.textContent.includes("Obsolete owner refresh"),"old owner reload cannot report an error after reconnect");
   });
@@ -1353,6 +1373,36 @@ test("approve done and explain feedback is synchronous and failure restores it",
     assert.ok(!p.all().some(e=>e.className === "pendtag"));
     if (kind !== "explain") assert.equal(button(p,kind === "approve" ? "同意" : "完成").disabled,false);
   });
+});
+
+// The page marks each draw, each build of the board's rules and each count of the filters (countEvent in web/app.ts); the browser
+// test of the live board's size (test/e2e/press-n.e2e.ts) holds the same counts against its time limit.
+test("n to an item under a folded row draws twice at most and neither builds the board's rules nor counts the filters again", async () => {
+  const frames=new Frames(), p=await page(snapshot(),unread("item","child"),null,undefined,{frames});
+  const count=(name:string)=>p.marks.get(name) ?? 0;
+  assert.ok(count("board:render") > 0 && count("board:rules") > 0 && count("board:filter-counts") > 0,"the page marks what it does");
+  const was={draw:count("board:render"),rules:count("board:rules"),filters:count("board:filter-counts")};
+  assert.ok(!p.all().some(e=>e.id === "detail-it-child"),"the item is not shown yet");
+  p.key("n"); await p.flush(); await settle(); await p.flush();
+  assert.ok(p.all().some(e=>e.id === "detail-it-child"),"n landed on the item");
+  const drawn=count("board:render")-was.draw;
+  assert.ok(drawn >= 1 && drawn <= 2,"drew "+drawn+" times");
+  assert.equal(count("board:rules")-was.rules,0,"no new snapshot, so the rules stay");
+  assert.equal(count("board:filter-counts")-was.filters,0,"no new snapshot, so the counts stay");
+});
+
+test("a write builds the board's rules and counts the filters once, however many draws follow", async () => {
+  const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush();
+  const count=(name:string)=>p.marks.get(name) ?? 0, was={rules:count("board:rules"),filters:count("board:filter-counts")};
+  p.emit("1".repeat(40),[{kind:"note",id:"burst",after:{target:"it:area",kind:"comment",text:"Burst",at,state:"sent",rev:1}}]); await p.flush();
+  assert.equal(count("board:rules")-was.rules,1);
+  assert.equal(count("board:filter-counts")-was.filters,1);
+  await rowOf(p,"child").querySelector(".item-head")!.click(); await p.flush();
+  assert.ok(p.all().some(e=>e.id === "detail-it-child"),"selecting another item drew");
+  assert.equal(count("board:rules")-was.rules,1,"a draw of the same snapshot keeps them");
+  p.intervals.forEach(fn=>fn()); await p.flush();
+  assert.equal(count("board:rules")-was.rules,2,"the minute moves the rules");
+  assert.equal(count("board:filter-counts")-was.filters,2,"and the done-in-7-days count with them");
 });
 
 test("SSE burst renders once per frame and fetches unread once", async () => {
@@ -1471,10 +1521,12 @@ test("explain withdrawal removes its pending badge before fetch and restores it 
   assert.ok(p.all().some(e=>e.className === "pendtag")); shownInHint(p,/Withdrawal refused/);
 });
 
-test("draft acknowledgement survives an older owner snapshot fetch and newer SSE note revision wins", async () => {
-  const s=snapshot(), hold=deferred<FakeResponse>(), frames=new Frames(); s.decisions.q=card(); let written=false, held=true;
-  const p=await page(s,unread("item","area"),null,undefined,{frames,response:path=> { if(path === "/api/read") { written=true; return; } if(written && held && path === "/api/snapshot") return hold.promise; }});
-  await expand(p); await button(p,"全部已阅").click(); await button(p,"确认").click();
+test("draft acknowledgement survives an older snapshot fetch and newer SSE note revision wins", async () => {
+  const s=snapshot(), hold=deferred<FakeResponse>(), frames=new Frames(); s.decisions.q=card(); let held=false;
+  const p=await page(s,unread("item","area"),null,undefined,{frames,response:path=> { if(held && path === "/api/snapshot") return hold.promise; }});
+  await expand(p);
+  // The page loads its snapshot again, as after its stream reconnects, and the answer is slow.
+  held=true; void p.sources[0]!.onopen!(); await settle();
   await option(p,"A").click(); await p.flush();
   held=false; hold.resolve(reply({...s,notes:{}})); await p.flush();
   assert.ok(option(p,"A").className.includes("sel"),"older snapshot cannot erase an acknowledged choice");
