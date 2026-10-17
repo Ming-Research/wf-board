@@ -1,4 +1,4 @@
-// Dispatch records: the agent sessions the architect started on items. A dispatch lives on its item (`Item.dispatches`);
+// Dispatch records: the agent sessions the PM (or the architect) started on items. A dispatch lives on its item (`Item.dispatches`);
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
@@ -144,9 +144,9 @@ export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   for (const item of Object.values(s.items)) for (const d of item.dispatches ?? []) if (!d.finish) out.add(d.agent);
   return out;
 }
-/** Every session holding an item. */
-export function holders(s: Pick<Snapshot, "items">): Set<string> {
-  const out = new Set<string>();
-  for (const id of Object.keys(s.items)) { const h = holderOf(s, id); if (h !== undefined) out.add(h); }
+/** Every session holding an item, with the items it holds in the board's item order; `only` narrows it to the items it accepts. */
+export function holders(s: Pick<Snapshot, "items">, only: (item: string) => boolean = () => true): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const id of Object.keys(s.items)) { const h = only(id) ? holderOf(s, id) : undefined; if (h !== undefined) out.set(h, [...(out.get(h) ?? []), id]); }
   return out;
 }

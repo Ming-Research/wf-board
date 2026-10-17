@@ -91,7 +91,7 @@ test("the same operation is told once an hour, later ones only logged, and again
   });
   assert.deepEqual(slowFrames(wake).map(f => [f.op, f.ms]), [["tool brief", 1500], ["tool context", 1500], ["tool brief", 1600]]);
   assert.equal(warn.length, 5, "every slow call is in the log, told or not");
-  assert.match(warn[1]!, /^slow tool brief: 4000 ms, limit 1000 ms; the architect was told 10 min ago$/);
+  assert.match(warn[1]!, /^slow tool brief: 4000 ms, limit 1000 ms; the PM was told 10 min ago$/);
   assert.doesNotMatch(warn[0]!, /was told/);
 });
 
@@ -220,7 +220,7 @@ test("a page request that runs over its limit is told to the architect; one with
   assert.ok(logs.info.some(line => /^GET \/api\/snapshot 200 \d+ ms$/.test(line)), logs.info.join("\n"));
   assert.ok(logs.info.some(line => /^POST \/api\/notes 200 \d+ ms$/.test(line)));
   assert.equal(logs.warn.length, 2);
-  assert.match(logs.warn[1]!, /the architect was told 0 min ago/);
+  assert.match(logs.warn[1]!, /the PM was told 0 min ago/);
 });
 
 test("a request whose connection closes before the answer is timed as closed, and is over its limit when it ran past it", async t => {

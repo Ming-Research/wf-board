@@ -4050,7 +4050,7 @@ test("an owner notice from the stream shows one browser notice; its click opens 
   assert.equal(shown[0]!.closed, true);
   assert.ok(p.all().find(e => e.id === "q-hard")!.className.includes("cur"), "the click selects the card the notice names");
   // A notice about no card or item opens the home view, which selects no card.
-  owner({ title: "架构师一小时没响应", message: "x" });
+  owner({ title: "PM 一小时没响应", message: "x" });
   shown[1]!.onclick!(); await p.flush();
   assert.ok(!p.all().find(e => e.id === "q-hard")?.className.includes("cur"), "the home view selects nothing");
   // After a reconnect the old stream's events are ignored; the new one shows its notices.

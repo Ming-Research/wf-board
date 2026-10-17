@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
-import { isArchitectSession } from "./model.ts";
+import { answersPushes } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
@@ -245,22 +245,28 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   /**
    * An agent's stream, `/wake/<session name>` (docs/design.md, The wake streams): the board keeps how far it was delivered, so the
    * client sends no number. It gets `connected`, `gap` when undelivered events were dropped, every undelivered event, then live
-   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again.
+   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again. It also sends
+   * `{"alive": true}` while its session is running, which is a sign of life for the session (src/liveness.ts).
    */
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
     try { name = decodeURIComponent(url.pathname.slice(6)).trim(); } catch { name = ""; }
-    // The PM's stream is /wake; a name with a slash, none, or a long one is not a session name.
-    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isArchitectSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    // The PM's stream is /wake, which the PM's and the architect's session names answer for; a name with a slash, none, or a long one is not a session name.
+    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || answersPushes({ session: name }) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
       socket.on("error", console.error);
       socket.on("close", () => connections.delete(connection));
       socket.on("message", data => {
-        let ack: unknown;
-        try { ack = (JSON.parse(data.toString()) as { ack?: unknown }).ack; } catch { return; }
-        if (typeof ack === "number") stream.deliver(ack);
+        let parsed: unknown;
+        try { parsed = JSON.parse(data.toString()); } catch { return; }
+        // `null` is valid JSON and has no fields to read; like a number, a string or an array it is not a frame.
+        if (typeof parsed !== "object" || parsed === null) return;
+        const message = parsed as { ack?: unknown; alive?: unknown };
+        if (typeof message.ack === "number") stream.deliver(message.ack);
+        // The wait script says its session is still there; the connection alone does not (docs/design.md, Liveness).
+        if (message.alive === true) wake.liveness.see(name);
       });
       // Replay and subscription happen in one synchronous step, so no event falls between them or is sent twice.
       socket.send(JSON.stringify({ event: "connected", latest: stream.latest() }));
@@ -327,7 +333,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const off = store.onChange(change => {
     const s = store.snapshot(), r = store.derived.rules(s, now());
     for (const doc of change.changed) {
-      // A card that stops work is for the owner, who is told in the open board pages; the architect finds it with its other work.
+      // A card that stops work is for the owner, who is told in the open board pages; the PM finds it with its other work.
       if (doc.kind === "decision") {
         const card = doc.after as Decision | null, was = doc.before as Decision | null;
         if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake.tell(`挡事的卡 · ${r.projectOf(card.item)}`, `${card.question}（挡住：${card.blocks}）`, { kind: "card", key: doc.id });
@@ -374,7 +380,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     finally { timing = false; }
   }
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
-  const checker = setInterval(() => { scanChecks(true); wake.checkReceipts(); const held = holders(store.snapshot()); wake.prune(name => held.has(name) || connected(name)); void timed(); }, deps.checkIntervalMs ?? 60_000);
+  const checker = setInterval(() => {
+    scanChecks(true); wake.checkReceipts();
+    const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
+    wake.prune(name => held.has(name) || connected(name));
+    // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
+    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
+    void timed();
+  }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
