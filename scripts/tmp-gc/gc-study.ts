@@ -476,7 +476,7 @@ async function replay(name: string): Promise<void> {
   timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]);
   applyChanges(dir, world.take(SMOKE ? 20 : 859));
   for (const [k, v] of def.config) git(dir, ["config", k, v]);
-  note(`replay start state, as the live repository was on 10-17: ${shape(dir)}`);
+  note(`replay start state (${spawnSync("git", ["--version"], { encoding: "utf8" }).stdout.trim()}), as the live repository was on 10-17: ${shape(dir)}; git maintenance is-needed --auto exits ${spawnSync("git", ["maintenance", "is-needed", "--auto"], { cwd: dir, env: GITENV }).status} (0: needed)`);
   const remote = join(ROOT, "remote.git");
   if (PUSH) {
     // The remote's own automatic maintenance (receive.autogc) would show in the same trace as the board's; the check is about the data repository.
@@ -529,6 +529,14 @@ async function replay(name: string): Promise<void> {
     if (def.idleMs) { clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (since >= def.idleMin!) requestMaint(); }, def.idleMs); if (since >= def.max!) requestMaint(); }
   };
   const writes: Promise<void>[] = [];
+  // A reader of history, as the page and the history tools are: it reads an old version of a document through the store's long-lived cat-file
+  // process, while maintenance packs and deletes the loose objects and replaces packs under it.
+  let reads = 0, readErrors = 0;
+  const readTimer = setInterval(() => {
+    const key = keys[Math.floor(keys.length * r.next())]!;
+    reads++;
+    store.log({ kind: "item", id: key, limit: 10 }).then(list => store.show("item", key, list.at(-1)!.commit)).then(doc => { if (doc == null) readErrors++; }).catch(() => { readErrors++; });
+  }, SMOKE ? 300 : 700);
   let pushTimer: NodeJS.Timeout | undefined;
   if (PUSH) pushTimer = setInterval(() => { pushes++; store.push().catch(() => { pushErrors++; }); }, SMOKE ? 500 : 3000);
   for (let i = 0; i < N; i++) {
@@ -551,7 +559,7 @@ async function replay(name: string): Promise<void> {
     })());
   }
   await Promise.all(writes);
-  clearTimeout(idleTimer); clearInterval(pushTimer);
+  clearTimeout(idleTimer); clearInterval(pushTimer); clearInterval(readTimer);
   await q.enqueue(async () => {});
   const sorted = [...lat].sort((a, b) => a - b), pct = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]!;
   // The trace: does any git add start while a maintenance process runs?
@@ -569,7 +577,7 @@ async function replay(name: string): Promise<void> {
   emit(`E4 replay, policy ${def.name}, ${N} writes at the busiest ten minutes' rhythm (live: 1566 commits in 596 s)${PUSH ? ", with a push every 3 s" : ""}`, [{
     policy: def.name, writes: N, p50: f(pct(0.5)), p90: f(pct(0.9)), p99: f(pct(0.99)), max: f(sorted.at(-1)!), over1s: lat.filter(x => x > 1000).length, over3s: lat.filter(x => x > 3000).length,
     maintRuns: maint.length, maintMaxMs: f(Math.max(0, ...maint.map(m => m.ms))), maintMedianMs: f(median(maint.map(m => m.ms))), maintTotalMs: f(maint.reduce((a, m) => a + m.ms, 0)), maintCommits: maint.map(m => m.commits).join("/"),
-    looseEnd: after.count, packsEnd: after.packs, gitAddsDuringMaintenance: overlaps, pushes, pushErrors,
+    looseEnd: after.count, packsEnd: after.packs, gitAddsDuringMaintenance: overlaps, pushes, pushErrors, historyReads: reads, historyReadErrors: readErrors,
   }]);
   if (PUSH) {
     git(dir, ["fsck", "--no-dangling"]);

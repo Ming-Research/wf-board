@@ -13,7 +13,7 @@ jobs:
       - id: p
         env:
           MSG: ${{ github.event.head_commit.message }}
-        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs( [a-z,]+)?|shard|replay [a-z0-9-]+|growth [0-9]+)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs|shard|replay|growth)[a-z0-9 ,-]*\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
   run:
     needs: plan
     if: needs.plan.outputs.cmds != '[]'
@@ -30,6 +30,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Tag [... git256]: the experiment runs on git 2.56.0 (the version of the live daemon) built from the tag, not on the runner's 2.55.
+      - name: git 2.56.0 from its tag
+        if: endsWith(matrix.cmd, 'git256')
+        shell: bash
+        run: |
+          git clone -q --depth 1 --branch v2.56.0 https://github.com/git/git.git "$RUNNER_TEMP/git-src"
+          make -C "$RUNNER_TEMP/git-src" -j4 prefix="$HOME/git256" NO_GETTEXT=1 NO_CURL=1 NO_EXPAT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 install >/dev/null
+          echo "$HOME/git256/bin" >> "$GITHUB_PATH"
       - name: ${{ matrix.cmd }}
         shell: bash
         run: node scripts/tmp-gc/gc-study.ts ${{ matrix.cmd }} 2>&1 | tee study.log
