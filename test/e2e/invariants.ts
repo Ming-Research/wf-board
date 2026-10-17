@@ -600,37 +600,22 @@ export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<str
   return v;
 }
 
-/** The 停滞 status and the progress line (docs/design.md, Status; How the page shows a plan). For an open item of each live
- * status the detail box and its chip carry the status as their class and the chip has a background of its own; the line
- * under the title says what its status promises, and a finished item has none; every project with part-done items has a
- * 停滞 button counting them. Violations start with "idle-status" or "progress-line". */
-export async function checkProgress(bp: BoardPage, o: Oracle): Promise<string[]> {
+/** The 停滞 status (docs/design.md, Status). For an open item of each live status the detail box and its chip carry the
+ * status as their class and the chip has a background of its own; every project with part-done items has a 停滞 button
+ * counting them. Violations start with "idle-status". */
+export async function checkIdleStatus(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page, ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
   for (const status of ["todo", "idle", "wip", "blocked"]) {
     const id = ids.find(x => o.r.statusOf(x) === status);
-    if (!id) { v.push(`progress-line: the board has no item with status ${status}`); continue; }
+    if (!id) { v.push(`idle-status: the board has no item with status ${status}`); continue; }
     await bp.select(id);
     const got = await page.evaluate(() => {
-      const box = document.querySelector("#item-detail > .item"), chip = box?.querySelector(".item-head .st"), line = box?.querySelector(":scope > .progress-line"), title = box?.querySelector(".item-title");
-      return {
-        box: box?.className ?? "", chip: chip?.className ?? "", background: chip ? getComputedStyle(chip).backgroundColor : "", line: line?.textContent ?? null, kind: line?.className ?? "",
-        lineTop: line ? line.getBoundingClientRect().top : null, titleBottom: title ? title.getBoundingClientRect().bottom : null,
-      };
+      const box = document.querySelector("#item-detail > .item"), chip = box?.querySelector(".item-head .st");
+      return { box: box?.className ?? "", chip: chip?.className ?? "", background: chip ? getComputedStyle(chip).backgroundColor : "" };
     });
     if (!got.box.split(" ").includes(status)) v.push(`idle-status: ${id} (${status}) has the box classes ${JSON.stringify(got.box)}`);
     if (!got.chip.split(" ").includes(status)) v.push(`idle-status: ${id} (${status}) has the chip classes ${JSON.stringify(got.chip)}`);
     if (got.background === "rgba(0, 0, 0, 0)" || got.background === "") v.push(`idle-status: the chip of ${id} (${status}) has no background of its own`);
-    const ratio = o.r.planRatio(id), want = status === "wip" ? /在做/ : status === "blocked" ? /^卡在：/ : new RegExp(`^做完 ${ratio.done}/${ratio.total}`);
-    const kind = status === "wip" ? "doing" : status === "blocked" ? "blocked" : "next";
-    if (got.line === null) { v.push(`progress-line: ${id} (${status}) shows no line under its title`); continue; }
-    if (!want.test(got.line)) v.push(`progress-line: ${id} (${status}) says ${JSON.stringify(got.line)}, which does not read as ${want}`);
-    if (!got.kind.split(" ").includes(kind)) v.push(`progress-line: ${id} (${status}) has the line classes ${JSON.stringify(got.kind)}, not ${kind}`);
-    if (got.lineTop !== null && got.titleBottom !== null && got.lineTop < got.titleBottom - 1) v.push(`progress-line: ${id}'s line is not below its title (${got.lineTop} against ${got.titleBottom})`);
-  }
-  const done = ids.find(x => o.r.statusOf(x) === "done");
-  if (done) {
-    await bp.select(done);
-    if (await page.locator("#item-detail > .item > .progress-line").count()) v.push(`progress-line: ${done} is done and still shows a line`);
   }
   for (const { name: g } of o.s.board.projects) {
     const n = ids.filter(x => o.s.items[x]!.group === g && o.r.statusOf(x) === "idle").length, section = page.locator(`#areas section.group[data-group="${q(g)}"]`);

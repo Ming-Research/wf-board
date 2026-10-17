@@ -4378,26 +4378,3 @@ test("an item with part done and nobody on it is 停滞: its chip, the parent's 
   assert.equal(rowOf(p,"child"), undefined, "and drops the one in progress");
 });
 
-test("the detail's progress line says how far a todo or part-done item is, what a blocked one waits on and who is on a wip one", async () => {
-  const s=nativeSnapshot();
-  const base=s.items.child!;
-  s.items.part={...base,title:"Part",plan:planWork([planStep("one","One","done"),planStep("two","Second step")])};
-  s.items.fresh={...base,title:"Fresh",plan:planWork([planStep("one","First step")])};
-  s.decisions.wait=card();
-  s.items.block={...base,title:"Blocked",plan:planWork([cardRow("wait")])};
-  s.items.live={...base,title:"Live",plan:planWork([planStep("work","Write the parser","doing")]),dispatches:[{agentId:"a1",agent:"eng",role:"工程师",level:2,model:"Sonnet",started:new Date().toISOString()}]};
-  s.items.quiet={...base,title:"Quiet",plan:planWork([planStep("one","One","done"),planStep("two","Second step")]),dispatches:[{agentId:"a2",agent:"eng2",role:"工程师",level:2,model:"Sonnet",started:new Date().toISOString()}]};
-  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("part"),ownedRow("fresh"),ownedRow("block"),ownedRow("live"),ownedRow("quiet")]);
-  const p=await page(s,[]);
-  const line=async (id: string) => { await expand(p,id); return item(p,id).querySelector(".progress-line"); };
-  const part=await line("part");
-  assert.equal(part!.innerHTML,"做完 1/3，下一步：Second step"); assert.ok(part!.classList.contains("next"));
-  assert.equal((await line("fresh"))!.innerHTML,"做完 0/2，下一步：First step", "a todo item reads the same way");
-  const blocked=await line("block");
-  assert.equal(blocked!.innerHTML,"卡在："+s.decisions.wait!.question); assert.ok(blocked!.classList.contains("blocked"));
-  const live=await line("live");
-  assert.equal(live!.innerHTML,"eng 在做：Write the parser"); assert.ok(live!.classList.contains("doing"));
-  assert.equal((await line("quiet"))!.innerHTML,"eng2 在做", "a live session with no row marked still shows who is on it");
-  assert.equal(rowOf(p,"part").querySelector(".progress-line"), null, "the tree row shows no progress line");
-  assert.equal(item(p,"quiet").children.filter(c=>c.classList.contains("progress-line")).length, 1);
-});

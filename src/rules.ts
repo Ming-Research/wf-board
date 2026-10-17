@@ -355,7 +355,7 @@ export interface DerivedPlanRow {
   dropped: boolean;
   excluded: boolean;
 }
-/** The progress line of an item (docs/design.md, How the page shows a plan). */
+/** How far an item is and what it waits on (docs/design.md, Status). */
 export interface Progress {
   done: number;
   total: number;

@@ -1090,7 +1090,7 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
 The three live states answer three different questions: `wip` says someone is on
 it, `idle` says work was done and nobody is on it now, `todo` says nothing
 was done. How far an item is and what it waits on is not a status; the page
-shows it as a line under the title (How the page shows a plan). `idle` is not
+shows it in 计划和进展 (How the page shows a plan). `idle` is not
 the 无人推进 check (Stalled work): `idle` says nobody is working on the item;
 无人推进 flags an item someone is working on, with a step in progress, that has
 been quiet for an hour.
@@ -1382,8 +1382,7 @@ The detail column of a selected item reads, top to bottom:
 
 1. the head row: status, priority, title, ratio, chips (unchanged); the left
    tree already shows the owner, so the detail has no ownership line;
-   under it the difficulty and tag chips, and under them the progress line
-   (below);
+   under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
 3. 计划和进展, the plan, with the cards it names unfolded under their rows;
 4. the head (问题 / 为什么 / 做法) and the `data` line;
@@ -1397,20 +1396,9 @@ The detail column of a selected item reads, top to bottom:
 The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
 
-The progress line is one line of text under the title and chips of an open item that has
-plan rows, read from `Rules.progress`; the tree rows do not change. Status says
-whether someone is on the item; the line says how far it is and what holds it up,
-in one of three forms by status:
-
-- todo or idle: `做完 5/7，下一步：<text of the first ready row>`;
-- blocked: `卡在：<what it waits on>`, the titles of the shared items and
-  cards the ready rows wait on, `等主人` for an unanswered request, and
-  `上级计划里排在它前面的行没做完` when the row that owns it comes after
-  an open row of its owner;
-- wip: `<session names> 在做：<the rows in progress>`; with no live session
-  just `在做：<rows>`.
-
-A paused, done or cancelled item shows no line.
+The detail shows no separate progress line: status says whether someone is on the item,
+and 计划和进展 at the top of the detail says how far it is and what it waits on, so a line
+under the title would say the same twice.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter

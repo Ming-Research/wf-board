@@ -8,7 +8,6 @@ import { drawMermaid, watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
-import { progressLine } from "./progress.ts";
 import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
@@ -2101,11 +2100,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级：1–5，决定派哪一级的代理来做";
       for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
       box.appendChild(chips);
-    }
-    // Then how far the item is and what holds it, on a line of its own; the tree rows show neither.
-    if (detail) {
-      const line = progressLine(statusOf(it), derived.progress(it.id), { item: id => index().byId.get(id)?.title ?? id, card: key => snapshot.decisions[key]?.question ?? key });
-      if (line) box.appendChild(el("div", "progress-line " + line.kind, esc(plain(line.text))));
     }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
