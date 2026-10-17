@@ -50,14 +50,7 @@ async function main() {
   // A tall window, so that a block is photographed whole.
   const head = [fence(PIPELINE), ...SAMPLES.flatMap(([name, code]) => ["", `**${name}**`, "", fence(code)])].join("\n");
   // What is put where the page spreads its compact settings into the library's configuration.
-  const tune = (f: string) => `...COMPACT, flowchart: { ...COMPACT.flowchart, ${f} },`;
-  const VARIANTS: Array<[string, string]> = [
-    ["old", ""],
-    ["d1", "...COMPACT,"],
-    ["d2", tune("nodeSpacing: 14, rankSpacing: 24, padding: 6, wrappingWidth: 100, minNodeWidth: 56")],
-    ["d3", tune("nodeSpacing: 14, rankSpacing: 24, padding: 6, wrappingWidth: 90, minNodeWidth: 56")],
-    ["d4", tune("nodeSpacing: 10, rankSpacing: 20, padding: 5, wrappingWidth: 80, minNodeWidth: 50")],
-  ];
+  const VARIANTS: Array<[string, string]> = [["old", ""], ["new", "...COMPACT,"]];
   for (const [tag, replacement] of VARIANTS) {
     const board = await startBoard(t, { webDir: await pageDir(replacement) }), id = board.gen.witness.code;
     const it = board.store.snapshot().items[id]!;
@@ -85,7 +78,7 @@ async function main() {
       }
     }
     await bp.page.emulateMedia({ colorScheme: "light" });
-    if (tag === "d1") {
+    if (tag === "new") {
       // The default view in a window 700 px wide, and the enlarged view at 1500 px, as the owner sees them.
       await bp.page.setViewportSize({ width: 700, height: 1000 });
       await bp.settle();

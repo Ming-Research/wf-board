@@ -620,9 +620,9 @@ const NO_GRAB: Edit = { file: "index.html", find: "cursor: grab; ", replace: "" 
 const FIXED_INK: Edit = { file: "index.html", find: "background: var(--surface); color: var(--ink); font-size: 13px;", replace: "background: var(--surface); color: #18201e; font-size: 13px;" };
 const FIXED_THUMB: Edit = { file: "index.html", find: ".mermaid-fig::-webkit-scrollbar-thumb { background: var(--muted);", replace: ".mermaid-fig::-webkit-scrollbar-thumb { background: #5b6763;" };
 // A view that is forgotten at once, and one shared by every source.
-const FORGET_VIEW: Edit = { file: "mermaid.ts", find: "const view = views.get(source);", replace: "const view = undefined as { zoom: number; left: number } | undefined;" };
+const FORGET_VIEW: Edit = { file: "mermaid.ts", find: "const saved = views.get(source);", replace: "const saved = undefined as { zoom: number; left: number } | undefined;" };
 const ONE_VIEW: Edit[] = [
-  { file: "mermaid.ts", find: "const view = views.get(source);", replace: 'const view = views.get("");' },
+  { file: "mermaid.ts", find: "const saved = views.get(source);", replace: 'const saved = views.get("");' },
   { file: "mermaid.ts", find: "views.delete(source)", replace: 'views.delete("")' },
   { file: "mermaid.ts", find: "views.set(source, {", replace: 'views.set("", {' },
 ];

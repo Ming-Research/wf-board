@@ -19,9 +19,12 @@ const LIBRARY: string = "/mermaid.js";
  * diagram type that has such settings. */
 const COMPACT = {
   layout: "dagre",
-  flowchart: { look: "classic", nodeSpacing: 20, rankSpacing: 28, padding: 8, diagramPadding: 4, minNodeWidth: 60 },
+  // A label wraps at wrappingWidth: a narrower chart is a larger one on a page that fits it to the text (the text is shrunk by
+  // the width), but under about 100 px a Chinese label breaks into lines of one or two characters.
+  flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 },
   state: { nodeSpacing: 20, rankSpacing: 28 },
-  class: { nodeSpacing: 20, rankSpacing: 28 },
+  // A class diagram keeps the library's gap between layers: the edge between two classes holds its label and the multiplicities at its ends.
+  class: { nodeSpacing: 20 },
   er: { nodeSpacing: 70, rankSpacing: 50, diagramPadding: 8 },
   // The boxes of the actors keep their width: a Chinese name does not wrap in them.
   sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, boxMargin: 6, messageMargin: 28 },
