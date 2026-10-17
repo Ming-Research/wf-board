@@ -334,10 +334,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   let reviewing = new Set<string>();
   // The snapshot the last scan read: a change is compared with it to find the items whose checks it can change.
   let scanned: Snapshot | undefined;
-  /** `only`: rescan these items and keep every other item's state (rules affectedItems: a write changes no other item's
-   * checks; elapsed active time alone is the timer's full scan). */
   /** The review level a review step's text names ("审查（3 级）"), null when it names none. */
   const reviewLevel = (text: string): number | null => { const level = /([1-5]) 级/.exec(text)?.[1]; return level === undefined ? null : Number(level); };
+  /** `only`: rescan these items and keep every other item's state (rules affectedItems: a write changes no other item's
+   * checks; elapsed active time alone is the timer's full scan). */
   function scanChecks(announce: boolean, s = store.snapshot(), only?: Iterable<string>) {
     const r = store.derived.rules(s, now()), next = only ? new Set(flagged) : new Set<string>(), done = only ? new Set(finished) : new Set<string>(), review = only ? new Set(reviewing) : new Set<string>();
     for (const id of only ?? Object.keys(s.items)) {
