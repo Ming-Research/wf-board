@@ -17,20 +17,22 @@ const OUT = join(process.cwd(), "shots");
 
 interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown> }
 const DAGRE = { layout: "dagre", flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 } };
+const CLASSIC = { look: "classic", flowchart: { look: "classic", padding: 6 } };
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
   { name: "dagre", cfg: DAGRE },
   { name: "dagre-step", cfg: { ...DAGRE, flowchart: { ...DAGRE.flowchart, curve: "step" } } },
-  { name: "elk-b30", elk: { root: { "spacing.baseValue": 30 } } },
   { name: "elk-b20", elk: { root: { "spacing.baseValue": 20 } } },
   { name: "elk-b12", elk: { root: { "spacing.baseValue": 12 } } },
-  { name: "elk-layers", elk: { root: { "elk.layered.spacing.nodeNodeBetweenLayers": 20, "elk.layered.spacing.edgeNodeBetweenLayers": 10, "elk.layered.spacing.edgeEdgeBetweenLayers": 8 } } },
-  { name: "elk-classic", cfg: { look: "classic", flowchart: { look: "classic", padding: 6 } } },
-  { name: "elk-linseg", cfg: { elk: { nodePlacementStrategy: "LINEAR_SEGMENTS" } } },
-  { name: "elk-ns", cfg: { elk: { nodePlacementStrategy: "NETWORK_SIMPLEX" } } },
-  { name: "elk-minwidth", cfg: { elk: { layeringStrategy: "MIN_WIDTH" } } },
-  { name: "elk-cg2", cfg: { elk: { layeringStrategy: "COFFMAN_GRAHAM", layeringLayerBound: 2 } } },
-  { name: "elk-b20-classic", cfg: { look: "classic", flowchart: { look: "classic", padding: 6 } }, elk: { root: { "spacing.baseValue": 20 } } },
+  { name: "elk-nn12", elk: { root: { "elk.spacing.nodeNode": 12 } } },
+  { name: "elk-classic", cfg: CLASSIC },
+  { name: "elk-b12-classic", cfg: CLASSIC, elk: { root: { "spacing.baseValue": 12 } } },
+  { name: "elk-feedback", elk: { root: { "elk.layered.feedbackEdges": true } } },
+  { name: "elk-compact", elk: { root: { "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH" } } },
+  { name: "elk-order", cfg: { elk: { considerModelOrder: "NODES_AND_EDGES", forceNodeModelOrder: true } } },
+  { name: "elk-legacy", cfg: { elk: { preset: "legacy" } } },
+  { name: "elk-modelorder", cfg: { elk: { preset: "modelOrder" } } },
+  { name: "elk-merge", cfg: { elk: { mergeEdges: true } } },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["lanes", LANES], ...SMALL];
 
@@ -52,7 +54,7 @@ function measure(block: Element) {
   const rel = (r: DOMRect) => ({ left: (r.left - box.left) / s, top: (r.top - box.top) / s, right: (r.right - box.left) / s, bottom: (r.bottom - box.top) / s });
   const nodes = new Map<string, { left: number; top: number; right: number; bottom: number }>();
   for (const n of svg.querySelectorAll("g.node")) {
-    const id = n.getAttribute("data-id") ?? n.id;
+    const id = n.getAttribute("data-id") ?? /flowchart-(.+)-\d+$/.exec(n.id)?.[1] ?? n.id;
     const shape = n.querySelector("rect, polygon, path, circle, ellipse") ?? n;
     nodes.set(id, rel(shape.getBoundingClientRect()));
   }
@@ -76,8 +78,8 @@ function measure(block: Element) {
       for (let at = 0; at <= length && !inside; at += 3) { const p = point(path, at); inside = p.x > r.left + 2 && p.x < r.right - 2 && p.y > r.top + 2 && p.y < r.bottom - 2; }
       if (inside) { through++; throughList.push(`${from}->${to} through ${nid}`); }
     }
-    const marker = path.getAttribute("marker-end");
-    if (!marker || marker === "none" || !target) continue;
+    // Every edge of the measured flow charts ends in an arrow (the library draws the heads apart from the line).
+    if (!target) continue;
     arrows++;
     const p = point(path, length), q = point(path, Math.max(0, length - 6));
     const flat = Math.abs(p.x - q.x) > Math.abs(p.y - q.y);
@@ -105,7 +107,8 @@ function measure(block: Element) {
   return {
     w: Math.round(vb.width), h: Math.round(vb.height), shown: Math.round(box.width), shownH: Math.round(box.height),
     screenFont: Math.round(font * s * 10) / 10, fill: Math.round(area / (vb.width * vb.height) * 100),
-    arrows, side, horizontal, ends, gap: Math.round(gap), labelOnBox, labelOnLabel, through, throughList,
+    arrows, side, horizontal, ends,
+    boxes: [...nodes].map(([k, r]) => `${k}:${Math.round(r.left)}-${Math.round(r.right)}@${Math.round(r.top)}`).join(" "), gap: Math.round(gap), labelOnBox, labelOnLabel, through, throughList,
   };
 }
 
@@ -114,7 +117,8 @@ async function main() {
   const browser = await launch(t);
   const board = await startBoard(t, { webDir: await pageDir() }), id = board.gen.witness.code;
   const bp = await BoardPage.open(browser, board);
-  await bp.page.setViewportSize({ width: 1500, height: 1000 });
+  // Tall enough that the longest diagram is painted whole in the screenshot.
+  await bp.page.setViewportSize({ width: 1500, height: 4000 });
   const write = async (head: string) => {
     const it = board.store.snapshot().items[id]!;
     await ops(board.store).updateItem({ author: it.group, id, rev: it.rev, head, reason: "measure" });
