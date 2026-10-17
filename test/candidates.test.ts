@@ -149,7 +149,7 @@ test("a pool with no free slot lists no rows and counts its candidates", async t
   const two = b.pool("2+");
   assert.deepEqual([two.working, two.free, two.listed, two.more, two.total], [7, 0, [], 2, 2], "seven working over the limit of six: no slot, no rows, two candidates, counted all the same");
   const text = candidatesText(b.view());
-  assert.match(text, /2 级以上：上限 6，在干活 7，空 0/);
+  assert.match(text, /2 级以上：上限 6，在干活 7，空 0，候选 2\n  还有 2 条能开工没列出/);
   assert.match(text, /还有 2 条能开工没列出/);
 });
 
@@ -208,7 +208,7 @@ test("candidates answers a few lines, under= answers one parent's items, and an 
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
   const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
-  assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
+  assert.match(all, /^1 级：上限 10，在干活 0，空 10，候选 1\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6，候选 4\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
   assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+\n  g2 /);
   const bad = await client.callTool({ name: "candidates", arguments: { under: "nope" } });
   assert.equal(bad.isError, true);

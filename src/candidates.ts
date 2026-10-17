@@ -132,7 +132,7 @@ function itemLine(x: Candidate): string {
 /** The text a tool answers with: a line per pool, then its rows. */
 export function candidatesText(view: Candidates): string {
   return view.pools.map(p => {
-    const head = `${POOLS.find(x => x.pool === p.pool)!.text}：上限 ${p.limit}，在干活 ${p.working}，空 ${p.free}${p.more || p.listed.length ? "" : "；没有能开工的"}`;
+    const head = `${POOLS.find(x => x.pool === p.pool)!.text}：上限 ${p.limit}，在干活 ${p.working}，空 ${p.free}，候选 ${p.total}`;
     const rows = p.listed.map(x => isGroup(x) ? `  ${x.parent} · ${x.title} · ${x.project}${numText(x)} · 下面有 ${x.count} 条能开工，candidates under=${x.parent} 看逐条` : `  ${itemLine(x)}`);
     return [head, ...rows, ...(p.more ? [`  还有 ${p.more} 条能开工没列出`] : [])].join("\n");
   }).join("\n");
