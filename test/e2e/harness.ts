@@ -52,10 +52,13 @@ export async function launch(t: Hooks): Promise<Browser> {
   return browser;
 }
 
-// Counts the page's fetches in flight and the change events its event stream delivered, so a test waits for the page
-// to finish what a click or a server write started instead of sleeping.
+// Counts the page's fetches in flight, its draws (the page marks each one) and the change events its event stream
+// delivered, so a test waits for the page to finish what a click or a server write started instead of sleeping.
 const INSTRUMENT = `(() => {
-  let inflight = 0, changes = 0;
+  let inflight = 0, changes = 0, draws = 0;
+  const drawObserver = new PerformanceObserver(list => { for (const e of list.getEntries()) if (e.name === "board:render") draws++; });
+  drawObserver.observe({ entryTypes: ["mark"] });
+  Object.defineProperty(window, "__draws", { get: () => { for (const e of drawObserver.takeRecords()) if (e.name === "board:render") draws++; return draws; } });
   const fetch = window.fetch.bind(window);
   window.fetch = (...args) => { inflight++; return fetch(...args).then(async r => { try { await r.clone().arrayBuffer(); } catch {} return r; }).finally(() => { inflight--; }); };
   Object.defineProperty(window, "__inflight", { get: () => inflight });
@@ -89,12 +92,16 @@ export class BoardPage {
     await this.page.waitForSelector("#areas .item");
     await this.settle();
   }
-  /** Waits until no fetch is in flight across two animation frames. */
+  /** Waits until no fetch is in flight and the page drew nothing across two animation frames: a navigation waits a frame
+   * for its draw before it fetches and again before it lands, and neither wait has a fetch in flight. */
   async settle() {
+    const state = () => this.page.evaluate(() => { const w = window as unknown as { __inflight: number; __draws: number }; return { inflight: w.__inflight, draws: w.__draws }; });
     for (let k = 0; k < 50; k++) {
       await this.page.waitForFunction(() => (window as unknown as { __inflight: number }).__inflight === 0, null, { timeout: 15_000 });
+      const before = await state();
       await this.page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 20)))));
-      if (await this.page.evaluate(() => (window as unknown as { __inflight: number }).__inflight === 0)) return;
+      const after = await state();
+      if (after.inflight === 0 && after.draws === before.draws) return;
     }
   }
   async changes(): Promise<number> { return this.page.evaluate(() => (window as unknown as { __changes: number }).__changes); }
