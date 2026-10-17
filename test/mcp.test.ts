@@ -396,8 +396,8 @@ test("MCP names the PM and Architect on the tools it reserves, lets them write a
   const before = store.snapshot();
   const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
   assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*only ${PROCESS_WRITERS} write other projects' items`); assert.deepEqual(store.snapshot(), before);
-  const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
-  assert.equal(retired.isError, true); assert.match(text(retired), retired); assert.deepEqual(store.snapshot(), before);
+  const retiredCall = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
+  assert.equal(retiredCall.isError, true); assert.match(text(retiredCall), retired); assert.deepEqual(store.snapshot(), before);
 });
 
 test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {
