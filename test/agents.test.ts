@@ -175,8 +175,9 @@ test("a step in progress on an item a session touched does not make it running; 
   // Finished records: each name wrote later on an item, but holds nothing alive. Open records: the same names, alive.
   const finished = item([], { dispatches: names.map(name => dispatch(`done-${name}`, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
   const open = item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
-  const writes = (prefix: string) => Object.fromEntries([["working", ["run", 5]], ["stopped", ["run", 31]], ["waiting", ["wait", 5]], ["longWait", ["wait", 61]], ["nothing", ["idle", 3]]]
-    .map(([name, [item, minutes]]) => [prefix + name, wrote([item as string, minutes as number])]));
+  // Each name wrote this many minutes ago on this item.
+  const touches: Array<[string, string, number]> = [["working", "run", 5], ["stopped", "run", 31], ["waiting", "wait", 5], ["longWait", "wait", 61], ["nothing", "idle", 3]];
+  const writes = (prefix: string) => Object.fromEntries(touches.map(([name, id, minutes]) => [prefix + name, wrote([id, minutes])]));
   const s = snap({ finished, open, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, { ...writes("done-"), ...writes("") });
   const state = (name: string) => [row(s, name)!.state, row(s, name)!.running];
   assert.deepEqual(names.map(name => state(`done-${name}`)), [["working", false], ["maybe-stopped", false], ["waiting", false], ["waiting", false], ["none", false]],
