@@ -294,4 +294,5 @@ test("a status and a priority are derived from the fields sameStatusAndPriority 
   assert.equal(sameStatusAndPriority(item, changed({ plan: item.plan.map(row => "state" in row && row.state === "todo" ? { ...row, state: "done" as const } : row) })), false, "a step's state");
   assert.equal(sameStatusAndPriority(item, changed({ group: "Firn" })), false, "the project");
   assert.equal(sameStatusAndPriority(item, changed({ paused: { reason: "wait", at } })), false, "a pause");
+  assert.equal(sameStatusAndPriority(item, changed({ dispatches: [{ agentId: "session-1", agent: "engineer", role: "工程师", level: 2, model: "Sonnet", started: at }] })), false, "a dispatch");
 });
