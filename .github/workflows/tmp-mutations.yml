@@ -47,6 +47,7 @@ jobs:
           check no-item-done src/http.ts 'wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });' ''
           check item-done-repeated src/http.ts 'if (announce && !finished.has(id)) for' 'if (announce) for'
           check footer-for-pm src/mcp.ts '(credential.who.access.role === "架构师" ? undefined : credential.who.session)' 'credential.who.session'
+          check footer-for-pm-session src/mcp.ts '&& !isArchitectSession(args.session) ? args.session.trim()' '? args.session.trim()'
           check footer-ignores-credential src/mcp.ts 'const caller = credential?.ok ?' 'const caller = false ?'
           check delivery-forgotten src/wake.ts 'this.delivered = Math.max(this.delivered, record.delivered);' ''
           check ack-ignored src/http.ts 'if (typeof ack === "number") stream.deliver(ack);' ''

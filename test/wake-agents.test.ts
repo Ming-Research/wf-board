@@ -208,6 +208,8 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(await call({ session: "eng" }), plain, "carried once");
   wake.agent("eng").push("item-done", done("c2", "p"));
   assert.equal(await call({}), plain, "a call naming no session carries nothing");
+  // Nothing routes to a stream under the PM's name; one made by hand still never reaches the PM's calls.
+  wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
   assert.equal(await call({ session: ARCHITECT_SESSION }), plain);
   assert.equal(await call({ session: " eng " }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(wake.agent("eng").since(1).frames[0]!)}`, "spaces around the name are ignored");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
@@ -217,6 +219,7 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(wake.agent("eng").deliveredUpTo(), 2);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
   assert.equal(await call({ session: "eng" }, architect), plain, "the PM's calls are receipts for its own stream and carry nothing");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 0);
 });
 
 test("an item becoming done tells the session holding each open item that waits on it, once, and nobody else", async t => {
