@@ -141,7 +141,7 @@ test("a request that asks for too much fails alone: its caller gets the error, a
   const ordinary = createMcpServer({ store, ops: ops(store) }), second = new Client({ name: "Budget test", version: "1" }), [st2, ct2] = InMemoryTransport.createLinkedPair();
   await ordinary.connect(st2); await second.connect(ct2);
   t.after(async () => { await second.close(); await ordinary.close(); });
-  assert.match(text(await second.callTool({ name: "changes", arguments: { since: "HEAD~1" } })), /item:a/);
+  assert.match(text(await second.callTool({ name: "changes", arguments: { since: "HEAD~1", detail: true } })), /item:a/);
 });
 
 test("every entry opens a budget: with requireBudget the page routes and the tools that read history run", async t => {

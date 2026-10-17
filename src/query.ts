@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.ts";
-import type { Rules } from "./rules.ts";
+import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
+import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
 
 export type Kind = "item" | "card" | "note";
@@ -383,7 +384,54 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
   return changes.join(", ") || "metadata changed";
 }
 export interface DocumentChange { kind: Kind; id: string; title: string; summary: string; commits: CommitInfo[] }
-export async function changes(store: Store, s: Snapshot, since: string, f: Scope = {}) {
+
+type DocFileKind = "item" | "decision" | "note";
+/** The item a document belongs to: an item is its own, a card's or a note's the item it is on. `cardItem` finds the item of a
+ * card `s` no longer holds. */
+function documentItem(s: Pick<Snapshot, "decisions" | "notes">, kind: DocFileKind, id: string, cardItem: (card: string) => string | undefined): string | undefined {
+  if (kind === "item") return id;
+  if (kind === "decision") return s.decisions[id]?.item ?? cardItem(id);
+  const target = s.notes[id]?.target;
+  return target === undefined ? undefined : target.startsWith("it:") ? target.slice(3) : s.decisions[target.slice(2)]?.item ?? cardItem(target.slice(2));
+}
+/** The item a changed file belongs to; undefined for a file that is no item, card or note. */
+export function itemOfFile(s: Pick<Snapshot, "decisions" | "notes">, file: string, cardItem: (card: string) => string | undefined = () => undefined): string | undefined {
+  const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
+  return match ? documentItem(s, ({ items: "item", decisions: "decision", notes: "note" } as const)[match[1] as "items" | "decisions" | "notes"], match[2]!, cardItem) : undefined;
+}
+/** Who wrote to each item in `commits`: the session names (the commit's author when it has none), in the order they first
+ * appear. `itemOf` names the item a file belongs to; a commit `skip` answers true for is left out. */
+export function writersByItem(commits: readonly CommitInfo[], itemOf: (file: string) => string | undefined, skip?: (commit: CommitInfo) => boolean): Map<string, Set<string>> {
+  const writers = new Map<string, Set<string>>();
+  for (const commit of commits) {
+    if (skip?.(commit)) continue;
+    for (const file of commit.files) {
+      const id = itemOf(file);
+      if (id === undefined) continue;
+      const set = writers.get(id) ?? new Set<string>();
+      set.add(commit.session ?? commit.author); writers.set(id, set);
+    }
+  }
+  return writers;
+}
+/** A commit the caller asked to leave out: it carries one of the named sessions. A commit without a session is never left out. */
+const droppedBy = (except: readonly string[] = []) => (commit: CommitInfo): boolean => commit.session !== undefined && except.includes(commit.session);
+
+interface RangeDoc { doc: { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }
+/** What a range of commits wrote, read once for both answers `changes` gives (the document listing and the report). */
+interface Range {
+  /** Every commit of the range, oldest first. */
+  commits: CommitInfo[];
+  /** Each document written in the range, with the commits that wrote it and its version before the first and after the last. */
+  changed: RangeDoc[];
+  /** The head board with the documents deleted in the range added back, for the rules of anything that hangs on them. */
+  view: Snapshot;
+  /** The rules of the head board. */
+  r: Rules;
+  rulesFor(owner: string): Rules;
+  ownerOf(kind: Kind, id: string): string;
+}
+async function readRange(store: Store, s: Snapshot, since: string, f: Scope, headRules?: Rules): Promise<Range> {
   if (f.under !== undefined && !Object.hasOwn(s.items, f.under) && !(await store.log({ kind: "item", id: f.under, limit: 1 })).length) throw new Error(`under ${f.under}: choose an existing or historical item subtree`);
   // Only the commits of the range are listed and read, so what a call costs follows the range and never the length of the
   // history (docs/design.md, section 4, Request budgets).
@@ -401,7 +449,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   // A document the snapshot no longer holds was deleted in the range. Its last version is its file in the commit before the
   // one that deleted it: one file read, never a rebuilt board.
   const gone: { items: Record<string, unknown>; decisions: Record<string, unknown>; notes: Record<string, unknown> } = { items: {}, decisions: {}, notes: {} };
-  const changed: Array<{ doc: { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }> = [];
+  const changed: RangeDoc[] = [];
   for (const doc of docs.values()) {
     const first = doc.commits[0]!, last = doc.commits.at(-1)!, collection = ({ item: "items", decision: "decisions", note: "notes" } as const)[doc.kind];
     const before = first.parents[0] ? await store.showCompared(doc.kind, doc.id, first.parents[0]) : null;
@@ -417,26 +465,155 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   // only when a document needs them. A document whose item the snapshot holds takes the snapshot's own ownership: a root
   // there stays a root, and a surviving owner that dropped the row stays detached. An item whose owner was deleted before
   // the range has no owner to find here, and is grouped as the top of its own project.
-  const r = makeRules(s), grouped = new Map<string, { areaId: string; area: string; documents: DocumentChange[] }>();
+  const r = headRules ?? makeRules(s);
   const deleted = Object.values(gone).some(collection => Object.keys(collection).length > 0);
   const view: Snapshot = deleted ? { ...s, items: { ...s.items, ...gone.items } as Snapshot["items"], decisions: { ...s.decisions, ...gone.decisions } as Snapshot["decisions"], notes: { ...s.notes, ...gone.notes } as Snapshot["notes"] } : s;
   let viewRules: Rules | undefined;
   const rulesFor = (owner: string): Rules => !deleted || Object.hasOwn(s.items, owner) ? r : (viewRules ??= makeRules(view));
   /** A card that is gone from the view still has the item the store last saw it on. */
-  const cardItem = (card: string): string => view.decisions[card]?.item ?? store.cardItem(card) ?? "";
-  const ownerOf = (kind: Kind, id: string): string => {
-    if (kind === "item") return id;
-    if (kind === "card") return view.decisions[id]?.item ?? "";
-    const target = view.notes[id]!.target;
-    return target.startsWith("it:") ? target.slice(3) : cardItem(target.slice(2));
-  };
-  for (const { doc, before, after } of changed) {
-    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = ownerOf(kind, doc.id), vr = rulesFor(owner);
+  const cardItem = (card: string): string | undefined => store.cardItem(card);
+  const ownerOf = (kind: Kind, id: string): string => documentItem(view, kind === "card" ? "decision" : kind, id, cardItem) ?? "";
+  return { commits, changed, view, r, rulesFor, ownerOf };
+}
+
+type AreaGroups = Array<{ areaId: string; area: string; documents: DocumentChange[] }>;
+/** The documents of the range grouped by area, each with the commits `shown` gives for it; a document it gives none for is left out. */
+function groupByArea(range: Range, f: Scope, shown: (entry: RangeDoc) => CommitInfo[] | undefined): AreaGroups {
+  const grouped = new Map<string, AreaGroups[number]>();
+  for (const entry of range.changed) {
+    const { doc, before, after } = entry, commits = shown(entry);
+    if (!commits?.length) continue;
+    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = range.ownerOf(kind, doc.id), vr = range.rulesFor(owner);
     if (!inScope(vr, owner, f)) continue;
-    const meta = row(view, vr, kind, doc.id, owner), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
-    group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits: doc.commits }); grouped.set(meta.areaId, group);
+    const meta = row(range.view, vr, kind, doc.id, owner), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
+    group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits }); grouped.set(meta.areaId, group);
   }
   return [...grouped.values()];
+}
+/** The documents the range changed, grouped by area, each with the commits that wrote it. */
+export async function changes(store: Store, s: Snapshot, since: string, f: Scope = {}) {
+  const range = await readRange(store, s, since, f);
+  return groupByArea(range, f, entry => entry.doc.commits);
+}
+
+export interface ReportOptions { except?: readonly string[]; detail?: boolean; rules?: Rules }
+/** Items other than the new ones that carry flags they did not carry when the range began. `by` is every session that wrote
+ * the item in the range, whether or not it is left out; empty when the flag came from a change to another item. */
+export interface FlagRow { item: string; project: string; flags: string[]; by: string[] }
+export interface CreatedRow { id: string; project: string; title: string; by: string; flags: string[] }
+export interface ReplyRow { kind: "note" | "card"; id: string; item: string; summary: string; by: string[] }
+export interface ChangesReport {
+  since: string;
+  /** Every commit of the range, and how many of them carry an excluded session. */
+  commits: { total: number; dropped: number };
+  except: string[];
+  /** Earlier versions of documents or of the board settings that do not fit today's schema; the old board has none of those documents and keeps today's settings. */
+  unreadable: number;
+  flags: FlagRow[];
+  /** How many new flags there are, by kind of flag. */
+  flagCounts: Record<string, number>;
+  created: CreatedRow[];
+  replies: ReplyRow[];
+  /** The changes that are not rows above: counted by kind and by session; the documents themselves only with `detail`. */
+  others: { items: number; cards: number; notes: number; bySession: Record<string, number>; groups: AreaGroups };
+}
+/** A flag's name on a row: its short label, else its text without a count that changes while the flag stays. */
+const flagName = (c: Check): string => c.label ?? c.text.replace(/（现在 \d+ 个）/, "");
+/** What makes a flag the same flag on two boards: its name and what it points at. */
+const flagKey = (c: Check): string => `${flagName(c)}|${c.target ? `${c.target.kind}:${c.target.id}` : ""}`;
+/** The kind of flag, for counting: the name up to the first colon, since some carry the item they name after it. */
+const flagKind = (c: Check): string => flagName(c).split("：")[0]!;
+function nameList(checks: readonly Check[]): string[] {
+  const counts = new Map<string, number>();
+  for (const c of checks) counts.set(flagName(c), (counts.get(flagName(c)) ?? 0) + 1);
+  return [...counts].map(([name, n]) => n > 1 ? `${name}×${n}` : name);
+}
+/** A new note or card, a note that gained a reply or changed state, a card whose status changed: someone is waiting on it. A
+ * draft is not: nobody has it yet. A document an excluded session created is not new to the reader, so only what happened
+ * to it since counts, judged by how it ended up: a note with a reply, a card no longer open. */
+function needsHandling(kind: "decision" | "note", before: unknown | null, after: unknown | null, creationLeftOut: boolean): boolean {
+  if (after === null) return false;
+  const b = after as Record<string, unknown>;
+  if (b.state === "draft") return false;
+  if (before === null) return !creationLeftOut || (kind === "note" ? b.reply !== undefined : b.status !== "open");
+  const a = before as Record<string, unknown>;
+  return kind === "note" ? a.reply !== b.reply || a.state !== b.state : a.status !== b.status;
+}
+/** What a row says of a note or card: the summary of its change, or of how it ended up when its creation is left out. */
+function summaryOf(kind: "decision" | "note", before: unknown | null, after: unknown | null, creationLeftOut: boolean): string {
+  if (!creationLeftOut || before !== null) return describeChanges(before, after, kind);
+  return kind === "note" ? "new reply" : `status open→${(after as { status: string }).status}`;
+}
+/** The board as it was when the range began: the head board with each document the range wrote put back to the version
+ * before it, those the range created taken away, those it deleted brought back, and the settings the range changed put back. */
+function boardBefore(store: Store, s: Snapshot, changed: readonly RangeDoc[], settings: Snapshot["board"] | null): { board: Snapshot; unreadable: number } {
+  const items: Record<string, unknown> = { ...s.items }, decisions: Record<string, unknown> = { ...s.decisions }, notes: Record<string, unknown> = { ...s.notes };
+  let unreadable = 0;
+  for (const { doc, before } of changed) {
+    const collection = doc.kind === "item" ? items : doc.kind === "decision" ? decisions : notes;
+    if (before === null) { delete collection[doc.id]; continue; }
+    // A version that does not fit today's schema cannot be read into the old board: it counts as absent there, and the answer says so.
+    try { collection[doc.id] = store.earlier(doc.kind, doc.id, before); } catch (error) { if (!(error instanceof ValidationError)) throw error; delete collection[doc.id]; unreadable++; }
+  }
+  return { board: { ...s, board: settings ?? s.board, items: items as Snapshot["items"], decisions: decisions as Snapshot["decisions"], notes: notes as Snapshot["notes"] }, unreadable };
+}
+/** When the range began, in milliseconds: the time given, or the time of the commit given. */
+async function timeOf(store: Store, since: string): Promise<number> {
+  if (/^\d{4}-\d{2}-\d{2}T/.test(since)) return Date.parse(since);
+  const commit = (await store.log({ at: since, limit: 1 }))[0];
+  return commit ? Date.parse(commit.at) : Date.now();
+}
+
+/** What a patrol needs of a range: the flags that appeared in it, the items created in it, the notes and cards others
+ * wrote, each with who wrote it; everything else only counted. Flags are the difference of two boards' checks: the head
+ * board's and the board when the range began, put together from the head by putting back the documents the range wrote, with
+ * its rules worked out at the time the range began (docs/design.md, section 6, Finding things). `except` leaves out the
+ * commits of the named sessions from the counts, the created items, and the notes and cards; flags are always listed. */
+export async function changesReport(store: Store, s: Snapshot, since: string, f: Scope = {}, o: ReportOptions = {}): Promise<ChangesReport> {
+  const range = await readRange(store, s, since, f, o.rules), { r, view } = range;
+  const except = [...new Set(o.except ?? [])], dropped = droppedBy(except), sessionOf = (c: CommitInfo) => c.session ?? c.author;
+  const writers = writersByItem(range.commits, file => itemOfFile(view, file, card => store.cardItem(card)));
+  const created: CreatedRow[] = [], replies: ReplyRow[] = [], createdIds = new Set<string>();
+  const others: ChangesReport["others"] = { items: 0, cards: 0, notes: 0, bySession: {}, groups: [] };
+  const otherCommits = new Map<RangeDoc, CommitInfo[]>();
+  for (const entry of range.changed) {
+    const { doc, before, after } = entry;
+    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = range.ownerOf(kind, doc.id), vr = range.rulesFor(owner);
+    if (!inScope(vr, owner, f)) continue;
+    const kept = doc.commits.filter(c => !dropped(c)), by = [...new Set(kept.map(sessionOf))];
+    if (doc.kind === "item" && before === null) {
+      if (after === null) continue; // created and deleted inside the range
+      if (!dropped(doc.commits[0]!)) { createdIds.add(doc.id); created.push({ id: doc.id, project: vr.projectOf(doc.id), title: s.items[doc.id]?.title ?? (after as { title: string }).title, by: sessionOf(doc.commits[0]!), flags: [] }); continue; }
+    }
+    if (!kept.length) continue;
+    if (doc.kind !== "item") {
+      const creationLeftOut = before === null && dropped(doc.commits[0]!);
+      if (needsHandling(doc.kind, before, after, creationLeftOut)) { replies.push({ kind: doc.kind === "decision" ? "card" : "note", id: doc.id, item: owner, summary: summaryOf(doc.kind, before, after, creationLeftOut), by }); continue; }
+    }
+    if (doc.kind === "item") others.items++; else if (doc.kind === "decision") others.cards++; else others.notes++;
+    for (const name of by) others.bySession[name] = (others.bySession[name] ?? 0) + 1;
+    otherCommits.set(entry, kept);
+  }
+  if (o.detail) others.groups = groupByArea(range, f, entry => otherCommits.get(entry));
+  // The board when the range began, and the flags that exist now but did not exist on it.
+  const boardCommit = range.commits.find(c => c.files.includes("board.yaml"));
+  // Settings that do not fit today's schema are taken as absent, like an unreadable document: the head's settings stand, and the answer counts it.
+  let settings: Snapshot["board"] | null = null, unreadableSettings = 0;
+  if (boardCommit?.parents[0]) try { settings = await store.boardAt(boardCommit.parents[0]); } catch (error) { if (!(error instanceof ValidationError)) throw error; unreadableSettings = 1; }
+  const old = boardBefore(store, s, range.changed, settings), rOld = makeRules(old.board, await timeOf(store, since));
+  const flags: FlagRow[] = [], flagCounts: Record<string, number> = {};
+  for (const id of Object.keys(s.items)) {
+    if (!inScope(r, id, f)) continue;
+    const now = r.checks(id);
+    if (!now.length) continue;
+    if (createdIds.has(id)) { created.find(c => c.id === id)!.flags = nameList(now); continue; }
+    const known = new Set(rOld.checks(id).map(flagKey)), added = now.filter(c => !known.has(flagKey(c)));
+    if (!added.length) continue;
+    flags.push({ item: id, project: r.projectOf(id), flags: nameList(added), by: [...(writers.get(id) ?? [])] });
+    for (const c of added) flagCounts[flagKind(c)] = (flagCounts[flagKind(c)] ?? 0) + 1;
+  }
+  flags.sort((a, b) => a.flags[0]!.localeCompare(b.flags[0]!) || a.item.localeCompare(b.item));
+  return { since, commits: { total: range.commits.length, dropped: range.commits.filter(dropped).length }, except, unreadable: old.unreadable + unreadableSettings, flags, flagCounts, created, replies, others };
 }
 export async function history(store: Store, kind: DocKind, id: string, limit = 20): Promise<CommitInfo[]> {
   const commits = await store.log({ kind, id, limit: limit === 0 ? 1 : limit });
