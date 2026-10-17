@@ -68,6 +68,8 @@ w.EventSource = class {
 };
 try { w.CSS = { escape: (s: string) => String(s).replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c) }; } catch { /* the window has its own */ }
 w.structuredClone = structuredClone;
+// The page hands its AbortController signals to fetch, which is Node's: use Node's classes.
+w.AbortController = AbortController; w.AbortSignal = AbortSignal;
 for (const proto of [w.Element?.prototype, w.HTMLElement?.prototype]) if (proto) {
   proto.scrollIntoView ??= function () {};
   proto.scrollTo ??= function () {};
@@ -94,6 +96,7 @@ try { w.eval(code); } catch (e) { errors.push("page eval: " + String((e as Error
 lap("page code evaluated");
 for (let k = 0; k < 2000 && !(doc.querySelector("#sendbox:not([hidden])") && doc.querySelector("#areas .item")); k++) await sleep(5);
 await settle();
+console.log(`PROTO ${lib} banner: hidden=${doc.getElementById("server-banner")?.hidden} text=${doc.getElementById("server-banner")?.textContent}; #areas children=${doc.getElementById("areas")?.children.length}`);
 lap(`first render done (${doc.querySelectorAll("#areas .item").length} tree rows, ${fetches} fetches)`);
 
 const selected = () => { const d = doc.querySelector("#item-detail > .item"); return d ? d.id.slice("detail-it-".length) : null; };
