@@ -26,8 +26,6 @@ import type { AgentStream } from "./wake.ts";
 import { hasReviewer, holderOf, holders } from "./dispatch.ts";
 import { deliveries } from "./merges.ts";
 import type { Delivery } from "./merges.ts";
-import { offers, poolCounts, toPush, toldNow } from "./offers.ts";
-import type { Told } from "./offers.ts";
 import { architectTimedWake, timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
@@ -373,21 +371,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
     flagged = next; finished = done; reviewing = review; scanned = s;
   }
-  // What the PM was last told in each pool of engineer slots (src/offers.ts). More free slots or candidates than that (a slot
-  // freed, a candidate appeared) pushes "dispatch"; the PM's own starts, which only lower them, push nothing and lower what it was
-  // told. Seeded at start without pushing. Looked at on the minute timer, not at every write: nobody starts an engineer within the
-  // second a slot frees. A failure here is logged, not allowed to end the daemon.
-  let told: Told = new Map();
-  function scanOffers(announce: boolean) {
-    try {
-      const s = store.snapshot(), counts = poolCounts(s, store.derived.rules(s, now()));
-      if (!announce) { told = toldNow(counts); return; }
-      const next = toPush(counts, told);
-      told = next.told;
-      for (const offer of next.push) wake.push("dispatch", { ...offer });
-    } catch (error) { console.error(error); }
-  }
-  scanChecks(false); scanOffers(false);
+  scanChecks(false);
   const off = store.onChange(change => {
     const s = store.snapshot(), r = store.derived.rules(s, now());
     for (const doc of change.changed) {
@@ -440,12 +424,12 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     finally { timing.delete(stream); }
   }
   const timed = () => Promise.all([
-    timedOn(wake, timedMs, async (s, r, last) => { wake.push("timed", { ...await timedWake(store, s, r, last, started, offers(s, r), deps.usage?.alert()) }); }),
+    timedOn(wake, timedMs, async (s, r, last) => { wake.push("timed", { ...await timedWake(store, s, r, last, started, deps.usage?.alert()) }); }),
     timedOn(wake.agent(ARCHITECT_SESSION), architectTimedMs, async (s, r, last) => { wake.push("timed-architect", { ...await architectTimedWake(store, s, r, last, started) }); }),
   ]);
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
-    scanChecks(true); scanOffers(true); wake.checkReceipts();
+    scanChecks(true); wake.checkReceipts();
     const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
     wake.prune(name => held.has(name) || connected(name));
     // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.

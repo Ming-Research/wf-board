@@ -242,7 +242,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
    bends with them. A tree row, which has no body, gets a short line beside its head. */
 .item.fresh:not(:has(> .body))::before { left: 3px; top: 8px; bottom: 8px; }
 .item.fresh:has(> .body)::before { content: none; }
-/* The detail column marks an item's own new content with a short line beside its headline, which stays in sight. */
+/* The detail column marks a changed title (or a new item) with a short line beside its headline, which stays in sight. */
 body.wide #item-detail .item.fresh > .item-row { position: relative; }
 body.wide #item-detail .item.fresh > .item-row::before { content: ""; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }
