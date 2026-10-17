@@ -236,7 +236,7 @@ test("a no-answer the PM leaves unanswered for an hour tells the owner, and a cl
   assert.deepEqual(notices, [{ title: "PM 1 小时没响应", message: "最早没回执的是 #1：没回应：做某事", target: { kind: "item", key: "it1" } }]);
 });
 
-test("a tool call is a sign of life for the session it is made as: the credential's, else the name the call gives, never the PM's", async t => {
+test("a tool call is a sign of life for the session it is made as: the credential's, else the name the call gives, the architect's included and never the PM's", async t => {
   const { store, op } = await board(t), wake = new Wake({ now: () => T0 });
   const see = t.mock.method(wake.liveness, "see");
   const call = async (args: Record<string, unknown>, credential?: Resolved) => {
@@ -250,12 +250,15 @@ test("a tool call is a sign of life for the session it is made as: the credentia
   await call({ session: " eng-2 " });
   await call({});
   await call({ session: ARCHITECT_SESSION });
-  assert.deepEqual(seen(), ["eng", "eng-2"], "a read counts, the name is trimmed, no name and the PM count for no one");
+  assert.deepEqual(seen(), ["eng", "eng-2", ARCHITECT_SESSION], "a read counts, the name is trimmed, the architect's session counts like any agent's, no name counts for no one");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
   await call({ session: "eng" }, credential);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
   await call({ session: "eng" }, architect);
-  assert.deepEqual(seen(), ["eng", "eng-2", "cred-eng"], "the credential's session, not the one the call names; the PM's credential is no one's sign");
+  assert.deepEqual(seen(), ["eng", "eng-2", ARCHITECT_SESSION, "cred-eng", ARCHITECT_SESSION], "the credential's session, not the one the call names, the architect's credential's too");
+  const pm: Resolved = { ok: true, who: { author: "PM", session: "PM", access: { role: "PM", project: "PM", roots: [] } } };
+  await call({ session: "eng" }, pm);
+  assert.equal(seen().length, 5, "the PM's credential is no one's sign");
 });
 
 test("holders maps each session to the items it holds, in item order, by the one reading of holding", () => {
