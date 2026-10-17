@@ -61,7 +61,7 @@ test("a message is one commit that adds it to its day's file, kept across a rest
 test("a message to a name the board cannot reach, or one that is too long, not one line or about no item, is refused and writes nothing", async t => {
   const { store, op } = await board(t);
   const head = store.snapshot().head;
-  await assert.rejects(op.sendMessage({ ...eng, to: "nobody", text: "看 a" }), refusedWith(/^to nobody: no session the board can reach has that name; send to one of: 架构师$/));
+  await assert.rejects(op.sendMessage({ ...eng, to: "nobody", text: "看 a" }), refusedWith(/^to nobody: no session the board can reach has that name; send to one of: 架构师, PM$/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "长".repeat(MESSAGE_TEXT_LIMIT + 1) }), refusedWith(/^text: 151 characters, at most 150; a message is only a doorbell: write the content on the item/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "第一行\n第二行" }), refusedWith(/^text: write one line/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "  " }), refusedWith(/^input\.text: provide nonempty text/));
@@ -83,7 +83,7 @@ test("a message goes to the architect, to a session with an open dispatch of any
   for (const to of ["架构师", "观察者", "资源管理", "b-review"]) await op.sendMessage({ ...eng, to, text: "看 b" });
   assert.deepEqual(Object.values(store.snapshot().messages!).flatMap(day => day.messages).map(m => m.to).sort(), ["b-review", "架构师", "观察者", "资源管理"].sort());
   await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1, rounds: 1 });
-  await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
+  await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, PM, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
 });
 
 test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the PM's stream", async t => {
@@ -125,7 +125,7 @@ test("send_message sends as the call's session; messages lists them newest first
   await send("eng-b", { to: "观察者", text: "规则有个问题，见 b 的日志", item: "b" });
   clock = "2026-10-11T02:20:00Z";
   await send("eng-a", { to: "观察者", text: "没事了" });
-  assert.match(await send("eng-a", { to: "nobody", text: "x" }), /^to nobody: no session the board can reach has that name; send to one of: 架构师, 观察者$/);
+  assert.match(await send("eng-a", { to: "nobody", text: "x" }), /^to nobody: no session the board can reach has that name; send to one of: 架构师, PM, 观察者$/);
   const list = (filters?: Record<string, unknown>) => tool(t, store, op, undefined, "messages", filters ? { filters } : {});
   assert.equal(await list(), [
     "2026-10-11T02:20:00Z · eng-a（Whitefoot）→ 观察者：没事了",

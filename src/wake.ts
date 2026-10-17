@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Liveness } from "./liveness.ts";
-import { isArchitectSession } from "./model.ts";
+import { answersPushes } from "./model.ts";
 
 /** Where a kind of push goes: the PM's stream; the stream of the session holding the item that `holder` names (an item key
  * among the fields), and the PM's when no session holds it; or the stream of the session that `session` names (the PM's when
@@ -17,7 +17,7 @@ export type WakeRoute = "pm" | { holder: string } | { session: string };
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "actions"], to: "pm" },
+  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "actions"], to: "pm" },
   "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url"], to: "pm" },
   "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"], to: "pm" },
   "pr-ready": { label: "PR 可以合入", fields: ["repo", "number", "project", "title", "base", "commit", "url", "items"], to: "pm" },
@@ -69,7 +69,7 @@ const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${count(f.working)} 条，Architect 项目开着 ${count(f.architect)} 条`,
+  timed: f => `变了 ${count(f.changed)} 条，在做 ${count(f.working)} 条，Architect 项目开着 ${count(f.architect)} 条，PM 项目开着 ${count(f.pm)} 条`,
   "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败`,
   "pr-red": f => `${pr(f)} · ${count(f.failed)} 项检查失败 · ${str(f.title)}`,
   "pr-ready": f => `${pr(f)} · ${str(f.title)}`,
@@ -402,7 +402,7 @@ export class Wake extends NumberedLog {
     if (to !== "pm") {
       const named = "session" in to ? fields[to.session] : fields[to.holder];
       const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
-      if (name !== undefined && !isArchitectSession(name)) return this.agent(name).push(event, fields);
+      if (name !== undefined && !answersPushes({ session: name })) return this.agent(name).push(event, fields);
     }
     return this.add(event, fields);
   }
@@ -452,7 +452,7 @@ export class Wake extends NumberedLog {
   /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
   markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
 
-  /** A call from the PM's session: everything pushed to the PM before it is answered. Writes only when that changes something. */
+  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed to the PM before it is answered. Writes only when that changes something. */
   receipt(): void {
     if (this.counter === this.receipted && !this.alerted) return;
     this.receipted = this.counter; this.alerted = false;
@@ -467,7 +467,7 @@ export class Wake extends NumberedLog {
     this.alerted = true;
     this.append({ alert: true, at: this.iso() });
     const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+    this.tell(`PM ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */

@@ -71,10 +71,10 @@ const snap = (items: Record<string, Item>, agents: Record<string, AgentTouch[]> 
 const wrote = (...touches: Array<[string, number]>) => touches.map(([item, m]) => ({ item, at: minutesAgo(m) }));
 const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find(r => r.name === name);
 
-test("a session is listed for six hours after its last write, and the architect's own never is", () => {
+test("a session is listed for six hours after its last write, and the architect's and the PM's own never are", () => {
   const items = { a: item() };
-  const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's session are out");
+  const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]), PM: wrote(["a", 2]) });
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's and the PM's sessions are out");
 });
 
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {

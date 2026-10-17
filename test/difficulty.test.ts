@@ -2,14 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Difficulty, Item, difficultyText } from "../src/model.ts";
+import { Difficulty, Item, PROCESS_WRITERS, difficultyText } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import { rules } from "../src/rules.ts";
 import { brief, context, list } from "../src/query.ts";
 import { unreadSteps, piecesOf } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, at, architect, architectSession, asArchitect } from "./helpers.ts";
+import { board, author, at, architect, architectSession, asArchitect, asPM, retired, rx } from "./helpers.ts";
 
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
@@ -41,22 +41,27 @@ test("a record cannot carry a difficulty, in the schema and by conversion to a r
   await refuses(op.setDifficulty({ ...asArchitect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
 });
 
-test("only Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
+test("only the PM (author PM, session PM) or Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
-  const refusal = /only Architect with session 架构师 may set an item's difficulty/;
-  // A project author, a project author borrowing the architect's session, the architect's project from another session or
-  // from none, and the retired coordinator are all refused.
-  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author: architect }, { author: architect, session: "另一个会话" }]) {
+  const refusal = rx`only ${PROCESS_WRITERS} may set an item's difficulty`;
+  // A project author, a project author borrowing the architect's or the PM's session, the architect's project from another
+  // session, from none or from the PM's, the PM's project without its session or with the architect's, and the retired
+  // coordinator are all refused.
+  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }, { author: architect, session: "PM" }, { author: "PM" }, { author: "PM", session: architectSession }]) {
     await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
     await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }
-  await refuses(op.setDifficulty({ author: "总管", id: "a", difficulty: 3, reason: "r" }), /this identity is retired/);
+  await refuses(op.setDifficulty({ author: "总管", id: "a", difficulty: 3, reason: "r" }), retired);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
   // The architect's own project is not the items' project: ownership does not apply.
   await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 4, reason: "Whitefoot 的条目" });
   await op.setDifficulty({ ...asArchitect, id: "other", difficulty: 5, reason: "Firn 的条目" });
   assert.equal(store.snapshot().items.a!.difficulty, 4); assert.equal(store.snapshot().items.other!.difficulty, 5);
+  // The PM rates as well, one item and many.
+  await op.setDifficulty({ ...asPM, id: "a", difficulty: 5, reason: "PM 评" });
+  await op.setDifficultyMany({ ...asPM, items: [{ id: "other", difficulty: 1, reason: "PM 评多个" }] });
+  assert.equal(store.snapshot().items.a!.difficulty, 5); assert.equal(store.snapshot().items.other!.difficulty, 1);
 });
 
 test("each change logs from what to what and why, the first rating from 未评, and an unchanged value writes nothing", async t => {
@@ -328,7 +333,7 @@ test("MCP: the tools answer with the row, refuse other authors, and the texts sh
   assert.ok(tools.includes("set_difficulty") && tools.includes("set_difficulty_many"));
   assert.match((await call("context", { id: "u" })).text, /check: 缺难度/);
   const refused = await call("set_difficulty", { author, id: "u", difficulty: 3, reason: "r" });
-  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师/);
+  assert.equal(refused.error, true); assert.match(refused.text, rx`only ${PROCESS_WRITERS}`);
   assert.equal((await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 7, reason: "r" })).error, true, "the schema refuses 7");
   const set = await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 3, reason: "要查并发" });
   assert.equal(set.error, false); assert.match(set.text, /^set_difficulty u · rev \d+ · commit [0-9a-f]{40}\nu · TODO P2 · 未评级 u · 难度 3 · Whitefoot › u/);
@@ -400,7 +405,7 @@ test("create_item rates the new item, logs it as the first rating, and refuses a
   await op.createItem({ ...asArchitect, ...create, key: "n3" });
   assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored");
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), /only Architect with session 架构师 may create items/);
+  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), rx`only ${PROCESS_WRITERS} may create items`);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x4", difficulty: "architect" as never }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
@@ -418,10 +423,10 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   assert.match(tools.find(x => x.name === "brief")!.description!, /next tasks \(only items rated 1–5/);
   for (const name of ["create_item", "set_difficulty"]) assert.match(tools.find(x => x.name === name)!.description!, /engineer\b.*own subtree/, `${name} says where an engineer may use it`);
   assert.match(tools.find(x => x.name === "set_difficulty")!.description!, /never that item itself/, "set_difficulty says the root is not the engineer's to rate");
-  assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, /Only author Architect.*everyone else replaces only their own/, "reply_note says whose reply replace may overwrite");
+  assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, rx`Only author ${PROCESS_WRITERS} replace a reply they did not write; everyone else replaces only their own`, "reply_note says whose reply replace may overwrite");
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
   const made = await call("create_item", { ...asArchitect, key: "m1", group: author, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);
   const refused = await call("create_item", { author, key: "m2", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 });
-  assert.equal(refused.error, true); assert.match(refused.text, /only Architect with session 架构师 may create items/);
+  assert.equal(refused.error, true); assert.match(refused.text, rx`only ${PROCESS_WRITERS} may create items`);
 });

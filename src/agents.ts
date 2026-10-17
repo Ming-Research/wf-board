@@ -3,7 +3,7 @@
 // never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
 import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, ARCHITECT_SESSION } from "./model.ts";
+import { AGENT_TOUCHES, answersPushes } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -70,7 +70,7 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
 
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when it wrote to the board or was
- * started by a dispatch record within AGENT_WINDOW_MS, except the architect's own, and except one whose newest
+ * started by a dispatch record within AGENT_WINDOW_MS, except the PM's and the architect's own, and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item).
  */
 export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number): AgentRow[] {
@@ -87,7 +87,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   const names = new Set([...Object.keys(s.activity?.agents ?? {}), ...started.keys()]);
   const rows: AgentRow[] = [];
   for (const name of names) {
-    if (name === ARCHITECT_SESSION) continue;
+    if (answersPushes({ session: name })) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const dispatches = started.get(name) ?? [];
     const newest = dispatches.reduce<Started | undefined>((a, b) => !a || Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a, undefined);

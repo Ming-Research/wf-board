@@ -6,7 +6,7 @@ import type { Notify } from "./notify.ts";
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
 export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
 
-/** A push to the architect, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
+/** A push to the PM, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
 
 /** A deploy that began and did not end, or a rollback that did not finish: the commit to go back to. The next run finishes it
@@ -87,7 +87,7 @@ const line = (text: string) => text.trim();
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().split("\n").slice(0, 3).join(" ").slice(0, 300);
 
 /** One run of the deploy job: move the checkout to the main line's head and restart the daemon on it when that is needed, go back to
- * the last healthy commit when the daemon does not come up, and tell the architect either way (docs/design.md, Running). */
+ * the last healthy commit when the daemon does not come up, and tell the PM either way (docs/design.md, Running). */
 export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   const state = d.load();
   const save = () => d.save(state);
@@ -268,7 +268,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
 
   try { return await run(); }
   catch (error) {
-    // Whatever the job could not do, the architect hears of it once; it would otherwise stop deploying with only a log to show.
+    // Whatever the job could not do, the PM hears of it once; it would otherwise stop deploying with only a log to show.
     d.log(`the deploy job failed: ${reasonOf(error)}`);
     await tellOnce("error", reasonOf(error), { event: "deployFailed", version: null, running: null, reason: `the deploy job itself failed: ${reasonOf(error)}` })
       .catch(failure => d.log(`could not tell: ${reasonOf(failure)}`));
