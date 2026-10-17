@@ -15,7 +15,7 @@ import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummar
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
-import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, priorityClearedItem } from "./migrate-priority.ts";
+import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing, priorityClearedItem } from "./migrate-priority.ts";
 import type { ClearedPriority } from "./migrate-priority.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
@@ -602,8 +602,8 @@ export class Store {
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
     for (const commit of commits) {
-      // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE) continue;
+      // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock. So is clearing the retired priority.
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE || isPriorityClearing(commit.message)) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);

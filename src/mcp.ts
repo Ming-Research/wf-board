@@ -138,6 +138,8 @@ const ref = Key.or(z.string().regex(/^#[1-9]\d{0,14}$/)).describe("Exact item id
 const text = (description: string) => z.string().describe(description);
 const clearableText = (description: string) => z.string().nullable().optional().describe(description);
 const limit = (n: number) => z.number().int().min(0).describe(`Maximum rows to return; default ${n}. Increase only when you need more context.`).optional();
+/** The error of a strict object that is handed `priority`, as an argument or inside a filter: the field is gone, which says more than "unrecognized key". */
+const removedPriority = (issue: z.core.$ZodRawIssue): string | undefined => issue.code === "unrecognized_keys" && issue.keys.includes("priority") ? REMOVED_PRIORITY : undefined;
 const scope = {
   group: text("Restrict to this exact project group heading.").optional(),
   under: Key.describe("Restrict to this item and its descendants, including their cards and notes.").optional(),
@@ -178,7 +180,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     // (docs/design.md, The wake streams), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
     const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
     const full = "session" in named ? named : { ...named, session };
-    const schema: z.ZodObject = z.strictObject(full, { error: issue => issue.code === "unrecognized_keys" && issue.keys.includes("priority") ? REMOVED_PRIORITY : undefined });
+    const schema: z.ZodObject = z.strictObject(full, { error: removedPriority });
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
@@ -218,7 +220,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     group: scope.group, status: statuses,
   }, a => { const x = read(); return q.overview(x.snapshot, x.rules, a).map(project => [ `${project.project}`, ...project.areas.map(area => [formatRow(area), Object.entries(area.counts).map(([st, n]) => `${label(st)} ${n}`).join(" · "), ...area.ownerActions.map(it => `  owner: ${formatRow(it)}`), ...area.blocked.map(it => `  blocked: ${formatRow(it)}`), ...area.checks.map(it => `  check: ${formatRow(it)} · ${it.checks.map(c => c.text).join("; ")}`)].join("\n"))].join("\n")).join("\n") || "No projects."; });
   register("list", "Which items match structured filters? Browse compact rows in page sibling order, then use context on the relevant ids. Done and cancelled items require an explicit status filter.", {
-    filters: z.object({ ...scope, status: statuses, needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
+    filters: z.strictObject({ ...scope, status: statuses, needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }, { error: removedPriority }).describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
   }, a => { const x = read(); return q.list(x.snapshot, x.rules, a.filters).map(it => `${formatRow(it)}${it.needsOwner ? " · owner waiting" : ""}${it.checks.length ? ` · ${it.checks.length} checks` : ""}`).join("\n") || "No items."; });
   register("dispatches", "How have the agent sessions started on items done? Tallies the dispatch records of every project, by level, by role and by the item's tags: dispatches, how many are still running, how many ended in each result, the rework share, the mean kickbacks and rounds, and the cost; then how many ended with each failure signal. Every figure is added up from the rows, so rows: true lists the rows that add up to it. An item with several tags counts under each of them. since and until bound the start time (since inclusive, until exclusive).", {
     filters: z.object({ id: Key.describe("Only the dispatches on this item.").optional(), role: z.enum(DISPATCH_ROLES).optional(), level: z.number().int().min(1).max(5).optional(), since: dispatchTime("Only dispatches started at or after this UTC time.").optional(), until: dispatchTime("Only dispatches started before this UTC time.").optional() }).strict().describe("Narrow the dispatches counted.").optional(),

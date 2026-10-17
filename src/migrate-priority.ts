@@ -12,6 +12,8 @@ import type { Item } from "./model.ts";
 export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer exists; start with the migration, or clear it once with the daemon stopped: npm run migrate:priority -- --data DIR";
 /** The message of the one commit that clears them. */
 export const CLEAR_PRIORITY_MESSAGE = "clear_priority";
+/** Whether a commit message is the clearing commit: bookkeeping, not work on the items, so activity and the timed wake leave it out. */
+export const isPriorityClearing = (message: string): boolean => message.startsWith(`${CLEAR_PRIORITY_MESSAGE} `);
 /** The log line of an item that held a priority, in the form of the other migration lines (from → to, and why). */
 export const clearedPriorityLog = (was: unknown): string => `优先级：${String(was)} → 去掉，理由：迁移：先做什么改由架构师定，必须先做的用依赖表达`;
 

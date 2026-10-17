@@ -211,6 +211,9 @@ test("MCP replaces legacy fields and tools with plan semantics and refuses remov
     const rejected = await client.callTool({ name, arguments: { ...args, priority: "P1" } });
     assert.equal(rejected.isError, true, name); assert.match(text(rejected), /priority: 已去掉/, name);
   }
+  // A list filter that names it is refused the same way, not left to the strict object's own wording.
+  const filtered = await client.callTool({ name: "list", arguments: { filters: { priority: "P0" } } });
+  assert.equal(filtered.isError, true); assert.match(text(filtered), /priority: 已去掉/);
   assert.deepEqual(store.snapshot(), before);
 });
 

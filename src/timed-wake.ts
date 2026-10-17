@@ -3,6 +3,7 @@ import { ARCHITECT, PM_AUTHOR, answersPushes } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import { reviewRequested } from "./rules.ts";
 import type { Rules } from "./rules.ts";
+import { isPriorityClearing } from "./migrate-priority.ts";
 import { itemOfFile, writersByItem } from "./query.ts";
 import type { Store } from "./store.ts";
 import type { TimedMark } from "./wake.ts";
@@ -37,7 +38,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   const from = since?.at ?? started;
   const commits = await store.log({ since: since?.head ?? from, at: s.head }).catch(() => store.log({ since: from, at: s.head }));
   // The log is newest first, so items come out most recently changed first.
-  const writers = writersByItem(commits, file => { const id = itemOfFile(s, file); return id !== undefined && Object.hasOwn(s.items, id) ? id : undefined; }, commit => answersPushes({ session: commit.session }));
+  const writers = writersByItem(commits, file => { const id = itemOfFile(s, file); return id !== undefined && Object.hasOwn(s.items, id) ? id : undefined; }, commit => answersPushes({ session: commit.session }) || isPriorityClearing(commit.message));
   const status = (id: string) => r.statusOf(id) ?? "record";
   const changed = [...writers].map(([item, by]): ChangedItem => ({ item, project: r.projectOf(item), title: s.items[item]!.title, status: status(item), by: [...by] }));
   const open = Object.keys(s.items).filter(id => r.isOpenWork(id));

@@ -6,9 +6,11 @@ import { execFile } from "node:child_process";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parse, stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { unreadSteps } from "../src/history.ts";
+import { timedWake } from "../src/timed-wake.ts";
 import { clearedPriorityLog, priorityReport } from "../src/migrate-priority.ts";
 import { board } from "./helpers.ts";
 
@@ -68,6 +70,20 @@ test("opening with the migration clears the priority from every item that holds 
   assert.equal(Object.hasOwn((await store.comparisonSnapshot(heldHead)).items.area!, "priority"), false);
   const news = (await unreadSteps(store, heldHead)).filter(step => step.docs.some(d => IDS.includes(d.id)));
   assert.deepEqual(news, []);
+});
+
+test("the clearing is bookkeeping: it restarts no clock, starts no active time and is not news to the timed wake", async t => {
+  const { dir, heldHead } = await withPriority(t);
+  // Commit times have a resolution of one second; the clearing must not share the earlier commit's.
+  await sleep(1100);
+  const store = await Store.open(dir, { clearPriority: true });
+  const [clearing, held] = await store.log({ limit: 2 });
+  assert.equal(clearing!.message, "clear_priority 2 items"); assert.notEqual(clearing!.at, held!.at);
+  const s = store.snapshot();
+  for (const id of IDS) assert.equal(s.activity!.items[id], held!.at, `${id}'s last change is still the earlier commit's`);
+  assert.equal(s.activity!.writes.at(-1), held!.at, "the clearing starts no active time");
+  const fields = await timedWake(store, s, store.derived.rules(s, Date.now()), { at: held!.at, head: heldHead }, held!.at);
+  assert.deepEqual(fields.changed, [], "and the timed wake lists nothing the clearing wrote");
 });
 
 test("the migration runs once: a second start with or without it writes nothing", async t => {
