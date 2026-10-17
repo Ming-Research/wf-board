@@ -29,8 +29,6 @@ const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk-narrow", tree: 2000 },
   { name: "c-p8-e12-narrow", ...C, tree: 2000 },
   { name: "c-p8-e12-narrow-min12", ...C, tree: 2000, css: MIN12 },
-  { name: "elk" },
-  { name: "c-p8-e12", ...C },
   { name: "c-p8-e12-min12", ...C, css: MIN12 },
   { name: "c-p8-e12-2400", ...C, window: 2400 },
 ];
@@ -135,8 +133,6 @@ async function main() {
     await bp.page.evaluate(v => {
       const g = globalThis as unknown as Record<string, unknown>; g.__elk = v.elk; g.__mcfg = v.cfg;
       document.getElementById("variant-css")?.remove();
-      const wrap = document.querySelector<HTMLElement>(".wrap");
-      if (wrap) { if (v.tree) wrap.style.setProperty("--tree-width", v.tree + "px"); else wrap.style.removeProperty("--tree-width"); }
       if (v.css) { const style = document.createElement("style"); style.id = "variant-css"; style.textContent = v.css; document.head.append(style); }
     }, v);
     await bp.page.setViewportSize({ width: v.window ?? 1500, height: 4000 });
@@ -149,6 +145,11 @@ async function main() {
       const blocks = [...document.querySelectorAll<HTMLElement>("#item-detail .mermaid-block")];
       return blocks.length === count && blocks.every(b => (b.querySelector("code")?.textContent ?? "").includes(tag as string) && (b.dataset.state === "done" || b.dataset.state === "error"));
     }, [CHARTS.length, "%% " + v.name] as const, { timeout: 120_000 });
+    // The tree's width last, since the page sets it again when the window changes: a wide tree leaves the detail pane at its narrowest.
+    if (v.tree) {
+      await bp.page.evaluate(tree => { const wrap = document.querySelector<HTMLElement>(".wrap")!; wrap.dataset.tree = wrap.style.getPropertyValue("--tree-width"); wrap.style.setProperty("--tree-width", tree + "px"); }, v.tree);
+      await bp.page.waitForTimeout(500);
+    }
     const blocks = bp.page.locator("#item-detail .mermaid-block");
     for (let i = 0; i < CHARTS.length; i++) {
       const name = CHARTS[i]![0];
@@ -178,6 +179,7 @@ async function main() {
     await blocks.nth(0).screenshot({ path: join(OUT, `role-${v.name}-dark.png`) });
     await bp.page.emulateMedia({ colorScheme: "light" });
     await bp.page.waitForTimeout(3_000);
+    if (v.tree) await bp.page.evaluate(() => { const wrap = document.querySelector<HTMLElement>(".wrap")!; wrap.style.setProperty("--tree-width", wrap.dataset.tree ?? ""); });
     const elk = await bp.page.evaluate(() => (globalThis as unknown as { __elkIn?: { layoutOptions?: unknown } }).__elkIn?.layoutOptions);
     console.log(`${v.name} last ELK root options: ${JSON.stringify(elk)}`);
   }
