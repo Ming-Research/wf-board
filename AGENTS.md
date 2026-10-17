@@ -49,9 +49,9 @@ matches what the artifact board offered.
   who is running, the state word, the level) derived from it, the steps in
   progress and the dispatch records. Imported by the server and bundled into
   the page.
-- `src/candidates.ts`: the items an engineer could be started on and the two pools of engineer slots, read from the whole
-  board (the `candidates` tool, and what the push that says work can be handed out reads): the board lists, the architect
-  chooses (design section 6, The candidates read).
+- `src/candidates.ts`: the items an engineer could be started on and the working engineers of the two pools, read from the
+  whole board (the `candidates` tool): the board lists and holds no limit, the PM compares the count with the owner's
+  numbers, the architect chooses (design section 6, The candidates read).
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
@@ -75,8 +75,6 @@ matches what the artifact board offered.
   `src/timed-wake.ts`: what the PM's half-hourly and the architect's hourly wake carry. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
-- `src/offers.ts`: the pools of engineer slots that have a free slot and candidates, and what the PM was last told of them (the
-  `dispatch` push and the timed wake's reminder), made from `src/candidates.ts`.
 - `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
   for the deploy pushes and the red main line.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
