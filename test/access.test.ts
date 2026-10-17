@@ -5,6 +5,7 @@ import { ACCESS, PARTS, ROLES, writesAnyProject } from "../src/model.ts";
 import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
+import { rules } from "../src/rules.ts";
 import { board, asArchitect } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
@@ -13,7 +14,7 @@ const RESERVED: Part[] = ["project.create", "tag-vocab", "journal", "item.create
 
 test("each role has the parts the design gives it", () => {
   assert.deepEqual(grants("审查"), ["item.log:subtree"]);
-  assert.deepEqual(grants("工程师"), ["card.write:subtree", "item.head:subtree", "item.links:subtree", "item.log:subtree", "item.plan:subtree", "item.targets:subtree", "term:subtree"]);
+  assert.deepEqual(grants("工程师"), ["card.write:subtree", "item.create:subtree", "item.difficulty:subtree", "item.head:subtree", "item.links:subtree", "item.log:subtree", "item.plan:subtree", "item.tags:subtree", "item.targets:subtree", "note.reply:subtree", "term:subtree"]);
   assert.deepEqual(grants("资源管理"), ["dispatch.finish:board", "item.head:subtree", "item.log:board", "item.plan:subtree"]);
   assert.deepEqual(grants("架构师"), PARTS.filter(p => p !== "item.merge-row").map(p => `${p}:board`).sort());
   assert.deepEqual(grants("观察者"), PARTS.filter(p => !RESERVED.includes(p)).map(p => `${p}:board`).sort());
@@ -200,4 +201,72 @@ test("the architect's credential does what the architect does, in any project", 
   await op.appendLog({ ...who, id: "other", text: "from the architect" });
   assert.ok(store.snapshot().items.made);
   assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "Architect");
+});
+
+const vocabulary = { 健全性: "改动影响程序是否被正确拒绝或接受", 报错信息: "改动影响诊断的措辞或位置" };
+const outside = (id: string, root: string) => (e: unknown) => e instanceof OpError && new RegExp(`item ${id}: outside the subtree of ${root}`).test(e.message);
+
+test("an engineer makes sub-items inside its subtree, rated and tagged, and cannot make a top item or pull in one from outside", async t => {
+  const { op, store } = await board(t);
+  for (const [name, meaning] of Object.entries(vocabulary)) await op.setTag({ ...asArchitect, name, meaning });
+  const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
+  const make = { title: "子条目", accept: "通过", tags: ["健全性"], difficulty: 2 as const };
+  await op.createItem({ ...who, ...make, key: "sub", owner: "a" });
+  const sub = store.snapshot().items.sub!;
+  assert.deepEqual([sub.group, sub.difficulty, sub.tags], ["Whitefoot", 2, ["健全性"]], "it is in the engineer's project, rated and tagged");
+  assert.deepEqual(sub.log.map(l => [l.by, l.text]), [["Whitefoot", "难度：未评 → 2，理由：建条目时评"]], "the rating is logged as the first rating, by the project");
+  assert.ok(store.snapshot().items.a!.plan.some(row => "item" in row && row.item === "sub" && row.own), "the owner's plan owns it");
+  // The subtree holds it from then on, at any depth.
+  await op.appendLog({ ...who, id: "sub", text: "inside now" });
+  await op.createItem({ ...who, ...make, key: "subsub", owner: "sub" });
+  assert.equal(rules(store.snapshot()).parentOf("subsub"), "sub");
+  const head = store.snapshot().head;
+  // A top item is owned by no item of the subtree; an owner outside it, whether a sibling or another project's, is no owner.
+  await assert.rejects(op.createItem({ ...who, ...make, key: "top", group: "Whitefoot", priority: "P1" }), outside("top", "a"));
+  await assert.rejects(op.createItem({ ...who, ...make, key: "n2", owner: "b" }), outside("b", "a"));
+  await assert.rejects(op.createItem({ ...who, ...make, key: "n3", owner: "other" }), (e: unknown) => e instanceof OpError && /item other belongs to project Firn/.test(e.message));
+  // Existing items moved into the new item's plan are written too, and so must be inside.
+  await assert.rejects(op.createItem({ ...who, ...make, key: "n4", owner: "a", children: ["b"] }), (e: unknown) => e instanceof OpError && /outside the subtree of a/.test(e.message));
+  assert.equal(store.snapshot().head, head, "no refused write was made");
+  // The tag vocabulary still applies to an engineer, so a sub-item without a tag is refused.
+  await assert.rejects(op.createItem({ ...who, title: "无标签", accept: "通过", key: "n5", owner: "a" }), (e: unknown) => e instanceof OpError && /tags: give at least one/.test(e.message));
+});
+
+test("an engineer rates and tags the items of its subtree and no others", async t => {
+  const { op, store } = await board(t);
+  for (const [name, meaning] of Object.entries(vocabulary)) await op.setTag({ ...asArchitect, name, meaning });
+  const who = (roots: string[]) => ({ author: "Whitefoot", session: "eng", access: engineer(roots) });
+  await op.setDifficulty({ ...who(["area"]), id: "a", difficulty: 3, reason: "涉及并发" });
+  assert.deepEqual([store.snapshot().items.a!.difficulty, store.snapshot().items.a!.log.at(-1)!.text, store.snapshot().items.a!.log.at(-1)!.by], [3, "难度：2 → 3，理由：涉及并发", "Whitefoot"]);
+  await op.setDifficultyMany({ ...who(["area"]), reason: "补评", items: [{ id: "a", difficulty: 4 }, { id: "b", difficulty: 1 }] });
+  assert.deepEqual([store.snapshot().items.a!.difficulty, store.snapshot().items.b!.difficulty], [4, 1]);
+  await op.setTags({ ...who(["area"]), id: "a", tags: ["健全性"] });
+  await op.setTagsMany({ ...who(["area"]), items: [{ id: "a", tags: ["报错信息"] }, { id: "b", tags: ["健全性"] }] });
+  assert.deepEqual([store.snapshot().items.a!.tags, store.snapshot().items.b!.tags], [["报错信息"], ["健全性"]]);
+  // Outside the subtree of a: its sibling b, and one entry of a list refuses the whole list.
+  const head = store.snapshot().head;
+  const calls: Array<[string, () => Promise<unknown>]> = [
+    ["set_difficulty", () => op.setDifficulty({ ...who(["a"]), id: "b", difficulty: 2, reason: "r" })],
+    ["set_difficulty_many", () => op.setDifficultyMany({ ...who(["a"]), reason: "r", items: [{ id: "a", difficulty: 5 }, { id: "b", difficulty: 5 }] })],
+    ["set_tags", () => op.setTags({ ...who(["a"]), id: "b", tags: ["报错信息"] })],
+    ["set_tags_many", () => op.setTagsMany({ ...who(["a"]), items: [{ id: "a", tags: ["健全性"] }, { id: "b", tags: ["报错信息"] }] })],
+  ];
+  for (const [name, call] of calls) await assert.rejects(call, outside("b", "a"), name);
+  // Another project's item is refused as it is for any project author.
+  await assert.rejects(op.setDifficulty({ ...who(["area"]), id: "other", difficulty: 2, reason: "r" }), (e: unknown) => e instanceof OpError && /item other belongs to project Firn/.test(e.message));
+  await assert.rejects(op.setTags({ ...who(["area"]), id: "other", tags: ["健全性"] }), (e: unknown) => e instanceof OpError && /item other belongs to project Firn/.test(e.message));
+  assert.equal(store.snapshot().head, head, "no refused write was made");
+});
+
+test("an engineer replies to the notes on its subtree and no others, and cannot close a note or rule a card", async t => {
+  const { op, store } = await board(t);
+  const who = (roots: string[]) => ({ author: "Whitefoot", session: "eng", access: engineer(roots) });
+  // note-1 is the owner's comment on item a.
+  await assert.rejects(op.replyNote({ ...who(["b"]), id: "note-1", reply: "不是我的" }), outside("a", "b"));
+  assert.equal(store.snapshot().notes["note-1"]!.reply, undefined);
+  await op.replyNote({ ...who(["a"]), id: "note-1", reply: "改好了" });
+  const note = store.snapshot().notes["note-1"]!;
+  assert.deepEqual([note.state, note.reply, note.repliedBy], ["done", "改好了", "Whitefoot"]);
+  await assert.rejects(op.closeNote({ ...who(["a"]), id: "note-2", log: "l" }), (e: unknown) => e instanceof OpError && /note\.close: a 工程师 credential may not write/.test(e.message));
+  await assert.rejects(op.ruleCard({ ...who(["a"]), key: "choice", ruling: "r" }), (e: unknown) => e instanceof OpError && /card\.rule: a 工程师 credential may not write/.test(e.message));
 });
