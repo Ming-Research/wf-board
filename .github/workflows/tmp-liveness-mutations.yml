@@ -52,7 +52,7 @@ jobs:
           ('ask-line-loses-time', 'src/wake.ts', r'''最后一次动静 ${minute(f.since)}，调一次看板就算在''', r'''调一次看板就算在'''),
           ('mcp-no-sign', 'src/mcp.ts', r'''if (caller) wake?.liveness.see(caller);''', r''''''),
           ('mcp-pm-is-a-sign', 'src/mcp.ts', r'''(credential.who.access.role === "架构师" ? undefined : credential.who.session)''', r'''credential.who.session'''),
-          ('mcp-name-untrimmed', 'src/mcp.ts', r'''args.session.trim() : undefined;''', r'''args.session : undefined;'''),
+          ('liveness-file-ignored', 'src/wake.ts', r'''file: options.livenessFile''', r'''file: undefined'''),
           ('ws-close-no-sign', 'src/http.ts', r'''connections.delete(connection); wake.liveness.see(name);''', r'''connections.delete(connection);'''),
           ('check-not-run', 'src/http.ts', r'''wake.liveness.check(held, connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));''', r''''''),
           ('connected-ignored-by-server', 'src/http.ts', r'''wake.liveness.check(held, connected,''', r'''wake.liveness.check(held, () => false,'''),
