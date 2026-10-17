@@ -684,12 +684,12 @@ export async function checkTagChips(bp: BoardPage, o: Oracle): Promise<string[]>
   return v;
 }
 
-/** The detail's difficulty chip says the item's difficulty (「难度 N」 or 「架构师做」), sits on the line under the title
+/** The detail's difficulty chip says the item's difficulty (「难度 N」), sits on the line under the title
  * beside the tags, and an unrated item has none. Checked on an item of each kind that also has tags. */
 export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page;
   const work = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && o.r.isOpenWork(id) && o.s.items[id]!.tags?.length);
-  const kinds: Array<[string, (d: unknown) => boolean]> = [["rated 1–5", d => typeof d === "number"], ["架构师做", d => d === "architect"], ["unrated", d => d === undefined]];
+  const kinds: Array<[string, (d: unknown) => boolean]> = [["rated 1–5", d => typeof d === "number"], ["unrated", d => d === undefined]];
   for (const [kind, matches] of kinds) {
     const id = work.find(id => matches(o.s.items[id]!.difficulty));
     if (!id) { v.push(`difficulty-chip: the board has no open tagged item that is ${kind}`); continue; }

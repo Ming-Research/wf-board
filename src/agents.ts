@@ -89,7 +89,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
     else if (steps.length) row.state = now - last > AGENT_STALE_MS ? "maybe-stopped" : "working";
     if (newest) { row.level = newest.dispatch.level; row.role = newest.dispatch.role; }
     else {
-      const rated = steps.map(x => s.items[x.item]?.difficulty).find((d): d is number => typeof d === "number");
+      const rated = steps.map(x => s.items[x.item]?.difficulty).find(d => d !== undefined);
       if (rated !== undefined) row.level = rated;
     }
     rows.push(row);

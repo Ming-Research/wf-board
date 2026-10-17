@@ -136,9 +136,13 @@ test("a write over a connection with a credential is recorded under the credenti
 test("a credential holds the writer to its role over MCP as it does in ops", async t => {
   const { client, text, store } = await connected(t, engineer);
   const before = store.snapshot().head;
+  const cancel = await client.callTool({ name: "set_status", arguments: { id: "a", status: "cancelled", log: "no" } });
+  assert.equal(cancel.isError, true);
+  assert.match(text(cancel), /item\.cancel: a 工程师 credential may not write this part/);
+  // An engineer makes items, but only inside its subtree: a top item is no part of it.
   const create = await client.callTool({ name: "create_item", arguments: { key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" } });
   assert.equal(create.isError, true);
-  assert.match(text(create), /item\.create: a 工程师 credential may not write this part/);
+  assert.match(text(create), /item n: outside the subtree of a/);
   const sibling = await client.callTool({ name: "append_log", arguments: { id: "b", text: "outside" } });
   assert.equal(sibling.isError, true);
   assert.match(text(sibling), /item b: outside the subtree of a/);
