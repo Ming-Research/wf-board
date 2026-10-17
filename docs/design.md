@@ -3128,7 +3128,10 @@ go on. Up to four pull requests are asked at once.
 
 **When a round is over.** A round is over when nothing on the commit is unfinished:
 no check run or status that is not finished, no check with only cancelled runs, and
-no more checks than one answer holds (100). A red check does not end it while another
+no more checks than one answer holds (100). The one status not waited for is `full-ci` when
+it is pending and links to no run: a mark written on every new commit of a pull request (`ci-mark.yml`,
+section 11) that says no full CI was started; the engineer's wait script treats it the same way. Once a
+run is started the status links to it, and the round is not over until the run writes its result. A red check does not end it while another
 still runs, since the engineer waits for the whole round. A round that ended with
 no check that ran (none, or only skipped ones) is told nothing. It ended with `success`, or with `failure` and the names
 of the failed checks. It is told once: again when the commit changes, when something is seen

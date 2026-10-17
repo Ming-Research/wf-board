@@ -36,7 +36,13 @@ const RunsBody = z.object({
     check_suite: z.object({ id: z.number() }).nullable(),
   })),
 });
-const StatusBody = z.object({ total_count: z.number(), statuses: z.array(z.object({ context: z.string(), state: z.string() })) });
+const StatusBody = z.object({ total_count: z.number(), statuses: z.array(z.object({ context: z.string(), state: z.string(), target_url: z.string().nullable() })) });
+
+/** The status a project's full CI writes (docs/design.md, section 11). It is pending without a link on every new commit of a pull
+ * request until the engineer starts the run, which then writes the link to itself; a pending `full-ci` with no link is "no full CI
+ * has been started", not a check that is running, so a round does not wait for it. The engineer's wait script reads it the same way. */
+const FULL_CI = "full-ci";
+const notStarted = (s: { context: string; state: string; target_url: string | null }) => s.context === FULL_CI && s.state === "pending" && !s.target_url;
 
 /** The most checks and statuses one request reads; more are `unfinished`, as in the GraphQL look. */
 const PAGE = 100;
@@ -123,7 +129,7 @@ export function restSource(o: RestOptions): CiSource {
       const rollup: ChecksRollup = { contexts: {
         pageInfo: { hasNextPage: (runs?.total_count ?? 0) > (runs?.check_runs.length ?? 0) || (statuses?.total_count ?? 0) > (statuses?.statuses.length ?? 0) },
         nodes: [
-          ...(statuses?.statuses ?? []).map(s => ({ __typename: "StatusContext" as const, context: s.context, state: s.state.toUpperCase() })),
+          ...(statuses?.statuses ?? []).filter(s => !notStarted(s)).map(s => ({ __typename: "StatusContext" as const, context: s.context, state: s.state.toUpperCase() })),
           ...(runs?.check_runs ?? []).map(r => ({
             __typename: "CheckRun" as const, name: r.name, status: r.status.toUpperCase(), conclusion: r.conclusion === null ? null : r.conclusion.toUpperCase(),
             startedAt: r.started_at, checkSuite: { id: String(r.check_suite?.id ?? "none") },

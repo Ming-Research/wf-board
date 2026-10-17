@@ -25,7 +25,7 @@ function fakeGithub(repo = REPO) {
   const gh = {
     pulls: new Map<number, { commit: string; state: string; draft: boolean; merged: boolean }>(),
     runs: new Map<string, FakeRun[]>(),
-    statuses: new Map<string, Array<{ context: string; state: string }>>(),
+    statuses: new Map<string, Array<{ context: string; state: string; target_url?: string }>>(),
     log: [] as Exchange[],
     quota: 5000,
     /** Set to answer every request with this status (and headers), as GitHub does when it refuses. */
@@ -51,7 +51,7 @@ function fakeGithub(repo = REPO) {
         body = { total_count: runs.length, check_runs: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion, started_at: r.started_at, check_suite: { id: r.suite } })) };
       } else if ((m = new RegExp(`^/repos/${repo}/commits/([0-9a-f]+)/status$`).exec(url.pathname))) {
         const statuses = gh.statuses.get(m[1]!) ?? [];
-        body = { state: "pending", total_count: statuses.length, statuses };
+        body = { state: "pending", total_count: statuses.length, statuses: statuses.map(x => ({ target_url: null, ...x })) };
       } else return reply(404, { message: "Not Found" });
       const etag = `"${createHash("sha1").update(JSON.stringify(body) + (accept ?? "")).digest("hex")}"`;
       if (inm === etag) return reply(304, null, { etag });
@@ -131,24 +131,28 @@ test("a look that finds nothing changed asks with the ETag it was given, gets 30
   assert.equal(watch.status().remaining, quota, "the quota left, as the newest answer says, is on /health");
 });
 
-test("a round on the same commit is told when it finishes again: the full CI a hand starts writes the status full-ci", async t => {
+const RUN_LINK = "https://github.com/Ming-Research/wf-board/actions/runs/1";
+test("the full CI nobody has started does not hold a round back; once started, a round on the same commit is told when it finishes again", async t => {
   const fx = await fixture(t), gh = fakeGithub(), watch = watchOver(fx, gh);
   gh.pulls.set(23, { commit: COMMIT, state: "open", draft: false, merged: false });
+  // The mark every new commit of a PR gets: pending, no link, until a run is started by hand.
+  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "pending" }]);
   gh.runs.set(COMMIT, [run("test", null)]);
   await watch.poll();
   gh.runs.set(COMMIT, [run("test", "success")]);
   await watch.poll();
-  assert.equal(messages(fx.store).length, 1);
-  // The engineer starts the full CI: its status is pending until the run ends.
-  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "pending" }]);
+  assert.equal(messages(fx.store).length, 1, "the quick checks are over: told, although the full CI has no result");
+  // The engineer starts the full CI: its status is pending and links to the run until the run ends.
+  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "pending", target_url: RUN_LINK }]);
   await watch.poll();
-  assert.equal(messages(fx.store).length, 1, "pending: not over");
-  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "failure" }]);
+  assert.equal(messages(fx.store).length, 1, "running: not over");
+  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "failure", target_url: RUN_LINK }]);
   await watch.poll();
   assert.deepEqual(messages(fx.store).map(m => m.text.slice(m.text.indexOf("提交"))), ["提交 a1b2c3d 全部通过", "提交 a1b2c3d 有失败：full-ci"]);
-  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "success" }]);
+  // Run again: the result differs from the one told, whether or not a look saw it pending in between.
+  gh.statuses.set(COMMIT, [{ context: "full-ci", state: "success", target_url: RUN_LINK }]);
   await watch.poll(); await watch.poll();
-  assert.equal(messages(fx.store).length, 3, "a run again on the same commit is a new round, told once");
+  assert.equal(messages(fx.store).length, 3, "told once");
 });
 
 test("a pull request with no checks, or only skipped ones, is not told", async t => {
