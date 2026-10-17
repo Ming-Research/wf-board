@@ -670,3 +670,83 @@ export async function checkChangedBlocks(bp: BoardPage): Promise<string[]> {
   }
   return v;
 }
+
+/** The blocks of an item's detail that had a maximum width of 78 characters (76 for the paragraphs of a card). */
+export const FULL_WIDTH_BLOCKS = [".note", ".log", ".rich", ".editor", ".body p", ".ask", ".checks", ".deplists", ".card p", ".refpop"] as const;
+export interface BlockBox { item: string; sel: string; at: number; x: number; w: number; parentW: number; maxWidth: string; fills: boolean }
+export interface ColumnBox { item: string; body: number; column: number; detailScroll: number; detailClient: number }
+/** Items that between them show every block in FULL_WIDTH_BLOCKS: the one with listed comments (and a head, a log), the one with
+ * code in its head, items with an ask, with checks, with dependents, and the home of a card no plan names. */
+function widthProbes(o: Oracle, w: BoardServer["gen"]["witness"]): string[] {
+  const ids = Object.keys(o.s.items), live = (id: string) => o.r.statusOf(id) !== "cancelled";
+  const some = (n: number, pred: (id: string) => boolean) => ids.filter(id => live(id) && pred(id)).slice(0, n);
+  return [...new Set([
+    w.commentItem, w.code,
+    ...some(2, id => !!o.s.items[id]!.ask),
+    ...some(2, id => o.r.checks(id).length > 0),
+    ...some(2, id => o.r.dependents(id).some(d => !d.own && live(d.id))),
+    o.s.decisions[w.recordCard]!.item, o.s.decisions[w.otherPlanCard]!.item,
+  ])];
+}
+/** Opens each probe item with its log and comment lists unfolded and the comment field open, and measures every block of
+ * FULL_WIDTH_BLOCKS in its detail at the window's current width. */
+export async function measureBlocks(bp: BoardPage, o: Oracle): Promise<{ blocks: BlockBox[]; columns: ColumnBox[]; doc: [number, number] }> {
+  const page = bp.page, w = bp.board.gen.witness, blocks: BlockBox[] = [], columns: ColumnBox[] = [];
+  for (const id of widthProbes(o, w)) {
+    await bp.select(id);
+    for (let k = 0; k < 3; k++) {
+      const folded = await page.evaluate(() => { const bs = [...document.querySelectorAll<HTMLElement>('#item-detail .notes-toggle[aria-expanded="false"]')]; bs.forEach(b => b.click()); return bs.length; });
+      await bp.settle();
+      if (!folded) break;
+    }
+    const field = page.locator("#item-detail .item-comment").first();
+    if (await field.count()) {
+      await field.click(); await bp.settle();
+      // Typing "#" and the start of a title opens the popup of items under the comment field.
+      if (id === w.commentItem) {
+        await page.locator("#item-detail textarea").first().pressSequentially("#" + o.s.items[id]!.title.slice(0, 2));
+        await page.waitForSelector("#item-detail .refpop", { timeout: 3_000 }).catch(() => undefined);
+      }
+    }
+    const got = await page.evaluate(([sels, item]) => {
+      const detail = document.getElementById("item-detail")!;
+      const content = (e: HTMLElement) => { const cs = getComputedStyle(e); return e.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); };
+      const seen: BlockBox[] = [];
+      for (const sel of sels!) [...detail.querySelectorAll<HTMLElement>(sel)].forEach((e, at) => {
+        if (!e.checkVisibility()) return;
+        const parent = e.parentElement!, pcs = getComputedStyle(parent), rect = e.getBoundingClientRect();
+        // A flex item of a row, or an inline box, takes the width of its content; it is capped only by max-width.
+        const shrinks = (pcs.display.includes("flex") && pcs.flexDirection.startsWith("row")) || getComputedStyle(e).display.startsWith("inline");
+        seen.push({ item: item!, sel, at, x: rect.x, w: rect.width, parentW: content(parent), maxWidth: getComputedStyle(e).maxWidth, fills: !shrinks });
+      });
+      const body = detail.querySelector<HTMLElement>(".item > .body");
+      return { seen, column: { item: item!, body: body ? content(body) : -1, column: content(detail), detailScroll: detail.scrollWidth, detailClient: detail.clientWidth } };
+    }, [FULL_WIDTH_BLOCKS as readonly string[], id] as const);
+    blocks.push(...got.seen); columns.push(got.column);
+  }
+  return { blocks, columns, doc: await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth] as [number, number]) };
+}
+/** In a window 2400, 1500 and 700px wide the blocks of an item's detail have no maximum width and fill the column: each
+ * is as wide as the box that holds it, the item's body is as wide as the column's content, and neither the page nor
+ * the column scrolls sideways. Violations open with `full-width <block>:`. */
+export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
+  const v: string[] = [], o = await oracle(bp.board.store);
+  for (const width of [2400, 1500, 700]) {
+    await bp.page.setViewportSize({ width, height: 1000 });
+    await bp.settle();
+    const { blocks, columns, doc } = await measureBlocks(bp, o);
+    if (width === 2400) for (const sel of FULL_WIDTH_BLOCKS) if (!blocks.some(b => b.sel === sel)) v.push(`full-width-setup: no ${sel} is shown in any probe item`);
+    for (const b of blocks) {
+      if (b.maxWidth !== "none") v.push(`full-width ${b.sel}: at ${width}px a ${b.sel} in ${b.item} has max-width ${b.maxWidth}`);
+      else if (b.fills && b.w < b.parentW - 3) v.push(`full-width ${b.sel}: at ${width}px a ${b.sel} in ${b.item} is ${Math.round(b.w)}px wide, its box ${Math.round(b.parentW)}px`);
+    }
+    for (const c of columns) {
+      if (Math.abs(c.body - c.column) > 3) v.push(`full-width column: at ${width}px the body of ${c.item} is ${Math.round(c.body)}px wide, the column's content ${Math.round(c.column)}px`);
+      if (width >= 1500 && c.detailScroll > c.detailClient + 1) v.push(`full-width scroll: at ${width}px the column of ${c.item} scrolls sideways (${c.detailScroll}px in ${c.detailClient}px)`);
+    }
+    if (doc[0] > doc[1] + 1) v.push(`full-width scroll: at ${width}px the page is ${doc[0]}px wide in a window of ${doc[1]}px`);
+  }
+  await bp.page.setViewportSize({ width: 1500, height: 1000 });
+  await bp.settle();
+  return v;
+}

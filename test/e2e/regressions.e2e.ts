@@ -10,7 +10,7 @@ import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { checkReload, checkWriting, checkLoop } from "./update.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -41,6 +41,21 @@ const ARROW_OLD = `    const all = stops();
 `;
 // `copy`: the check rebuilds the page it is served (test/e2e/update.ts), so the current page is served from a copy of the page directory.
 interface Witness { bug: string; reverts: Revert[]; family: string; copy?: true; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
+// The maximum widths the right column's blocks once had (the owner asked for none on 2026-10-17): each is the rule's opening, which the
+// page now holds without the cap, and the cap in characters. A witness puts one cap back.
+const CAPS = [
+  { sel: ".note", find: ".note { font-size: 14px; border-radius: 6px; padding: 6px 10px; background: var(--note-bg); display: flex; flex-direction: column; gap: 2px;", ch: 78 },
+  { sel: ".log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", ch: 78 },
+  { sel: ".rich", find: ".rich { display: flex; flex-direction: column; gap: 6px;", ch: 78 },
+  { sel: ".editor", find: ".editor { display: flex; flex-direction: column; gap: 6px;", ch: 78 },
+  { sel: ".body p", find: ".body p { margin: 0;", ch: 78 },
+  { sel: ".ask", find: ".ask { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 14.5px; font-weight: 500;", ch: 78 },
+  { sel: ".checks", find: ".checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px;", ch: 78 },
+  { sel: ".deplists", find: ".deplists { display: flex; flex-direction: column; gap: 1px;", ch: 78 },
+  { sel: ".card p", find: ".card p { margin: 0;", ch: 76 },
+  { sel: ".refpop", find: ".refpop { display: flex; flex-direction: column;", ch: 78 },
+];
+const capBack = (c: typeof CAPS[number]): Revert => ({ file: "web/index.html", edit: `the maximum width of ${c.sel}`, find: c.find, replace: `${c.find} max-width: ${c.ch}ch;` });
 const WITNESSES: Witness[] = [
   {
     bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
@@ -233,6 +248,12 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/app.ts", edit: "the page remembers the reload it began", find: "lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),", replace: "lastReload: () => undefined," }], family: "update-loop", copy: true,
     run: async (bp, b) => checkLoop(bp, b),
   },
+  ...CAPS.map((c): Witness => ({
+    bug: `blocks of the right column stayed at ${c.ch} characters in a wide window (${c.sel}; owner, 2026-10-17)`,
+    // The cap on this one block; the other blocks keep filling the column.
+    reverts: [capBack(c)], family: `full-width ${c.sel}:`,
+    run: async bp => checkFullWidth(bp),
+  })),
 ];
 
 for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout: 10 * 60_000 }, async t => {
@@ -245,4 +266,19 @@ for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout:
     if (page === "current page") assert.deepEqual(all, [], "the current page passes this check");
     else assert.ok(hits.length > 0, `the check misses the bug on the ${page}; it reported: ${all.join("\n") || "nothing"}`);
   }
+});
+
+test("at a window 700px wide the right column lays out as it did with the maximum widths", { timeout: 10 * 60_000 }, async t => {
+  const browser = await launch(t), laid: string[][] = [];
+  for (const webDir of [undefined, await variantWeb(t, CAPS.map(capBack))]) {
+    const board = await startBoard(t, { webDir });
+    const bp = await BoardPage.open(browser, board, openAll(board));
+    await bp.page.setViewportSize({ width: 700, height: 1000 });
+    await bp.settle();
+    const { blocks } = await measureBlocks(bp, await oracle(board.store));
+    await bp.context.close();
+    laid.push(blocks.map(b => `${b.item} ${b.sel} #${b.at}: x ${Math.round(b.x)}, ${Math.round(b.w)}px wide`));
+  }
+  assert.ok(laid[0]!.length > 0, "the page shows blocks to compare");
+  assert.deepEqual(laid[0], laid[1]);
 });
