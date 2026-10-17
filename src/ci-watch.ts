@@ -16,8 +16,9 @@ import type { Watched } from "./watch.ts";
  * `watchedPulls` (src/watch.ts); how the checks are read is `readChecks` (src/github.ts). */
 
 /** What was last seen of one pull request: the commit, and what the finished round of checks on it said when it was told (the
- * result and the names of the checks that failed), null while a round is awaited. */
-export interface CiRecord { commit: string; told: string | null }
+ * result and the names of the checks that failed), null while a round is awaited. `retry`: the sessions of this round whose
+ * message could not be written and is sent again at the next look. */
+export interface CiRecord { commit: string; told: string | null; retry?: string[] }
 
 /** How a finished round reads, so a result that differs from the one told is news even when no look saw the checks unfinished
  * in between (a rerun that ended between two looks). */
@@ -87,7 +88,10 @@ export class CiWatch {
         if (saved.pulls && typeof saved.pulls === "object") {
           for (const [key, value] of Object.entries(saved.pulls)) {
             const record = value as Partial<CiRecord> | null;
-            if (record && typeof record.commit === "string" && (record.told === null || typeof record.told === "string")) this.records.set(key, { commit: record.commit, told: record.told });
+            if (record && typeof record.commit === "string" && (record.told === null || typeof record.told === "string")) {
+              const retry = Array.isArray(record.retry) ? record.retry.filter((to): to is string => typeof to === "string") : [];
+              this.records.set(key, { commit: record.commit, told: record.told, ...(retry.length ? { retry } : {}) });
+            }
           }
         }
       } catch { /* no file, or not ours */ }
@@ -137,6 +141,7 @@ export class CiWatch {
       for (const entry of watched.values()) byRepo.set(entry.pr.repo.toLowerCase(), [...byRepo.get(entry.pr.repo.toLowerCase()) ?? [], entry]);
       const kept = new Set<string>();
       for (const [repo, entries] of byRepo) {
+        if (this.stopped) break;
         const baseline = !this.looks.has(repo);
         let failure: string | undefined;
         for (let i = 0; i < entries.length && !this.stopped; i += PARALLEL) {
@@ -149,10 +154,13 @@ export class CiWatch {
         this.problem(repo, failure);
         if (failure === undefined && !this.stopped) this.looks.add(repo);
       }
-      // A repository none of whose pull requests is named has nothing to fail at: its first look is over too.
-      for (const project of before.board.projects) if (project.repo && !byRepo.has(project.repo.toLowerCase())) { this.looks.add(project.repo.toLowerCase()); this.problem(project.repo, undefined); }
-      // What is no longer named by an open item, or no longer open, is forgotten, so the file holds only what is looked at.
-      for (const key of [...this.records.keys()]) if (!kept.has(key)) this.records.delete(key);
+      // A look that was stopped halfway has not seen every pull request: it forgets nothing, so a restart finds what it left.
+      if (!this.stopped) {
+        // A repository none of whose pull requests is named has nothing to fail at: its first look is over too.
+        for (const project of before.board.projects) if (project.repo && !byRepo.has(project.repo.toLowerCase())) { this.looks.add(project.repo.toLowerCase()); this.problem(project.repo, undefined); }
+        // What is no longer named by an open item, or no longer open, is forgotten, so the file holds only what is looked at.
+        for (const key of [...this.records.keys()]) if (!kept.has(key)) this.records.delete(key);
+      }
       this.persist();
     } catch (error) { console.error("ci watch failed", error); }
     finally { this.polling = false; }
@@ -165,25 +173,30 @@ export class CiWatch {
     if (!pull?.open) return false;
     const reading = await ci.checks(repo, pull.commit);
     const record = this.records.get(key), { next, tell } = judge(record, pull.commit, reading, baseline);
-    this.records.set(key, next);
-    if (tell && !await this.tell(entry, pull.commit, reading)) this.records.set(key, { commit: pull.commit, told: null });
+    // The sessions an earlier look of this same round could not reach.
+    const owed = !tell && record !== undefined && next === record ? record.retry ?? [] : [];
+    if (!tell && !owed.length) { this.records.set(key, next); return true; }
+    const failed = await this.tell(entry, pull.commit, reading, tell ? undefined : owed);
+    this.records.set(key, { commit: next.commit, told: next.told, ...(failed.length ? { retry: failed } : {}) });
     return true;
   }
 
-  /** The message to each session holding an item that names the pull request. false: it could not be written and is tried again at the next look. */
-  private async tell(entry: Watched, commit: string, reading: CheckReading): Promise<boolean> {
+  /** The message to each session holding an item that names the pull request, or only to `only`. The sessions whose message could
+   * not be written, to be sent again at the next look. */
+  private async tell(entry: Watched, commit: string, reading: CheckReading, only?: readonly string[]): Promise<string[]> {
     const s = this.o.store.snapshot(), { repo, number } = entry.pr, text = ciText(repo, number, commit, reading);
     const holders = new Map<string, string>();
     for (const item of entry.items) { const holder = holderOf(s, item); if (holder !== undefined && !holders.has(holder)) holders.set(holder, item); }
-    let again = false;
+    const failed: string[] = [];
     for (const [to, item] of holders) {
+      if (only && !only.includes(to)) continue;
       try { await this.o.ops.sendMessage({ author: s.items[item]!.group, session: this.session, to, item, text }); }
       catch (error) {
         console.error(`ci watch: message to ${to} about ${repo}#${number} failed`, error);
         // A refusal (the session ended meanwhile, the item is gone) will not pass by itself; a write that failed may.
-        if (!(error instanceof OpError)) again = true;
+        if (!(error instanceof OpError)) failed.push(to);
       }
     }
-    return !again;
+    return failed;
   }
 }

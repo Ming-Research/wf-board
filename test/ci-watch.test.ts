@@ -3,11 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Store } from "../src/store.ts";
-import { ops } from "../src/ops.ts";
+import { OpError, ops } from "../src/ops.ts";
+import type { Ops } from "../src/ops.ts";
 import { restSource } from "../src/ci-source.ts";
 import { CiWatch, ciText, judge } from "../src/ci-watch.ts";
 import type { CheckReading } from "../src/github.ts";
@@ -19,13 +21,15 @@ import { agentSocket, asArchitect, server } from "./helpers.ts";
 // header, as GitHub's does (the Vary header names Accept), and 304 for a request that carries it.
 
 const REPO = "Ming-Research/wf-board", PREFIX = `/repos/${REPO}`;
-interface FakeRun { name: string; status: string; conclusion: string | null; started_at: string | null; suite: number }
+interface FakeRun { name: string; status: string; conclusion: string | null; started_at: string | null; suite: number | null }
 interface Exchange { path: string; ifNoneMatch: string | null; accept: string | null; status: number }
 function fakeGithub(repo = REPO) {
   const gh = {
     pulls: new Map<number, { commit: string; state: string; draft: boolean; merged: boolean }>(),
     runs: new Map<string, FakeRun[]>(),
     statuses: new Map<string, Array<{ context: string; state: string; target_url?: string }>>(),
+    /** More check runs than the page lists, as GitHub's total_count says. */
+    more: new Map<string, number>(),
     log: [] as Exchange[],
     quota: 5000,
     /** Set to answer every request with this status (and headers), as GitHub does when it refuses. */
@@ -48,7 +52,7 @@ function fakeGithub(repo = REPO) {
       } else if ((m = new RegExp(`^/repos/${repo}/commits/([0-9a-f]+)/check-runs$`).exec(url.pathname))) {
         assert.equal(url.searchParams.get("filter"), "all", "every attempt of every round is read");
         const runs = gh.runs.get(m[1]!) ?? [];
-        body = { total_count: runs.length, check_runs: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion, started_at: r.started_at, check_suite: { id: r.suite } })) };
+        body = { total_count: runs.length + (gh.more.get(m[1]!) ?? 0), check_runs: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion, started_at: r.started_at, check_suite: r.suite === null ? null : { id: r.suite } })) };
       } else if ((m = new RegExp(`^/repos/${repo}/commits/([0-9a-f]+)/status$`).exec(url.pathname))) {
         const statuses = gh.statuses.get(m[1]!) ?? [];
         body = { state: "pending", total_count: statuses.length, statuses: statuses.map(x => ({ target_url: null, ...x })) };
@@ -62,7 +66,7 @@ function fakeGithub(repo = REPO) {
   return gh;
 }
 type Github = ReturnType<typeof fakeGithub>;
-const run = (name: string, conclusion: string | null, status = conclusion === null ? "in_progress" : "completed", suite = 1, started_at: string | null = "2026-10-17T10:00:00Z"): FakeRun => ({ name, status, conclusion, started_at, suite });
+const run = (name: string, conclusion: string | null, status = conclusion === null ? "in_progress" : "completed", suite: number | null = 1, started_at: string | null = "2026-10-17T10:00:00Z"): FakeRun => ({ name, status, conclusion, started_at, suite });
 
 // --- The board ----------------------------------------------------------------------------------------------------------------
 
@@ -267,6 +271,95 @@ test("a PR number GitHub does not know is no problem: it is forgotten like a clo
   await watch.poll();
   assert.deepEqual(watch.status().problems, {});
   assert.deepEqual(messages(fx.store), []);
+});
+
+test("more checks than one answer holds: the round is not over; a check run of no suite is read", async t => {
+  const fx = await fixture(t), gh = fakeGithub(), watch = watchOver(fx, gh);
+  gh.pulls.set(23, { commit: COMMIT, state: "open", draft: false, merged: false });
+  gh.runs.set(COMMIT, [run("test", null)]);
+  await watch.poll();
+  // The page lists one run, all green; GitHub counts 150: what is not listed may still run or fail.
+  gh.runs.set(COMMIT, [run("test", "success", "completed", null)]);
+  gh.more.set(COMMIT, 149);
+  await watch.poll();
+  assert.deepEqual(messages(fx.store), [], "not over");
+  gh.more.delete(COMMIT);
+  await watch.poll();
+  assert.deepEqual(messages(fx.store).map(m => m.text), [`CI 跑完：${REPO}#23 提交 a1b2c3d 全部通过`]);
+});
+
+// --- A write that fails, and a look that is stopped ------------------------------------------------------------------------------
+
+/** The board with two sessions holding items that name PR 23, and an `ops` whose messages to twin-eng go through `send`. */
+async function twins(t: Parameters<typeof fixture>[0], send: (to: string, real: () => Promise<unknown>) => Promise<unknown>) {
+  const fx = await fixture(t);
+  await fx.op.createItem({ ...asArchitect, key: "twin", group: "wf-board", title: "Twin", head: "## 改动\n\nMing-Research/wf-board#23", accept: "验收通过" });
+  await fx.op.dispatchStart({ ...asArchitect, id: "twin", role: "工程师", level: 2, model: "Sonnet", agent: "twin-eng", agentId: "agent-3" });
+  const op: Ops = { ...fx.op, sendMessage: a => send(a.to, () => fx.op.sendMessage(a)) as ReturnType<Ops["sendMessage"]> };
+  return { ...fx, op };
+}
+const finish = async (fx: { store: Store; op: Ops }, gh: Github, watch: CiWatch, commit: string) => {
+  gh.pulls.set(23, { commit, state: "open", draft: false, merged: false });
+  gh.runs.set(commit, [run("test", null)]); await watch.poll();
+  gh.runs.set(commit, [run("test", "success")]); await watch.poll();
+};
+
+test("a message that could not be written is sent again at the next look, only to the session it did not reach", async t => {
+  let broken = true;
+  const attempts: string[] = [];
+  const fx = await twins(t, async (to, real) => { attempts.push(to); if (to === "twin-eng" && broken) throw new Error("disk full"); return real(); });
+  const gh = fakeGithub(), file = await stateFile(t), watch = watchOver(fx, gh, { stateFile: file });
+  await finish(fx, gh, watch, COMMIT);
+  assert.deepEqual(messages(fx.store).map(m => m.to), ["watch-eng"], "one reached, the other not");
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")).pulls[`${REPO.toLowerCase()}#23`].retry, ["twin-eng"], "and the state file remembers which");
+  await watch.poll();
+  assert.deepEqual(attempts, ["watch-eng", "twin-eng", "twin-eng"], "the next look asks the one that failed, and it fails again");
+  broken = false;
+  // The board is restarted (the old watch is gone): the state file says whom it owes.
+  const restarted = watchOver(fx, gh, { stateFile: file });
+  await restarted.poll();
+  assert.deepEqual(messages(fx.store).map(m => m.to), ["watch-eng", "twin-eng"], "after a restart the one that failed is told, the other is not told again");
+  await restarted.poll();
+  assert.equal(messages(fx.store).length, 2);
+  assert.equal(JSON.parse(await readFile(file, "utf8")).pulls[`${REPO.toLowerCase()}#23`].retry, undefined, "nothing is owed any more");
+});
+
+test("a message the board refuses (the session ended meanwhile) is not sent again", async t => {
+  const attempts: string[] = [];
+  const fx = await twins(t, async (to, real) => { attempts.push(to); if (to === "twin-eng") throw new OpError("to twin-eng: no session the board can reach has that name"); return real(); });
+  const gh = fakeGithub(), watch = watchOver(fx, gh);
+  await finish(fx, gh, watch, COMMIT);
+  await watch.poll(); await watch.poll();
+  assert.deepEqual(attempts, ["watch-eng", "twin-eng"], "asked once");
+  assert.deepEqual(messages(fx.store).map(m => m.to), ["watch-eng"]);
+});
+
+test("a look stopped halfway forgets nothing: the pull requests it did not reach keep their records, and a restart does not tell them again", async t => {
+  const fx = await fixture(t), gh = fakeGithub(), file = await stateFile(t);
+  // Six PRs, more than are asked at once.
+  await fx.op.createItem({ ...asArchitect, key: "many", group: "wf-board", title: "Many", head: `## 改动\n\n${[24, 25, 26, 27, 28].map(n => `${REPO}#${n}`).join(", ")}`, accept: "验收通过" });
+  await fx.op.dispatchStart({ ...asArchitect, id: "many", role: "工程师", level: 2, model: "Sonnet", agent: "many-eng", agentId: "agent-5" });
+  for (const n of [23, 24, 25, 26, 27, 28]) {
+    const commit = `a${n}b2c3d4e5f6`;
+    gh.pulls.set(n, { commit, state: "open", draft: false, merged: false });
+    gh.runs.set(commit, [run("test", "success")]);
+  }
+  let gated = false, entered: () => void = () => {}, release: () => void = () => {};
+  const reached = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const fetchGated = (async (input: string | URL | Request, init?: RequestInit) => { if (gated) { entered(); await gate; } return gh.fetch(input, init); }) as typeof fetch;
+  const watch = new CiWatch({ store: fx.store, ops: fx.op, ci: restSource({ token: async () => "token", fetch: fetchGated }), stateFile: file });
+  await watch.poll();
+  const records = () => Object.keys(JSON.parse(readFileSync(file, "utf8")).pulls).length;
+  assert.equal(records(), 6, "the first look remembers all six, finished before the board looked");
+  // The second look is stopped while the first four are being asked.
+  gated = true;
+  const looking = watch.poll();
+  await reached;
+  watch.stop(); release();
+  await looking;
+  assert.equal(records(), 6, "the two it did not reach are still there");
+  await watchOver(fx, gh, { stateFile: file }).poll();
+  assert.deepEqual(messages(fx.store), [], "and the restarted board has nothing new to tell");
 });
 
 // --- The pieces -------------------------------------------------------------------------------------------------------------------

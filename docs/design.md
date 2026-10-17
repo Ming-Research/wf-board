@@ -3114,7 +3114,8 @@ unfinished again (a rerun, or the full CI that a hand starts on the same commit,
 the status `full-ci`, pending until its run ends), and when the result differs from the one told
 (a rerun that ended between two looks). What was last seen of each pull request, the commit and what
 was told for it, is kept in `state/ci-watch.json` beside the board (git excludes it), so a restart
-neither tells a round twice nor loses one. The first look at a repository tells nothing of a
+neither tells a round twice nor loses one. A look that is stopped halfway (the board is
+restarted) forgets no record of the pull requests it did not reach. The first look at a repository tells nothing of a
 round already over (`judge`, baseline): those are the backlog from before the board looked, as
 for orphan pushes. A pull request that an item names later, in a repository looked at before, is
 news when first seen finished, since the engineer has just opened it. Known limit: a check GitHub
@@ -3127,7 +3128,8 @@ a message (Messages, above) sent as the session 「看板」 with the item's pro
 named, one for each holding session. Its text is one line, for example
 `CI 跑完：Ming-Research/wf-board#80 提交 bb81c7b 全部通过` or `… 有失败：test、e2e`; names that do not
 fit the 150 characters become a count. A message that could not be written is sent again at the
-next look; one the board refuses (the session ended meanwhile) is not.
+next look to the sessions it did not reach, and only to those (their names are kept in
+`state/ci-watch.json` until sent); one the board refuses (the session ended meanwhile) is not.
 
 Rejected: GitHub webhooks, which cannot reach a board that listens on the local address only
 without a relay service; the engineer's own wait script, which asks GitHub itself every five minutes
