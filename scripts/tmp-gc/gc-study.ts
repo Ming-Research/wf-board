@@ -13,9 +13,11 @@ const ROOT = process.env.STUDY_DIR ?? mkdtempSync(join(tmpdir(), "gcstudy-"));
 // Live (read 2026-10-17): 20260 commits, 1749 items, 729 cards, 1032 notes. Pack A (the 10-14 gc) holds the first 15670
 // commits; the gc of 10-16 22:52Z built pack B from the next 3741 commits. Pack X below stands for the part of B that was
 // already packed when that gc ran (3741 commits less the 2160 whose 9087 objects were still loose).
+// `growth <k>` multiplies the number of documents by k, to see what a larger board costs per commit.
+const GROW = process.argv[2] === "growth" ? Number(process.argv[3] ?? 1) : 1;
 const SCALE = SMOKE
-  ? { items: 60, decisions: 25, notes: 35, history: 300, packX: 40, preLoose: 80 }
-  : { items: 1749, decisions: 729, notes: 1032, history: 15670, packX: 1580, preLoose: 2160 };
+  ? { items: 60 * GROW, decisions: 25 * GROW, notes: 35 * GROW, history: 300, packX: 40, preLoose: 80 }
+  : { items: 1749 * GROW, decisions: 729 * GROW, notes: 1032 * GROW, history: 15670, packX: 1580, preLoose: 2160 };
 const ROUNDS = (n: number) => SMOKE ? 2 : n;
 const FG = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
 const NO_AUTO = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
@@ -437,12 +439,14 @@ function shard(): void {
 // The real Store writes at the rate of the busiest ten minutes of the live board (1566 commits in 595 s: gaps under 1 s for 69%,
 // 1 to 2 s for 30%), while a policy decides when maintenance runs. Maintenance is a task of the Store's own write queue, so a write
 // that arrives during it waits, as it would in the daemon. Latency is measured from the write's submission to its answer.
-interface PolicyDef { name: string; config: [string, string][]; start: number; adaptive?: boolean; idleMs?: number; idleMin?: number; max?: number }
+interface PolicyDef { name: string; config: [string, string][]; start: number; push?: boolean; adaptive?: boolean; idleMs?: number; idleMin?: number; max?: number }
 const POLICIES: PolicyDef[] = [
   { name: "git-default", config: [], start: 0 },
   { name: "git-g500", config: [["gc.auto", "500"]], start: 0 },
   { name: "count-100", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 100 },
   { name: "count-200", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 200 },
+  { name: "count-300", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 300 },
+  { name: "count-200-push", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 200, push: true },
   { name: "count-400", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 400 },
   { name: "adaptive", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 200, adaptive: true },
   { name: "idle", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 400, idleMs: 3000, idleMin: 50, max: 800 },
@@ -450,18 +454,42 @@ const POLICIES: PolicyDef[] = [
 // The board's own maintenance step: git's geometric repack of the small packs and the loose objects (what git's auto maintenance runs), the
 // commit-graph, and big packs kept out of the repack (STUDY_KEEP_MB, 0: none).
 const REPLAY_KEEP_MB = Number(process.env.STUDY_KEEP_MB ?? (SMOKE ? 1 : 8));
+const REPLAY_STEP = process.env.STUDY_STEP ?? "midx";
+const REPLAY_MERGE_MB = Number(process.env.STUDY_MERGE_MB ?? (SMOKE ? 1 : 16));
+/** One maintenance step, as a list of git commands (the board runs them one after another inside its write queue). */
+function stepCommands(dir: string): string[][] {
+  if (REPLAY_STEP === "geo") return [["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"], GRAPH];
+  if (REPLAY_STEP === "keep") { if (REPLAY_KEEP_MB > 0) keepBig(dir, REPLAY_KEEP_MB * 1048576); return [["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"], GRAPH]; }
+  const cmds = [["repack", "-d", "-l", "--write-midx", "-q"], GRAPH];
+  if (counts(dir).packs > 8) cmds.push(["multi-pack-index", "expire", "--no-progress"], ["multi-pack-index", "repack", `--batch-size=${REPLAY_MERGE_MB}m`, "--no-progress"]);
+  return cmds;
+}
 async function replay(name: string): Promise<void> {
   const def = POLICIES.find(p => p.name === name);
   if (!def) throw new Error("unknown policy " + name);
+  const PUSH = def.push === true || process.env.STUDY_PUSH === "1";
   const { Store } = await import("../../src/store.ts");
   const { world, base } = prepare("flat", []);
   const dir = copyRepo(base, "replay");
+  // The live repository right after the gc of 10-16: its packs are a geometric ladder, and 859 commits (3557 loose objects) have come since.
+  // The synthetic base has packs that still break the ladder; one geometric repack makes it consistent.
+  timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]);
+  applyChanges(dir, world.take(SMOKE ? 20 : 859));
   for (const [k, v] of def.config) git(dir, ["config", k, v]);
+  note(`replay start state, as the live repository was on 10-17: ${shape(dir)}`);
   const remote = join(ROOT, "remote.git");
-  if (process.env.STUDY_PUSH === "1") { git(ROOT, ["init", "-q", "--bare", remote]); git(dir, ["remote", "add", "origin", remote]); git(dir, ["push", "-q", "origin", "main"]); }
+  if (PUSH) { git(ROOT, ["init", "-q", "--bare", remote]); git(dir, ["remote", "add", "origin", remote]); git(dir, ["push", "-q", "origin", "main"]); }
   const trace = join(ROOT, "trace2.jsonl");
   process.env.GIT_TRACE2_EVENT = trace;
   GITENV.GIT_TRACE2_EVENT = trace;
+  // A board with a maintenance policy of its own finds the backlog at start and works it off before it takes writes.
+  const catchUp: number[] = [];
+  if (def.start > 0) while (Math.floor(counts(dir).count / 4) >= def.start) {
+    const t = performance.now();
+    for (const cmd of stepCommands(dir)) git(dir, cmd);
+    catchUp.push(performance.now() - t);
+  }
+  if (catchUp.length) note(`E4 ${def.name}: the start works off the backlog in ${catchUp.length} step(s) of ${catchUp.map(x => f(x)).join(", ")} ms; then ${shape(dir)}`);
   const store = await Store.open(dir);
   const q = store as unknown as { enqueue<T>(fn: () => Promise<T>): Promise<T>; git(args: string[]): Promise<string> };
   const r = new Rng(4242), keys = Object.keys(store.snapshot().items);
@@ -469,16 +497,14 @@ async function replay(name: string): Promise<void> {
   const bins: [number, number, number][] = [[0, 1, 1075], [1, 2, 470], [2, 3, 5], [3, 5, 5], [5, 10, 6], [10, 15, 4]], total = bins.reduce((a, b) => a + b[2], 0);
   const gap = (): number => { let u = r.next() * total; for (const [lo, hi, w] of bins) { if (u < w) return (lo + (hi - lo) * r.next()) * (SMOKE ? 100 : 1000); u -= w; } return 500; };
   const lat: number[] = [], maint: { at: number; ms: number; commits: number }[] = [], slow: string[] = [];
-  let since = 0, pending = false, nextAt = def.start, msPerCommit = 3, idleTimer: NodeJS.Timeout | undefined, pushes = 0, pushErrors = 0;
+  let since = def.start > 0 ? Math.floor(counts(dir).count / 4) : 0, pending = false, nextAt = def.start, msPerCommit = 3, idleTimer: NodeJS.Timeout | undefined, pushes = 0, pushErrors = 0;
   const t0 = performance.now();
   const requestMaint = () => {
     if (pending) return;
     pending = true;
     void q.enqueue(async () => {
       const a = performance.now(), n = since;
-      if (REPLAY_KEEP_MB > 0) keepBig(dir, REPLAY_KEEP_MB * 1048576);
-      await q.git(["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]);
-      await q.git(GRAPH);
+      for (const cmd of stepCommands(dir)) await q.git(cmd);
       const ms = performance.now() - a;
       maint.push({ at: a - t0, ms, commits: n });
       since -= n; pending = false;
@@ -492,7 +518,7 @@ async function replay(name: string): Promise<void> {
   };
   const writes: Promise<void>[] = [];
   let pushTimer: NodeJS.Timeout | undefined;
-  if (process.env.STUDY_PUSH === "1") pushTimer = setInterval(() => { pushes++; store.push().catch(() => { pushErrors++; }); }, SMOKE ? 500 : 3000);
+  if (PUSH) pushTimer = setInterval(() => { pushes++; store.push().catch(() => { pushErrors++; }); }, SMOKE ? 500 : 3000);
   let at = 0;
   for (let i = 0; i < N; i++) {
     at += gap();
@@ -530,16 +556,35 @@ async function replay(name: string): Promise<void> {
   const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.time);
   const overlaps = adds.filter(a => procs.some(m => a >= m.from && a < m.to)).length;
   const after = counts(dir);
-  emit(`E4 replay, policy ${def.name}, ${N} writes at the busiest ten minutes' rhythm${process.env.STUDY_PUSH === "1" ? ", with a push every 3 s" : ""}`, [{
+  emit(`E4 replay, policy ${def.name}, ${N} writes at the busiest ten minutes' rhythm${PUSH ? ", with a push every 3 s" : ""}`, [{
     policy: def.name, writes: N, p50: f(pct(0.5)), p90: f(pct(0.9)), p99: f(pct(0.99)), max: f(sorted.at(-1)!), over1s: lat.filter(x => x > 1000).length, over3s: lat.filter(x => x > 3000).length,
     maintRuns: maint.length, maintMaxMs: f(Math.max(0, ...maint.map(m => m.ms))), maintMedianMs: f(median(maint.map(m => m.ms))), maintTotalMs: f(maint.reduce((a, m) => a + m.ms, 0)), maintCommits: maint.map(m => m.commits).join("/"),
     looseEnd: after.count, packsEnd: after.packs, gitAddsDuringMaintenance: overlaps, pushes, pushErrors,
   }]);
-  if (process.env.STUDY_PUSH === "1") {
+  if (PUSH) {
     git(dir, ["fsck", "--no-dangling"]);
     note(`E6 after the run: git fsck passed; remote head is an ancestor of the local head: ${spawnSync("git", ["merge-base", "--is-ancestor", git(remote, ["rev-parse", "main"]).trim(), "HEAD"], { cwd: dir, env: GITENV }).status === 0}`);
   }
   note(`E4 ${def.name}: maintenance runs (at s, ms, commits): ${maint.map(m => `${f(m.at / 1000)}/${f(m.ms)}/${m.commits}`).join(" ")}`);
+}
+
+// ---------------------------------------------------------------- experiment: growth (a larger board)
+function growth(): void {
+  const dirty = SMOKE ? [10, 20] : [100, 200, 400];
+  const { ckpt } = prepare("flat", dirty);
+  const rows: Record<string, unknown>[] = [];
+  for (const L of dirty) {
+    const ms: number[] = [];
+    let before = counts(ckpt.get(L)!);
+    for (let i = 0; i < ROUNDS(5); i++) {
+      const w = copyRepo(ckpt.get(L)!, "w");
+      before = counts(w);
+      ms.push(stepCommands(w).reduce((a, cmd) => a + timed(w, cmd).ms, 0));
+      rmSync(w, { recursive: true, force: true });
+    }
+    rows.push({ boardSize: `x${GROW}`, documents: SCALE.items + SCALE.decisions + SCALE.notes, itemsTreeBytes: git(ckpt.get(L)!, ["cat-file", "-s", "HEAD:items"]).trim(), L, looseObjects: before.count, KBperCommit: f(before.size! / L, 1), medianMs: f(median(ms)), minMs: f(Math.min(...ms)), maxMs: f(Math.max(...ms)), msPerCommit: f(median(ms) / L, 2) });
+  }
+  emit(`E7 one maintenance step on a board ${GROW} times the live one's size (the board's step: repack -d -l, commit-graph)`, rows);
 }
 
 const command = process.argv[2];
@@ -549,5 +594,6 @@ else if (command === "knobs") knobs();
 else if (command === "packs") packs(process.argv[3]);
 else if (command === "shard") shard();
 else if (command === "replay") await replay(process.argv[3]!);
+else if (command === "growth") growth();
 else throw new Error("usage: gc-study.ts cost|knobs|packs|shard");
 if (process.env.STUDY_KEEP !== "1") rmSync(ROOT, { recursive: true, force: true });
