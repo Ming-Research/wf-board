@@ -3,7 +3,7 @@
 // maintenance on it. Commands: cost | knobs | packs | shard   (STUDY_SMOKE=1: a tiny scale, to check the script runs).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
@@ -224,7 +224,11 @@ function prepare(layout: Layout, dirty: number[]): Prepared {
   const pre = join(ROOT, `pre-${layout}`);
   importHistory(pre, world, SCALE.history);
   note(`replica ${layout}: history imported in ${f((performance.now() - t0) / 1000)} s; ${shape(pre)}`);
-  git(pre, ["repack", "-a", "-d", "-q"]);
+  // fast-import deltifies badly (a delta against the previous blob, whatever file it is), so its pack is several times the live pack;
+  // -f redoes the deltas the way the live pack, made by git's own repack, has them (live: 27 MB for 88.5 thousand objects).
+  const tA = performance.now();
+  git(pre, ["repack", "-a", "-d", "-f", "-q"]);
+  note(`replica ${layout}: pack A repacked with -f in ${f((performance.now() - tA) / 1000)} s; ${shape(pre)}`);
   applyChanges(pre, world.take(SCALE.packX));
   git(pre, MAINT);
   applyChanges(pre, world.take(SCALE.preLoose));
@@ -356,33 +360,42 @@ function readBench(dir: string): Record<string, number> {
   run("diffTree", ["diff-tree", "-r", "--name-only", "HEAD~50", "HEAD"]);
   return out;
 }
+/** Packs of at least this many bytes get a .keep file, so a geometric repack never rewrites them. */
+function keepBig(dir: string, bytes: number): number {
+  const packDir = join(dir, ".git/objects/pack");
+  let kept = 0;
+  for (const name of readdirSync(packDir)) if (name.endsWith(".pack") && statSync(join(packDir, name)).size >= bytes) { writeFileSync(join(packDir, name.replace(/\.pack$/, ".keep")), ""); kept++; }
+  return kept;
+}
+const GRAPH = ["commit-graph", "write", "--split", "--reachable", "--no-progress"];
 function packs(): void {
-  const STEP = Number(process.env.STUDY_STEP ?? (SMOKE ? 10 : 200)), K = Number(process.env.STUDY_K ?? (SMOKE ? 6 : 60));
+  const TOTAL = SMOKE ? 60 : 12000, STEPS = SMOKE ? [10] : [100, 300];
+  const KEEP_MB = Number(process.env.STUDY_KEEP_MB ?? (SMOKE ? 1 : 8));
   const { world, base } = prepare("flat", []);
-  const changes = world.take(STEP * K);
-  const strategies: Variant[] = [
-    { name: "git auto (incremental, consolidates at 50 packs)", args: MAINT },
-    { name: "geometric=2", args: ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"] },
-    { name: "incremental repack -d -l, never merges", args: ["repack", "-d", "-l", "--write-midx", "-q"] },
+  const changes = world.take(TOTAL);
+  // Each strategy maintains after every STEP commits. All three use git's own geometric repack; they differ in what stays out of it.
+  const strategies: { name: string; step: (dir: string) => number }[] = [
+    { name: "geometric=2 (git's own auto maintenance does this)", step: dir => timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms },
+    { name: `geometric=2, packs of ${KEEP_MB} MB and more kept (.keep)`, step: dir => { keepBig(dir, KEEP_MB * 1048576); return timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms; } },
+    { name: `git auto with gc.bigPackThreshold=${KEEP_MB}m`, step: dir => timed(dir, ["-c", `gc.bigPackThreshold=${KEEP_MB}m`, ...MAINT]).ms },
   ];
-  const ends = new Map<string, string>();
-  for (const s of strategies) {
-    const w = copyRepo(base, "strat");
-    const rows: Record<string, unknown>[] = [], ms: number[] = [];
-    for (let k = 0; k < K; k++) {
+  const ends: [string, string][] = [];
+  for (const STEP of STEPS) for (const s of strategies) {
+    const w = copyRepo(base, "strat"), ms: number[] = [], rows: Record<string, unknown>[] = [];
+    for (let k = 0; k < TOTAL / STEP; k++) {
       applyChanges(w, changes.slice(k * STEP, (k + 1) * STEP));
-      const before = counts(w), t = timed(w, s.args), after = counts(w);
-      ms.push(t.ms);
-      rows.push({ step: k + 1, ms: f(t.ms), looseBefore: before.count, packsAfter: after.packs, sizePackKB: after["size-pack"], looseAfter: after.count });
+      const before = counts(w), t = s.step(w), after = counts(w);
+      ms.push(t);
+      rows.push({ step: k + 1, ms: f(t), looseBefore: before.count, packsAfter: after.packs, sizePackKB: after["size-pack"], looseAfter: after.count });
     }
-    ends.set(s.name, w);
-    emit(`E3 ${s.name}: ${K} steps of ${STEP} commits each, per step`, rows);
-    note(`E3 ${s.name}: median ${f(median(ms))} ms, p95 ${f([...ms].sort((a, b) => a - b)[Math.floor(ms.length * 0.95)]!)} ms, max ${f(Math.max(...ms))} ms; end state ${shape(w)}`);
+    const sorted = [...ms].sort((a, b) => a - b), med = median(ms);
+    emit(`E3 ${s.name}, every ${STEP} commits: the steps over twice the median (${f(med)} ms), of ${ms.length}`, rows.filter(r => Number(r.ms) > 2 * med));
+    note(`E3 ${s.name}, every ${STEP} commits: ${ms.length} steps, median ${f(med)} ms, p95 ${f(sorted[Math.floor(sorted.length * 0.95)]!)} ms, max ${f(sorted.at(-1)!)} ms, sum ${f(ms.reduce((a, b) => a + b, 0) / 1000)} s; end state ${shape(w)}; max packs seen ${Math.max(...rows.map(r => Number(r.packsAfter)))}`);
+    ends.push([`${s.name} / ${STEP}`, w]);
   }
-  // What a full consolidation costs on this repository, and what reading costs with many packs.
   const full = copyRepo(base, "full");
-  note(`E3 full repack of base (repack -a -d --write-midx): ${f(timed(full, ["repack", "-a", "-d", "-q", "--write-midx"]).ms)} ms; repack -A -d -l (what git auto does past the pack limit): ${f(timed(copyRepo(base, "fullA"), ["repack", "-A", "-d", "-l", "--write-midx", "-q"]).ms)} ms`);
-  const reads: Record<string, unknown>[] = [{ state: "base (2-3 packs)", packs: counts(base).packs, ...Object.fromEntries(Object.entries(readBench(base)).map(([k, v]) => [k, f(v, 1)])) }];
+  note(`E3 full repack of base (repack -a -d -f --write-midx): ${f(timed(full, ["repack", "-a", "-d", "-q", "--write-midx"]).ms)} ms; same without a rewrite of deltas, repack -a -d: see above`);
+  const reads: Record<string, unknown>[] = [{ state: "base", packs: counts(base).packs, ...Object.fromEntries(Object.entries(readBench(base)).map(([k, v]) => [k, f(v, 1)])) }];
   for (const [name, dir] of ends) reads.push({ state: name, packs: counts(dir).packs, ...Object.fromEntries(Object.entries(readBench(dir)).map(([k, v]) => [k, f(v, 1)])) });
   emit("E3 read commands (median ms of 3) by end state", reads);
 }
@@ -419,7 +432,9 @@ const POLICIES: PolicyDef[] = [
   { name: "adaptive", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 200, adaptive: true },
   { name: "idle", config: [["gc.auto", "0"], ["maintenance.auto", "false"]], start: 400, idleMs: 3000, idleMin: 50, max: 800 },
 ];
-const MAINT_STEP = (process.env.STUDY_MAINT ?? "repack -d -l --write-midx -q").split(" ");
+// The board's own maintenance step: git's geometric repack of the small packs and the loose objects (what git's auto maintenance runs), the
+// commit-graph, and big packs kept out of the repack (STUDY_KEEP_MB, 0: none).
+const REPLAY_KEEP_MB = Number(process.env.STUDY_KEEP_MB ?? (SMOKE ? 1 : 8));
 async function replay(name: string): Promise<void> {
   const def = POLICIES.find(p => p.name === name);
   if (!def) throw new Error("unknown policy " + name);
@@ -446,7 +461,9 @@ async function replay(name: string): Promise<void> {
     pending = true;
     void q.enqueue(async () => {
       const a = performance.now(), n = since;
-      await q.git(MAINT_STEP);
+      if (REPLAY_KEEP_MB > 0) keepBig(dir, REPLAY_KEEP_MB * 1048576);
+      await q.git(["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]);
+      await q.git(GRAPH);
       const ms = performance.now() - a;
       maint.push({ at: a - t0, ms, commits: n });
       since -= n; pending = false;
