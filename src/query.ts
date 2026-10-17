@@ -495,7 +495,7 @@ export interface ChangesReport {
   /** Every commit of the range, and how many of them carry an excluded session. */
   commits: { total: number; dropped: number };
   except: string[];
-  /** Earlier versions of documents that do not fit today's schema; the old board has none of those documents. */
+  /** Earlier versions of documents or of the board settings that do not fit today's schema; the old board has none of those documents and keeps today's settings. */
   unreadable: number;
   flags: FlagRow[];
   /** How many new flags there are, by kind of flag. */
@@ -585,7 +585,9 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
   if (o.detail) others.groups = groupByArea(range, f, entry => otherCommits.get(entry));
   // The board when the range began, and the flags that exist now but did not exist on it.
   const boardCommit = range.commits.find(c => c.files.includes("board.yaml"));
-  const settings = boardCommit?.parents[0] ? await store.boardAt(boardCommit.parents[0]) : null;
+  // Settings that do not fit today's schema are taken as absent, like an unreadable document: the head's settings stand, and the answer counts it.
+  let settings: Snapshot["board"] | null = null, unreadableSettings = 0;
+  if (boardCommit?.parents[0]) try { settings = await store.boardAt(boardCommit.parents[0]); } catch (error) { if (!(error instanceof ValidationError)) throw error; unreadableSettings = 1; }
   const old = boardBefore(store, s, range.changed, settings), rOld = makeRules(old.board, await timeOf(store, since));
   const flags: FlagRow[] = [], flagCounts: Record<string, number> = {};
   for (const id of Object.keys(s.items)) {
@@ -599,7 +601,7 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
     for (const c of added) flagCounts[flagKind(c)] = (flagCounts[flagKind(c)] ?? 0) + 1;
   }
   flags.sort((a, b) => a.flags[0]!.localeCompare(b.flags[0]!) || a.item.localeCompare(b.item));
-  return { since, commits: { total: range.commits.length, dropped: range.commits.filter(dropped).length }, except, unreadable: old.unreadable, flags, flagCounts, created, replies, others };
+  return { since, commits: { total: range.commits.length, dropped: range.commits.filter(dropped).length }, except, unreadable: old.unreadable + unreadableSettings, flags, flagCounts, created, replies, others };
 }
 export async function history(store: Store, kind: DocKind, id: string, limit = 20): Promise<CommitInfo[]> {
   const commits = await store.log({ kind, id, limit: limit === 0 ? 1 : limit });

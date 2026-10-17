@@ -239,7 +239,7 @@ test("the tool answers the compact form by default, the document listing with de
 });
 
 test("a range that only changes the board's settings still lists the flags it brought, through the tool", async t => {
-  const { store, op } = await board(t);
+  const { store } = await board(t);
   const since = store.snapshot().head, current = store.snapshot();
   await store.commit({ author: "Architect", session: "架构师", message: "Approve a tag", board: { ...current.board, tags: [{ name: "测试", meaning: "Applies to tests", projects: ["Whitefoot"] }] } });
   const mcp = createMcpServer({ store, ops: ops(store) }), client = new Client({ name: "Patrol", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
@@ -249,11 +249,10 @@ test("a range that only changes the board's settings still lists the flags it br
   assert.match(text, /^自 .* 起 1 个提交/);
   assert.match(text, /新标记 \d+ 条（缺标签 ×\d+）/);
   assert.match(text, /  a · Whitefoot · 缺标签 · 改的人：范围内没人改它/);
-  void op;
 });
 
 test("a range with nothing to show says so, and one with only commits says there is nothing to handle", async t => {
-  const { store, op } = await board(t);
+  const { store } = await board(t);
   const since = store.snapshot().head;
   assert.equal(formatReport(await report(store, since)), `自 ${since.slice(0, 12)} 起没有改动。`);
   // A draft note is a change nobody has to handle.
@@ -262,7 +261,6 @@ test("a range with nothing to show says so, and one with only commits says there
   assert.deepEqual(r.replies, []);
   assert.equal(r.others.notes, 1, "counted with the other changes");
   assert.match(formatReport(r), /起 1 个提交，没有要处理的行\n其它改动：留言 1 个/);
-  void op;
 });
 
 test("a card or note an excluded session wrote counts as new only to those who did not write it; what others did to it is a change", async t => {
@@ -301,6 +299,19 @@ test("a version of a document from before the range that does not fit today's sc
   assert.deepEqual(r.created, [], "it was not created in the range; its earlier version is only unreadable");
 });
 
+test("a version of the board's settings from before the range that does not fit today's schema is taken as absent too, and counted", async t => {
+  const { dir, store: seeded } = await board(t);
+  const base = Math.floor(Date.now() / 1000) + 60, settings = seeded.snapshot().board;
+  // The settings the range starts from hold a field no schema knows; the range's one commit writes them as today's, with a tag.
+  await appendCommits(dir, [
+    { at: base, message: "Odd settings", session: "seed", files: { "board.yaml": { ...settings, retired_setting: 1 } } },
+    { at: base + 60, message: "Approve a tag", session: "架构师", files: { "board.yaml": { ...settings, tags: [{ name: "测试", meaning: "Applies to tests", projects: ["Whitefoot"] }] } } },
+  ]);
+  const store = await Store.open(dir), since = (await store.log({ at: store.snapshot().head, limit: 5 })).find(c => c.message === "Odd settings")!.commit;
+  const r = await report(store, since);
+  assert.equal(r.unreadable, 1, "the unreadable settings are counted like an unreadable document");
+  assert.match(formatReport(r), /1 个旧版本读不出，按没有算/);
+});
 test("the old listing keeps showing the project when a commit has no session", () => {
   const commit = { commit: "a".repeat(40), at: "2026-10-11T00:00:00Z", author: "migration", message: "Import", files: [] };
   const groups = [{ areaId: "x", area: "X", documents: [{ kind: "item" as const, id: "a", title: "a", summary: "new item", commits: [commit, { ...commit, session: "eng-1" }] }] }] as unknown as Parameters<typeof formatChanges>[0];

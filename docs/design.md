@@ -1612,7 +1612,9 @@ whose commits do not count.
   section 4 on a hosted CI runner, and those figures, not a run on another machine, are
   the reference. An earlier version of a document that does not fit today's schema (a
   field since removed) cannot be put back: the document counts as absent from the old
-  board, and the answer's first line says how many versions that was. A flag is the same
+  board, and the answer's first line says how many versions that was. The same holds for
+  the board settings of before the range: the head's settings stand, and the version is
+  counted. A flag is the same
   flag on both boards when its short label (else its text without the count of the
   title-length flag) and the item or card it points at are equal. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
