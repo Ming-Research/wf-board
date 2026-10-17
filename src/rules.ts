@@ -722,7 +722,10 @@ export class DerivedCache {
 
 type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
 /** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
-export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
+// PROBE (study n-writes-stable-study, not for merge): what a Rules object keeps for the next one to reuse.
+const INTERNALS = new WeakMap<object, { memo: Map<string, Map<string, unknown>>; now: number; closedMemo: Map<string, unknown>; targetStatuses: Map<string, unknown> }>();
+export const reuseStats = { reused: 0, rebuilt: 0 };
+export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex); previous?: { rules: Rules; changed: ReadonlyArray<{ kind: string; id: string }>; activity?: ActivityDelta } } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
   function stepLine(step: PlanStep): string {
     if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
@@ -1190,7 +1193,41 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return out;
     });
   }
-  return {
+  // PROBE: a write that changes no field the statuses and priorities read keeps every derived value but the clocks and the checks
+  // of the items it can reach.
+  const previous = options.previous && INTERNALS.get(options.previous.rules);
+  if (previous && Math.floor(previous.now / 60_000) === Math.floor(now / 60_000)) (() => {
+    const before = options.previous!.rules;
+    const changed = options.previous!.changed;
+    if (!changed.every(d => d.kind === "message" || d.kind === "item" && before.item(d.id) && s.items[d.id] && sameStatusAndPriority(before.item(d.id)!, s.items[d.id]!))) return;
+    for (const agent of Object.keys(options.previous!.activity?.agents ?? {})) for (const id of before.dispatchedItems(agent)) {
+      const was = previous.memo.get("sessions")?.get(id) as string[] | undefined, nowLive = [...new Set(liveDispatches(s, id, now).map(d => d.agent))];
+      if (!was || JSON.stringify(was) !== JSON.stringify(nowLive)) return;
+    }
+    // Within one minute a Rules object answers for the first read's time, as DerivedCache does: the reused values were made for it.
+    now = previous.now;
+    const seeds = new Set<string>([...changed.filter(d => d.kind === "item").map(d => d.id), ...Object.keys(options.previous!.activity?.items ?? {})]);
+    const reach = new Set<string>();
+    const up = (id: string) => { reach.add(id); for (const a of before.ancestors(id)) reach.add(a); };
+    for (const id of seeds) {
+      up(id);
+      for (const d of before.depsOf(id)) if (d.kind === "item") up(d.id);
+      for (const d of before.dependents(id)) up(d.id);
+      for (const target of [id, ...before.ancestors(id)]) for (const w of before.mentionedBy(target)) up(w);
+    }
+    for (const [name, values] of previous.memo) {
+      if (name === "activity") continue;
+      if (name === "index") { const old = values.get("") as ReturnType<typeof index>; memo.set("index", new Map([["", { ...old, items: new Map(Object.entries(s.items)) }]])); continue; }
+      const copy = new Map(values);
+      if (name === "checks" || name === "stalledBelow") for (const id of reach) copy.delete(id);
+      memo.set(name, copy);
+    }
+    for (const [k, v] of previous.closedMemo) closedMemo.set(k, v as "done" | "cancelled" | undefined);
+    for (const [k, v] of previous.targetStatuses) targetStatuses.set(k, v as Status | undefined);
+    reuseStats.reused++;
+  })();
+  if (memo.size === 0) reuseStats.rebuilt++;
+  const made: Rules = {
     stepDays, stepLine, planRatio,
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
@@ -1209,4 +1246,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
   };
+  INTERNALS.set(made, { memo, now, closedMemo, targetStatuses });
+  return made;
 }

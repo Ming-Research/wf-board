@@ -8,6 +8,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -26,7 +28,11 @@ jobs:
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run build:web
-      - run: node --test test/e2e/probe-*.e2e.ts
+      - run: |
+          git worktree add --detach "$RUNNER_TEMP/base" origin/main
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+          echo "base $(git -C "$RUNNER_TEMP/base" rev-parse HEAD)"
+          PROBE_BASE="$RUNNER_TEMP/base" node --test test/e2e/probe-*.e2e.ts
       - if: always()
         uses: actions/upload-artifact@v4
         with:

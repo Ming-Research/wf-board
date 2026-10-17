@@ -2,10 +2,16 @@
 // press-n time while sessions write is made of. Run by the temporary workflow probe-writes.yml on the study branch only.
 
 import { test } from "node:test";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { build } from "esbuild";
+import { rules, reuseStats } from "../../src/rules.ts";
+import type { Rules } from "../../src/rules.ts";
+import type { Item, Snapshot } from "../../src/model.ts";
 import type { Browser, CDPSession } from "playwright";
 import { prng } from "./board-gen.ts";
-import { launch, BoardPage } from "./harness.ts";
+import { launch, BoardPage, serveBoard, ROOT } from "./harness.ts";
 import type { BoardServer } from "./harness.ts";
 import { startLiveBoard } from "./live-board.ts";
 
@@ -95,62 +101,130 @@ function summarize(label: string, profile: CpuProfile, per: number, unit: string
   out(`-- self\n${top(self, 30)}`);
 }
 
-test("probe: a write's cost on the page and the parts of press-n time while writing", { timeout: 40 * 60_000 }, async t => {
+
+/** Everything a Rules object answers, for every item: two objects that agree here agree for the page and the server. */
+function answers(r: Rules, s: Pick<Snapshot, "items">): string {
+  const ids = Object.keys(s.items).sort();
+  return JSON.stringify([r.areas(), ids.map(id => [id, r.statusOf(id), r.priorityOf(id), r.checks(id), r.refusals(id), r.planRows(id), r.depsOf(id), r.dependents(id), r.isNeeded(id), r.canStart(id), r.startable(id), r.progress(id),
+    r.stalledBelow(id), r.blockingBelow(id), r.nonBlockingBelow(id), r.pausedBy(id), r.isOpenWork(id), r.isRoot(id), r.isBacklog(id), r.children(id), r.ancestors(id), r.onCycle(id), r.needsOwner(id), r.workedOn(id),
+    r.planRatio(id), r.mentionedBy(id), r.cardsOf(id), r.parentOf(id)])]);
+}
+/** A random write of the kinds sessions make, most of which change nothing the statuses read. */
+function mutate(rnd: ReturnType<typeof prng>, s: Snapshot, k: number): { s: Snapshot; id: string; kind: string } {
+  const ids = Object.keys(s.items), id = rnd.pick(ids), it = s.items[id]!, at = new Date(Date.parse("2026-10-17T12:00:00Z") + k * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const kinds = ["log", "log", "log", "head", "head", "title", "tags", "difficulty", "plan-doing", "plan-done", "cardline"];
+  const kind = rnd.pick(kinds);
+  let next: Item = { ...it, updated: at };
+  if (kind === "log") next.log = [...it.log, { at, by: it.group, text: "进展 " + k }];
+  else if (kind === "head") next.head = (it.head ?? "") + "\n\n补充 " + k;
+  else if (kind === "title") next.title = it.title.length > 30 ? it.title.slice(0, 8) : it.title + " 很长很长很长很长很长很长很长很长的标题";
+  else if (kind === "tags") next.tags = it.tags?.length ? [] : ["看板"];
+  else if (kind === "difficulty") next.difficulty = it.difficulty === undefined ? 2 : undefined;
+  else if (kind === "cardline") { const cards = Object.entries(s.decisions).filter(([, d]) => d.item === id).map(([key]) => key); next.head = cards.length && rnd.chance(0.5) ? (it.head ?? "") + "\n[[q:" + cards[0] + "]]\n" : (it.head ?? "").replace(/\n\[\[q:[^\]]+\]\]/g, ""); }
+  else {
+    let done = false;
+    next.plan = it.plan.map(row => !done && "state" in row && (kind === "plan-doing" ? row.state === "todo" : row.state === "doing") ? (done = true, kind === "plan-doing" ? { ...row, state: "doing" as const, since: at } : { ...row, state: "done" as const, doneAt: at }) : row);
+  }
+  if (next.difficulty === undefined) delete next.difficulty;
+  return { s: { ...s, items: { ...s.items, [id]: next } }, id, kind };
+}
+
+async function pageOf(root: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "probe-page-"));
+  await mkdir(join(dir, "dist"));
+  await writeFile(join(dir, "index.html"), await readFile(join(root, "web/index.html")));
+  await symlink(join(ROOT, "web/dist/mermaid.js"), join(dir, "dist/mermaid.js"));
+  await build({ entryPoints: [join(root, "web/app.ts")], bundle: true, format: "esm", target: "es2022", outfile: join(dir, "dist/app.js"), logLevel: "silent" });
+  return dir;
+}
+
+/** One run of one page: the main thread per write with no key pressed, then landings while sessions write. */
+async function cell(browser: Browser, board: BoardServer, landingsWanted: number) {
+  const { bp, cdp } = await openPage(browser, board);
+  const warm = startWriters(board, 3); await sleep(2500); await warm.stop(); await quiet(bp); await take(bp);
+  const c0 = await bp.changes(), b0 = await busyTime(cdp);
+  const w = startWriters(board, 3); await sleep(6000); await w.stop(); await quiet(bp);
+  const perWrite = (await busyTime(cdp) - b0) / Math.max(1, await bp.changes() - c0);
+  await take(bp);
+  const w2 = startWriters(board, 3);
+  const busy: number[] = [], land: number[] = [];
+  for (let presses = 0; busy.length < landingsWanted && presses < 8 * landingsWanted; presses++) {
+    const was = await bp.selected(), before = await busyTime(cdp);
+    await bp.page.keyboard.press("n");
+    await quiet(bp);
+    const spent = await busyTime(cdp) - before, now = await bp.selected(), p = await take(bp);
+    if (now === null || now === was) continue;
+    const cur = p.curAt.filter(x => x >= p.pressAt);
+    busy.push(spent); if (cur.length) land.push(Math.min(...cur) - p.pressAt);
+  }
+  await w2.stop();
+  await bp.context.close();
+  return { perWrite, busy: med(busy), busy90: q(busy, 0.9), land: med(land), land90: q(land, 0.9) };
+}
+/** Mean of the log ratios and its 95% interval (t distribution), as ratios. */
+function interval(ratios: number[]) {
+  const T = [12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23, 2.20, 2.18, 2.16, 2.14, 2.13, 2.12, 2.11, 2.10, 2.09];
+  const l = ratios.map(Math.log), n = l.length, m = l.reduce((a, b) => a + b, 0) / n, sd = Math.sqrt(l.reduce((a, b) => a + (b - m) ** 2, 0) / (n - 1)), h = (T[n - 2] ?? 2.0) * sd / Math.sqrt(n);
+  return { ratio: Math.exp(m), lo: Math.exp(m - h), hi: Math.exp(m + h), half: (Math.exp(h) - 1) };
+}
+
+test("probe: reused rules agree with fresh ones; base, twin and candidate pages compared in interleaved pairs", { timeout: 60 * 60_000 }, async t => {
   const board = await startLiveBoard(t), browser = await launch(t);
   await mkdir("probe-out", { recursive: true });
 
-  // 1. No key pressed, sessions writing 3 times a second: the page's main thread per write, and where it goes.
+  // 0. The oracle: after each random write, rules that reuse the previous ones answer exactly what rules built from nothing answer.
   {
-    const { bp, cdp } = await openPage(browser, board);
-    const warm = startWriters(board, 3); await sleep(4000); await warm.stop(); await quiet(bp); await take(bp);
-    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 200 });
-    const b0 = await busyTime(cdp);
-    await cdp.send("Profiler.start");
-    const w = startWriters(board, 3); await sleep(PROFILE_SECONDS * 1000); const written = await w.stop(); await quiet(bp);
-    const { profile } = await cdp.send("Profiler.stop") as { profile: CpuProfile };
-    const busy = await busyTime(cdp) - b0, p = await take(bp);
-    await writeFile("probe-out/writes.cpuprofile", JSON.stringify(profile));
-    const handler = p.changes.map(c => c[1]), task = p.changes.map(c => c[2]), draws = p.draws.map(d => d[1] - d[0]);
-    out(`WRITES idle page: ${written} writes, ${p.changes.length} change events, busy ${f(busy)} ms = ${(busy / p.changes.length).toFixed(1)} ms per change event (profiler on); rules builds ${p.rules.length}; draws ${p.draws.length}`);
-    out(`WRITES change handler (sync) ms: median ${f(med(handler))} p90 ${f(q(handler, 0.9))} max ${f(Math.max(...handler))}; handler task incl. microtasks: median ${f(med(task))} p90 ${f(q(task, 0.9))}`);
-    out(`WRITES draw task ms: median ${f(med(draws))} p90 ${f(q(draws, 0.9))} max ${f(Math.max(...draws))}; scopes sample: ${p.draws.slice(0, 6).map(d => d[2]).join(" | ")}`);
-    summarize("idle page, sessions writing 3/s", profile, p.changes.length, "write");
-    await bp.context.close();
+    const rnd = prng(99), T0 = Date.parse("2026-10-17T12:00:00Z");
+    let s = board.store.snapshot() as Snapshot, r = rules(s, T0);
+    answers(r, s);
+    let mismatches = 0, k = 0, rNow = T0, reusedBefore = reuseStats.reused, pending: { r: Rules; s: Snapshot; now: number; k: number; kind: string; id: string } | undefined;
+    const kinds = new Map<string, number>();
+    // Each Rules object is checked only after the next one was built from it, so every build reuses a cache the page would leave:
+    // half its answers asked, the other half not.
+    const check = (p: NonNullable<typeof pending>) => { if (answers(rules(p.s, p.now), p.s) !== answers(p.r, p.s)) { mismatches++; if (mismatches <= 5) out(`ORACLE mismatch after write ${p.k} (${p.kind} on ${p.id})`); } };
+    for (; k < Number(process.env.PROBE_ORACLE_WRITES ?? 150); k++) {
+      const m = mutate(rnd, s, k), at = T0 + (k % 50) * 1000;
+      const next = rules(m.s, at, { previous: { rules: r, changed: [{ kind: "item", id: m.id }] } });
+      // A reused Rules object answers for the time its first ancestor in the chain was built at, as DerivedCache does within a minute.
+      if (reuseStats.reused === reusedBefore) rNow = at;
+      reusedBefore = reuseStats.reused;
+      if (pending) check(pending);
+      for (const id of Object.keys(m.s.items)) if (rnd.chance(0.5)) { next.statusOf(id); next.priorityOf(id); next.checks(id); }
+      pending = { r: next, s: m.s, now: rNow, k, kind: m.kind, id: m.id };
+      kinds.set(m.kind, (kinds.get(m.kind) ?? 0) + 1);
+      s = m.s; r = next;
+    }
+    if (pending) check(pending);
+    out(`ORACLE ${k} writes (${[...kinds].map(([a, b]) => a + " " + b).join(", ")}): ${mismatches} mismatches; reused ${reuseStats.reused}, rebuilt ${reuseStats.rebuilt}`);
   }
 
-  // 2. Landings, quiet and writing: the test's busy time beside the time to land and what else fell into the window.
-  for (const writing of [false, true]) {
-    const { bp, cdp } = await openPage(browser, board);
-    const w = writing ? startWriters(board, 3) : null;
-    const rows: Array<{ busy: number; land: number; window: number; changes: number; changeMs: number; inputDelay: number; drawsMs: number; draws: number; landDraws: number }> = [];
-    for (let presses = 0; rows.length < LANDINGS && presses < 8 * LANDINGS; presses++) {
-      const was = await bp.selected(), b0 = await busyTime(cdp);
-      await bp.page.keyboard.press("n");
-      await quiet(bp);
-      const end = await bp.page.evaluate(() => performance.now());
-      const busy = await busyTime(cdp) - b0, now = await bp.selected(), p = await take(bp);
-      if (now === null || now === was) continue;
-      const cur = p.curAt.filter(x => x >= p.pressAt), land = cur.length ? Math.min(...cur) - p.pressAt : NaN;
-      const ch = p.changes.filter(c => c[0] >= p.pressAt), key = p.keys.filter(k => Math.abs(k[0] - p.pressAt) < 50)[0];
-      const landDraws = p.draws.filter(d => d[0] >= p.pressAt && (!cur.length || d[0] <= Math.min(...cur)));
-      rows.push({ busy, land, window: end - p.pressAt, changes: ch.length, changeMs: ch.reduce((a, c) => a + c[2], 0), inputDelay: key ? key[1] : 0, drawsMs: p.draws.filter(d => d[0] >= p.pressAt).reduce((a, d) => a + d[1] - d[0], 0), draws: p.draws.filter(d => d[0] >= p.pressAt).length, landDraws: landDraws.length });
-    }
-    const written = w ? await w.stop() : 0;
-    const label = writing ? `writing 3/s (${written} writes)` : "quiet";
-    const col = (k: keyof typeof rows[number]) => rows.map(r => r[k]);
-    const line = (name: string, xs: number[]) => out(`LAND ${label}: ${name.padEnd(34)} median ${f(med(xs)).padStart(5)}  p90 ${f(q(xs, 0.9)).padStart(5)}  max ${f(Math.max(...xs.filter(Number.isFinite))).padStart(5)}`);
-    out(`LAND ${label}: ${rows.length} landings`);
-    line("busy (the test's metric)", col("busy"));
-    line("key to landed (current mark)", col("land"));
-    line("key delay (keydown waited)", col("inputDelay"));
-    line("window key..quiet", col("window"));
-    line("change events in window", col("changes"));
-    line("change handling ms in window", col("changeMs"));
-    line("busy minus change handling", rows.map(r => r.busy - r.changeMs));
-    line("draws in window", col("draws"));
-    line("draws ms in window", col("drawsMs"));
-    line("draws before landed", col("landDraws"));
-    out(`LAND ${label}: rows busy/land/window/changes/changeMs: ${rows.map(r => [r.busy, r.land, r.window, r.changes, r.changeMs].map(f).join("/")).join(" ")}`);
+  // 1. Interleaved pairs: base (the main line), its twin (the same source built again) and the candidate (this branch).
+  const base = process.env.PROBE_BASE!, pages = { base: await pageOf(base), twin: await pageOf(base), cand: await pageOf(ROOT) };
+  const served = { base: await serveBoard(t, board, pages.base), twin: await serveBoard(t, board, pages.twin), cand: await serveBoard(t, board, pages.cand) };
+  const PAIRS = Number(process.env.PROBE_PAIRS ?? 10), LANDINGS_PER_CELL = Number(process.env.PROBE_CELL_LANDINGS ?? 12);
+  const runs: Array<Record<"base" | "twin" | "cand", Awaited<ReturnType<typeof cell>>>> = [];
+  const orders: Array<Array<"base" | "twin" | "cand">> = [["base", "twin", "cand"], ["cand", "base", "twin"], ["twin", "cand", "base"]];
+  for (let i = 0; i < PAIRS; i++) {
+    const row = {} as Record<"base" | "twin" | "cand", Awaited<ReturnType<typeof cell>>>;
+    for (const v of orders[i % 3]!) row[v] = await cell(browser, served[v], LANDINGS_PER_CELL);
+    runs.push(row);
+    out(`PAIR ${i}: ` + (["base", "twin", "cand"] as const).map(v => `${v} perWrite ${f(row[v].perWrite)} busy ${f(row[v].busy)}/${f(row[v].busy90)} land ${f(row[v].land)}/${f(row[v].land90)}`).join(" | "));
+  }
+  for (const metric of ["perWrite", "busy", "busy90", "land", "land90"] as const) {
+    const twin = interval(runs.map(r => r.twin[metric] / r.base[metric])), cand = interval(runs.map(r => r.cand[metric] / r.base[metric]));
+    out(`CELL ${metric}: base median ${f(med(runs.map(r => r.base[metric])))}, cand median ${f(med(runs.map(r => r.cand[metric])))}; twin/base ${twin.ratio.toFixed(3)} [${twin.lo.toFixed(3)}, ${twin.hi.toFixed(3)}] noise ±${(twin.half * 100).toFixed(1)}%; cand/base ${cand.ratio.toFixed(3)} [${cand.lo.toFixed(3)}, ${cand.hi.toFixed(3)}]`);
+  }
+
+  // 2. Where the candidate's write still goes.
+  {
+    const { bp, cdp } = await openPage(browser, served.cand);
+    const warm = startWriters(board, 3); await sleep(3000); await warm.stop(); await quiet(bp);
+    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 200 });
+    const c0 = await bp.changes();
+    await cdp.send("Profiler.start");
+    const w = startWriters(board, 3); await sleep(PROFILE_SECONDS * 1000); await w.stop(); await quiet(bp);
+    const { profile } = await cdp.send("Profiler.stop") as { profile: CpuProfile };
+    summarize("candidate page, sessions writing 3/s", profile, await bp.changes() - c0, "write");
     await bp.context.close();
   }
 });

@@ -234,7 +234,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // nothing; an observer in the test has seen it.
   function countEvent(name: string, detail?: string) { performance.mark(name, detail === undefined ? undefined : { detail }); performance.clearMarks(name); }
   // The data changed (a snapshot, a minute that moves the rules): the board's rules are built again, and both caches go.
-  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
+  // PROBE (study n-writes-stable-study): the live change being applied, whose rules the next build may reuse.
+  let reuseNext: { rules: Rules; changed: Array<{ kind: string; id: string }>; activity?: ActivityDelta } | undefined;
+  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot, previous = reuseNext; reuseNext = undefined; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s), ...(previous ? { previous } : {}) }); }
   // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
   function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
@@ -3077,6 +3079,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (base.head === change.activity.from) snapshot.activity = applyActivityDelta(base.activity, change.activity);
         else if (base.head !== change.commit) resync=true;
       }
+      if (!resync) reuseNext = { rules: baseRules, changed: change.changed, ...(change.activity ? { activity: change.activity } : {}) };
       applySnapshot(snapshot,true);
       const seeds=changeSeeds(base,snapshot,baseRules,derived,change.changed,change.activity);
       if (!seeds) rulePresentationDirty=true;
