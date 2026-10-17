@@ -287,7 +287,7 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
 });
 
-test("MCP moves an item and what it owns to another project, and only Architect with session PM or 架构师 may", async t => {
+test("MCP moves an item and what it owns to another project, and only the PM or the architect may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
@@ -357,7 +357,7 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   assert.equal(store.snapshot().head, head, "crossing the active-time threshold changes no document or commit");
 });
 
-test("MCP set_pause is Architect-only and paused status works in list and overview", async t => {
+test("MCP set_pause is for the PM and the architect only, and paused status works in list and overview", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Pause test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
@@ -365,10 +365,10 @@ test("MCP set_pause is Architect-only and paused status works in list and overvi
   const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_pause");
   assert.ok(tool, "the pause operation is available to Architect");
-  assert.match(tool.description!, /Only author Architect/);
+  assert.match(tool.description!, rx`Only author ${PROCESS_WRITERS}`);
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_pause", arguments: { author, id: "area", paused: true, reason: "Pause" } });
-  assert.equal(refused.isError, true); assert.match(text(refused), /only Architect/); assert.deepEqual(store.snapshot(), before);
+  assert.equal(refused.isError, true); assert.match(text(refused), rx`only ${PROCESS_WRITERS}`); assert.deepEqual(store.snapshot(), before);
   const missingReason = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true } });
   assert.equal(missingReason.isError, true); assert.match(text(missingReason), /reason.*required/);
   const paused = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true, reason: "Owner paused project" } });

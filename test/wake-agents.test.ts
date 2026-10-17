@@ -166,9 +166,11 @@ async function agentSocket(t: { after(fn: () => void): void }, url: string, name
 async function refused(t: { after(fn: () => void): void }, url: string, path: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + path);
   socket.on("error", () => {}); t.after(() => socket.terminate());
-  const [, response] = await once(socket, "unexpected-response");
-  response.resume();
-  return response.statusCode as number;
+  // A refused upgrade answers with a status; one that is wrongly accepted opens the socket, and the test fails at once instead of waiting.
+  return await Promise.race([
+    once(socket, "unexpected-response").then(([, response]) => { response.resume(); return response.statusCode as number; }),
+    once(socket, "open").then(() => 101),
+  ]);
 }
 
 test("an agent's socket gets what was not delivered, then its own live pushes only; after its ack they are not sent again", async t => {

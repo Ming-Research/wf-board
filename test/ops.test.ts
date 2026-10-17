@@ -953,7 +953,7 @@ test("Architect writes any project's items, cards and note replies under its own
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
-test("only Architect from session PM or 架构师 creates items, cancels or reopens them, changes a title, moves them to another project, pauses or resumes, and only 架构师 changes the tag vocabulary", async t => {
+test("only the PM or the architect creates items, cancels or reopens them, changes a title, moves them to another project, pauses or resumes, and only 架构师 changes the tag vocabulary", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass", priority: "P1" });
   const before = store.snapshot(), count = (await store.log()).length, rev = before.items.a!.rev;
