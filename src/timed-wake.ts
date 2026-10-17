@@ -37,11 +37,10 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   const changed = [...writers].map(([item, by]): ChangedItem => ({ item, project: r.projectOf(item), title: s.items[item]!.title, status: status(item), by: [...by] }));
   const open = Object.keys(s.items).filter(id => r.isOpenWork(id));
   const entry = (item: string): WorkingItem => ({ item, project: r.projectOf(item), title: s.items[item]!.title, status: status(item), flags: flags(item) });
-  const doing = (id: string) => s.items[id]!.plan.some(row => "text" in row && row.state === "doing");
   return {
     since: from,
     changed: capped(changed),
-    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.projectOf(id) !== PM_AUTHOR && r.statusOf(id) === "wip" && doing(id)).map(entry)),
+    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.projectOf(id) !== PM_AUTHOR && r.statusOf(id) === "wip" && r.workedOn(id)).map(entry)),
     architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT).map(entry)),
     pm: capped(open.filter(id => r.projectOf(id) === PM_AUTHOR).map(entry)),
     actions,

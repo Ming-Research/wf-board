@@ -11,7 +11,7 @@ import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts
 import type { BoardServer, Revert } from "./harness.ts";
 import { checkReload, checkWriting, checkLoop } from "./update.ts";
 import { setHead, checkFit, FIT_HEAD } from "./mermaid-checks.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks, checkIdleStatus } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -268,6 +268,18 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/index.html", edit: n.edit, find: n.find, replace: n.replace }], family: n.family,
     run: async bp => checkFullWidth(bp),
   })),
+  {
+    bug: "an item with part done and nobody on it was counted and filtered as 未开始, with no 停滞 filter (owner, 2026-10-16)",
+    // The project's 停滞 button is gone, so part-done items fall back under 未开始 alone.
+    reverts: [{ file: "web/app.ts", edit: "the 停滞 filter", find: "    [\"idle\", \"停滞\", \"做完了一部分、现在没人在做的条目\", it => statusOf(it) === \"idle\"],\n", replace: "" }], family: "idle-status",
+    run: async (bp, b) => checkIdleStatus(bp, await oracle(b.store)),
+  },
+  {
+    bug: "the chip of a part-done item had no colour of its own, so it read as nothing (owner, 2026-10-16)",
+    // Without its background rule the chip is bare text beside the coloured chips of the other statuses.
+    reverts: [{ file: "web/index.html", edit: "the background of a part-done chip", find: ".st.idle { background: var(--idle-soft); }\n", replace: "" }], family: "idle-status",
+    run: async (bp, b) => checkIdleStatus(bp, await oracle(b.store)),
+  },
   {
     bug: "a diagram wider than the text was drawn at its own width, so its right part was cut off by a box that scrolled sideways without showing it could (owner, 2026-10-17)",
     // Every diagram at its own width again, whatever its box.

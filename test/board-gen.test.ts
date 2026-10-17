@@ -27,6 +27,8 @@ for (const seed of [1, 2]) test(`generated board ${seed}: valid documents, every
   assert.ok(s.items[s.decisions[gen.witness.commentCard]!.item]!.plan.some(row => "card" in row && row.card === gen.witness.commentCard), "the comment card unfolds inline under its home plan row");
   assert.equal(r.isPaused(gen.witness.unpaused), false);
   assert.ok(r.isOpenWork(gen.witness.unpaused));
+  // Every status and progress derives, whichever item is asked first (a loop in the derivation overflowed the stack on some).
+  for (const id of Object.keys(s.items)) { const fresh = rules(s); fresh.statusOf(id); fresh.progress(id); r.statusOf(id); r.progress(id); }
   // The ownership graph is acyclic: every item reaches a top item.
   for (const id of Object.keys(s.items)) assert.ok(r.ancestors(id).length < 20 && !r.onCycle(id), id);
   const steps = await unreadSteps(store, s.owner.cursor, s.owner.readMarks, s.head);
