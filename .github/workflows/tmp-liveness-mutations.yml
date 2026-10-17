@@ -41,7 +41,7 @@ jobs:
           ('last-item-named', 'src/liveness.ts', r'''const item = items[0]!,''', r'''const item = items.at(-1)!,'''),
           ('ask-time-changed', 'src/liveness.ts', r'''export const ASK_AFTER_MS = 30 * 60_000;''', r'''export const ASK_AFTER_MS = 15 * 60_000;'''),
           ('tell-time-changed', 'src/liveness.ts', r'''export const TELL_AFTER_MS = 30 * 60_000;''', r'''export const TELL_AFTER_MS = 60 * 60_000;'''),
-          ('footer-shows-ask', 'src/wake.ts', r'''const carried = frames.filter(f => !("answeredByCall" in WAKE_KINDS[f.event]));''', r'''const carried = frames;'''),
+          ('footer-shows-ask', 'src/wake.ts', r'''const carried = frames.filter(mustBeGiven);''', r'''const carried = frames;'''),
           ('footer-ask-undelivered', 'src/wake.ts', r'''if (!carried.length && !gap) { stream.deliver(frames.at(-1)!.n); return ""; }''', r'''if (!carried.length && !gap) { return ""; }'''),
           ('footer-gap-hidden', 'src/wake.ts', r'''if (!carried.length && !gap)''', r'''if (!carried.length)'''),
           ('footer-delivers-shown-only', 'src/wake.ts', r'''stream.deliver(rest.length ? shown.at(-1)!.n : frames.at(-1)!.n);''', r'''stream.deliver(shown.at(-1)!.n);'''),
