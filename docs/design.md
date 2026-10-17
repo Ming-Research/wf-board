@@ -212,10 +212,11 @@ A commit's automatic repack also runs in the foreground (see Storage). On
 wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
 runs; the same commit with the repack in the background took 25 to 103 ms). The
 study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. Not measured: the first repack of the live repository (4,986 loose
-objects), a repack that merges existing packs, and a repack that overlaps a push.
-After deployment the architect checks the slowest write in the service log
-against three seconds.
+to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
+5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
+has ruled that the board turns git's automatic maintenance off and queues a
+maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
+not yet built); until then the repack stays in the foreground.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in
@@ -418,7 +419,7 @@ restart.
   answer there, the owner is told on the Mac.
 - The checkout is not moved, and one `deployFailed` push per reason and commit
   says why, when it is on another branch, has local changes to tracked
-  files (untracked files do not count) or has a commit the main line lacks: the
+  files (untracked files and the files of a submodule do not count, since a merge that moves a submodule's pointer leaves them behind) or has a commit the main line lacks: the
   edit or commit is someone's, not the job's to move or undo.
 - The job asks the board to make the pushes through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
