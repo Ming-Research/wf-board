@@ -121,7 +121,7 @@ export function nextUnder(s: Snapshot, r: Rules, parent: string): { parent: stri
 const isGroup = (x: NextItem | NextGroup): x is NextGroup => "parent" in x;
 const numText = (x: { num?: number }) => x.num === undefined ? "" : ` · #${x.num}`;
 function itemLine(x: NextItem): string {
-  return `${x.id} · ${x.priority || "无优先级"} · ${x.title} · 难度 ${x.difficulty} · ${x.project}${numText(x)}${x.waiters ? ` · ${x.waiters} 条在等它` : ""}`;
+  return `${x.id} · ${x.priority || "无优先级"} · ${x.title} · 难度 ${x.difficulty} · ${x.project}${numText(x)}${x.waiters ? ` · 等它 ${x.waiters}` : ""}`;
 }
 
 /** The text a tool answers with: a line per pool, then its rows. */
