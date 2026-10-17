@@ -163,9 +163,18 @@ function logAnswers(label: string, list: Landing[], log: (line: string) => void)
   const last = list.map(l => Math.max(0, ...l.answers.map(a => a[1]))), slowest = list.map(l => Math.max(0, ...l.answers.map(a => a[1] - a[0])));
   const asked = list.map(l => l.answers.length);
   // The baselines of the rows around each landing's target (kind item, another item than the target): the ones the navigation waits for.
-  const around = list.flatMap(l => l.answers.filter(([, , url]) => { const q = new URL(url, "http://board.invalid").searchParams; return q.get("kind") === "item" && q.get("doc") !== l.item; }).map(a => a[1]));
-  if (around.length) log(`press-n rows around the target (${label}): ${around.length} baselines over ${list.length} landings, answered after the key: median ${ms(median(around))} ms, 90th percentile ${ms(p90(around))}, max ${ms(Math.max(...around))}; ${around.filter(x => x > 100).length} later than 100 ms`);
-  else log(`press-n rows around the target (${label}): none over ${list.length} landings`);
+  // It waits from the moment it asks for the target's own baselines, right after its first draw, so the time that matters is counted
+  // from there: the earliest request that is not one of those rows' is taken for it.
+  const isAround = (url: string, l: Landing) => { const q = new URL(url, "http://board.invalid").searchParams; return q.get("kind") === "item" && q.get("doc") !== l.item; };
+  const around = list.flatMap(l => l.answers.filter(([, , url]) => isAround(url, l)).map(a => a[1]));
+  const waited = list.flatMap(l => {
+    const own = l.answers.filter(([, , url]) => !isAround(url, l)).map(a => a[0]);
+    return own.length ? l.answers.filter(([, , url]) => isAround(url, l)).map(a => a[1] - Math.min(...own)) : [];
+  });
+  if (around.length) {
+    log(`press-n rows around the target (${label}): ${around.length} baselines over ${list.length} landings, answered after the key: median ${ms(median(around))} ms, 90th percentile ${ms(p90(around))}, max ${ms(Math.max(...around))}; ${around.filter(x => x > 100).length} later than 100 ms`);
+    if (waited.length) log(`press-n rows around the target (${label}): answered after the navigation began to wait for them (${waited.length} measured): median ${ms(median(waited))} ms, 90th percentile ${ms(p90(waited))}, max ${ms(Math.max(...waited))}; ${waited.filter(x => x > 100).length} later than 100 ms`);
+  } else log(`press-n rows around the target (${label}): none over ${list.length} landings`);
   log(`press-n baselines (${label}): ${list.length} landings, ${median(asked)} baselines asked for per landing (median); the last one answered ${ms(median(last))} ms after the key (median), ${ms(p90(last))} (90th percentile), ${ms(Math.max(...last))} (max); the slowest single answer took ${ms(median(slowest))} ms (median), ${ms(Math.max(...slowest))} (max)`);
 }
 
