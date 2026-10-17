@@ -3568,9 +3568,10 @@ file serves every project that adopts this scheme; only the test jobs differ.
   the pull request be marked ready; a later push needs a new run.
 - **The main line** runs the full CI on every push, as before.
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
-  `.github/workflows`. It runs in every full CI, so the last run before a merge
-  stops a temporary workflow that was not deleted, and the main line's own run
-  stops one that got in anyway.
+  `.github/workflows`. It runs in every full CI, ahead of the test jobs, so the
+  last run before a merge stops a temporary workflow that was not deleted
+  within seconds instead of after the tests, and the main line's own run stops
+  one that got in anyway. It costs the happy path about 10 seconds.
 - **Status `full-ci`**: a run started by hand is attached to the head commit
   (`gh run list --commit` and the commit's check-run list show it), but it is
   not among the checks a pull request lists, which is what `gh pr checks`, the

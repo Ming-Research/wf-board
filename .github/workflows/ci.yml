@@ -17,7 +17,7 @@ permissions:
   contents: read
 jobs:
   # A temporary workflow must not reach the main line. The last full CI before a merge fails while one is still in the
-  # branch; the main line's own run catches one that got in anyway.
+  # branch, within seconds because the test jobs wait for this one; the main line's own run catches one that got in anyway.
   no-tmp-workflow:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +32,7 @@ jobs:
             exit 1
           fi
   test:
+    needs: no-tmp-workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +48,7 @@ jobs:
   # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
   # commits, so the checkout carries history; the browser is cached by Playwright version.
   e2e:
+    needs: no-tmp-workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
