@@ -226,7 +226,7 @@ export class AgentStream extends NumberedLog {
     if (!this.touched) this.touched = this.now();
   }
 
-  /** The first line a new file gets: whose stream it is, since the file is named by a hash of the name. */
+  /** A new file starts with whose stream it is, since the file is named by a hash of the name. */
   protected append(record: unknown): void {
     if (this.file && !existsSync(this.file)) super.append({ name: this.name });
     super.append(record);
@@ -274,13 +274,17 @@ export interface WakeOptions extends LogOptions {
 }
 
 /** The file of an agent's stream: a hash of the session name, so any name of up to 80 characters is a short file name and two
- * names that differ only in case (the same file on a case-insensitive disk) are two files. The name is the file's first line. */
+ * names that differ only in case (the same file on a case-insensitive disk) are two files. The name is a line of its own in the
+ * file: first in a new file, after the events once the file is rewritten. */
 export const agentFileName = (name: string): string => createHash("sha256").update(name).digest("hex").slice(0, 32) + ".jsonl";
 /** The session name an agent's stream file holds, or none. */
 function nameIn(file: string): string | undefined {
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    try { const record = JSON.parse(line) as { name?: unknown }; if (typeof record.name === "string") return record.name; } catch { continue; }
+    let record: { name?: unknown; n?: unknown };
+    try { record = JSON.parse(line) as typeof record; } catch { continue; }
+    // An event is never the name line, whatever fields a kind may carry.
+    if (typeof record.n !== "number" && typeof record.name === "string") return record.name;
   }
   return undefined;
 }
