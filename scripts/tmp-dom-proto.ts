@@ -42,7 +42,30 @@ w.cancelAnimationFrame = (id: number) => clearTimeout(id);
 w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
-w.EventSource = class { addEventListener() {} close() {} };
+// The page's event stream, read from the real server: onopen when the response starts, then the named events.
+w.EventSource = class {
+  onopen?: () => unknown; onerror?: () => unknown; handlers = new Map<string, Array<(event: unknown) => unknown>>(); abort = new AbortController();
+  constructor(url: string) { void this.run(url); }
+  addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
+  close() { this.abort.abort(); }
+  async run(url: string) {
+    try {
+      const res = await realFetch(new URL(url, board.url), { signal: this.abort.signal, headers: { Accept: "text/event-stream" } });
+      void this.onopen?.();
+      const decoder = new TextDecoder(); let buffer = "";
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let at: number;
+        while ((at = buffer.indexOf("\n\n")) >= 0) {
+          const block = buffer.slice(0, at); buffer = buffer.slice(at + 2);
+          let kind = "message", data = "";
+          for (const line of block.split("\n")) { if (line.startsWith("event:")) kind = line.slice(6).trim(); else if (line.startsWith("data:")) data += line.slice(5).trim(); }
+          for (const fn of this.handlers.get(kind) ?? []) fn({ data });
+        }
+      }
+    } catch { /* closed */ }
+  }
+};
 try { w.CSS = { escape: (s: string) => String(s).replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c) }; } catch { /* the window has its own */ }
 w.structuredClone = structuredClone;
 for (const proto of [w.Element?.prototype, w.HTMLElement?.prototype]) if (proto) {
