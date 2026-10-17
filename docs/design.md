@@ -520,6 +520,7 @@ wf-board-data/
   state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
+  state/ci-watch.json       what the look at the checks last saw of each pull request an open item names (same)
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -2908,7 +2909,9 @@ board, where the owner and later readers find it.
   once instead of filling a stream nobody reads. The text is one line of at most
   150 characters (`MESSAGE_TEXT_LIMIT` in `src/model.ts`); longer text is
   refused, never cut: a message is a doorbell, and the content belongs on the
-  item. Every role may send (part `message.send`, section 9).
+  item. Every role may send (part `message.send`, section 9). The board sends too, as
+  the session 「看板」 with an item's project: the finished checks of a pull request
+  (Watching GitHub, The look at the checks, below).
 - **Delivery.** The write pushes one `message` event to the recipient's
   stream: the PM's for the PM, else the session's own, the architect's among them. With no
   process connected it waits there, and reaches the session once, on its wait
@@ -2944,10 +2947,13 @@ keeps a second place to read messages from and a job that moves them.
 The board looks at GitHub itself and does with the answer what the PM
 would otherwise do by hand on each round: it tells when the checks went red on
 the main line or on a pull request, and when an open pull request is named by no item, and it marks the merge row of a
-merged pull request done (`src/watch.ts`, `src/github.ts`).
+merged pull request done (`src/watch.ts`, `src/github.ts`). A second look, every 30 seconds,
+tells the engineer when the checks of a pull request have finished (The look at the
+checks, below; `src/ci-watch.ts`, `src/ci-source.ts`).
 
 **The look.** Every five minutes, and not oftener, because every session on the
-owner's account shares GitHub's quota. The time of the last look is kept in
+owner's account shares GitHub's quota and every GraphQL question costs some of it (the look at the
+checks, below, asks REST conditionally and so can run oftener). The time of the last look is kept in
 `state/github-watch.json` beside the board (git excludes it), so a restart waits
 out what is left of the interval (no record: it looks at once; a record in the
 future, from a clock that went back, counts as at most one interval). The daemon asks
@@ -3045,6 +3051,79 @@ removed or already done since the look, or whose counted pull requests are no
 longer all merged, is left as written. A row that also says more (a deployment)
 is marked as a whole, so a merge row says only the merge. A write that fails is
 tried at the next look.
+
+### The look at the checks
+
+An engineer that waits for its pull request's checks should know within seconds
+that they have finished, and should not spend the owner's GitHub quota to find out.
+The board looks at every pull request an open item names, every 30 seconds, and
+tells the session holding the item when the checks on the pull request's newest
+commit have all finished (`src/ci-watch.ts`; the requests are `src/ci-source.ts`).
+
+**Why a second look.** The look above asks GraphQL, whose answers cannot be asked
+conditionally: every question costs quota, so it stays at five minutes. The REST
+API answers a request that carries the `ETag` of an earlier answer with 304
+when nothing changed, and a 304 is not counted against the hourly quota (measured
+on this board's repository: the quota left stayed the same over 304 answers to the
+pull request list, a commit's check runs and its commit status; GitHub's
+documentation says the same). So this look uses REST with conditional requests and costs
+quota only when something changed. The five-minute look is unchanged: it makes the
+pushes to the PM and marks merge rows. The two do not share state.
+
+**What is asked.** For each pull request that the 改动 section of an open item names
+(`watchedPulls`, as in Watching GitHub; draft or not), three requests, signed with the token of
+the account `gh` is signed in as (`gh auth token`, read once and again after a 401):
+the pull request itself (its newest commit, and whether it is still open: a merged
+or closed one is dropped), the commit's check runs (`filter=all`, every attempt of
+every round, which the default would cut to the latest run of each name and so hide a red in
+one round behind a green of the same name in another) and the commit's statuses (where the full CI that a hand
+starts writes `full-ci`, section 11). They are read into the same shape as the GraphQL
+look reads, and `readChecks` (`src/github.ts`) gives the same states and failed names. A request that repeats
+an earlier one carries the answer's `ETag` in `If-None-Match`, with the same `Accept` header
+(GitHub varies its answer on it and answers 200 again otherwise); the answers are kept in memory, at most 400.
+Out of quota or told to slow down (429, or 403 with `Retry-After` or no requests left)
+the look makes no request until the time GitHub names (a minute when it names none); any other
+failure is that request's. A repository that fails is shown by `/health` (`ci.problems`, with
+the quota left from the newest answer as `ci.remaining`) and logged once; the other repositories
+go on. Up to four pull requests are asked at once.
+
+**When a round is over.** A round is over when nothing on the commit is unfinished:
+no check run or status that is not finished, no check with only cancelled runs, and
+no more checks than one answer holds (100). The one status not waited for is `full-ci` when
+it is pending and links to no run: a mark written on every new commit of a pull request (`ci-mark.yml`,
+section 11) that says no full CI was started; the engineer's wait script treats it the same way. Once a
+run is started the status links to it, and the round is not over until the run writes its result. A red check does not end it while another
+still runs, since the engineer waits for the whole round. A round that ended with
+no check that ran (none, or only skipped ones) is told nothing. It ended with `success`, or with `failure` and the names
+of the failed checks. It is told once: again when the commit changes, when something is seen
+unfinished again (a rerun, or the full CI that a hand starts on the same commit, which writes
+the status `full-ci`, pending until its run ends), and when the result differs from the one told
+(a rerun that ended between two looks). What was last seen of each pull request, the commit and what
+was told for it, is kept in `state/ci-watch.json` beside the board (git excludes it), so a restart
+neither tells a round twice nor loses one. A look that is stopped halfway (the board is
+restarted) forgets no record of the pull requests it did not reach. The first look at a repository tells nothing of a
+round already over (`judge`, baseline): those are the backlog from before the board looked, as
+for orphan pushes. A pull request that an item names later, in a repository looked at before, is
+news when first seen finished, since the engineer has just opened it. Known limit: a check GitHub
+creates only after the first looks of a new commit is not there yet to be waited for, so a
+round read as over in the first seconds after a push may be followed by another message when that check ends.
+
+**Who is told.** The session holding the item that names the pull request (section 8, The wake
+streams; an item that no session holds tells nobody, and a reviewer holds nothing), by
+a message (Messages, above) sent as the session 「看板」 with the item's project and the item
+named, one for each holding session. Its text is one line, for example
+`CI 跑完：Ming-Research/wf-board#80 提交 bb81c7b 全部通过` or `… 有失败：test、e2e`; names that do not
+fit the 150 characters become a count. A message that could not be written is sent again at the
+next look to the sessions it did not reach, and only to those (their names are kept in
+`state/ci-watch.json` until sent); one the board refuses (the session ended meanwhile) is not.
+
+Rejected: GitHub webhooks, which cannot reach a board that listens on the local address only
+without a relay service; the engineer's own wait script, which asks GitHub itself every five minutes
+and so waits up to five minutes after the last check and spends the shared quota once per engineer; asking
+`gh api` for every request, which starts dozens of processes every 30 seconds and hides the
+status code and headers a conditional request needs; the open pull request list of a repository
+as one request for every newest commit, which misses a named pull request beyond its first 100 and
+saves little; telling at the first red check, which the engineer cannot act on while others run.
 
 ## 9. Project responsibility
 

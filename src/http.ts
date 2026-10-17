@@ -28,6 +28,7 @@ import { deliveries } from "./merges.ts";
 import type { Delivery } from "./merges.ts";
 import { architectTimedWake, timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
+import type { CiWatch } from "./ci-watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
@@ -49,7 +50,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -165,7 +166,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         if (req.headers["if-none-match"] === tag) { res.writeHead(304, { ETag: tag, "Cache-Control": "no-cache" }); res.end(); return; }
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", ETag: tag }); res.end(library); return;
       }
-      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}) }); return; }
+      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.ci ? { ci: deps.ci.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, pageSnapshot(store.snapshot())); return; }
       if (path === "/api/events") {
         // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
@@ -438,12 +439,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
+  // The look at the checks (src/ci-watch.ts) runs on its own timer, every 30 seconds.
+  deps.ci?.start();
   // Stopping (design section 4): no new request is served; what is running gets the grace to finish; then every connection is closed.
   const close = server.close.bind(server);
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.ci?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();

@@ -105,9 +105,10 @@ test("only the module that keeps the data starts git: no other source file does"
   const dir = join(import.meta.dirname, "../src"), source = (file: string) => readFileSync(join(dir, file), "utf8");
   const spawners = readdirSync(dir).filter(file => file.endsWith(".ts") && /child_process/.test(source(file))).sort();
   // store.ts runs git on the data; net-git.ts runs only the commands that reach a remote (push and fetch, whose output is capped and never
-  // read as history); github.ts runs gh for GitHub's checks, and notify.ts the owner's notification command: none of them reads the board's history.
-  assert.deepEqual(spawners, ["github.ts", "net-git.ts", "notify.ts", "store.ts"]);
-  for (const file of ["github.ts", "notify.ts"]) assert.doesNotMatch(source(file), /["'`]git["'`]/, `${file} must not run git`);
+  // read as history); github.ts runs gh for GitHub's checks, ci-source.ts gh for the token of its requests, and notify.ts the
+  // owner's notification command: none of them reads the board's history.
+  assert.deepEqual(spawners, ["ci-source.ts", "github.ts", "net-git.ts", "notify.ts", "store.ts"]);
+  for (const file of ["ci-source.ts", "github.ts", "notify.ts"]) assert.doesNotMatch(source(file), /["'`]git["'`]/, `${file} must not run git`);
 });
 
 test("a request that asks for too much fails alone: its caller gets the error, and the next call and the health check are served", async t => {

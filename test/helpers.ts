@@ -14,6 +14,7 @@ import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Wake } from "../src/wake.ts";
 import type { GithubWatch } from "../src/watch.ts";
+import type { CiWatch } from "../src/ci-watch.ts";
 import type { Credentials } from "../src/credentials.ts";
 
 /** A RegExp from a template whose interpolated values match literally: an expected error text built from the same definition the code builds it from. */
@@ -58,10 +59,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; ci?: (fixture: Awaited<ReturnType<typeof board>>) => CiWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture) });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
