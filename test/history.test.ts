@@ -775,7 +775,7 @@ test("historical comparison omits the retired level 「架构师做」 from an o
   // Only that value is omitted: a level that never existed is unknown content and is refused.
   await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, difficulty: "wizard", rev: 3 }));
   const unknown = await commit("Rate the item with a level that never existed");
-  await assert.rejects(store.comparisonSnapshot(unknown), /^Error: .*items\/work\.yaml: difficulty/m);
+  await assert.rejects(store.comparisonSnapshot(unknown), /items\/work\.yaml: difficulty: Invalid input/);
   // Raw history keeps what was written.
   assert.match(await store.diff("item", "work", held, cleared), /^-difficulty: architect$/m);
   // And the current schema refuses it.

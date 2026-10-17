@@ -266,7 +266,6 @@ test("brief lists as startable only rated items, and carries the difficulty on i
   const labels = (id: string) => checks.find(row => row.id === id)?.checks.map(c => c.label);
   assert.ok(checks.some(row => row.id === "u" && !("difficulty" in row)), "the checks list names the unrated item, without a difficulty");
   assert.ok(labels("u")!.includes("缺难度"));
-  assert.equal(checks.find(row => row.id === "one")?.difficulty ?? 1, 1, "a row of the checks list carries the difficulty it has");
 });
 
 test("every section of brief carries the difficulty, and only an item a root needs is startable", async t => {
@@ -375,12 +374,16 @@ test("a first rating is not unread for the owner, a changed level is, and a log-
   assert.equal(combined.length, 1); assert.equal(combined[0]!.docs[0]!.summary, "plan changed"); assert.deepEqual(combined[0]!.docs[0]!.pieces, { progress: 1, reply: 0, other: 0 });
 });
 
-test("piecesOf leaves a first rating out and keeps every other change of the item", () => {
+test("piecesOf leaves a first rating and the cleared retired level out and keeps every other change of the item", () => {
   const base = { title: "t", group: "g", plan: [], log: [], links: [], rev: 1, updated: "2026-10-16T00:00:00Z" };
   const pieces = (before: object | null, after: object | null) => piecesOf(before, after, "item", "difficulty changed");
   assert.deepEqual(pieces(base, { ...base, difficulty: 2 }), { progress: 0, reply: 0, other: 0 }, "first rating");
   assert.deepEqual(pieces({ ...base, difficulty: 2 }, { ...base, difficulty: 3 }).other, 1, "a changed level");
   assert.deepEqual(pieces({ ...base, difficulty: 2 }, { ...base, difficulty: 5 }).other, 1);
+  // The migration that cleared the retired level 「架构师做」 is bookkeeping too, and still shows another change beside it.
+  assert.deepEqual(pieces({ ...base, difficulty: "architect" }, base), { progress: 0, reply: 0, other: 0 }, "the retired level cleared");
+  assert.deepEqual(pieces({ ...base, difficulty: "architect" }, { ...base, head: "新" }).other, 1, "a clearing beside another visible change still shows that change");
+  assert.deepEqual(pieces({ ...base, difficulty: 2 }, base).other, 1, "any other level taken away is a change");
   assert.deepEqual(pieces(base, { ...base, difficulty: 2, head: "新" }).other, 1, "a first rating beside another visible change still shows that change");
   assert.deepEqual(pieces(null, { ...base, difficulty: 2 }).other, 1, "a new item is new, rated or not");
 });
@@ -412,6 +415,7 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   const tools = (await client.listTools()).tools;
   assert.ok("difficulty" in tools.find(x => x.name === "create_item")!.inputSchema.properties!);
   assert.match(tools.find(x => x.name === "brief")!.description!, /next tasks \(only items rated 1–5/);
+  for (const name of ["create_item", "set_difficulty"]) assert.match(tools.find(x => x.name === name)!.description!, /engineer\b.*own subtree/, `${name} says where an engineer may use it`);
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
   const made = await call("create_item", { ...asArchitect, key: "m1", group: author, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);

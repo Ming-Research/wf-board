@@ -8,12 +8,13 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState, RETIRED_LEVEL } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
+import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
@@ -53,6 +54,8 @@ const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
 /** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
 export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
+/** Start of the message of the one-time commit that cleared the retired level 「架构师做」 (the message goes on with the item count); activity skips it, as it skips numbering. */
+const CLEAR_LEVEL_MESSAGE = "clear_architect_level";
 
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
 // holds and not by how many entries there are: a parsed document takes about 16 times the bytes of its file (a board of
@@ -152,8 +155,16 @@ function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 }
+/** The level 「架构师做」 no longer exists: an old version of an item, or a file the migration has not cleared, holds it as `difficulty: architect`. */
+const holdsRetiredLevel = (doc: unknown): boolean => !!doc && typeof doc === "object" && !Array.isArray(doc) && (doc as { difficulty?: unknown }).difficulty === RETIRED_LEVEL;
+/** The item document without that value, the one rating historical comparison omits; any other value of the field still refuses. */
+function withoutRetiredLevel(doc: unknown): unknown {
+  if (!holdsRetiredLevel(doc)) return doc;
+  const { difficulty: _retired, ...rest } = doc as Record<string, unknown>;
+  return rest;
+}
 function withoutRetiredFields(path: string, doc: unknown): unknown {
-  if (path.startsWith("items/")) return without(doc, retiredFields.item);
+  if (path.startsWith("items/")) return without(withoutRetiredLevel(doc), retiredFields.item);
   if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
   const { projects } = doc as { projects?: unknown };
   if (!Array.isArray(projects) || !projects.some(project => without(project, retiredFields.project) !== project)) return doc;
@@ -358,11 +369,11 @@ export class Store {
   /** `startup` is told how long each step of the start took (docs/design.md, Running). The start reads history under a
    * budget of its own (`STARTUP_LIMITS`). `requireBudget`: from then on a read of history that runs under no budget fails
    * (docs/design.md, section 4, Request budgets); the daemon sets it, and tests leave it off unless they test the budget. */
-  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
+  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
     return withBudget(new Budget("start", STARTUP_LIMITS), () => Store.start(dir, opts));
   }
 
-  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
+  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
     dir = resolve(dir);
     const lap = stopwatch(opts.startup);
     let entries: string[];
@@ -388,11 +399,17 @@ export class Store {
     const invalid: InvalidDocument[] = [];
     // Whether any document has a shape only a retired format wrote.
     let retired = false;
+    // The items whose files hold the retired level 「架构师做」: read without it, and cleared in one commit below.
+    const clearing: string[] = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
         const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
         if (retiredShape(path, raw)) retired = true;
-        return validated(schema, raw, path);
+        if (path.startsWith("items/") && holdsRetiredLevel(raw)) {
+          if (!opts.clearArchitectLevel) throw new ValidationError([{ path, issues: RETIRED_LEVEL_REFUSAL }]);
+          clearing.push(path.slice("items/".length, -".yaml".length));
+        }
+        return validated(schema, path.startsWith("items/") ? withoutRetiredLevel(raw) : raw, path);
       } catch (error) {
         invalid.push(...(error instanceof ValidationError ? error.invalid : [{ path, issues: String(error) }]));
         return undefined;
@@ -458,6 +475,10 @@ export class Store {
     lap("check board", "numbers, git status, HEAD, owner state");
     await store.numberExisting();
     lap("number documents");
+    if (clearing.length) {
+      await store.clearArchitectLevel(clearing);
+      lap("clear the retired level", `${clearing.length} items`);
+    }
     await store.loadActivity();
     return store;
   }
@@ -506,6 +527,17 @@ export class Store {
       puts: pending.map(({ kind, id, doc }) => ({ kind, id, doc, expectRev: doc.rev })) });
   }
 
+  /** The items cleared of the retired level 「架构师做」 by this start (src/migrate-architect-level.ts); none when the data held none. */
+  clearedArchitectLevel: readonly string[] = [];
+
+  /** Clear the retired level from the items that held it, in one commit: each item is unrated and logs the change. */
+  private async clearArchitectLevel(ids: string[]): Promise<void> {
+    const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    await this.commit({ author: "wf-board", message: `${CLEAR_LEVEL_MESSAGE} ${ids.length} items`,
+      puts: ids.map(id => { const doc = this.state.items[id]!; return { kind: "item" as const, id, doc: clearedItem(doc, at), expectRev: doc.rev }; }) });
+    this.clearedArchitectLevel = ids;
+  }
+
   /** Activity is a derived index of the existing history, including replaced and deleted documents. A start continues
    * from the startup cache when it can be trusted, replaying only the commits after the commit the cache is of; with no
    * usable cache it replays the whole history (the scan) and writes the cache at once. */
@@ -522,7 +554,7 @@ export class Store {
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
     for (const commit of commits) {
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE) continue;
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message.startsWith(`${CLEAR_LEVEL_MESSAGE} `)) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -1266,7 +1298,7 @@ function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numb
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
-    try { raw[path] = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); }
+    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? withoutRetiredLevel(doc) : doc; }
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");

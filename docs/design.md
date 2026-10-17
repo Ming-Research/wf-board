@@ -820,19 +820,25 @@ log:
   existed; the 缺标签 check lists such items until a session backfills them.
   A tag change is a real change in `changes` and in unread, unlike `num`.
 - **Difficulty.** A work item may carry `difficulty`: an integer 1–5, which
-  decides the agent that does it (the architect's rules map levels to agents,
-  so the board keeps no such table), or `architect` for an item the architect
-  does itself (a discussion, a walkthrough, a design), which is rated but
-  never dispatched. Text outputs write it as 「难度 N」 or 「架构师做」. A record
-  has none. It is a field of the item, not of a plan row, because the unit
-  dispatched to an agent is the item; it replaces the temporary 「（难度 N）」
-  that plan rows carried in their text. Only `Architect` sets it, with
-  `set_difficulty` on an item of any project, and every change appends a log
-  line `难度：<from> → <to>，理由：<reason>` (from 未评 the first time), because
-  changing the level changes who does the work. `create_item`, which only
-  `Architect` calls, takes `difficulty` and logs it as the first rating
-  (reason 建条目时评). `changes` shows every change
-  of difficulty; unread shows a changed level but not a first rating (below).
+  decides the agent that does it (the rules map levels to agents, so the board
+  keeps no such table). Text outputs write it as 「难度 N」. A record has none.
+  It is a field of the item, not of a plan row, because the unit dispatched to
+  an agent is the item; it replaces the temporary 「（难度 N）」 that plan rows
+  carried in their text. `Architect` sets it with `set_difficulty` on an item
+  of any project, and an engineer on the items of its own subtree; every change
+  appends a log line `难度：<from> → <to>，理由：<reason>` (from 未评 the first
+  time), because changing the level changes who does the work. `create_item`,
+  which `Architect` calls anywhere and an engineer inside its subtree, takes
+  `difficulty` and logs it as the first rating (reason 建条目时评). `changes`
+  shows every change of difficulty; unread shows a changed level but not a
+  first rating (below).
+  The board once had a level `architect` (shown as 「架构师做」) for the
+  architect's own work, rated but never dispatched. It is retired: every item
+  is rated 1–5. No schema accepts the value, but old versions of an item in
+  history hold it as `difficulty: architect`, and historical comparison omits
+  exactly that value, as it omits the retired fields (section 9). A
+  board whose files still hold it refuses to start, naming the one-time
+  migration that clears it (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
   dispatched: the item is todo, and one of its ready steps (every step before
@@ -840,9 +846,8 @@ log:
   item or a card, such as an unfinished study sub-item, is not such a step, so
   the item raises no check until that sub-item is done. A blocked item, or
   one with a step in progress, raises none either. Work is not listed as
-  startable (`brief.todo`) without a rating; a work item rated `architect`
-  raises no check and is not listed either, since the architect schedules its
-  own items itself. Only the architect clears 缺难度.
+  startable (`brief.todo`) without a rating. Whoever may rate the item clears
+  缺难度: the architect, or the engineer whose subtree holds it.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -908,7 +913,8 @@ log:
   A first rating, an item's `difficulty` going from none to a level, is not
   unread either, alone or beside another change (which still counts as
   itself): rating hundreds of items would show each new for one added label.
-  Changing a level that exists is unread.
+  Neither is the migration that cleared the retired level (from `architect` to
+  none). Changing a level that exists is unread.
   A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
@@ -1248,7 +1254,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect or the engineer whose subtree holds the item; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or a blocked item or one whose next step is another item or card) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1623,12 +1629,12 @@ that delivers it, joined by a shared row. A write under the retired author
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; only `Architect`; owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; only `Architect`; owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by `Architect` anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only `Architect` creates items |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
 | `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |
-| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5 or `architect`) and appends the log line for the change | Only `Architect`, whatever the item's project; a work item, not a record; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
+| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5) and appends the log line for the change | `Architect` for an item of any project, an engineer's credential for the items of its subtree (`item.difficulty`), nobody else; a work item, not a record; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
 | `set_difficulty_many(items: [{id, difficulty, reason?}], reason?)` | Sets many items' difficulty in one commit, for rating a backlog of unrated items | Each entry checked and logged as `set_difficulty` does, naming the entry it refuses; `reason` is the default for entries without their own, and an entry with neither is refused; one refused entry refuses the whole write; each item once; unchanged entries write nothing, and no commit is made when none changes |
 | `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
 | `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `Architect`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
@@ -1686,7 +1692,7 @@ own marker offers only 恢复, so the owner can also release open descendants
 under a record without asking an agent to clear the marker. Records have
 no pause control.
 The detail shows an item's difficulty and tags on their own line directly under
-the title: the difficulty first, as a plain outlined chip (「难度 3」, or 「架构师做」)
+the title: the difficulty first, as a plain outlined chip (「难度 3」)
 so it reads apart from the teal tags, then the tags; an item with a difficulty
 and no tags still has the line. Tree rows show no difficulty.
 Each project's filter row also offers one button per tag applicable to the
@@ -2036,8 +2042,8 @@ level, and whether that someone is working, waiting or has gone quiet.
   The level is the one in the newest dispatch record naming the session, which
   is what it was started at (「审查 3 级」 for a review); with no record, the
   difficulty (1 to 5) of the newest of its items that has a step in progress
-  and a difficulty in that range: an item the architect does itself, or an
-  unrated one, is passed over for an older item that has one.
+  and a difficulty in that range: an unrated item is passed over for an older
+  item that has one.
 - **State word.** Read from the steps in progress on its two items, never from
   the host. A step with `waits` text: 「在等：」 and that text, whatever the
   time (the text is the session's own); amber when it has not written for over
@@ -2459,7 +2465,8 @@ as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
 `author === Architect`; this applies to items, their cards and owner-note
-replies or closures. Only `Architect` creates items, in any project.
+replies or closures. Only `Architect` creates items in any project; an
+engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
 `Architect`'s included. Moving work requires the source and destination to
 belong to one project, which the author must own unless it is `Architect`
@@ -2598,7 +2605,14 @@ the writer from it.
     when the resource agent's own design (item `resource-ops-study`) says what it needs.
   - An engineer writes the log, plan, targets, links, cards and glossary terms of its
     subtree, and the head of its items, which is the whole body until bodies are stored by
-    section (item `mcp-sections`); it narrows to the 改动 section then.
+    section (item `mcp-sections`); it narrows to the 改动 section then. It also makes
+    the sub-items of its tree and rates and tags them (`item.create`, `item.difficulty`,
+    `item.tags`), and replies to the owner's notes on the subtree's items and cards
+    (`note.reply`); it does not close a note without a reply, rule a card, move an item,
+    or write the tag vocabulary. A new item counts as inside the subtree only when an item
+    of the subtree owns it, so an engineer cannot make a top item. Without a credential,
+    creating an item and rating one stay the architect's alone (the old way, until the
+    old tools are removed).
   - A review writes the log of its subtree.
 - **Rejected.** Passing the credential in an environment variable: a background session
   does not receive the environment of the command that started it (tested 2026-10-16). A
@@ -2940,6 +2954,22 @@ pointers, not findings, and phase 2 settles each in passing:
 
 Every work item has an acceptance step from phase 1 on, so 没有计划：至少要有一个
 验收步骤 is empty from the first day and stays a refused write.
+
+### Clearing the retired difficulty level
+
+`npm run migrate:architect-level -- --data DIR` clears the retired level
+`architect` (「架构师做」, section 5, Difficulty) from the item files that hold
+it. It runs offline, with the daemon stopped or on a copy: the board refuses to
+start on a file that holds the level, and `Store.open(dir, { clearArchitectLevel:
+true })`, which the command calls, reads those files without it and writes one
+commit, `clear_architect_level N items`, in which each such item has no
+difficulty and one more log line, `难度：架构师做 → 未评，理由：迁移：…`. The
+commit is bookkeeping: activity skips it, as it skips numbering, and unread
+shows nothing for it. Items cleared this way raise 缺难度 once they qualify
+(section 5, Difficulty) and are rated 1–5 by whoever may rate them. A second run
+writes nothing. The command, its module, its test, the npm script and the start
+option are deleted after the run on the live board; what stays is the omission of
+the value from old versions in historical comparison, and the skip of the commit.
 
 ### Owner-wide rules to change
 
