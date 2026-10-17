@@ -591,6 +591,18 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
   return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
 }
 
+/** The fields of an item that the status and the priority of every item are derived from: the plan and the owner's ask, a
+ * cancellation, a pause, the project (a pause stops at the project's edge), a record, a root's stored priority, the order
+ * of the top items, which the index sorts as it is built, and the dispatch records (a live session makes an item worked on).
+ * The test in test/derived.test.ts records which fields the two derivations read and fails when this list and that set
+ * differ. */
+export const STATUS_PRIORITY_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "priority", "order", "dispatches"];
+/** Whether two versions of one item give the same status and priority on the same board. Versions that differ in some other
+ * field (the text, the log, the tags) do; one that differs in a listed field may not, which only costs the caller a derivation. */
+export function sameStatusAndPriority(a: Item, b: Item): boolean {
+  return STATUS_PRIORITY_FIELDS.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+}
+
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
  * and the labels of what it waits on and what waits on it. The page repaints an item when this changes. */
 export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {

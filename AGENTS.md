@@ -84,7 +84,8 @@ matches what the artifact board offered.
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
-  headless Chromium) and the click invariants.
+  headless Chromium) and the click invariants; `live-board.ts` makes a board of the live board's weight, and
+  `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand

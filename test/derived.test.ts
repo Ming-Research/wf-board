@@ -10,9 +10,9 @@ import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, STALLED_LABEL } from "../src/rules.ts";
+import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority, STATUS_PRIORITY_FIELDS, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
-import type { Snapshot } from "../src/model.ts";
+import type { Item, Snapshot } from "../src/model.ts";
 import { architect, asArchitect, board, author, at } from "./helpers.ts";
 
 const MINUTE = 60_000;
@@ -276,4 +276,23 @@ test("one Rules object per snapshot and minute is shared, and a write or a new m
   assert.notStrictEqual(store.derived.rules(s, at + MINUTE), first, "a new minute builds another");
   await ops(store).appendLog({ author: "Whitefoot", id: "W0", text: "more" });
   assert.notStrictEqual(store.derived.rules(store.snapshot(), at + 1000), first, "a new snapshot builds another");
+});
+
+test("a status and a priority are derived from the fields sameStatusAndPriority compares, and from no others", async t => {
+  const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
+  const base = store.snapshot(), read = new Set<string>();
+  // Every item is handed to the rules through a proxy that notes each field read from it.
+  const watched: Snapshot = { ...base, items: Object.fromEntries(Object.entries(base.items).map(([id, it]) => [id, new Proxy(it, { get: (target, key, receiver) => { if (typeof key === "string") read.add(key); return Reflect.get(target, key, receiver); } })])) };
+  const r = rules(watched);
+  read.clear();
+  for (const id of Object.keys(base.items)) { r.statusOf(id); r.priorityOf(id); }
+  assert.deepEqual([...read].sort(), [...STATUS_PRIORITY_FIELDS].sort(), "the fields the two derivations read are the listed ones");
+  // The predicate: text and log differences do not matter, a field the derivations read does.
+  const item = base.items.W0!;
+  const changed = (fields: Partial<Item>): Item => ({ ...item, ...fields });
+  assert.equal(sameStatusAndPriority(item, changed({ head: "another head", title: "another title", log: [...item.log, { at, by: author, text: "more" }], tags: ["健全性"], updated: "2030-01-01T00:00:00Z" })), true);
+  assert.equal(sameStatusAndPriority(item, changed({ plan: item.plan.map(row => "state" in row && row.state === "todo" ? { ...row, state: "done" as const } : row) })), false, "a step's state");
+  assert.equal(sameStatusAndPriority(item, changed({ group: "Firn" })), false, "the project");
+  assert.equal(sameStatusAndPriority(item, changed({ paused: { reason: "wait", at } })), false, "a pause");
+  assert.equal(sameStatusAndPriority(item, changed({ dispatches: [{ agentId: "session-1", agent: "engineer", role: "工程师", level: 2, model: "Sonnet", started: at }] })), false, "a dispatch");
 });
