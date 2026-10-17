@@ -1,6 +1,6 @@
-// The items an engineer could be started on, and how many engineers may work: read from the whole board, so the PM does
-// not collect them or count sessions itself. The board lists candidates in a default order and does not choose among them:
-// the architect does. docs/design.md, section 6, "The candidates read", gives the reasons for each rule.
+// The items an engineer could be started on, and how many engineers are working in each pool: read from the whole board, so
+// the PM does not collect them or count sessions itself. The board lists candidates in a default order and does not choose
+// among them, and it holds no limit: the PM compares the working count with the owner's numbers. The architect chooses. docs/design.md, section 6, "The candidates read", gives the reasons for each rule.
 
 import { openDispatches, holderOf } from "./dispatch.ts";
 import type { Difficulty, Dispatch, Snapshot } from "./model.ts";
@@ -87,7 +87,7 @@ function workingBy(s: Snapshot, r: Rules): Map<Pool, number> {
 }
 
 /**
- * The pools' slots and the candidates. Candidates from every project are put in one default order (`compareCandidates`);
+ * The pools' working engineers and the candidates. Candidates from every project are put in one default order (`compareCandidates`);
  * more than GROUP_OVER of them under one parent, of any level, are listed as that parent and the count, at the place of the
  * best of them in each pool they fall in. The order is for reading; which candidate to start is decided by the architect, not by the board.
  */

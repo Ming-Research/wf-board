@@ -638,7 +638,6 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
   await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], actions: "" });
   await refused("timed-architect", { event: "timed-architect", since: "s", changed: [], working: 0 });
-  await refused("dispatch", { event: "dispatch", pool: "1", free: 1, limit: 10, candidates: 1 });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
   await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes, restarted: fields.restarted });

@@ -1752,7 +1752,7 @@ instructions within the limit and free of rule text.
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
-| `candidates(under?)` | Which items could an engineer be started on, and how many engineers may work? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
+| `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -1819,7 +1819,7 @@ whose commits do not count.
   list of commits.
 
 **The candidates read.** `candidates` lists the items an engineer could be started on and how
-many engineers may work, so the PM neither collects the items nor counts sessions. It lists; it
+many engineers are working in each pool, so the PM neither collects the items nor counts sessions. It lists; it
 does not choose. Which candidate to start is the architect's decision (the PM asks the architect,
 who gives the reason), so the order below is only the default order of the rows, and no row is
 called the next one. `candidates` in `src/candidates.ts` is the one function; the tool prints it,
@@ -1857,10 +1857,9 @@ and the board pushes nothing from it.
   of them, at the place of the best of them in each pool they fall in; the candidates a pool
   counts are counted apart from the groups. `under=<parent>` lists the
   parent's candidates of every level one by one (at most 10).
-  The answer is a few lines of text. Measured on the two generated boards of 176 items
-  (`generateBoard`, seeds 1 and 2; 28 and 34 startable items, all slots free): 1087 and 996
-  characters, where the todo lists of `brief` over the five projects are 8316 and 10199
-  characters of JSON. `test/candidates.test.ts` bounds it at 1500.
+  The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
+  of the live board's shape it stays under 1500 characters and shorter than the todo lists of
+  `brief`. The character counts were not measured again after the limits went.
 
 ### Lean replies
 
@@ -2590,7 +2589,7 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Nineteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `note` and `timed-architect`,
@@ -2634,8 +2633,6 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` a
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below), and the
   board makes the pushes (Deploys and the red main line, below);
-- an item that became done (`item-done`), to the session holding each open item
-  that waits on it; when nobody holds that item nothing is pushed;
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
@@ -2646,11 +2643,14 @@ an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
 
 **Free slots are the PM's to count.** The board holds no limit per pool and pushes no
-offer. The PM compares the working count and the candidates that `candidates` answers with
-the limits the owner gave it, and decides whether to start an engineer. It has the events
-that free a slot or add a candidate: an engineer it collected, an item that became done
-(`item-done` and `finished`), and a new list from the architect; the timed wake does not
-carry the counts. Rejected: the board holding the limits and pushing a free slot, which keeps a second
+offer, so no push says a slot is free. The PM compares the working count and the candidates
+that `candidates` answers with the limits the owner gave it, and decides whether to start an
+engineer. The PM learns of a slot that frees from the pushes that end an engineer's work:
+`finished` (an item it holds became done, and its session should stop) and `review` (the
+item's review step started, so its engineer waits for a reviewer). An engineer that waits on
+a card, a 14900K run or another item pushes nothing; the PM reads `candidates` when it
+collects an engineer, on `finished` and on a new list from the architect, and sees the slot
+then. The timed wake does not carry the counts. Rejected: the board holding the limits and pushing a free slot, which keeps a second
 copy of the owner's numbers that can drift from what the owner said; a push naming the next
 item, which makes the board choose among the candidates.
 
