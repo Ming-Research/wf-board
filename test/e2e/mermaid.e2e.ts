@@ -3,8 +3,9 @@
 // never runs; a page with no diagram never fetches the library; a diagram survives the repaint a live update makes; the same diagram
 // drawn twice has no id twice; both color schemes read, and the owner's data-theme attribute wins over the system's. Each check also
 // runs on a page with one part taken out (an edit applied while the page is bundled), where it must report the part's absence for
-// the reason the check protects: the reported line must say it, so a page that did not start or a wait that ran out does not pass
-// for a catch. Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
+// the reason the check protects. A diagram that never appears can only be observed by waiting, so the wait is short (GIVE_UP) and the
+// reported line must say what was waited for and what the page held; a bare timeout, or a page that did not start, is not a catch.
+// Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -107,7 +108,7 @@ const fetches = (bp: BoardPage) => bp.page.evaluate(() => performance.getEntries
 /** The head's blocks: a good one is a diagram in place of its code, with its Chinese labels; the bad one shows its source and the error; the one after it and the code block after that are untouched. */
 async function checkHead(bp: BoardPage, wait: number): Promise<string[]> {
   const waited = await settled(bp, 3, wait);
-  if (waited) return [`mermaid-head: ${waited}`];
+  if (waited) return [`mermaid-head: ${waited}`, ...(await shownAsCode(bp, "#item-detail") ? ["mermaid-head: the head's diagram source is shown as plain code"] : [])];
   const v: string[] = [];
   const got = await bp.page.evaluate(() => [...document.querySelectorAll<HTMLElement>("#item-detail .mermaid-block")].map(b => {
     const fig = b.querySelector<HTMLElement>(".mermaid-fig"), pre = b.querySelector("pre.code"), err = b.querySelector(".mermaid-err");
@@ -139,11 +140,14 @@ async function checkHead(bp: BoardPage, wait: number): Promise<string[]> {
   return v;
 }
 
+/** Whether the page shows the source of GOOD as an ordinary code block under `scope`: the part a page without the wrapper still has. */
+const shownAsCode = (bp: BoardPage, scope: string) => bp.page.evaluate(scope => [...document.querySelectorAll(scope + " pre.code")].some(p => !p.closest(".mermaid-block") && p.textContent?.includes("A[需求] --> B[设计]")), scope);
+
 /** A block in a log entry is a diagram too: the log is opened the way the owner does. */
 async function checkLog(bp: BoardPage, wait: number): Promise<string[]> {
   await bp.page.locator("#item-detail .log-toggle").click();
   const waited = await settled(bp, 1, wait, "#item-detail .log");
-  if (waited) return [`mermaid-log: ${waited}`];
+  if (waited) return [`mermaid-log: ${waited}`, ...(await shownAsCode(bp, "#item-detail .log") ? ["mermaid-log: the log's diagram source is shown as plain code"] : [])];
   const got = await bp.page.evaluate(() => { const b = document.querySelector<HTMLElement>("#item-detail .log .mermaid-block")!; return { state: b.dataset.state, svg: !!b.querySelector(".mermaid-fig svg"), label: b.querySelector("svg")?.textContent ?? "" }; });
   return got.state === "done" && got.svg && got.label.includes("需求") ? [] : [`mermaid-log: the block in the log is ${got.state} (diagram ${got.svg}, text ${JSON.stringify(got.label)})`];
 }
@@ -244,7 +248,7 @@ async function checkWide(bp: BoardPage, wait: number): Promise<string[]> {
     return {
       figs: figs.map(f => {
         const svg = f.querySelector("svg")!;
-        return { natural: svg.viewBox.baseVal.width, drawn: svg.getBoundingClientRect().width, box: f.clientWidth, scroll: f.scrollWidth, overflowX: getComputedStyle(f).overflowX };
+        return { natural: svg.viewBox.baseVal.width, drawn: svg.getBoundingClientRect().width, box: f.clientWidth, scroll: f.scrollWidth, overflowX: getComputedStyle(f).overflowX, left: svg.getBoundingClientRect().left - f.getBoundingClientRect().left };
       }),
       // Anything above a diagram's box that is wider than itself would scroll the page, or part of it, sideways.
       spilling: figs.flatMap(f => { const out: string[] = []; for (let e = f.parentElement; e; e = e.parentElement) if (e.scrollWidth > e.clientWidth + 1) out.push(e.tagName.toLowerCase() + (e.id ? "#" + e.id : "")); return out; }),
@@ -257,6 +261,8 @@ async function checkWide(bp: BoardPage, wait: number): Promise<string[]> {
   if (wide.natural <= wide.box + 1) v.push(`witness setup: the wide diagram is ${wide.natural}px, not wider than its box of ${wide.box}px`);
   if (small.natural >= small.box - 40) v.push(`witness setup: the narrow diagram is ${small.natural}px, not narrower than its box of ${small.box}px`);
   for (const [what, f] of [["narrow", small], ["wide", wide]] as const) if (Math.abs(f.drawn - f.natural) > 1) v.push(`mermaid-wide: the ${what} diagram is drawn ${Math.round(f.drawn)}px wide, not its own ${Math.round(f.natural)}px`);
+  if (Math.abs(small.left - (small.box - small.drawn) / 2) > 2) v.push(`mermaid-wide: the narrow diagram is not centered: it starts ${Math.round(small.left)}px from the left of its ${small.box}px box, centered would be ${Math.round((small.box - small.drawn) / 2)}px`);
+  if (Math.abs(wide.left) > 1) v.push(`mermaid-wide: the wide diagram does not start at the left edge of its box (${Math.round(wide.left)}px in)`);
   if (wide.scroll <= wide.box + 1 || !/auto|scroll/.test(wide.overflowX)) v.push(`mermaid-wide: the wide diagram's box does not scroll sideways (scroll width ${wide.scroll}px in a box of ${wide.box}px, overflow-x ${wide.overflowX})`);
   if (got.spilling.length) v.push(`mermaid-wide: the page scrolls sideways: ${[...new Set(got.spilling)].join(", ")} are wider than themselves`);
   if (got.page[0]! > got.page[1]! + 1) v.push(`mermaid-wide: the page scrolls sideways: it is ${got.page[0]}px wide in a window of ${got.page[1]}px`);
@@ -326,7 +332,7 @@ async function checkTheme(bp: BoardPage, wait: number): Promise<string[]> {
 }
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.join("\n"));
-/** The check must report a line that says `why`: the part's absence, not a wait that ran out. */
+/** The check must report a line that says `why`: what it waited for and what the page held, not a bare timeout. */
 const caught = (v: string[], why: RegExp) => assert.ok(v.some(l => why.test(l)), `the check must report ${String(why)}; it reported:\n${v.join("\n") || "(nothing)"}`);
 
 const seedHead = async (board: BoardServer, id: string) => setHead(board, id, HEAD);
@@ -336,7 +342,11 @@ const seedOne = async (board: BoardServer, id: string) => setHead(board, id, fen
 // The first copy sits in the head's 参考 section, which is folded; the second is in the log, opened after the first is drawn.
 const seedTwice = async (board: BoardServer, id: string) => { await setHead(board, id, "正文。\n\n**参考：同一张图**\n" + fence(GOOD)); await addLog(board, id, "同一张图又画一次：\n\n" + fence(GOOD)); };
 const WIDE = "flowchart LR\n  " + Array.from({ length: 30 }, (_, i) => `N${i}[第${i}步]`).join(" --> ");
-const seedWide = async (board: BoardServer, id: string) => setHead(board, id, ["一张窄的：", "", fence(GOOD), "", "一张很宽的：", "", fence(WIDE)].join("\n"));
+const SMALL = "flowchart LR\n  A[甲] --> B[乙]";
+const seedWide = async (board: BoardServer, id: string) => setHead(board, id, ["一张窄的：", "", fence(SMALL), "", "一张很宽的：", "", fence(WIDE)].join("\n"));
+/** The window at about the width of a phone held sideways, where the page puts the list and the detail side by side in two narrow columns. */
+const NARROW = { width: 700, height: 1000 };
+const narrow = async (bp: BoardPage) => { await bp.page.setViewportSize(NARROW); await bp.settle(); };
 const seedNone = async (board: BoardServer, id: string) => setHead(board, id, "没有图，只有代码：\n\n```wf\nfn main() {}\n```");
 const probe = (bp: BoardPage) => bp.page.evaluate(() => { (window as unknown as { __probe: () => void }).__probe = () => { (window as unknown as { __xss: number }).__xss = 4; }; });
 
@@ -351,6 +361,7 @@ const NO_ERROR: Edit = { file: "mermaid.ts", find: 'note.textContent = "图画�
 const SYSTEM_ONLY: Edit = { file: "mermaid.ts", find: 'return theme === "dark" || (theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);', replace: 'return matchMedia("(prefers-color-scheme: dark)").matches;' };
 const FIT_WIDTH: Edit = { file: "mermaid.ts", find: 'if (drawing && width) drawing.style.width = width + "px";', replace: "" };
 const NO_SCROLL: Edit = { file: "index.html", find: ".mermaid-fig { overflow-x: auto; ", replace: ".mermaid-fig { " };
+const NO_CENTER: Edit = { file: "index.html", find: "display: block; margin-inline: auto; ", replace: "display: block; " };
 const SAME_IDS: Edit = { file: "mermaid.ts", find: 'show(block, known.svg.replaceAll(known.id, "mermaid-" + ++serial))', replace: "show(block, known.svg)" };
 
 const LONG = { timeout: 5 * 60_000 };
@@ -361,7 +372,9 @@ test("a mermaid block in an item's head is a diagram; a bad one shows its source
 });
 test("the same check on a page that never wraps mermaid blocks reports that no block is drawn", LONG, async t => {
   const { bp } = await open(t, seedHead, [NO_WRAP]);
-  caught(await checkHead(bp, GIVE_UP), /^mermaid-head: expected 3 mermaid blocks drawn within 8 s; found 0 blocks/);
+  const v = await checkHead(bp, GIVE_UP);
+  caught(v, /^mermaid-head: expected 3 mermaid blocks drawn within 8 s; found 0 blocks/);
+  caught(v, /^mermaid-head: the head's diagram source is shown as plain code/);
 });
 test("the same check on a page that shows no error under a bad block reports the missing error", LONG, async t => {
   const { bp } = await open(t, seedHead, [NO_ERROR]);
@@ -374,7 +387,9 @@ test("a mermaid block in a log entry is a diagram", LONG, async t => {
 });
 test("the same check on a page that never wraps mermaid blocks reports that the log holds no block drawn", LONG, async t => {
   const { bp } = await open(t, seedLog, [NO_WRAP]);
-  caught(await checkLog(bp, GIVE_UP), /^mermaid-log: expected 1 mermaid blocks drawn within 8 s; found 0 blocks/);
+  const v = await checkLog(bp, GIVE_UP);
+  caught(v, /^mermaid-log: expected 1 mermaid blocks drawn within 8 s; found 0 blocks/);
+  caught(v, /^mermaid-log: the log's diagram source is shown as plain code/);
 });
 
 test("the text of a diagram never runs", LONG, async t => {
@@ -404,7 +419,7 @@ test("a diagram is a diagram again after a live update repaints its item", LONG,
 test("the same check on a page that draws only its first render reports the code left behind", LONG, async t => {
   const { bp, board, id } = await open(t, seedHead, [FIRST_ONLY]);
   // The blocks are in the page after the update, and none of them was drawn.
-  caught(await checkRepaint(bp, board, id, GIVE_UP), /^mermaid-repaint: after the live update, expected 4 mermaid blocks drawn within 8 s; found 4 blocks, states (none|loading)/);
+  caught(await checkRepaint(bp, board, id, GIVE_UP), /^mermaid-repaint: after the live update, expected 4 mermaid blocks drawn within 8 s; found 4 blocks, states none,none,none,none/);
 });
 
 test("the same diagram drawn twice, the first in a folded section, has no id twice and the visible copy keeps its own markers", LONG, async t => {
@@ -422,9 +437,23 @@ test("a wide diagram keeps its own size and scrolls in its box, and the page doe
   const { bp } = await open(t, seedWide);
   none(await checkWide(bp, WAIT));
 });
+test("at a window 700px wide a wide diagram still keeps its own size and scrolls in its box, and the page does not scroll sideways", LONG, async t => {
+  const { bp } = await open(t, seedWide);
+  await narrow(bp);
+  none(await checkWide(bp, WAIT));
+});
+test("the same check at a window 700px wide on a page whose diagram box does not scroll reports the box or the page", LONG, async t => {
+  const { bp } = await open(t, seedWide, [NO_SCROLL]);
+  await narrow(bp);
+  caught(await checkWide(bp, GIVE_UP), /^mermaid-wide: (the wide diagram's box does not scroll sideways|the page scrolls sideways)/);
+});
 test("the same check on a page that fits every diagram to its box reports the size", LONG, async t => {
   const { bp } = await open(t, seedWide, [FIT_WIDTH]);
   caught(await checkWide(bp, GIVE_UP), /^mermaid-wide: the (narrow|wide) diagram is drawn \d+px wide, not its own \d+px/);
+});
+test("the same check on a page that does not center a narrow diagram reports where it sits", LONG, async t => {
+  const { bp } = await open(t, seedWide, [NO_CENTER]);
+  caught(await checkWide(bp, GIVE_UP), /^mermaid-wide: the narrow diagram is not centered/);
 });
 test("the same check on a page whose diagram box does not scroll reports the box or the page", LONG, async t => {
   const { bp } = await open(t, seedWide, [NO_SCROLL]);

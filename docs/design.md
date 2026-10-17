@@ -1941,8 +1941,8 @@ main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
 diagram stands in for its code (the code stays in the page, hidden) and is shown at its own
-size: a narrow one is centered, and one wider than the text scrolls sideways in its own box,
-so the page itself never scrolls sideways. A block that
+size: a narrow one is centered in the text, and one wider than the text starts at its left edge
+and scrolls sideways in its own box, so the page itself never scrolls sideways. A block that
 does not parse keeps showing its code with the library's error under it, and the
 other blocks and the rest of the page are untouched. The diagrams use the
 library's `dark` theme when the page shows its dark colors (the owner's
@@ -3076,8 +3076,9 @@ section, has no id twice and the visible copy's line markers are its own; labels
 and lines read in both color schemes, and the `data-theme` attribute wins over the system's
 scheme. Each check also
 runs on a page with the one part it protects taken out by an edit applied while the page is
-bundled, where it must report the part's absence for the reason the check protects, not for
-a timeout or a page that did not start.
+bundled, where it must report the part's absence in a line that says what the check was
+waiting for and what the page held (a diagram that never appears can only be observed by
+waiting, so the wait is short), not a bare timeout or a page that did not start.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix
