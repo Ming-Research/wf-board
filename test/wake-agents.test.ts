@@ -54,7 +54,7 @@ const L = "长".repeat(1000), many = Array.from({ length: 500 }, (_, i) => `x${i
 const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
-  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, actions: L },
+  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many, actions: L },
   review: { item: L, project: L, title: L, level: 5 },
   finished: { item: L, project: L, title: L, session: L },
   "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },

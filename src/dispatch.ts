@@ -4,6 +4,7 @@
 
 import { DISPATCH_RESULTS, DISPATCH_ROLES, DISPATCH_SIGNALS, milliDollars } from "./model.ts";
 import type { Dispatch, Snapshot } from "./model.ts";
+import { isReviewStep } from "./rules.ts";
 
 type Role = (typeof DISPATCH_ROLES)[number];
 type Result = (typeof DISPATCH_RESULTS)[number];
@@ -138,6 +139,14 @@ export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispat
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
+/** The text of the item's review step while it is in progress (rules isReviewStep: the row with id `review`): the engineer's
+ * request for a review. Undefined when the item has no such step or it is not in progress. */
+export function reviewRequested(s: Pick<Snapshot, "items">, item: string): string | undefined {
+  const step = s.items[item]?.plan.find(isReviewStep);
+  return step && "text" in step && step.state === "doing" ? step.text : undefined;
+}
+/** Whether a reviewer session has an open dispatch on the item: a review the engineer resumes itself, not one the PM starts. */
+export const hasReviewer = (s: Pick<Snapshot, "items">, item: string): boolean => openDispatches(s, item).some(d => d.role === "审查");
 /** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
 export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   const out = new Set<string>();
