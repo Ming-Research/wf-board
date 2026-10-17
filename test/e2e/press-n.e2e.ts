@@ -8,6 +8,9 @@
 //   time    – the main thread's busy time from the key until the page is quiet, over 30 landings: median 0.2 s at most and
 //             90th percentile 0.3 s at most, with the board quiet and with sessions writing 3 times a second. It depends on the
 //             machine (a hosted runner's speed differs by up to a factor of two between jobs); each run is made once.
+// (The wait of a navigation for the baselines of the rows around its target, which keeps their draws inside the two, is held by a
+// test in test/web.test.ts: only a few landings in a hundred have such a row that answers late, too few for a reversed page to be
+// reported here every time.)
 // Each layer also runs on the page with what it protects taken out, where it must report: the three changes one at a time for
 // the counts, a draw made 150 ms slower for the time (quiet and writing). Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
 
@@ -134,9 +137,6 @@ const SCHEDULE_REBUILDS: Revert[] = [
 const NAVIGATION_DRAWS_THREE_TIMES: Revert[] = [
   { file: "web/app.ts", edit: "navigation draws the unfolded rows and the selected item one by one", find: "unfolded = openPath(it.id, false);\n      selectItem(it.id, false);", replace: "unfolded = openPath(it.id);\n      selectItem(it.id);" },
 ];
-const ROWS_AROUND_NOT_WAITED_FOR: Revert[] = [
-  { file: "web/app.ts", edit: "a navigation waits for the target's baselines alone, and the rows around it draw when theirs arrive", find: "await Promise.all(around ? [...own, allWithin([...pendingDiffs.values()], AROUND_BASELINES_WAIT_MS)] : own);", replace: "await Promise.all(own);" },
-];
 const FILTERS_COUNTED_EACH_DRAW: Revert[] = [
   { file: "web/app.ts", edit: "the filter counts are made again at each draw", find: "  function invalidateView() { memo = {}; }", replace: "  function invalidateView() { memo = {}; dataMemo = {}; }" },
 ];
@@ -190,7 +190,6 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     ["views draw with the board's rules rebuilt", SCHEDULE_REBUILDS, v => v.includes("built the board's rules")],
     ["navigation draws the unfolded rows, the selected item and the comments one by one", NAVIGATION_DRAWS_THREE_TIMES, v => v.includes("drew")],
     ["every draw counts the filters again", FILTERS_COUNTED_EACH_DRAW, v => v.includes("counted the filters")],
-    ["navigation does not wait for the baselines of the rows around its target", ROWS_AROUND_NOT_WAITED_FOR, v => v.includes("drew")],
   ];
   for (const [what, reverts, names] of lost) await t.test(`the counts report it when ${what}`, async () => {
     const { bp, cdp } = await openPage(browser, await pageOf(reverts));

@@ -3150,7 +3150,9 @@ sessions writing in four CI runs, and the speed of a hosted runner differs by up
 factor of two between jobs. While sessions write, a press also carries the page's
 handling of the writes that fall into it (about 50 ms for each, the board's rules built
 again), which leaves the limits close. Each change that the counts protect is taken out
-in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
+in turn (the wait for the rows around the target is held by a test of the page in a fake
+DOM instead: only a few landings in a hundred have such a row that answers late, too few
+for a reversed page to be reported every time), and a draw made 150 ms slower, with the board quiet and with sessions writing,
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
 
