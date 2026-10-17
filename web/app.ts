@@ -1644,9 +1644,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // The agent list: one row per session that wrote to the board lately, with the two items it touched last (src/agents.ts,
   // docs/design.md "Agent list"). Everything shown is what sessions declared by writing; nothing is observed, and the
-  // state word is inferred, so every row carries how long ago the session wrote.
-  let agentsOpen = true;
-  try { agentsOpen = localStorage.getItem("board-agents") !== "closed"; } catch (e) {}
+  // state word is inferred, so every row carries how long ago the session wrote. Only the running rows are unfolded; the
+  // others sit behind one line, 「其他 N 个」, that the reader opens.
+  let agentsOpen = true, othersOpen = false;
+  try { agentsOpen = localStorage.getItem("board-agents") !== "closed"; othersOpen = localStorage.getItem("board-agents-others") === "open"; } catch (e) {}
   // What the list was last painted from: a repaint with the same inputs is skipped, so a write elsewhere leaves it alone.
   let agentsSignature = "";
   function agoText(iso: string) {
@@ -1722,31 +1723,44 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (cells.children.length) box.appendChild(cells);
     return box;
   }
+  // The line that holds the rows which are not running: a count that opens them, below the running rows.
+  function agentOthers(rows: AgentRow[]) {
+    const box = el("li", "agent-others"), toggle = el("button", "agents-others-toggle", (othersOpen ? "▾ " : "▸ ") + "其他 " + rows.length + " 个");
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(othersOpen));
+    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的，和派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
+    toggle.addEventListener("click", () => { othersOpen = !othersOpen; try { localStorage.setItem("board-agents-others", othersOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
+    box.appendChild(toggle);
+    if (othersOpen) { const list = el("ul", "agent-list"); rows.forEach(r => list.appendChild(agentRow(r))); box.appendChild(list); }
+    return box;
+  }
   function renderAgents() {
     const host = get("agents"); if (!host) return;
-    const rows = agentRowsNow();
+    const rows = agentRowsNow(), running = rows.filter(r => r.running), others = rows.filter(r => !r.running);
     // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
     // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
     const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
       agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0];
     const unfolded = (prefix: string, id: string): unknown => agentOpen[prefix + id] ? kids(id, true).filter(passes).map(k => drawn(prefix, k.id)) : 0;
-    const signature = JSON.stringify([agentsOpen, rows.map(r => [r.name, r.level, r.role, r.state, r.waits, r.amber, r.lastKind, agoText(r.lastAt), r.touched.map(t => {
+    const shown = (r: AgentRow) => [r.name, r.level, r.role, r.state, r.waits, r.amber, r.lastKind, agoText(r.lastAt), r.touched.map(t => {
       const it = index().byId.get(t.item);
       return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;
-    })])]);
+    })];
+    // The rows behind the closed line are not drawn, so only their number can change what is on screen.
+    const signature = JSON.stringify([agentsOpen, othersOpen, running.map(shown), othersOpen ? others.map(shown) : others.length]);
     if (signature === agentsSignature) return;
     agentsSignature = signature;
     host.hidden = !rows.length;
     host.innerHTML = "";
     if (!rows.length) return;
-    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length);
+    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + running.length);
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(agentsOpen)); toggle.title = agentsOpen ? "收起代理列表" : "展开代理列表";
     toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
     if (!agentsOpen) return;
-    host.appendChild(el("p", "agents-note", "最近 6 小时写过看板的会话，各带它最近碰过的 2 个条目。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。没有派活记录的、派活已收尾的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
-    rows.forEach(r => list.appendChild(agentRow(r)));
+    running.forEach(r => list.appendChild(agentRow(r)));
+    if (others.length) list.appendChild(agentOthers(others));
     host.appendChild(list);
   }
   // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.

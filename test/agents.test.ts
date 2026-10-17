@@ -162,3 +162,55 @@ test("a dispatch is live while its session started or wrote within the window, a
   assert.deepEqual(liveDispatches(s, "a", NOW).map(d => d.agent).sort(), ["quiet-then-wrote", "recent"], "started or wrote within six hours; the ended one and the long quiet one are out");
   assert.deepEqual(liveDispatches(s, "missing", NOW), []);
 });
+
+// --- which rows are running ------------------------------------------------------------------------------------------
+
+// The oracle is this table, written from the rule in docs/design.md ("Who is expanded"), not computed by the code under test.
+// A finish ten minutes after the dispatch started `startedAgo` minutes ago.
+const endedAfter = (startedAgo: number) => ({ finish: { ended: minutesAgo(startedAgo - 10), result: "一次通过" } }) as unknown as Partial<Dispatch>;
+const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }]);
+
+test("a step in progress on an item a session touched does not make it running; an unfinished live dispatch does, whatever the state word", () => {
+  const names = ["working", "stopped", "waiting", "longWait", "nothing"];
+  // Finished records: each name wrote later on an item, but holds nothing alive. Open records: the same names, alive.
+  const finished = item([], { dispatches: names.map(name => dispatch(`done-${name}`, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
+  const open = item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
+  // Each name wrote this many minutes ago on this item.
+  const touches: Array<[string, string, number]> = [["working", "run", 5], ["stopped", "run", 31], ["waiting", "wait", 5], ["longWait", "wait", 61], ["nothing", "idle", 3]];
+  const writes = (prefix: string) => Object.fromEntries(touches.map(([name, id, minutes]) => [prefix + name, wrote([id, minutes])]));
+  const s = snap({ finished, open, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, { ...writes("done-"), ...writes("") });
+  const state = (name: string) => [row(s, name)!.state, row(s, name)!.running];
+  assert.deepEqual(names.map(name => state(`done-${name}`)), [["working", false], ["maybe-stopped", false], ["waiting", false], ["waiting", false], ["none", false]],
+    "its dispatch ended: the steps on the items it wrote to are other sessions', so it is folded although the state word is read from them");
+  assert.deepEqual(names.map(name => state(name)), [["working", true], ["maybe-stopped", true], ["waiting", true], ["waiting", true], ["none", true]],
+    "alive: running with every state word, 「可能停了」 and a wait over an hour (amber) included, and with none");
+});
+
+test("a session with no dispatch record is never running, whatever stands on the items it touched", () => {
+  const s = snap({ run: doing(), wait: doing("PR 草稿 CI") }, { observer: wrote(["run", 5]), waiter: wrote(["wait", 5]), stopped: wrote(["run", 45]) });
+  assert.deepEqual(["observer", "waiter", "stopped"].map(name => [row(s, name)!.state, row(s, name)!.running]), [["working", false], ["waiting", false], ["maybe-stopped", false]],
+    "the state word is still read from the steps, but those steps are other sessions': it is folded");
+});
+
+test("a session with an unfinished dispatch that is alive is running, an engineer or a review, with no step in progress", () => {
+  const done = [{ id: "w", text: "work", state: "done" }];
+  const review = (agent: string, startedAgo: number) => item(done, { dispatches: [dispatch(agent, minutesAgo(startedAgo), { role: "审查", level: 3 })] } as Partial<Item>);
+  const s = snap({
+    fresh: item([], { dispatches: [dispatch("fresh", minutesAgo(3))] } as Partial<Item>),
+    rowsDone: item(done, { dispatches: [dispatch("rowsDone", minutesAgo(300))] } as Partial<Item>),
+    over: item(done, { dispatches: [dispatch("over", minutesAgo(120), endedAfter(120))] } as Partial<Item>),
+    moved: item(done, { dispatches: [dispatch("moved", minutesAgo(200), endedAfter(200)), dispatch("moved", minutesAgo(100))] } as Partial<Item>),
+    r10: review("r10", 10), r40: review("r40", 40), r300: review("r300", 300),
+    // One name: an engineer dispatch that ended, and an older review dispatch still unfinished on another item.
+    mixedA: item(done, { dispatches: [dispatch("mixed", minutesAgo(100), endedAfter(100))] } as Partial<Item>),
+    mixedB: item(done, { dispatches: [dispatch("mixed", minutesAgo(300), { role: "审查" })] } as Partial<Item>),
+  }, { over: wrote(["over", 5]), rowsDone: wrote(["rowsDone", 250]), mixed: wrote(["mixedA", 5]), r300: wrote(["r300", 200]) });
+  const running = (name: string) => row(s, name)!.running;
+  assert.deepEqual([row(s, "fresh")!.state, running("fresh")], ["none", true], "just started, no row marked yet: it holds the item");
+  assert.deepEqual([row(s, "rowsDone")!.state, running("rowsDone")], ["none", true], "every row done and waiting for the merge: still holds it, 5 hours after the start");
+  assert.deepEqual([row(s, "over")!.state, running("over")], ["none", false], "its dispatch ended: it holds nothing, though it wrote again afterwards");
+  assert.equal(running("moved"), true, "a new dispatch under the name of an ended one holds the item");
+  assert.equal([running("r10"), running("r40"), running("r300")].join(), "true,true,true", "an unfinished review is running at 10 minutes, at 40 and at 5 hours: no shorter bound than the window");
+  assert.equal(row(s, "r10")!.state, "none", "and it gets no state word");
+  assert.equal(running("mixed"), true, "an unfinished review record under the name is alive for status too");
+});
