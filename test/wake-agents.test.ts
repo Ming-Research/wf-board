@@ -16,7 +16,8 @@ import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
 import { holderOf, openDispatches } from "../src/dispatch.ts";
-import { offers } from "../src/offers.ts";
+import { candidates } from "../src/candidates.ts";
+import { offers, toPush, toldNow } from "../src/offers.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Resolved } from "../src/credentials.ts";
 
@@ -326,11 +327,58 @@ test("something more to hand out than the PM was last told pushes dispatch, with
   assert.deepEqual(dispatches(), [{ event: "dispatch", pool: "2+", free: starting.free - 1, limit: 6, candidates: starting.candidates }], "one more candidate than after the start; no item is named");
   await tick();
   assert.equal(dispatches().length, 1, "the same offer is not pushed again");
-  // The engineer finishes: a slot is free again.
-  await op.dispatchFinish({ ...asArchitect, id: candidate, agentId: "agent-c", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 1, reports: 0, kickbacks: 0 });
+  // The engineer asks for a review and waits for it, which frees its slot with no candidate added.
+  await op.setPlan({ ...asArchitect, id: candidate, row: { id: "review", text: "审查（2 级）", state: "doing" } });
   await tick();
-  assert.equal(dispatches().at(-1)!.free, starting.free, "a slot freed");
+  assert.deepEqual(dispatches().at(-1), { event: "dispatch", pool: "2+", free: starting.free, limit: 6, candidates: starting.candidates }, "a slot freed");
   assert.equal(dispatches().length, 2);
+});
+
+test("a pool is pushed when it has something to hand out and more free slots or candidates than the PM was last told; its own starts lower what it was told", () => {
+  const counts = (free: number, candidates: number) => [{ pool: "2+", free, limit: 6, candidates }];
+  const look = (told: ReturnType<typeof toldNow>, free: number, candidates: number) => toPush(counts(free, candidates), told);
+  let told = toldNow(counts(3, 5));
+  // The same, and fewer: nothing, and what the PM is told follows the lower numbers.
+  assert.deepEqual(look(told, 3, 5).push, []);
+  told = look(told, 2, 4).told;
+  assert.deepEqual(told.get("2+"), { free: 2, candidates: 4 });
+  // A candidate appears with no slot freed: pushed. A slot frees with no candidate added: pushed.
+  const added = look(told, 2, 5);
+  assert.deepEqual(added.push, counts(2, 5));
+  assert.deepEqual(look(added.told, 3, 5).push, counts(3, 5), "the slot only");
+  assert.deepEqual(look(added.told, 2, 5).push, [], "pushed once for the same state");
+  // No free slot, or no candidate: nothing to hand out, though a number is higher than it was told; the lower number is what it is told.
+  told = look(told, 0, 9).told;
+  assert.deepEqual(look(told, 0, 9).push, []);
+  assert.deepEqual(told.get("2+"), { free: 0, candidates: 4 });
+  assert.deepEqual(look(told, 1, 9).push, counts(1, 9), "a slot frees after none: pushed");
+  assert.deepEqual(look(look(told, 2, 0).told, 2, 1).push, counts(2, 1), "a candidate after none: pushed");
+  // A pool that was never told counts as told nothing.
+  assert.deepEqual(toPush(counts(1, 1), new Map()).push, counts(1, 1));
+  assert.deepEqual(toPush(counts(0, 1), new Map()).push, []);
+});
+
+test("the offers count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {
+  const doc = (title: string, extra: object = {}) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  // The count of what can start in the 2+ pool, read without the code under test.
+  const independent = (s: Snapshot, r: ReturnType<(typeof import("../src/rules.ts"))["rules"]>) => Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined && s.items[id]!.difficulty! >= 2).length;
+  // Five startable parts under one parent are listed as the parent and 5, not as five rows.
+  const grouped = await board(t), children = Array.from({ length: 5 }, (_, i) => `part${i}`);
+  await grouped.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "parent", expectRev: null, doc: doc("有五个部分的条目", { priority: "P0", plan: [...children.map(id => ({ id, item: id, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...children.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`部分 ${id}`) })),
+  ] });
+  const g = grouped.store.snapshot(), gr = grouped.store.derived.rules(g, T0), gpool = candidates(g, gr).pools.find(p => p.pool === "2+")!;
+  assert.ok(gpool.listed.some(x => "parent" in x && x.count === 5), "the five parts are listed as one group");
+  assert.deepEqual(offers(g, gr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(g, gr) });
+  assert.ok(independent(g, gr) >= 6, "the five parts and the fixture's own candidate");
+  // Twelve loose candidates are more than the rows listed for a pool: the rest are only counted.
+  const crowded = await board(t), loose = Array.from({ length: 12 }, (_, i) => `loose${i}`);
+  await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`, { priority: "P1" }) })) });
+  const c = crowded.store.snapshot(), cr = crowded.store.derived.rules(c, T0), cpool = candidates(c, cr).pools.find(p => p.pool === "2+")!;
+  assert.ok(cpool.more > 0, "some candidates are past the rows listed");
+  assert.deepEqual(offers(c, cr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(c, cr) });
+  assert.ok(independent(c, cr) >= 13, "the twelve and the fixture's own candidate");
 });
 
 test("an item a session holds becoming done tells the PM which session to stop, once; one nobody holds tells nothing", async t => {
