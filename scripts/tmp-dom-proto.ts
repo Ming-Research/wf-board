@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { build } from "esbuild";
 import { startBoard, ROOT } from "../test/e2e/harness.ts";
+import { oracle } from "../test/e2e/invariants.ts";
 
 const lib = process.argv[2] ?? "jsdom";
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -136,6 +137,48 @@ for (const x of picks) {
 }
 console.log(`PROTO ${lib} family plan item rows: ${picks.length} items, ${planClicks} clicks in ${(performance.now() - began).toFixed(0)} ms; wrong landings ${bad2.length}`);
 if (bad2.length) console.log("PROTO " + lib + " first wrong: " + bad2.slice(0, 3).join(" || "));
+
+// Family 3: decision cards in an item's body (structure, option buttons, the fold of a closed card toggling on a summary click).
+began = performance.now();
+const o = await oracle(board.store);
+const cardIds = Object.keys(o.s.decisions).slice(0, 40);
+const bad3: string[] = []; let folds = 0, opens = 0, noRow = 0;
+for (const card of cardIds) {
+  const d = o.s.decisions[card]!;
+  if (selected() !== d.item) {
+    const title = doc.getElementById("it-" + d.item)?.querySelector(".item-title");
+    if (!title) { noRow++; continue; }
+    title.click(); await settle();
+  }
+  const boxes = doc.querySelectorAll(`#item-detail [id="q-${card}"]`);
+  if (boxes.length !== 1) { bad3.push(`card ${card} drawn ${boxes.length} times`); continue; }
+  const e = boxes[0] as any;
+  if (e.querySelectorAll("h3").length !== 1) bad3.push(`card ${card} has ${e.querySelectorAll("h3").length} headings`);
+  if (d.status === "open") { opens++; const n = e.querySelectorAll("button.optbtn").length; if (n !== d.options.length) bad3.push(`open card ${card} shows ${n} options, not ${d.options.length}`); }
+  else {
+    const fold = e.querySelector("details.cardfold");
+    if (!fold) { bad3.push(`${d.status} card ${card} has no fold`); continue; }
+    const was = fold.open; fold.querySelector("summary")?.click(); await settle(); folds++;
+    if (fold.open === was) bad3.push(`card ${card}: a click on the summary did not toggle the fold (open stays ${was})`);
+  }
+}
+console.log(`PROTO ${lib} family cards: ${cardIds.length} cards (${opens} open, ${folds} closed with fold clicked, ${noRow} without a tree row) in ${(performance.now() - began).toFixed(0)} ms; violations ${bad3.length}`);
+if (bad3.length) console.log("PROTO " + lib + " first violations: " + bad3.slice(0, 4).join(" || "));
+
+// Family 4: n walks the unread items (page.e2e's n-walk), with the jsdom-style geometry of zeros.
+began = performance.now();
+const visited = new Set<string>(); const bad4: string[] = [];
+(doc.activeElement as any)?.blur?.();
+for (let k = 0; k < 4 * o.docs.size + 4; k++) {
+  doc.dispatchEvent(new w.KeyboardEvent("keydown", { key: "n", bubbles: true })); await settle();
+  const sel = selected();
+  if (sel && !o.fresh.has(sel)) bad4.push(`n landed on ${sel}, which holds no unread content`);
+  if (sel) visited.add(sel);
+  if ([...o.fresh].every(id => visited.has(id))) break;
+}
+const missed = [...o.fresh].filter(id => !visited.has(id));
+console.log(`PROTO ${lib} family n-walk: ${visited.size} of ${o.fresh.size} unread items reached, missed ${missed.length}, bad landings ${bad4.length}, in ${(performance.now() - began).toFixed(0)} ms`);
+if (bad4.length) console.log("PROTO " + lib + " first bad: " + bad4.slice(0, 3).join(" || "));
 if (errors.length) console.log(`PROTO ${lib} page errors (${errors.length}): ` + errors.slice(0, 5).join(" || "));
 lap("done");
 for (const fn of cleanups.reverse()) { try { await fn(); } catch { /* ignore */ } }
