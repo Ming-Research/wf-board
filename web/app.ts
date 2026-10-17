@@ -21,7 +21,7 @@ type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
-  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
+  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", idle: "IDLE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
@@ -345,7 +345,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ["wip", "进行中", "进行中的条目", it => statusOf(it) === "wip"],
     ["blocked", "卡住", "卡住的条目", it => statusOf(it) === "blocked"],
     ["paused", "暂停", "由主人暂停的条目，包括暂停条目的下级", it => statusOf(it) === "paused"],
-    ["todo", "未开始", "还没开始的条目，包括部分完成但没人在做的", it => statusOf(it) === "todo"],
+    ["idle", "停滞", "做完了一部分、现在没人在做的条目", it => statusOf(it) === "idle"],
+    ["todo", "未开始", "什么都还没做、也没人在做的条目", it => statusOf(it) === "todo"],
     ["done", "完成", "所有完成的条目", it => statusOf(it) === "done"],
     ["done7", "7 天内完成", "最近 7 天完成的条目", it => statusOf(it) === "done" && Date.parse(latestOf(it)) > Date.now() - WEEK],
     ["cancelled", "取消", "取消的条目", it => statusOf(it) === "cancelled"]
@@ -1612,9 +1613,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
 
-    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, todo: 0, done: 0, cancelled: 0 };
+    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, idle: 0, todo: 0, done: 0, cancelled: 0 };
     state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
-    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
+    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["idle", "停滞", "--bar-idle"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
       .filter(([k]) => (k !== "cancelled" && k !== "blocked" && k !== "paused") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
     view.appendChild(stats);
@@ -2095,7 +2096,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       // Done and cancelled parts are not counted on the row: only what is still open.
-      ["todo", "wip", "blocked", "paused"].forEach(k => { if (n[k]) {
+      ["todo", "idle", "wip", "blocked", "paused"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
         count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);

@@ -104,7 +104,7 @@ test("overview/list/notes filter derived plan status, inherited priority, subtre
   await op.clearAsk({author,id:"a",log:"Handled"});
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
-  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
+  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, idle: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["b"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
@@ -289,7 +289,7 @@ test("brief queues own work and frontier steps, folds resolved rows and projects
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
 });
 
-test("brief excludes an ask-blocked frontier but retains ready parallel work beside a doing step", async t => {
+test("brief excludes an ask-blocked frontier and an item somebody holds, and offers ready parallel work once nobody does", async t => {
   const {store,op}=await board(t);
   const blocked=store.snapshot();
   assert.equal(rules(blocked).statusOf("a"),"blocked");
@@ -298,8 +298,14 @@ test("brief excludes an ask-blocked frontier but retains ready parallel work bes
   await op.setPlan({author,id:"a",rows:[{id:"doing",text:"Current work",state:"doing",after:[]},{id:"ready",text:"Independent next work",state:"todo",after:[]},acceptance()]});
   const running=store.snapshot(),r=rules(running);
   assert.equal(r.statusOf("a"),"wip");
-  assert.ok(q.brief(running,r,author).todo.some(row=>row.id === "a"));
+  assert.ok(!q.brief(running,r,author).todo.some(row=>row.id === "a"));
   assert.ok(q.brief(running,r,author).wip.some(row=>row.id === "a"));
+  // The step in progress is done: part way, nobody on it, and the ready step is offered.
+  await op.setPlan({author,id:"a",row:{id:"doing",text:"Current work",state:"done",after:[]}});
+  const parked=store.snapshot(),pr=rules(parked);
+  assert.equal(pr.statusOf("a"),"idle");
+  assert.ok(q.brief(parked,pr,author).todo.some(row=>row.id === "a"));
+  assert.ok(!q.brief(parked,pr,author).wip.some(row=>row.id === "a"));
 });
 
 test("project followups use strict age boundary and omit drafts, replies and closures", async t => {
@@ -330,7 +336,7 @@ test("project identity read shapes omit agents", async t => {
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 } }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, idle: 0, wip: 0, blocked: 3, paused: 0 } }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
@@ -502,4 +508,21 @@ test("paused items have explicit list, overview and project counts and are absen
 test("describeChanges ignores a changed num, as it does rev and updated", () => {
   assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "T", num: 9 }, "item"), "metadata changed", "a num-only difference names no field");
   assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "U", num: 9 }, "item"), "title changed");
+});
+
+test("brief counts the items that only wait for their turn in their owner's plan, per owner, and still lists the ones blocked for their own reason", async t => {
+  const { store, op } = await board(t);
+  // area's plan puts new1 and new2 behind its earlier open row; new2 also waits on another item of its own.
+  for (const key of ["new1", "new2"]) await op.createItem({ ...asArchitect, key, owner: "area", title: key, head: "Stable", accept: "Result passes", plan: [{ id: "work", text: "Deliver result", state: "todo" }], links: [], data: "4 cases" });
+  await op.setPlan({ author, id: "new2", rows: [{ item: "b", own: false, after: [] }, acceptance()] });
+  // new3 also waits only for its turn, but a live session is on it: it is listed, so the session's work is not hidden.
+  await op.createItem({ ...asArchitect, key: "new3", owner: "area", title: "new3", head: "Stable", accept: "Result passes", plan: [{ id: "work", text: "Deliver result", state: "todo" }], links: [], data: "4 cases" });
+  await op.dispatchStart({ ...asArchitect, id: "new3", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
+  const s = store.snapshot(), r = rules(s, Date.parse(later)), result = q.brief(s, r, author);
+  assert.deepEqual([r.statusOf("new1"), r.statusOf("new2"), r.statusOf("new3")], ["blocked", "blocked", "blocked"]);
+  const listed = result.progress.map(row => row.id);
+  assert.ok(!listed.includes("new1"), "waiting only for its turn: counted, not listed");
+  assert.ok(listed.includes("new2"), "blocked on another item too: listed with its plan");
+  assert.ok(listed.includes("new3"), "a session is on it: listed, not counted");
+  assert.deepEqual(result.queued, [{ owner: "area", ...(s.items.area!.num === undefined ? {} : { num: s.items.area!.num }), title: s.items.area!.title, count: 1 }]);
 });

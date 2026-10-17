@@ -3231,10 +3231,11 @@ test("record labels render in the page and stay outside status counts", async ()
   assert.ok(row.querySelectorAll(".st").some(e => e.innerHTML === "记录"));
   assert.ok(!row.querySelectorAll(".st").some(e => /TODO|WIP/.test(e.innerHTML)));
   const counts = summaryText(p).find(e => e.className === "sum-stats")!.children.map(e => e.innerHTML);
-  assert.equal(counts.length, 3);
+  assert.equal(counts.length, 4);
   assert.match(counts[0]!, /进行中 0$/);
-  assert.match(counts[1]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
-  assert.match(counts[2]!, /完成 0$/);
+  assert.match(counts[1]!, /停滞 0$/);
+  assert.match(counts[2]!, /未开始 1$/, "only the ordinary parent counts as TODO; its record child has no status");
+  assert.match(counts[3]!, /完成 0$/);
 });
 
 // Records each item the page signs (rules presentationSignature) as a render entry "sign:<id>".
@@ -4420,3 +4421,23 @@ test("a saved draft being edited holds the reload until the edit is saved", asyn
   await sleep(RECHECK_MS + 200);
   assert.equal(p.reloads, 1);
 });
+
+test("an item with part done and nobody on it is 停滞: its chip, the parent's count, the status bar and its own filter", async () => {
+  const s=nativeSnapshot();
+  s.items.part={...s.items.child!,title:"Part",plan:planWork([planStep("one","One","done"),planStep("two","Two")])};
+  s.items.area!.plan=planWork([ownedRow("child"),ownedRow("part")]);
+  const p=await page(s,[]); await expand(p,"area");
+  assert.ok(rowOf(p,"part").querySelector(".item-head .st")!.classList.contains("idle"), "the chip takes the idle colour");
+  const counts=rowOf(p,"area").querySelector(".counts")!;
+  assert.deepEqual(counts.children.map(e=>e.className),["st idle","st wip"], "a parent counts the part-done leaf before the one in progress");
+  assert.equal(counts.children[0]!.attributes["aria-label"],"IDLE 1");
+  const bar=summaryText(p).find(e=>e.className === "sum-stats")!.children.map(e=>e.innerHTML);
+  assert.ok(bar.some(t=>/停滞 1$/.test(t)), "the status bar counts it apart from 未开始: "+bar.join(" | "));
+  assert.ok(bar.some(t=>/未开始 0$/.test(t)));
+  const button=p.all().find(e=>e.tagName === "BUTTON" && e.innerHTML.startsWith("停滞 "))!;
+  assert.equal(button.innerHTML,"停滞 1");
+  await button.click(); await p.flush(); await expand(p,"area");
+  assert.ok(rowOf(p,"part"), "the filter keeps the part-done item");
+  assert.equal(rowOf(p,"child"), undefined, "and drops the one in progress");
+});
+
