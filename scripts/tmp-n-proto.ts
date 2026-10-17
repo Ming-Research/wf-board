@@ -33,6 +33,8 @@ const edit = (text: string, find: string, replace: string) => {
 };
 const slow = (ms: number) => (t: string) => edit(t, '    countEvent("board:render", [...scope].join(","));\n', `    countEvent("board:render", [...scope].join(","));\n    for (const began = performance.now(); performance.now() - began < ${ms};) {}\n`);
 const filtersEachDraw = (t: string) => edit(t, "  function invalidateView() { memo = {}; }", "  function invalidateView() { memo = {}; dataMemo = {}; }");
+const rebuildsRules = (t: string) => edit(edit(t, "    invalidateView(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;", "    invalidate(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;"), "function renderNow(...scope:string[]) { invalidateView();", "function renderNow(...scope:string[]) { invalidate();");
+const drawsThreeTimes = (t: string) => edit(t, "unfolded = openPath(it.id, false);\n      selectItem(it.id, false);", "unfolded = openPath(it.id);\n      selectItem(it.id);");
 async function bundle(change?: (t: string) => string): Promise<string> {
   const contents = change ? change(appText) : appText;
   return (await build({ stdin: { contents, resolveDir: join(ROOT, "web"), sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", write: false, logLevel: "silent" })).outputFiles[0]!.text;
@@ -214,6 +216,8 @@ if (phases.includes("slow")) await runPhase("slow", [{ label: "base", code: base
 lap("slow done");
 if (phases.includes("counts")) await runPhase("counts", [{ label: "base", code: base }, { label: "filtersEachDraw", code: await bundle(filtersEachDraw) }]);
 lap("counts done");
+if (phases.includes("witness")) await runPhase("witness", [{ label: "base", code: base }, { label: "rebuildsRules", code: await bundle(rebuildsRules) }, { label: "drawsThreeTimes", code: await bundle(drawsThreeTimes) }, { label: "allThree", code: await bundle(t => drawsThreeTimes(rebuildsRules(filtersEachDraw(t)))) }]);
+lap("witness done");
 if (errors.length) out("errors", errors.slice(0, 6));
 for (const fn of cleanups.reverse()) { try { await fn(); } catch { /* ignore */ } }
 process.exit(0);

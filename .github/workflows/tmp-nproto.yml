@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rep: [a, b, c, d, e]
+        rep: [a, b]
     name: nproto-${{ matrix.rep }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -28,7 +28,7 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: n-press time layer in Node
-        run: node --max-old-space-size=8192 scripts/tmp-n-proto.ts 2>&1 | tee nproto.out
+        run: NP_PHASES=witness node --max-old-space-size=8192 scripts/tmp-n-proto.ts 2>&1 | tee nproto.out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
