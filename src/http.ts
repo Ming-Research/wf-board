@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, Note } from "./model.ts";
@@ -57,12 +58,15 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // The page files are read from disk on each request, so a rebuilt page needs no restart (design section 4, Deploying).
   const pageFile = (name: string) => readFile(join(deps.webDir, name));
-  /** The page as it is on disk now: index.html, and the version its two files make. The version is undefined while the bundle is
-   * missing (a build under way), which leaves the page without one: it does not reload itself. */
+  const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
+  const optionalPageFile = (name: string) => pageFile(name).catch((error: unknown) => { if (missing(error)) return undefined; throw error; });
+  /** The page as it is on disk now: index.html, and the version its files make. The version is undefined while the bundle is
+   * missing (a build under way), which leaves the page without one: it does not reload itself. The diagram library is part of the
+   * version when it is built; a page served without it draws no diagrams. */
   async function currentPage(): Promise<{ html: Buffer; version: string | undefined }> {
     const html = await pageFile("index.html");
-    try { return { html, version: pageVersion(html, await pageFile("dist/app.js")) }; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { html, version: undefined }; throw error; }
+    try { return { html, version: pageVersion(html, await pageFile("dist/app.js"), await optionalPageFile("dist/mermaid.js")) }; }
+    catch (error) { if (missing(error)) return { html, version: undefined }; throw error; }
   }
   // The version the open pages were last told: by a deploy that ended, or when the first page connected. A deploy that ends tells them
   // again only when the version differs (design section 4, Deploying).
@@ -131,6 +135,15 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       }
       if (path === "/app.js") {
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache" }); res.end(await pageFile("dist/app.js")); return;
+      }
+      if (path === "/mermaid.js") {
+        // The diagram library the page loads when it first shows a mermaid block. It is several MB, so the browser keeps it and asks again
+        // with the tag of its copy: an unchanged library costs a 304, a rebuilt one is fetched whole.
+        const library = await optionalPageFile("dist/mermaid.js");
+        if (!library) { json(res, 404, { error: "The diagram library is not built" }); return; }
+        const tag = `"${createHash("sha256").update(library).digest("hex").slice(0, 16)}"`;
+        if (req.headers["if-none-match"] === tag) { res.writeHead(304, { ETag: tag, "Cache-Control": "no-cache" }); res.end(); return; }
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", ETag: tag }); res.end(library); return;
       }
       if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, store.snapshot()); return; }

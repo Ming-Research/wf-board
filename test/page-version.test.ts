@@ -11,17 +11,20 @@ const HTML = `<!doctype html><meta id="page-version" content="${VERSION_MARK}"><
 const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: [], restarted: false };
 const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
 
-/** A page directory of its own, which a test rewrites the way a deploy does. */
-async function pageDir(t: { after(fn: () => unknown): void }, files: { html?: string; js?: string | null } = {}) {
+/** A page directory of its own, which a test rewrites the way a deploy does. The diagram library is built only when `library` is given. */
+async function pageDir(t: { after(fn: () => unknown): void }, files: { html?: string; js?: string | null; library?: string } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-page-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, "dist"));
-  const write = async (html: string, js: string | null) => {
+  const write = async (html: string, js: string | null, library?: string | null) => {
     await writeFile(join(dir, "index.html"), html);
     if (js !== null) await writeFile(join(dir, "dist/app.js"), js);
+    if (library === null) await rm(join(dir, "dist/mermaid.js"), { force: true });
+    else if (library !== undefined) await writeFile(join(dir, "dist/mermaid.js"), library);
   };
-  await write(files.html ?? HTML, files.js === undefined ? "console.log('one')" : files.js);
-  return { dir, write, version: async () => pageVersion(await readFile(join(dir, "index.html")), await readFile(join(dir, "dist/app.js"))) };
+  await write(files.html ?? HTML, files.js === undefined ? "console.log('one')" : files.js, files.library);
+  const library = () => readFile(join(dir, "dist/mermaid.js")).catch(() => undefined);
+  return { dir, write, version: async () => pageVersion(await readFile(join(dir, "index.html")), await readFile(join(dir, "dist/app.js")), await library()) };
 }
 
 /** The events of a page's stream, read as they arrive: `next` waits for one event (the comment line that opens the stream is not one). */
@@ -150,4 +153,55 @@ test("a page that connects is told the version on disk, and the pages already op
   // The deploy ends: now every open page is told.
   assert.equal((await api("/api/wake", deployed)).status, 200);
   assert.deepEqual(await first.next(), { event: "page", data: { version: two } });
+});
+
+test("the diagram library is part of the version once built: a change to it changes the version, a byte moved into it does too, and a page without it keeps the old version", () => {
+  const html = Buffer.from("html"), js = Buffer.from("js"), lib = Buffer.from("lib");
+  const without = pageVersion(html, js), a = pageVersion(html, js, lib);
+  assert.notEqual(a, without, "building the library is a new version");
+  assert.equal(pageVersion(html, js, Buffer.from("lib")), a);
+  assert.notEqual(pageVersion(html, js, Buffer.from("lib!")), a);
+  assert.notEqual(pageVersion(html, Buffer.from("jsl"), Buffer.from("ib")), a, "a byte moved from the bundle to the library is another version");
+  assert.notEqual(pageVersion(html, js, Buffer.alloc(0)), without, "an empty library is not no library");
+});
+
+test("GET /mermaid.js serves the library on disk with a tag, answers 304 to that tag and the new file once rebuilt, and 404 while it is not built", async t => {
+  const page = await pageDir(t), { url } = await server(t, { webDir: page.dir });
+  const missing = await fetch(url + "/mermaid.js");
+  assert.equal(missing.status, 404);
+  await missing.arrayBuffer();
+  await page.write(HTML, "console.log('one')", "export default 1;");
+  const first = await fetch(url + "/mermaid.js");
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get("content-type") ?? "", /^text\/javascript/);
+  assert.equal(first.headers.get("cache-control"), "no-cache");
+  assert.equal(await first.text(), "export default 1;");
+  const tag = first.headers.get("etag")!;
+  assert.match(tag, /^"[0-9a-f]{16}"$/);
+  const same = await fetch(url + "/mermaid.js", { headers: { "If-None-Match": tag } });
+  assert.equal(same.status, 304);
+  assert.equal((await same.arrayBuffer()).byteLength, 0);
+  await page.write(HTML, "console.log('one')", "export default 2;");
+  const rebuilt = await fetch(url + "/mermaid.js", { headers: { "If-None-Match": tag } });
+  assert.equal(rebuilt.status, 200, "a rebuilt library is not answered with the old tag");
+  assert.equal(await rebuilt.text(), "export default 2;");
+  assert.notEqual(rebuilt.headers.get("etag"), tag);
+});
+
+test("a rebuilt diagram library is a new page version: GET / carries it and a deploy announces it, though the bundle did not change", async t => {
+  const page = await pageDir(t, { library: "export default 1;" }), { url, api } = await server(t, { webDir: page.dir });
+  const meta = async () => /id="page-version" content="([^"]*)"/.exec(await (await fetch(url + "/")).text())![1];
+  const one = await page.version();
+  assert.equal(await meta(), one);
+  const events = await stream(t, url);
+  assert.deepEqual(await events.next(), { event: "page", data: { version: one } });
+  await page.write(HTML, "console.log('one')", "export default 2;");
+  const two = await page.version();
+  assert.notEqual(two, one);
+  assert.equal(await meta(), two);
+  assert.equal((await api("/api/wake", deployed)).status, 200);
+  assert.deepEqual(await events.next(), { event: "page", data: { version: two } });
+  // A page without the library is still a page with a version, so it reloads itself when the library arrives.
+  await page.write(HTML, "console.log('one')", null);
+  assert.equal(await meta(), await page.version());
 });

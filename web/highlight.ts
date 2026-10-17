@@ -70,8 +70,10 @@ export function highlightCode(src: string, info: string, numbered: boolean): str
   }).join("\n");
 }
 
-/** A code block's HTML: line numbers when it has 3 or more lines. */
+/** A code block's HTML: line numbers when it has 3 or more lines. A mermaid block is wrapped for web/mermaid.ts, which draws it as a
+ * diagram above its code; the code shows as it is until, and unless, the diagram is drawn. */
 export function codeBlock(lines: string[], info: string): string {
   const numbered = lines.length >= 3;
-  return '<pre class="code' + (numbered ? " numbered" : "") + '"><code>' + highlightCode(lines.join("\n"), info, numbered) + "</code></pre>";
+  const pre = '<pre class="code' + (numbered ? " numbered" : "") + '"><code>' + highlightCode(lines.join("\n"), info, numbered) + "</code></pre>";
+  return fenceLang(info) === "mermaid" ? '<div class="mermaid-block">' + pre + "</div>" : pre;
 }

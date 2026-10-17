@@ -228,7 +228,7 @@ An operation has a class, and is slow when it takes more than its class's limit:
 
 | Class | Limit | Operations |
 |---|---|---|
-| read | 1 s | `GET /`, `/app.js`, `/health`, `/api/snapshot`; every tool that reads the board except those of the next row |
+| read | 1 s | `GET /`, `/app.js`, `/mermaid.js`, `/health`, `/api/snapshot`; every tool that reads the board except those of the next row |
 | history | 10 s | `GET /api/unread`, `GET /api/step`; the tools `changes`, `history` and `diff`, which read the git history |
 | write | 2 s | `POST /api/notes`, `/api/draft`, `/api/send`, `/api/read`, `/api/wake`; `DELETE /api/notes/<id>`; every tool that changes the board |
 
@@ -360,11 +360,12 @@ restart.
   A daemon that is down at the deploy is restarted whatever changed, since a
   deploy leaves the board up.
 - Pages open in the owner's browser are replaced after the deploy, and the job
-  does nothing for it. The page's version is a hash of the two files the daemon
-  serves, `web/index.html` and `web/dist/app.js` (`src/page-version.ts`): it
+  does nothing for it. The page's version is a hash of the files the daemon
+  serves, `web/index.html`, `web/dist/app.js` and, once built, the diagram
+  library `web/dist/mermaid.js` (`src/page-version.ts`): it
   changes exactly when a page loaded now would differ from one loaded before, so
   a deploy of docs or tests changes nothing for an open page, and a rebuilt page
-  changes it with no restart. `GET /` fills the version into the page's own text
+  (or a rebuilt library) changes it with no restart. `GET /` fills the version into the page's own text
   (the `page-version` meta tag), and `GET /api/events` opens with a `page` event
   that carries the version on disk at that moment, to that stream alone. When a
   deploy ends, the `deployed` push (`deployFailed` after a rollback) arrives at
@@ -1922,6 +1923,28 @@ Blocks of 1 or 2 lines show none. Long lines scroll horizontally. Change
 marking wraps whole blocks, and glossary links skip text inside code, so
 neither writes markup into a token.
 
+Diagrams. A fence whose language is `mermaid` is drawn as a diagram, in item
+heads and log entries alike (`web/mermaid.ts`). `codeBlock` wraps such a block in
+`<div class="mermaid-block">` around its ordinary code block, and the page draws
+each wrapped block it shows, whichever render put it there: a `MutationObserver`
+on the body sees every block added, so a live update that repaints an item draws
+its blocks again, from a cache of what the library made of each source (by color
+scheme and source), which also keeps a block from showing code for a moment. The
+library is mermaid from npm, pinned in `package.json`, bundled as one file,
+`web/dist/mermaid.js` (`web/mermaid-entry.ts`, built by `build:web` beside the
+page bundle), served at `GET /mermaid.js` with an `ETag` so the browser asks
+again and gets a 304 for an unchanged file. The page imports it only when it
+first meets a block, so a page that shows no diagram never fetches it and the
+main bundle does not carry it. The library runs with `securityLevel: "strict"`:
+board text is written by agents, and strict makes the text of a diagram plain
+text and leaves out the click handlers that call functions of the page. A drawn
+diagram stands in for its code (the code stays in the page, hidden). A block that
+does not parse keeps showing its code with the library's error under it, and the
+other blocks and the rest of the page are untouched. The diagrams use the
+library's `dark` theme when the page shows its dark colors (the owner's
+`data-theme`, else the system's) and `default` otherwise, and are drawn again
+when that changes.
+
 Glossary links. In item heads, steps and log entries, card questions, backgrounds,
 options and rulings, and note texts and replies, a glossary term links to its
 definition. The page has no glossary section. Titles are not linked. Terms
@@ -3037,6 +3060,15 @@ Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
 new item), so incremental re-renders happen in between.
+
+Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
+log are drawn, with Chinese labels; a block that does not parse shows its code and the
+error while the blocks after it are drawn; hostile text (a script in a label, a
+`javascript:` link) leaves nothing that runs; a page with no diagram never fetches the
+library and one with diagrams fetches it once; the diagrams are drawn again after a live
+update repaints their item; labels and lines read in both color schemes. Each check also
+runs on a page with the one part it protects taken out by an edit applied while the page is
+bundled, where it must report the part's absence.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix
