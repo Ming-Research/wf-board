@@ -656,7 +656,8 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
 }
 
 /** Rules objects shared by every reader of one snapshot. A Rules object reads
- * `now` only for elapsed time (active time, doing days); readers within the
+ * `now` only for elapsed time (active time, doing days, and the six-hour window
+ * of a live session, which status reads); readers within the
  * same minute share the one built at the first read of that minute, so its
  * results are exactly `rules(s, t)` for that first read's time `t`. The
  * activity index is advanced from the newest one instead of rebuilt. */
@@ -822,16 +823,20 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   const closedMemo = new Map<string, "done" | "cancelled" | undefined>();
   // Done or cancelled, by the same rules as the status; an item met again on the path is not done (a cycle never completes).
+  // A value is kept only when no such guard was hit while computing it: one that was depends on where the walk began, and
+  // the order edges ownerRowReady follows are not in cycles(), so that set cannot tell.
+  let closedGuards = 0;
   function closedWalk(id: string, seen: Set<string>): "done" | "cancelled" | undefined {
     if (closedMemo.has(id)) return closedMemo.get(id);
     const it = item(id);
     if (!it || it.record) return undefined;
     if (it.status === "cancelled") return "cancelled";
-    if (seen.has(id)) return undefined;
+    if (seen.has(id)) { closedGuards++; return undefined; }
+    const before = closedGuards;
     seen.add(id);
     const closed = it.plan.length > 0 && it.plan.every(row => rowResolved(row, seen)) ? "done" : undefined;
     seen.delete(id);
-    if (!cycles().has(id)) closedMemo.set(id, closed);
+    if (closedGuards === before) closedMemo.set(id, closed);
     return closed;
   }
   // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
@@ -848,7 +853,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return true;
   }
-  // Something here is done: a row of the plan, or an open item it owns that has itself begun.
+  // Something of its own is done: a step of the plan, an item it owns that is done, or an open item it owns that has itself
+  // begun. What others finished does not count: a shared row, a card and an owned record are not this item's work.
   const beginning = new Set<string>();
   function begunOf(id: string): boolean {
     return cached("begun", id, () => {
@@ -858,7 +864,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function anyBegun(rows: readonly DerivedPlanRow[]): boolean {
-    return rows.some(entry => !entry.excluded && (entry.state === "resolved" || ("item" in entry.row && entry.row.own && begunOf(entry.row.item))));
+    return rows.some(entry => !entry.excluded && ("text" in entry.row ? entry.state === "resolved" : "item" in entry.row && entry.row.own && (entry.state === "resolved" || begunOf(entry.row.item))));
   }
   const liveSessions = (id: string): string[] => cached("sessions", id, () => [...new Set(liveDispatches(s, id, now).map(d => d.agent))]);
   // Cycle members keep the path-sensitive guard; acyclic targets have the same

@@ -240,7 +240,7 @@ test("cards and missing targets wait, and a sent choice does not resolve an open
   assert.equal(r.cardWaiting("q"), false); assert.equal(r.statusOf("waiter"), "blocked");
   for (const id of ["missing", "missingCard"]) { assert.equal(r.statusOf(id), "blocked"); assert.equal(r.depsOf(id)[0]!.open, true); assert.equal(r.depsOf(id)[0]!.missing, true); }
   assert.deepEqual(r.cardDependents("q"), [{ id: "waiter" }]);
-  for (const status of ["ruled", "withtree", "elsewhere"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "partial"); }
+  for (const status of ["ruled", "withtree", "elsewhere"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo", "a ruled card is not the item's own work"); }
 });
 
 test("row ratios exclude dropped steps, cancelled owned work and owned records, while shared records count", () => {
@@ -777,4 +777,18 @@ test("two plans whose owned items each wait on the other's earlier row derive wi
   // A finished item on the way lets the turn come: w done frees c.
   s.items.w!.plan = workPlan([], "done");
   assert.equal(rules(s).statusOf("c"), "todo");
+});
+
+test("whether an owned item's turn has come does not depend on which item was asked about first", () => {
+  // p: [shared x, own id after x, own z after x and id]. x waits on id, which is done, so x is done too and z's turn has come.
+  // Asking about id first meets x with id on the path, where x cannot be done; that answer must not be kept for z.
+  const build = () => snapshot({
+    p: { plan: workPlan([shared("x"), own("id", ["x"]), own("z", ["x", "id"])]) },
+    x: { plan: workPlan([shared("id")], "done") }, id: { plan: workPlan([], "done") }, z: {},
+  });
+  const idFirst = rules(build());
+  idFirst.progress("id"); idFirst.statusOf("id");
+  const zFirst = rules(build());
+  assert.deepEqual([idFirst.statusOf("z"), zFirst.statusOf("z")], ["todo", "todo"]);
+  assert.deepEqual([idFirst.progress("z").behind, zFirst.progress("z").behind], [false, false]);
 });

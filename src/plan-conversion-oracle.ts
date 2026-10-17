@@ -64,9 +64,10 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     }
     return true;
   }
-  // Something is done here, or in an open item this one owns that has begun.
+  // Something of the item's own is done: a step, or an item it owns that is done; or an open item it owns has begun. What
+  // others finished does not count: a shared row, a card and an owned record are not this item's work.
   function begun(id:string,values:Array<{state:OracleRowState;excluded:boolean}>,plan:readonly PlanRow[],trail:Set<string>):boolean {
-    if(values.some(value=>value.state==="resolved"&&!value.excluded))return true;
+    if(plan.some((row,at)=>values[at]!.state==="resolved"&&!values[at]!.excluded&&("text"in row||"item"in row&&row.own)))return true;
     return plan.some(row=>"item"in row&&row.own&&open(row.item)&&!trail.has(row.item)&&begunItem(row.item,new Set(trail).add(row.item)));
   }
   function begunItem(id:string,trail:Set<string>):boolean {

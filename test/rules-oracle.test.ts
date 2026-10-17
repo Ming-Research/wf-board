@@ -31,14 +31,15 @@ test("independent row-state table covers normal, cancelled, record and missing t
     { row: { id: "target", item: "target", own: true }, target: { status: "cancelled" }, expected: ["resolved", "✗", true, true, "todo"] },
     { row: { id: "target", item: "target", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "target", item: "target", own: false }, target: { status: "cancelled" }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    { row: { id: "target", item: "target", own: false }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "partial"] },
+    // What others finished is not this item's own work: a done shared target leaves the item at todo.
+    { row: { id: "target", item: "target", own: false }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "todo"] },
     { row: { id: "target", item: "target", own: true }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, true, "todo"] },
-    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, false, "partial"] },
+    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, false, "todo"] },
     { row: { id: "gone", item: "gone", own: true }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", item: "gone", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "q", card: "q" }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", card: "gone" }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    ...(["ruled", "withtree", "elsewhere"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "partial"] as [string, string, boolean, boolean, Status] })),
+    ...(["ruled", "withtree", "elsewhere"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "todo"] as [string, string, boolean, boolean, Status] })),
   ];
   for (const c of cases) {
     const r = rules(fixture([c.row, acceptance()], c.target, c.card)), first = r.planRows("subject")[0]!;
@@ -144,6 +145,24 @@ test("the item's two examples: a plan done but for two unheld parts is part way,
   ] as const) {
     assert.equal(rules(snap, now).statusOf("pr"), expected, `production: ${name}`);
     assert.equal(derivePlanOracle(snap, undefined, now).statusOf("pr"), expected, `oracle: ${name}`);
+  }
+});
+
+// "Part done" is the item's own work: its steps, and the items it owns. What others finished (a shared dependency, a ruled card,
+// a shared record) is not, though the progress count still includes those rows.
+test("status table: only the item's own work makes it part way", () => {
+  const step: PlanRow = { id: "work", text: "Work", state: "todo", after: [] };
+  const cases: Array<{ name: string; plan: PlanRow[]; target?: Partial<Item>; card?: "ruled"; expected: Status }> = [
+    { name: "a shared dependency is done", plan: [{ id: "target", item: "target", own: false, after: [] }, step, acceptance()], target: { plan: [acceptance("done")] }, expected: "todo" },
+    { name: "a shared record", plan: [{ id: "target", item: "target", own: false, after: [] }, step, acceptance()], target: { record: true, plan: [] }, expected: "todo" },
+    { name: "a card is ruled", plan: [{ id: "q", card: "q", after: [] }, step, acceptance()], card: "ruled", expected: "todo" },
+    { name: "an owned item is done", plan: [{ id: "target", item: "target", own: true, after: [] }, step, acceptance()], target: { plan: [acceptance("done")] }, expected: "partial" },
+    { name: "an own step is done", plan: [{ ...step, state: "done", doneAt: at } as PlanRow, acceptance()], expected: "partial" },
+  ];
+  for (const c of cases) {
+    const s = fixture(c.plan, c.target, c.card);
+    assert.equal(rules(s).statusOf("subject"), c.expected, `production: ${c.name}`);
+    assert.equal(derivePlanOracle(s).statusOf("subject"), c.expected, `oracle: ${c.name}`);
   }
 });
 

@@ -502,3 +502,16 @@ test("describeChanges ignores a changed num, as it does rev and updated", () => 
   assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "T", num: 9 }, "item"), "metadata changed", "a num-only difference names no field");
   assert.equal(q.describeChanges({ title: "T", num: 3 }, { title: "U", num: 9 }, "item"), "title changed");
 });
+
+test("brief counts the items that only wait for their turn in their owner's plan, per owner, and still lists the ones blocked for their own reason", async t => {
+  const { store, op } = await board(t);
+  // area's plan puts new1 and new2 behind its earlier open row; new2 also waits on another item of its own.
+  for (const key of ["new1", "new2"]) await op.createItem({ ...asArchitect, key, owner: "area", title: key, head: "Stable", accept: "Result passes", plan: [{ id: "work", text: "Deliver result", state: "todo" }], links: [], data: "4 cases" });
+  await op.setPlan({ author, id: "new2", rows: [{ item: "b", own: false, after: [] }, acceptance()] });
+  const s = store.snapshot(), r = rules(s), result = q.brief(s, r, author);
+  assert.deepEqual([r.statusOf("new1"), r.statusOf("new2")], ["blocked", "blocked"]);
+  const listed = result.progress.map(row => row.id);
+  assert.ok(!listed.includes("new1"), "waiting only for its turn: counted, not listed");
+  assert.ok(listed.includes("new2"), "blocked on another item too: listed with its plan");
+  assert.deepEqual(result.queued, [{ owner: "area", ...(s.items.area!.num === undefined ? {} : { num: s.items.area!.num }), title: s.items.area!.title, count: 1 }]);
+});
