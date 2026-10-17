@@ -2128,7 +2128,9 @@ minute tick (elapsed times move with the clock). A click, a fold, a filter, an u
 mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
 indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
 until the data changes: the counts on every project's filter buttons are made in one pass
-over the board, where each button once passed over it. A navigation (n, a number on an
+over the board, where each button once passed over it, and the cards each head places are
+found once for each version of an item (a write makes a new object), so a write does not scan
+all the heads again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
 comments in one draw, and draws once more when the baselines it needs have loaded. The
 rows that first draw paints around the target ask for their own baselines too, and the
