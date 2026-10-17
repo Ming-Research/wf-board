@@ -19,6 +19,9 @@ async function farItem(bp: BoardPage, board: BoardServer): Promise<string> {
 }
 const write = (board: BoardServer, session: string, id: string) =>
   ops(board.store).appendLog({ author: board.store.snapshot().items[id]!.group, session, id, text: `${session} wrote here` });
+// A write that leaves a step in progress on the item: the session is then running, so the list unfolds its row.
+const work = (board: BoardServer, session: string, id: string) =>
+  ops(board.store).setPlan({ author: board.store.snapshot().items[id]!.group, session, id, row: { id: `work-${session}`, text: `${session} works here`, state: "doing" } });
 
 test("the agent list is above the projects, and 在树中 lands on the item's tree row and Back returns", async t => {
   const board = await startBoard(t), browser = await launch(t);
@@ -26,7 +29,7 @@ test("the agent list is above the projects, and 在树中 lands on the item's tr
   const id = await farItem(bp, board);
   assert.equal(await bp.page.evaluate(() => getComputedStyle(document.getElementById("agents")!).display), "none", "no session has written yet: no list, and no space for it");
   const base = await bp.changes();
-  await write(board, "agent-x", id);
+  await work(board, "agent-x", id);
   await bp.waitChanges(base + 1);
   const row = bp.page.locator('#agents [data-agent="agent-x"]');
   await row.waitFor();
@@ -69,10 +72,10 @@ test("two sessions on one item each show it, and the tree's element is still fou
   const bp = await BoardPage.open(browser, board, openAll(board));
   const id = await farItem(bp, board);
   const base = await bp.changes();
-  await write(board, "agent-x", id);
+  await work(board, "agent-x", id);
   // Commit times have a resolution of one second, and rows with the same time sort by name: leave a second between the writes.
   await new Promise(resolve => setTimeout(resolve, 1100));
-  await write(board, "agent-y", id);
+  await work(board, "agent-y", id);
   await bp.waitChanges(base + 2);
   await bp.page.locator('#agents [data-agent="agent-y"]').waitFor();
   assert.deepEqual(await bp.page.locator("#agents .agent").evaluateAll(rows => rows.map(r => (r as HTMLElement).dataset.agent)), ["agent-y", "agent-x"], "newest writer first");
@@ -96,7 +99,7 @@ test("a cell unfolds its sub-items in place, the list folds apart from the tree,
   assert.ok(id, "the generated board draws an item with a drawn sub-item");
   const child = r.children(id).find(c => rows.includes(c))!;
   const base = await bp.changes();
-  await write(board, "agent-x", id);
+  await work(board, "agent-x", id);
   await bp.waitChanges(base + 1);
   const cell = bp.page.locator('#agents [data-agent="agent-x"] .agitem').first();
   await cell.waitFor();
@@ -118,4 +121,37 @@ test("a cell unfolds its sub-items in place, the list folds apart from the tree,
   const failures = await checkTreeRows(bp, await oracle(board.store));
   assert.equal(failures.length, 0, failures.length + " violations:\n" + failures.slice(0, 40).join("\n"));
   assert.equal(await bp.page.locator(`#agents [id="ag-agent-x--it-${child}"]`).count(), 1, "the unfolded cell survives the tree walk");
+});
+
+test("a session with nothing in progress sits behind 其他 N 个 until the line is opened, and a running one is unfolded above it", async t => {
+  const board = await startBoard(t), browser = await launch(t);
+  const bp = await BoardPage.open(browser, board, openAll(board));
+  const s = board.store.snapshot(), rows = await bp.treeRows();
+  const hasDoing = (x: string) => (s.items[x]!.plan ?? []).some(r => "state" in r && r.state === "doing");
+  // An open item with no step in progress, and a second one for the running session so that the two do not share an item.
+  const [idle, busy] = rows.filter(x => s.items[x] && !s.items[x]!.record && s.items[x]!.group && !hasDoing(x));
+  assert.ok(idle && busy, "the generated board draws two open items with no step in progress");
+  let base = await bp.changes();
+  await write(board, "agent-idle", idle);
+  await bp.waitChanges(base + 1);
+  const toggle = bp.page.locator("#agents .agents-others-toggle");
+  await toggle.waitFor();
+  assert.equal(await bp.page.locator("#agents .agents-toggle").innerText(), "▾ 代理 0", "nothing runs: the heading counts none");
+  assert.equal((await toggle.innerText()).trim(), "▸ 其他 1 个");
+  assert.equal(await bp.page.locator("#agents .agent").count(), 0, "the idle session's row is not drawn while the line is closed");
+  base = await bp.changes();
+  await work(board, "agent-busy", busy);
+  await bp.waitChanges(base + 1);
+  await bp.page.locator('#agents [data-agent="agent-busy"]').waitFor();
+  assert.equal(await bp.page.locator("#agents .agents-toggle").innerText(), "▾ 代理 1");
+  assert.equal(await bp.page.locator('#agents [data-agent="agent-idle"]').count(), 0, "still folded");
+  const order = await bp.page.evaluate(() => {
+    const busy = document.querySelector('#agents [data-agent="agent-busy"]')!, line = document.querySelector("#agents .agents-others-toggle")!;
+    return !!(busy.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.equal(order, true, "the running row is above the fold line");
+  await toggle.click();
+  await bp.settle();
+  assert.equal((await toggle.innerText()).trim(), "▾ 其他 1 个");
+  assert.deepEqual(await bp.page.locator("#agents .agent").evaluateAll(els => els.map(e => (e as HTMLElement).dataset.agent)), ["agent-busy", "agent-idle"], "opened: the idle row follows the running one");
 });

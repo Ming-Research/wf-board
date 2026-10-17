@@ -162,3 +162,53 @@ test("a dispatch is live while its session started or wrote within the window, a
   assert.deepEqual(liveDispatches(s, "a", NOW).map(d => d.agent).sort(), ["quiet-then-wrote", "recent"], "started or wrote within six hours; the ended one and the long quiet one are out");
   assert.deepEqual(liveDispatches(s, "missing", NOW), []);
 });
+
+// --- which rows are running ------------------------------------------------------------------------------------------
+
+// The oracle is this table, written from the rule in docs/design.md ("Who is expanded"), not computed by the code under test.
+test("a session is running when it has a step in progress; a reviewer when its record is open and it moved within 30 minutes", () => {
+  const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }]);
+  const review = (agent: string, startedAgo: number, fields: Partial<Dispatch> = {}) => item([], { dispatches: [dispatch(agent, minutesAgo(startedAgo), { role: "审查", level: 3, ...fields })] } as Partial<Item>);
+  const ended = { finish: { ended: minutesAgo(30), result: "一次通过" } } as unknown as Partial<Dispatch>;
+  const s = snap({
+    run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]),
+    r10: review("r10", 10), r30: review("r30", 30), r31: review("r31", 31), rWrote: review("rWrote", 120), rEnded: review("rEnded", 120, ended), rEndedWrote: review("rEndedWrote", 120, ended),
+  }, {
+    working: wrote(["run", 5]), stopped: wrote(["run", 31]), waiting: wrote(["wait", 5]), longWait: wrote(["wait", 61]), nothing: wrote(["idle", 3]),
+    rWrote: wrote(["rWrote", 10]), rEndedWrote: wrote(["rEndedWrote", 5]),
+  });
+  const running = (name: string) => row(s, name)!.running;
+  assert.equal(running("working"), true, "a step in progress, written 5 minutes ago");
+  assert.equal(running("stopped"), true, "maybe stopped is the anomaly the owner most needs to see: it stays unfolded");
+  assert.equal(running("waiting"), true);
+  assert.equal(running("longWait"), true, "a wait over an hour (amber) is still running");
+  assert.equal(running("nothing"), false, "no step in progress: nothing it does is on the board");
+  assert.equal(running("r10"), true, "an open review started 10 minutes ago, never written");
+  assert.equal(running("r30"), true, "30 minutes is within the bound");
+  assert.equal(running("r31"), false, "an open review with no sign of life for over 30 minutes");
+  assert.equal(running("rWrote"), true, "started 2 hours ago but wrote 10 minutes ago");
+  assert.equal(row(s, "rEnded"), undefined, "an ended review with no later write is not listed at all");
+  assert.equal(running("rEndedWrote"), false, "an ended review is listed again after a later write, and is not running");
+});
+
+test("a session that holds an item and is alive is running without a step in progress; a live review is not a holder", () => {
+  const ended = { finish: { ended: minutesAgo(30), result: "一次通过" } } as unknown as Partial<Dispatch>;
+  const done = [{ id: "w", text: "work", state: "done" }];
+  const s = snap({
+    fresh: item([], { dispatches: [dispatch("fresh", minutesAgo(3))] } as Partial<Item>),
+    rowsDone: item(done, { dispatches: [dispatch("rowsDone", minutesAgo(300))] } as Partial<Item>),
+    over: item(done, { dispatches: [dispatch("over", minutesAgo(120), ended)] } as Partial<Item>),
+    review: item(done, { dispatches: [dispatch("review", minutesAgo(40), { role: "审查" })] } as Partial<Item>),
+    moved: item(done, { dispatches: [dispatch("moved", minutesAgo(200), ended), dispatch("moved", minutesAgo(100))] } as Partial<Item>),
+    // One name: an engineer dispatch that ended, and an older review dispatch still open on another item.
+    mixedA: item(done, { dispatches: [dispatch("mixed", minutesAgo(100), ended)] } as Partial<Item>),
+    mixedB: item(done, { dispatches: [dispatch("mixed", minutesAgo(300), { role: "审查" })] } as Partial<Item>),
+  }, { over: wrote(["over", 5]), rowsDone: wrote(["rowsDone", 250]), mixed: wrote(["mixedA", 5]) });
+  const running = (name: string) => row(s, name)!.running;
+  assert.deepEqual([row(s, "fresh")!.state, running("fresh")], ["none", true], "just started, no row marked yet: it holds the item");
+  assert.deepEqual([row(s, "rowsDone")!.state, running("rowsDone")], ["none", true], "every row done and waiting for the merge: still holds it, 5 hours after the start");
+  assert.deepEqual([row(s, "over")!.state, running("over")], ["none", false], "its dispatch ended: it holds nothing, though it wrote again afterwards");
+  assert.equal(running("review"), false, "an open review 40 minutes old: a review holds nothing, and 40 minutes is past its bound");
+  assert.equal(running("moved"), true, "a new dispatch under the name of an ended one holds the item");
+  assert.equal(running("mixed"), false, "the open review record under the same name is alive for status, but it holds nothing");
+});

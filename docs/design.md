@@ -2094,6 +2094,30 @@ level, and whether that someone is working, waiting or has gone quiet.
   seen silent for longer. The word is
   inferred from declarations, so the list says so on its face and every row
   carries the time since the session wrote.
+- **Who is expanded.** Listed is not drawn: on 2026-10-16 at 20:40 UTC the
+  list held 37 rows, many of them finished sessions nobody had closed out, and
+  the running ones were hard to find. Only running rows are drawn in full; the
+  others are one last line, 「其他 N 个」, that opens them in the same order and
+  form (the choice is kept in the browser like the list's own fold). The
+  heading counts the running rows. A row is running when any of these holds:
+  it has a step in progress on the items it touched, whatever the state word
+  says, so 「可能停了」 stays expanded, being the exception the owner most needs
+  to see; it holds an item and is alive, meaning an unfinished engineer
+  dispatch record whose session started or wrote within the list's window
+  (`liveDispatches`, the reading item status uses for a live session, see
+  Status), so a session just started or waiting for the merge with every row
+  done is running although it has marked no step; it is a review whose
+  dispatch record is unfinished and which started or wrote within 30 minutes
+  (the bound of 「干活」). A review is judged by that shorter bound, not by
+  the window: it holds no step and reads for minutes without writing, so only
+  a recent start or write shows that it runs, and one the architect forgot to
+  close would otherwise stay expanded for six hours. Rejected: hiding the
+  other rows, because a session that finished but was never closed out could
+  then not be found, and the owner would not notice the unclosed record; telling
+  running by the time since the last write alone, because a session waiting for
+  CI or for the architect writes nothing for an hour and is running; folding
+  「可能停了」 with the rest, because it holds a step in progress and is the
+  case the list exists to show.
 - **Reading a row with the tree.** Each item cell has the status chip and
   number, the title (a click selects the item and shows its detail), the time
   it was touched, an arrow and 「在树中」. The arrow unfolds the item's
