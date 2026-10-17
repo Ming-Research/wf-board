@@ -1,6 +1,6 @@
 name: tmp-gc-timing
 # TEMPORARY (item data-repo-gc-timing-study): times git's maintenance on a data repository of the live one's size.
-# Never merged. A push runs the experiments named in the head commit's message, as [cost] [knobs] [packs] [shard].
+# Never merged. A push runs the experiments named in the head commit's message, as [cost] [knobs] [packs] [shard] [replay <policy>].
 on:
   push:
     branches: [data-repo-gc-timing-study]
@@ -13,7 +13,7 @@ jobs:
       - id: p
         env:
           MSG: ${{ github.event.head_commit.message }}
-        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs|shard)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs|shard|replay [a-z0-9-]+)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
   run:
     needs: plan
     if: needs.plan.outputs.cmds != '[]'
