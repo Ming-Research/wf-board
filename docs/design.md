@@ -1906,7 +1906,11 @@ indexes a draw reads, is emptied at each draw. What depends on the data alone is
 until the data changes: the counts on every project's filter buttons are made in one pass
 over the board, where each button once passed over it. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
-comments in one draw, and draws once more when the baselines it needs have loaded. After
+comments in one draw, and draws once more when the baselines it needs have loaded. The
+rows that first draw paints around the target ask for their own baselines too, and the
+navigation waits for those with its own, 100 ms at most: their marks then come in that
+second draw and not one draw for each row. A baseline that is slower than that, or never
+comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
 (15 MB on the live board). The page leaves a performance mark for each draw, each build
@@ -3135,9 +3139,9 @@ board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comm
 press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
 (board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
 press that lands on another item draws at most twice, builds the board's rules no
-time and counts the filters no time, read from the page's performance marks (a draw
-made only of other items' own rows, which a late baseline asks for one row at a time,
-is not one of the two). Time:
+time and counts the filters no time, read from the page's performance marks: every
+draw from the key until the page is quiet counts, those of the rows around the target
+included. Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
 quiet and with sessions writing three times a second, each run made once. The time

@@ -1056,13 +1056,28 @@ class Frames {
   flush(ms=100) { this.now+=ms; const jobs=this.jobs.splice(0); jobs.forEach(fn=>fn(this.now)); }
 }
 
-test("unrelated collapsed baseline does not block target navigation", async () => {
-  const s=snapshot(), hold=deferred<unknown>(); s.items.far={...s.items.area!,title:"Far",deps:[]};
-  const p=await page(s,[...unread(),...unread("item","far","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "far" ? hold.promise : endpoints(s,params,null),undefined,{geometry:geom});
+test("an unrelated baseline that does not arrive holds a jump for 100 ms at most", async () => {
+  const s=snapshot(), clock=new FakeClock(), hold=deferred<unknown>(); s.items.far={...s.items.area!,title:"Far",deps:[]};
+  const p=await page(s,[...unread(),...unread("item","far","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "far" ? hold.promise : endpoints(s,params,null),undefined,{geometry:geom,clock});
   p.key("n"); await settle();
-  assert.equal(p.scrolls.length,1,"a collapsed unrelated baseline must not delay the target");
+  assert.equal(p.scrolls.length,0,"the baselines of the rows around the target are waited for, so their marks come in the landing's draw");
+  clock.advance(99); await settle();
+  assert.equal(p.scrolls.length,0,"for 100 ms");
+  clock.advance(1); await settle();
+  assert.equal(p.scrolls.length,1,"and no longer: a collapsed unrelated baseline that does not come cannot hold the target");
   assert.equal(p.measurements[0]!.id,"it-child");
   hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=far"),null)); await settle();
+});
+
+test("the baselines of the rows around the target that arrive within 100 ms come in the landing's own draws", async () => {
+  const s=snapshot(), clock=new FakeClock(), hold=deferred<unknown>(); s.items.far={...s.items.area!,title:"Far",deps:[]};
+  const p=await page(s,[...unread(),...unread("item","far","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "far" ? hold.promise : endpoints(s,params,null),undefined,{geometry:geom,clock});
+  const drawn=()=>p.marks.get("board:render") ?? 0, was=drawn();
+  p.key("n"); await settle();
+  assert.equal(p.scrolls.length,0);
+  hold.resolve(endpoints(s,new URLSearchParams("kind=item&doc=far"),null)); await settle();
+  assert.equal(p.scrolls.length,1,"the target lands as soon as the rows around it have theirs");
+  assert.ok(drawn()-was <= 2,"drew "+(drawn()-was)+" times, with the late row's draw among them");
 });
 
 test("unrelated collapsed baseline failure does not suppress target navigation", async () => {
@@ -1763,10 +1778,10 @@ test("scoped unread card membership inserts replies and removes read ended cards
 test("all card jump entry points await baselines before selecting and scrolling", async t => {
   // A card its item holds has no 新 chip of its own (it counts toward the item's), so the chip is no entry point here.
   for(const path of ["waiting key","previous key","reference","dependency","next button"]) await t.test(path,async()=> {
-    const s=snapshot(), frames=new Frames(), hold=deferred<unknown>(), other=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
+    const s=snapshot(), frames=new Frames(), clock=new FakeClock(), hold=deferred<unknown>(), other=deferred<unknown>(); s.decisions.q=card(); s.notes.n={target:"q:q",kind:"comment",text:"Target comment",at,state:"sent",rev:1};
     if(path === "dependency") s.items.area!.deps.push({card:"q",why:"Needs decision"});
     if(path === "next button") s.items.area!.ask={text:"Parent approval"};
-    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : other.promise,undefined,{frames,notesOpen:{"q:q":false}}); await expand(p,path === "dependency" || path === "next button" ? "area" : "child"); await p.flush();
+    const p=await page(s,[...unread("decision","q"),...unread("item","area","e".repeat(40))],(params:URLSearchParams)=>params.get("doc") === "q" ? hold.promise : other.promise,undefined,{frames,clock,notesOpen:{"q:q":false}}); await expand(p,path === "dependency" || path === "next button" ? "area" : "child"); await p.flush();
     if(path === "waiting key") p.key("ArrowRight");
     else if(path === "previous key") p.key("ArrowLeft");
     else if(path === "reference") await p.all().find(e=>e.className.startsWith("ref q"))!.click();
@@ -1776,7 +1791,10 @@ test("all card jump entry points await baselines before selecting and scrolling"
     assert.ok(p.all().some(e=>e.id === "note-n"),"jump unfolds the target comment list");
     // The parent's plan row unfolds the card in the parent, which is unread too: its baseline alone does not release the jump.
     if(path === "dependency") { other.resolve({before:s.items.area,after:s.items.area,diff:""}); await p.flush(); assert.equal(p.scrollCount,0,"the card's own baseline still holds the jump"); }
-    hold.resolve({before:card(),after:card(),diff:""}); await p.flush(); assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
+    hold.resolve({before:card(),after:card(),diff:""}); await p.flush();
+    // The parent's baseline is not the card's: the jump waits for it, as for the rows around a target, 100 ms at most.
+    if(path !== "dependency") { assert.equal(p.scrollCount,0,"the unrelated baseline is waited for"); clock.advance(100); await p.flush(); }
+    assert.ok(p.scrollCount>0); assert.ok(p.all().find(e=>e.id === "q-q")!.className.includes("cur"));
     other.resolve({before:s.items.area,after:s.items.area,diff:""});
   });
 });

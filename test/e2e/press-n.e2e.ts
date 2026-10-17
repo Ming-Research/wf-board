@@ -2,8 +2,9 @@
 // stop at a time with n and wants the page to answer within 0.2 s (board-read-fast); on the live board a press that lands on
 // another item took 0.3–0.5 s, because each of its four draws rebuilt the board's rules and counted every filter again
 // (page-n-fast). Two layers hold it:
-//   counts  – a press that lands on another item draws at most twice, builds the rules no time and counts the filters no
-//             time; the page leaves a performance mark for each (countEvent in web/app.ts). Exact on any machine.
+//   counts  – a press that lands on another item draws at most twice (every draw from the key to the quiet), builds the rules no
+//             time and counts the filters no time; the page leaves a performance mark for each (countEvent in web/app.ts).
+//             Exact on any machine.
 //   time    – the main thread's busy time from the key until the page is quiet, over 30 landings: median 0.2 s at most and
 //             90th percentile 0.3 s at most, with the board quiet and with sessions writing 3 times a second. It depends on the
 //             machine (a hosted runner's speed differs by up to a factor of two between jobs); each run is made once.
@@ -28,21 +29,28 @@ const ms = (x: number) => x.toFixed(0);
 // rebuild would fall into whichever press it meets, so the test holds the page's minute tick still.
 const INIT = `(() => {
   const counts = { "board:render": 0, "board:rules": 0, "board:filter-counts": 0 };
-  let scopes = [], pressAt = 0, lastDraw = 0;
+  let scopes = [], pressAt = 0, lastDraw = 0, answers = [];
   addEventListener("keydown", () => { pressAt = performance.now(); }, true);
+  // When each baseline (/api/step) was asked for and answered, for how late the rows around a target get theirs.
+  const fetch0 = window.fetch.bind(window);
+  window.fetch = (...args) => {
+    const began = performance.now(), url = String(args[0] && args[0].url || args[0]), p = fetch0(...args);
+    if (url.includes("/api/step")) p.then(() => answers.push([began, performance.now()]), () => {});
+    return p;
+  };
   const bump = entries => { for (const e of entries) if (e.name in counts) { counts[e.name]++; if (e.name === "board:render") { scopes.push(e.detail); lastDraw = e.startTime; } } };
   const observer = new PerformanceObserver(list => bump(list.getEntries()));
   observer.observe({ entryTypes: ["mark"] });
   // The marks counted since the last call; those the observer has not delivered yet are taken from its queue.
-  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes, lastDrawAfter: lastDraw - pressAt }; for (const k in counts) counts[k] = 0; scopes = []; return seen; };
+  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes, lastDrawAfter: lastDraw - pressAt, answers: answers.map(([began, end]) => [began - pressAt, end - pressAt]) }; for (const k in counts) counts[k] = 0; scopes = []; answers = []; return seen; };
   const every = window.setInterval.bind(window);
   window.setInterval = (fn, delay, ...rest) => delay >= 30000 ? 0 : every(fn, delay, ...rest);
 })();`;
-interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[]; lastDrawAfter: number }
+interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[]; lastDrawAfter: number; answers: Array<[number, number]> }
 const marks = (bp: BoardPage) => bp.page.evaluate(() => (window as unknown as { __takeMarks(): Marks }).__takeMarks());
 
 /** What one press cost: the main thread's busy time from the key until the page was quiet, and what the page marked meanwhile. */
-interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[]; lastDraw: number }
+interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[]; lastDraw: number; answers: Array<[number, number]> }
 
 async function busyTime(cdp: CDPSession): Promise<number> {
   const { metrics } = await cdp.send("Performance.getMetrics");
@@ -68,7 +76,7 @@ async function landings(bp: BoardPage, cdp: CDPSession, wanted: number): Promise
     await bp.page.keyboard.press("n");
     await quiet(bp);
     const busy = await busyTime(cdp) - before, now = await bp.selected(), m = await marks(bp);
-    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"], scopes: m.scopes, lastDraw: m.lastDrawAfter });
+    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"], scopes: m.scopes, lastDraw: m.lastDrawAfter, answers: m.answers });
   }
   return out;
 }
@@ -90,15 +98,11 @@ function startWriters(board: BoardServer, perSecond: number) {
   return { stop: async () => { stopped = true; await loop; return count; } };
 }
 
-/** The draws of a landing that repaint what it landed on. A draw made of other items' own rows alone is not one of them: those rows
- * were drawn with the landing's tree and ask for their changes to be marked when their baselines arrive, a row at a time. */
-const landingDraws = (l: Landing) => l.scopes.filter(scope => !scope.split(",").every(key => key.startsWith("item:") && key !== "item:" + l.item));
 /** Violations of the counts. A press that lands draws at least once, or the page marks nothing and the check proves nothing. */
 function checkCounts(label: string, list: Landing[]): string[] {
   const v: string[] = [];
   for (const l of list) {
-    const mine = landingDraws(l).length;
-    if (mine < 1 || mine > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${mine} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
+    if (l.draws < 1 || l.draws > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${l.draws} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
     if (l.rules !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} built the board's rules ${l.rules} times, not 0`);
     if (l.filters !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} counted the filters ${l.filters} times, not 0`);
   }
@@ -114,6 +118,14 @@ function checkTime(label: string, list: Landing[], log: (line: string) => void):
   return v;
 }
 
+/** How late the baselines of a landing's draws arrive: the page waits for those of the rows around its target for 100 ms at most
+ * (AROUND_BASELINES_WAIT_MS in web/app.ts), so this says whether the wait was long enough. Logged, not asserted. */
+function logAnswers(label: string, list: Landing[], log: (line: string) => void) {
+  const last = list.map(l => Math.max(0, ...l.answers.map(a => a[1]))), slowest = list.map(l => Math.max(0, ...l.answers.map(a => a[1] - a[0])));
+  const asked = list.map(l => l.answers.length);
+  log(`press-n baselines (${label}): ${list.length} landings, ${median(asked)} baselines asked for per landing (median); the last one answered ${ms(median(last))} ms after the key (median), ${ms(p90(last))} (90th percentile), ${ms(Math.max(...last))} (max); the slowest single answer took ${ms(median(slowest))} ms (median), ${ms(Math.max(...slowest))} (max)`);
+}
+
 // The three changes of page-n-fast taken out one at a time, and a draw made slower; each applies to the page's text where it stands.
 const SCHEDULE_REBUILDS: Revert[] = [
   { file: "web/app.ts", edit: "a draw asked for later rebuilds the board's rules", find: "    invalidateView(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;", replace: "    invalidate(); scope.forEach(s => dirty.add(s));\n    if (renderQueued) return;" },
@@ -121,6 +133,9 @@ const SCHEDULE_REBUILDS: Revert[] = [
 ];
 const NAVIGATION_DRAWS_THREE_TIMES: Revert[] = [
   { file: "web/app.ts", edit: "navigation draws the unfolded rows and the selected item one by one", find: "unfolded = openPath(it.id, false);\n      selectItem(it.id, false);", replace: "unfolded = openPath(it.id);\n      selectItem(it.id);" },
+];
+const ROWS_AROUND_NOT_WAITED_FOR: Revert[] = [
+  { file: "web/app.ts", edit: "a navigation waits for the target's baselines alone, and the rows around it draw when theirs arrive", find: "await Promise.all(around ? [...own, allWithin([...pendingDiffs.values()], AROUND_BASELINES_WAIT_MS)] : own);", replace: "await Promise.all(own);" },
 ];
 const FILTERS_COUNTED_EACH_DRAW: Revert[] = [
   { file: "web/app.ts", edit: "the filter counts are made again at each draw", find: "  function invalidateView() { memo = {}; }", replace: "  function invalidateView() { memo = {}; dataMemo = {}; }" },
@@ -148,7 +163,8 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const list = await landings(bp, cdp, LANDINGS);
     await bp.context.close();
     assert.equal(list.length, LANDINGS, "n reached " + LANDINGS + " other items");
-    log(`press-n counts: draws of the landing ${[...new Set(list.map(l => landingDraws(l).length))].join("/")} (with the late rows of other items: ${[...new Set(list.map(l => l.draws))].join("/")}), rules builds ${list.reduce((a, l) => a + l.rules, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
+    logAnswers("quiet", list, log);
+    log(`press-n counts: draws of the landing ${[...new Set(list.map(l => l.draws))].join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
     // Both layers are run before either is asserted, so a failure of one still shows the other's numbers.
     assert.deepEqual([...checkCounts("quiet", list), ...checkTime("quiet", list, log)], []);
   });
@@ -161,6 +177,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const list = await landings(bp, cdp, wanted), written = await writers.stop();
     await bp.context.close();
     log(`press-n time (writing): ${written} writes during ${list.length} landings`);
+    logAnswers("writing", list, log);
     assert.ok(written >= wanted, "the sessions wrote while n was pressed");
     return list;
   };
@@ -173,6 +190,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     ["views draw with the board's rules rebuilt", SCHEDULE_REBUILDS, v => v.includes("built the board's rules")],
     ["navigation draws the unfolded rows, the selected item and the comments one by one", NAVIGATION_DRAWS_THREE_TIMES, v => v.includes("drew")],
     ["every draw counts the filters again", FILTERS_COUNTED_EACH_DRAW, v => v.includes("counted the filters")],
+    ["navigation does not wait for the baselines of the rows around its target", ROWS_AROUND_NOT_WAITED_FOR, v => v.includes("drew")],
   ];
   for (const [what, reverts, names] of lost) await t.test(`the counts report it when ${what}`, async () => {
     const { bp, cdp } = await openPage(browser, await pageOf(reverts));
@@ -187,7 +205,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const list = await landings(bp, cdp, WITNESS_LANDINGS);
     await bp.context.close();
     const violations = checkCounts("all three out", list);
-    log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => landingDraws(l).length))].join("/")}`);
+    log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => l.draws))].join("/")}`);
     checkTime("all three out", list, log);
     for (const family of ["drew", "built the board's rules", "counted the filters"]) assert.ok(violations.some(v => v.includes(family)), "the counts report: " + family);
   });

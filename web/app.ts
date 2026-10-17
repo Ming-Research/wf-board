@@ -553,8 +553,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     shownStop = st.key; shownAt = st.at; shownMark = 0;
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshIndex().position.has(st.key));
   }
-  // The baselines a navigation is waiting for, and the draws their arrival asks for, held until the navigation has them all.
-  const awaitedDiffs = new Set<string>(), heldDraws = new Set<string>();
+  // While a navigation loads baselines, the draws the arrival of any baseline asks for are held and made together when it has them all.
+  let loadingNavigations = 0;
+  const heldDraws = new Set<string>();
+  // The rows around the target ask for their own baselines when the navigation's first draw paints them. The landing waits for those
+  // too, so that their marks come in the same draw, but not longer than this: an unrelated baseline that is slow or never comes
+  // holds a landing for this long at most, and its row is drawn when it arrives.
+  const AROUND_BASELINES_WAIT_MS = 100;
+  /** Resolves when all of `promises` have, or after `ms`, whichever is first. */
+  function allWithin(promises: Promise<unknown>[], ms: number): Promise<void> {
+    return new Promise(resolve => { const timer = setTimeout(resolve, ms); void Promise.all(promises).then(() => { clearTimeout(timer); resolve(); }); });
+  }
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
   // The new places inside a changed item, top to bottom: a changed status, title or body block, a new or changed step or target, an added
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
@@ -592,11 +601,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!active()) return;
     let required=navigationBaselines(target);
     for (const key of required.keys()) if (retry.has(key)) failedDiffs.delete(key);
-    for (;;) {
-      // The baselines are drawn together once they have all arrived, not one draw for each.
-      for (const key of required.keys()) awaitedDiffs.add(key);
-      try { await Promise.all([...required.values()].map(({step,doc}) => loadDiff(step,doc))); }
-      finally { for (const key of required.keys()) awaitedDiffs.delete(key); if (heldDraws.size) { scheduleRender(...heldDraws); heldDraws.clear(); } }
+    for (let around=true;; around=false) {
+      // The target's baselines, and once those of the rows around it, are drawn together when they have all arrived, not one draw
+      // for each.
+      loadingNavigations++;
+      try {
+        const own = [...required.values()].map(({step,doc}) => loadDiff(step,doc));
+        await Promise.all(around ? [...own, allWithin([...pendingDiffs.values()], AROUND_BASELINES_WAIT_MS)] : own);
+      }
+      finally { loadingNavigations--; if (heldDraws.size) { scheduleRender(...heldDraws); heldDraws.clear(); } }
       if (!active()) return;
       await rendered();
       if (!active()) return;
@@ -2773,7 +2786,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       try {
         const diff = await api<{before: unknown; after: unknown; diff: string}>("/api/step?id=" + step.id + "&kind=" + doc.kind + "&doc=" + encodeURIComponent(doc.id));
         diffs.set(key,diff);
-        if (relevant()) { const scope=scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target); if (awaitedDiffs.has(key)) scope.forEach(k => heldDraws.add(k)); else scheduleRender(...scope); }
+        if (relevant()) { const scope=scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target); if (loadingNavigations) scope.forEach(k => heldDraws.add(k)); else scheduleRender(...scope); }
       } catch(e) {
         // A failed baseline cannot keep a render/navigation drain retrying forever. The next unread refresh or unread walk retries it.
         failedDiffs.add(key);
