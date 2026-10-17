@@ -1010,7 +1010,7 @@ test("the blue line marks an item's own new content: new and changed items, not 
   assert.ok(!dep.className.includes("chg-add") && !link.className.includes("chg-add"),"new item retains title-only green marks");
   s.items.plain={title:"Untouched",group:"Project",status:"todo",updated:at,rev:1,deps:[],links:[],log:[]};
   const changed=await page(s,unread(),{...s.items.child!,head:"Before"}); await expand(changed);
-  assert.ok(item(changed).className.split(" ").includes("fresh"),"a changed item shows 新 and so carries the bar");
+  assert.ok(rowOf(changed).className.split(" ").includes("fresh"),"a changed item shows 新 and so carries the bar in its tree row");
   assert.ok(!item(changed,"area").className.split(" ").includes("fresh"),"a parent with only new content below carries no line, only its 新 chip");
   assert.ok(descendants(item(changed,"area").querySelector(".item-head")!).some(e=>e.className === "newtag freshchip"),"that parent still counts the sub-item");
   assert.ok(!item(changed,"plain").className.split(" ").includes("fresh"),"an item with nothing new carries no bar");
