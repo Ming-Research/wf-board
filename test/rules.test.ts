@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -681,6 +681,16 @@ test("a line holding only [[q:key]] places that card; a token in a sentence, a f
   assert.equal(cardMarker("- [[q:first]]"), undefined);
   assert.deepEqual(placedCards("Why.\n\n[[q:b]]\n\nThen [[q:no]] here\n```\n[[q:fenced]]\n```\n[[q:a]]\n[[q:b]]\r\n"), ["b", "a"]);
   assert.deepEqual(placedCards(undefined), []);
+});
+
+test("the cards a version of an item's head places are found once, and a new version of the item is read again", () => {
+  const item = { head: "Why.\n\n[[q:a]]\n" }, again = placedCardsOf(item);
+  assert.deepEqual(again, ["a"]);
+  assert.strictEqual(placedCardsOf(item), again, "the same version of the item gives the answer kept for it");
+  // A write makes a new object for the item; the old one's answer is not given for it.
+  assert.deepEqual(placedCardsOf({ head: "Why.\n\n[[q:b]]\n\n[[q:a]]\n" }), ["b", "a"]);
+  assert.deepEqual(placedCardsOf({}), []);
+  assert.deepEqual(placedCardsOf(undefined), []);
 });
 
 test("an open card its item's head does not place gets one check; a closed card, or a placed one, none", () => {

@@ -1,7 +1,7 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { rules, placedCards, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority } from "../src/rules.ts";
+import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { drawMermaid, watchMermaid } from "./mermaid.ts";
@@ -93,7 +93,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The cards of an item in the order its body shows them: those its head places, top to bottom, then the rest in plan order.
   function cardOrder(itemId: string): string[] {
     return cached("cardOrder:" + itemId, () => {
-      const own = derived.cardsOf(itemId), placed = placedCards(snapshot.items[itemId]?.head).filter(key => own.includes(key));
+      const own = derived.cardsOf(itemId), placed = placedCardsOf(snapshot.items[itemId]).filter(key => own.includes(key));
       return [...placed, ...own.filter(key => !placed.includes(key))];
     });
   }

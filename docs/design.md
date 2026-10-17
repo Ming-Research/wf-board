@@ -1849,7 +1849,8 @@ and the push that says work can be handed out reads it too.
   its first mark. A session that has stopped keeps its slot until the PM closes its dispatch.
 - *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
   knows this). The review that waits for a reviewer is that step in progress.
-- *Answer.* Per pool: the limit, the engineers working, the free slots; while a slot is free,
+- *Answer.* Per pool: the limit, the engineers working, the free slots, the number of candidates
+  of the pool (`total`, counted whether or not a slot is free); while a slot is free,
   the first 10 rows in the default order, then the number of candidates not listed. More than 3
   candidates under one parent, of any level, are one row naming the parent and the count of all
   of them, at the place of the best of them in each pool they fall in; the free slots and the
@@ -2173,7 +2174,9 @@ minute tick (elapsed times move with the clock). A click, a fold, a filter, an u
 mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
 indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
 until the data changes: the counts on every project's filter buttons are made in one pass
-over the board, where each button once passed over it. A navigation (n, a number on an
+over the board, where each button once passed over it, and the cards each head places are
+found once for each version of an item (a write makes a new object), so a write does not scan
+all the heads again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
 comments in one draw, and draws once more when the baselines it needs have loaded. The
 rows that first draw paints around the target ask for their own baselines too, and the
