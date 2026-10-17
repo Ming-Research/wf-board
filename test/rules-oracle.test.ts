@@ -173,3 +173,19 @@ test("status table: an owned item waits for the rows before its row, and part wa
     }
   }
 });
+
+test("status table: owned items each waiting on the other's earlier row stay blocked in both derivations", () => {
+  const todo = (id: string, extra: Partial<PlanRow>): PlanRow => ({ id, ...extra } as PlanRow);
+  const s: Snapshot = {
+    head: "0".repeat(40), board: { title: "Cross", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
+    items: {
+      y: Item.parse({ title: "Y", group: "P", priority: "P1", updated: at, rev: 1, plan: [todo("w", { item: "w", own: false, after: [] }), todo("c", { item: "c", own: true, after: ["w"] }), acceptance()] }),
+      v: Item.parse({ title: "V", group: "P", priority: "P1", updated: at, rev: 1, plan: [todo("c", { item: "c", own: false, after: [] }), todo("w", { item: "w", own: true, after: ["c"] }), acceptance()] }),
+      c: Item.parse({ title: "C", group: "P", updated: at, rev: 1, plan: [acceptance()] }), w: Item.parse({ title: "W", group: "P", updated: at, rev: 1, plan: [acceptance()] }),
+    },
+  };
+  for (const id of ["c", "w"]) {
+    assert.equal(rules(s).statusOf(id), "blocked", `production ${id}`);
+    assert.equal(derivePlanOracle(s).statusOf(id), "blocked", `oracle ${id}`);
+  }
+});

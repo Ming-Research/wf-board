@@ -1050,8 +1050,12 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    card, an owned item that is itself blocked or paused), or the row that owns
    the item in its owner's plan comes after a row that is not resolved (an
    owner that is a record has no order, so a backlog item is never blocked
-   this way). A paused child is waiting on the owner; a parent that is not
-   paused can therefore be blocked by it, under the ordinary frontier rule.
+   this way). Whether the rows before it are resolved reads only whether their
+   items are done or cancelled, never their full status: a full status asks
+   back whether the owned item's turn has come, and two plans that each wait
+   on the other's earlier row would loop. Such a pair is blocked. A paused
+   child is waiting on the owner; a parent that is not paused can therefore be
+   blocked by it, under the ordinary frontier rule.
 6. `wip` when a session holds the item: it has an unfinished dispatch record,
    of either role, and that session was started or wrote on the board within
    the agent list's window (`AGENT_WINDOW_MS`, six hours). The sessions are
