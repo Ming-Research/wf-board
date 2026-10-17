@@ -8,7 +8,8 @@ export const TELL_AFTER_MS = 30 * 60_000;
 
 /** What the board knows of one session between signs: when the silence began, and how far it has gone. */
 interface Silence {
-  /** The last sign of life, or the moment the board first saw the session holding an item, or the board's start. */
+  /** The last sign of life, or the first moment the board saw the session holding an item in progress, whichever is later; after a
+   * restart, moved on by the time the board was stopped. */
   since: number;
   /** When the session was asked; set once per silence. */
   asked?: number;
@@ -19,14 +20,14 @@ interface Silence {
 export interface LivenessOptions {
   wake: Wake;
   now?: () => number;
-  /** Where the asked and told marks are kept, so a restart neither forgets nor repeats a push; without it they live in memory only. */
+  /** Where the silences are kept, so a restart neither loses the time already silent nor repeats a push; without it they live in memory only. */
   file?: string;
   askMs?: number;
   tellMs?: number;
 }
 
 /**
- * Whether the sessions holding items are still there (docs/design.md, The wake streams, Liveness). A session gives a sign of
+ * Whether the sessions holding items in progress are still there (docs/design.md, The wake streams, Liveness). A session gives a sign of
  * life by calling any tool as itself (`see`, from the tool wrapper) or by having its wait script connected (`check` asks
  * the server which sessions are). After ASK_AFTER_MS without one the board puts an ask in the session's own stream; after
  * TELL_AFTER_MS more it pushes "no answer" to the PM. A sign at any time ends the silence, and the next one starts over, so
@@ -49,19 +50,21 @@ export class Liveness {
     this.load(this.now());
   }
 
-  /** Read the marks of the last run. Their silences start anew at `started`: the board was not there to hear a sign while it
-   * was down, so a session asked before the restart gets its whole time to answer after it. A told session stays told until a sign. */
+  /** Read the silences of the last run. The time the board was stopped since its last round is not the sessions' silence: it is
+   * added to every time a silence is counted from, so a session silent for 20 minutes before a restart is silent for 20 after it. */
   private load(started: number): void {
     if (!this.file) return;
     try {
-      const marks = JSON.parse(readFileSync(this.file, "utf8")) as Record<string, { asked?: unknown; told?: unknown }>;
-      for (const [name, mark] of Object.entries(marks)) {
-        const silence: Silence = { since: started };
-        if (typeof mark.asked === "number") silence.asked = Math.max(mark.asked, started);
+      const doc = JSON.parse(readFileSync(this.file, "utf8")) as { at?: unknown; silences?: Record<string, { since?: unknown; asked?: unknown; told?: unknown }> };
+      const stopped = typeof doc.at === "number" ? Math.max(0, started - doc.at) : 0;
+      for (const [name, mark] of Object.entries(doc.silences ?? {})) {
+        if (typeof mark.since !== "number") continue;
+        const silence: Silence = { since: mark.since + stopped };
+        if (typeof mark.asked === "number") silence.asked = mark.asked + stopped;
         if (typeof mark.told === "number") silence.told = mark.told;
-        if (silence.asked !== undefined || silence.told !== undefined) this.silences.set(name, silence);
+        this.silences.set(name, silence);
       }
-    } catch { /* no file, or not ours: every silence starts at the board's start */ }
+    } catch { /* no file, or not ours: every silence starts at the first round that sees the session */ }
   }
 
   /** The session gave a sign of life now. */
@@ -87,33 +90,25 @@ export class Liveness {
       if (silence.asked === undefined) {
         if (now - silence.since < this.askMs) continue;
         silence.asked = now;
-        this.save();
         this.wake.push("ask-alive", { item, ...about(item), since: last });
       } else if (now - silence.asked >= this.tellMs) {
         silence.told = now;
-        this.save();
         this.wake.push("no-answer", { session: name, item, ...about(item), since: last });
       }
     }
-    let dropped = false;
-    for (const [name, silence] of this.silences) {
-      if (holding.has(name)) continue;
-      this.silences.delete(name);
-      dropped ||= silence.asked !== undefined || silence.told !== undefined;
-    }
-    if (dropped) this.save();
+    for (const name of this.silences.keys()) if (!holding.has(name)) this.silences.delete(name);
+    this.save();
   }
 
-  /** Write the marks of the silences that have gone as far as an ask; the others cost nothing to lose. */
+  /** Write the silences with the time of this round, which tells the next start how long the board was stopped. A round writes
+   * once; a sign writes at once only when it ends an ask or a tell, so a restart cannot bring that back. */
   private save(): void {
     if (!this.file) return;
-    const marks: Record<string, { asked?: number; told?: number }> = {};
-    for (const [name, { asked, told }] of this.silences) if (asked !== undefined || told !== undefined) marks[name] = { ...(asked === undefined ? {} : { asked }), ...(told === undefined ? {} : { told }) };
     const temporary = this.file + ".tmp";
     try {
       mkdirSync(dirname(this.file), { recursive: true });
-      writeFileSync(temporary, JSON.stringify(marks) + "\n");
+      writeFileSync(temporary, JSON.stringify({ at: this.now(), silences: Object.fromEntries(this.silences) }) + "\n");
       renameSync(temporary, this.file);
-    } catch (error) { console.error("liveness marks not written", error); }
+    } catch (error) { console.error("liveness silences not written", error); }
   }
 }

@@ -121,35 +121,58 @@ test("a session holding nothing is not watched, and what the board knew of it is
   assert.equal(r2.asks().length, 1);
 });
 
-test("the asked and told marks survive a restart: a restart repeats nothing, and a session asked before it has its whole time after it", async t => {
+test("a silence before a restart counts after it: 20 minutes silent before, 10 more after, and it is asked", async t => {
+  const file = join(await scratch(t), "liveness.json");
+  const r = rig(file);
+  r.check(); r.at(20); r.check();
+  const second = r.restart();
+  second.check(); r.at(29); second.check();
+  assert.equal(second.asks().length, 0);
+  r.at(30); second.check();
+  assert.deepEqual(second.asks().map(f => f.since), [iso(T0)], "30 minutes silent in all, from the first round that saw the session");
+});
+
+test("the time the board was stopped is no silence: it is added back after a restart", async t => {
+  const file = join(await scratch(t), "liveness.json");
+  const r = rig(file);
+  r.check(); r.at(10); r.check();
+  r.at(190);
+  const second = r.restart();
+  second.check(); r.at(209); second.check();
+  assert.equal(second.asks().length, 0, "silent for 10 minutes before the board stopped, 19 after it started: three hours stopped do not count");
+  r.at(210); second.check();
+  assert.deepEqual(second.asks().map(f => f.since), [iso(T0 + 180 * MIN)], "the silence began 180 minutes later than it did, by the time the board was stopped");
+});
+
+test("the asked and told marks survive a restart: a restart repeats nothing, and the time to answer an ask is not cut short by it", async t => {
   const file = join(await scratch(t), "liveness.json");
   const r = rig(file);
   r.check(); r.at(30); r.check();
   assert.equal(r.asks().length, 1);
   r.at(40);
   const second = r.restart();
-  r.at(69); second.check();
-  assert.deepEqual([second.asks().length, second.told().length], [0, 0], "the restart does not ask again, and the silence starts anew at it, so 30 minutes after the ask is not yet 30 after the restart");
+  second.check(); r.at(69); second.check();
+  assert.deepEqual([second.asks().length, second.told().length], [0, 0], "the restart does not ask again, and the 10 minutes it was stopped are not 10 of the 30 the session has to answer");
   r.at(70); second.check();
-  assert.deepEqual([second.asks().length, second.told().length], [0, 1], "30 minutes after the restart the PM is told");
+  assert.deepEqual(second.told().map(f => [f.session, f.since]), [["eng", iso(T0 + 10 * MIN)]], "30 minutes after the ask, by the clock of the board running; the silence began 10 minutes later than it did");
   r.at(500);
   const third = r.restart();
   third.check(); r.at(900); third.check();
   assert.deepEqual([third.asks().length, third.told().length], [0, 0], "a told silence stays told through a restart");
   third.liveness.see("eng");
-  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {}, "a sign takes the marks out of the file");
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")).silences, { eng: { since: T0 + 900 * MIN } }, "a sign takes the ask and the tell out of the file at once");
   const fourth = r.restart();
   fourth.check(); r.at(931); fourth.check();
   assert.equal(fourth.asks().length, 1, "a new silence after the sign is asked");
 });
 
-test("a session that stops holding its item loses its marks, so holding again starts a silence from nothing", async t => {
+test("a session that stops holding its item loses its silence, so holding again starts one from nothing", async t => {
   const file = join(await scratch(t), "liveness.json");
   const r = rig(file);
   r.check(); r.at(30); r.check();
-  assert.ok(JSON.parse(await readFile(file, "utf8")).eng.asked);
+  assert.ok(JSON.parse(await readFile(file, "utf8")).silences.eng.asked);
   r.at(31); r.liveness.check(new Map(), () => false, about);
-  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {});
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")).silences, {});
   r.at(100); r.check();
   r.at(129); r.check();
   assert.deepEqual([r.asks().length, r.told().length], [1, 0], "no immediate tell from the earlier ask");
@@ -254,14 +277,52 @@ test("holders maps each session to the items it holds, in item order, by the one
     v: { dispatches: [d("late", "2026-10-16T01:00:00Z")] },
   } } as unknown as Pick<Snapshot, "items">;
   assert.deepEqual([...holders(s)], [["eng", ["x", "y"]], ["late", ["v"]]]);
+  assert.deepEqual([...holders(s, item => item !== "x")], [["eng", ["y"]], ["late", ["v"]]], "only the items the filter accepts");
+  assert.deepEqual([...holders(s, () => false)], []);
 });
+
+/** Make `item` ready as `prepare` says, dispatch an engineer on it, and let two hours pass without a sign from it: what the
+ * session was asked, what the PM was told, and the item's status. */
+async function twoSilentHours(t: Parameters<typeof board>[0] & { mock: { timers: { enable(o: { apis: string[] }): void; tick(ms: number): void } } }, item: string, prepare: (op: Awaited<ReturnType<typeof server>>["op"]) => Promise<unknown>) {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
+  const { op, store } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000, timedWakeMs: 1e12 });
+  await prepare(op);
+  await op.dispatchStart({ ...asArchitect, id: item, role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
+  const tick = async () => { t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve)); };
+  await tick();
+  for (let i = 0; i < 4; i++) { clock.now += 30 * MIN; await tick(); }
+  return {
+    status: store.derived.rules(store.snapshot(), clock.now).statusOf(item),
+    asked: wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive").length,
+    told: wake.since(0).frames.filter(f => f.event === "no-answer").length,
+  };
+}
+const acceptRow = (state: "todo" | "doing" | "done") => ({ id: "accept", accept: true as const, text: "独立验收通过", state });
+
+test("a session holding an item in progress is asked after 30 minutes and the PM told after 30 more", async t => {
+  const result = await twoSilentHours(t, "a", op => op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") }));
+  assert.deepEqual(result, { status: "wip", asked: 1, told: 1 });
+});
+
+for (const [name, item, status, prepare] of [
+  ["paused", "a", "paused", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") }); await op.setPause({ ...asArchitect, id: "a", paused: true, reason: "测试" }); }],
+  ["blocked", "b", "blocked", async () => {}],
+  ["done", "a", "done", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("done") }); }],
+  ["cancelled", "a", "cancelled", async (op: Parameters<Parameters<typeof twoSilentHours>[2]>[0]) => { await op.setStatus({ ...asArchitect, id: "a", status: "cancelled", log: "测试" }); }],
+] as const) {
+  test(`a session holding a ${name} item is neither asked nor told`, async t => {
+    assert.deepEqual(await twoSilentHours(t, item, prepare), { status, asked: 0, told: 0 });
+  });
+}
 
 test("on the server a connected wait script is a sign and its end starts the silence; a silent holder is asked, then the PM is told, with the item's project and title", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
   const see = t.mock.method(wake.liveness, "see");
-  const { url, op } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000 });
-  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
+  const { url, op } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000, timedWakeMs: 1e12 });
+  await op.setPlan({ ...asArchitect, id: "a", row: acceptRow("doing") });
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
   const tick = async () => { t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve)); };
   const asked = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
   const told = () => wake.since(0).frames.filter(f => f.event === "no-answer");
@@ -276,9 +337,9 @@ test("on the server a connected wait script is a sign and its end starts the sil
   clock.now += 29 * MIN; await tick();
   assert.equal(asked().length, 0);
   clock.now += 2 * MIN; await tick();
-  assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["b", "Whitefoot", "阻塞证据"]], "30 minutes after the connection ended");
+  assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["a", "Whitefoot", "中文检查"]], "30 minutes after the connection ended");
   clock.now += 29 * MIN; await tick();
   assert.equal(told().length, 0);
   clock.now += 1 * MIN; await tick();
-  assert.deepEqual(told().map(f => [f.session, f.item, f.project, f.title]), [["eng", "b", "Whitefoot", "阻塞证据"]]);
+  assert.deepEqual(told().map(f => [f.session, f.item, f.project, f.title]), [["eng", "a", "Whitefoot", "中文检查"]]);
 });

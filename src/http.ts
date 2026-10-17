@@ -362,9 +362,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
     scanChecks(true); wake.checkReceipts();
-    const s = store.snapshot(), held = holders(s), r = store.derived.rules(s, now());
+    const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
     wake.prune(name => held.has(name) || connected(name));
-    wake.liveness.check(held, connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
+    // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
+    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
     void timed();
   }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
