@@ -18,21 +18,18 @@ const OUT = join(process.cwd(), "shots");
 interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown> }
 const DAGRE = { layout: "dagre", flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 } };
 const CLASSIC = { look: "classic", flowchart: { look: "classic", padding: 6 } };
+const LAYERS = (nn: number, layers: number, edge: number) => ({ "elk.spacing.nodeNode": nn, "elk.layered.spacing.nodeNodeBetweenLayers": layers, "elk.layered.spacing.edgeNodeBetweenLayers": edge, "elk.spacing.edgeNode": edge, "elk.layered.spacing.edgeEdgeBetweenLayers": 10, "elk.spacing.edgeEdge": 10 });
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
   { name: "dagre", cfg: DAGRE },
-  { name: "dagre-step", cfg: { ...DAGRE, flowchart: { ...DAGRE.flowchart, curve: "step" } } },
   { name: "elk-b20", elk: { root: { "spacing.baseValue": 20 } } },
   { name: "elk-b12", elk: { root: { "spacing.baseValue": 12 } } },
-  { name: "elk-nn12", elk: { root: { "elk.spacing.nodeNode": 12 } } },
-  { name: "elk-classic", cfg: CLASSIC },
-  { name: "elk-b12-classic", cfg: CLASSIC, elk: { root: { "spacing.baseValue": 12 } } },
-  { name: "elk-feedback", elk: { root: { "elk.layered.feedbackEdges": true } } },
-  { name: "elk-compact", elk: { root: { "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH" } } },
-  { name: "elk-order", cfg: { elk: { considerModelOrder: "NODES_AND_EDGES", forceNodeModelOrder: true } } },
-  { name: "elk-legacy", cfg: { elk: { preset: "legacy" } } },
-  { name: "elk-modelorder", cfg: { elk: { preset: "modelOrder" } } },
-  { name: "elk-merge", cfg: { elk: { mergeEdges: true } } },
+  { name: "elk-n20-l20-e20", elk: { root: LAYERS(20, 20, 20) } },
+  { name: "elk-n20-l20-e12", elk: { root: LAYERS(20, 20, 12) } },
+  { name: "elk-n16-l12-e12", elk: { root: LAYERS(16, 12, 12) } },
+  { name: "elk-n20-l20-e12-classic6", cfg: CLASSIC, elk: { root: LAYERS(20, 20, 12) } },
+  { name: "elk-n20-l20-e12-classic8", cfg: { ...CLASSIC, flowchart: { ...CLASSIC.flowchart, padding: 8 } }, elk: { root: LAYERS(20, 20, 12) } },
+  { name: "elk-classic6", cfg: CLASSIC },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["lanes", LANES], ...SMALL];
 
@@ -63,7 +60,7 @@ function measure(block: Element) {
     const q = new DOMPoint(p.x, p.y).matrixTransform(m);
     return { x: (q.x - box.left) / s, y: (q.y - box.top) / s };
   };
-  const ends: string[] = [];
+  const ends: string[] = [], runs: number[] = [];
   let side = 0, horizontal = 0, arrows = 0, through = 0;
   const throughList: string[] = [];
   for (const path of svg.querySelectorAll<SVGPathElement>('path[data-edge="true"]')) {
@@ -82,7 +79,12 @@ function measure(block: Element) {
     if (!target) continue;
     arrows++;
     const p = point(path, length), q = point(path, Math.max(0, length - 6));
-    const flat = Math.abs(p.x - q.x) > Math.abs(p.y - q.y);
+    // The straight run before the tip, along the direction of its last 2 units: an arrowhead sits on a bend when it is short.
+    const r = point(path, Math.max(0, length - 2)), dx = p.x - r.x, dy = p.y - r.y, n = Math.hypot(dx, dy) || 1;
+    let run = 0;
+    while (run < 60 && run < length) { const o = point(path, length - run - 1); if (Math.abs((o.x - p.x) * dy / n - (o.y - p.y) * dx / n) > 1) break; run++; }
+    runs.push(run);
+    const flat = Math.abs(dx) > Math.abs(dy);
     // A side entry: the arrow's tip is level with the box (between its top and bottom), not above or below it.
     const level = p.y > target.top + 3 && p.y < target.bottom - 3;
     if (flat) horizontal++;
@@ -107,7 +109,7 @@ function measure(block: Element) {
   return {
     w: Math.round(vb.width), h: Math.round(vb.height), shown: Math.round(box.width), shownH: Math.round(box.height),
     screenFont: Math.round(font * s * 10) / 10, fill: Math.round(area / (vb.width * vb.height) * 100),
-    arrows, side, horizontal, ends,
+    arrows, side, horizontal, ends, minRun: Math.min(...runs), shortRuns: runs.filter(r => r < 10).length,
     boxes: [...nodes].map(([k, r]) => `${k}:${Math.round(r.left)}-${Math.round(r.right)}@${Math.round(r.top)}`).join(" "), gap: Math.round(gap), labelOnBox, labelOnLabel, through, throughList,
   };
 }
@@ -146,16 +148,29 @@ async function main() {
       results[`${v.name} ${name}`] = m;
       console.log(`${v.name} ${name}: ${JSON.stringify(m)}`);
       await blocks.nth(i).screenshot({ path: join(OUT, `${name}-${v.name}.png`) });
+      if (name === "role" || name === "lanes") {
+        // The same drawing at its own size, as the reader sees it zoomed in.
+        await blocks.nth(i).evaluate(block => {
+          const copy = block.querySelector("svg")!.cloneNode(true) as SVGSVGElement, holder = document.createElement("div");
+          holder.id = "natural";
+          holder.style.cssText = "position:absolute;left:0;top:0;z-index:99;background:#fff;padding:8px";
+          copy.style.cssText = `width:${copy.viewBox.baseVal.width}px;max-width:none;height:auto`;
+          holder.append(copy);
+          document.body.append(holder);
+        });
+        await bp.page.locator("#natural").screenshot({ path: join(OUT, `${name}-${v.name}-natural.png`) });
+        await bp.page.evaluate(() => document.getElementById("natural")?.remove());
+      }
     }
     const elk = await bp.page.evaluate(() => (globalThis as unknown as { __elkIn?: { layoutOptions?: unknown } }).__elkIn?.layoutOptions);
     console.log(`${v.name} last ELK root options: ${JSON.stringify(elk)}`);
   }
   await writeFile(join(OUT, "results.json"), JSON.stringify(results, null, 1));
   // The table of the role chart.
-  console.log("\nvariant | w×h | shown w×h | font on screen | fill% | side/arrows | horizontal | gap | label on box | label on label | through");
+  console.log("\nvariant | w×h | shown w×h | font on screen | fill% | side/arrows | horizontal | min run | runs<10 | gap | label on box | label on label | through");
   for (const v of VARIANTS) {
     const m = results[`${v.name} role`] as ReturnType<typeof measure> | undefined;
-    if (m) console.log(`${v.name} | ${m.w}×${m.h} | ${m.shown}×${m.shownH} | ${m.screenFont} | ${m.fill} | ${m.side}/${m.arrows} | ${m.horizontal} | ${m.gap} | ${m.labelOnBox} | ${m.labelOnLabel} | ${m.through}`);
+    if (m) console.log(`${v.name} | ${m.w}×${m.h} | ${m.shown}×${m.shownH} | ${m.screenFont} | ${m.fill} | ${m.side}/${m.arrows} | ${m.horizontal} | ${m.minRun} | ${m.shortRuns} | ${m.gap} | ${m.labelOnBox} | ${m.labelOnLabel} | ${m.through}`);
   }
 }
 
