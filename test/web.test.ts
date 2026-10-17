@@ -4401,3 +4401,12 @@ test("the detail's progress line says how far a todo or part-done item is, what 
   assert.equal(rowOf(p,"part").querySelector(".progress-line"), null, "the tree row shows no progress line");
   assert.equal(item(p,"quiet").children.filter(c=>c.classList.contains("progress-line")).length, 1);
 });
+
+test("a tree row in progress carries a band as wide as its plan's share, behind the row", async () => {
+  const p = await page(snapshot(), []); await expand(p);
+  const band = rowOf(p, "child").querySelector(".progress-band") as Element | null;
+  assert.ok(band, "a wip row carries its band");
+  const share = parseFloat((band as unknown as { style: Record<string, string> }).style["--p"]!);
+  assert.ok(share > 0 && share <= 1, "the band's width is the plan's share, 0 to 1");
+  assert.equal(rowOf(p, "area").querySelector(".progress-band"), null, "the area row is not in progress: no band");
+});

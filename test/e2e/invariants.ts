@@ -796,3 +796,42 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
   await bp.settle();
   return v;
 }
+
+// The left tree's band behind each row in progress or idle: as wide as the plan's share, its gradient sized to the whole row
+// (so the colour at any point is the colour that point has across the row), and no band on the other rows. Both colour
+// schemes (docs/design.md, How the page shows a plan).
+export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], page = bp.page, ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
+  const part = ids.find(id => o.r.statusOf(id) === "wip"), idle = ids.find(id => o.r.statusOf(id) === "idle"), todo = ids.find(id => o.r.statusOf(id) === "todo");
+  if (!part) v.push("progress-band: the board has no item in progress");
+  if (!todo) v.push("progress-band: the board has no todo item");
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const id of [part, idle, todo]) {
+      if (!id) continue;
+      const status = o.r.statusOf(id);
+      const got = await page.evaluate((key: string) => {
+        const row = document.getElementById("it-" + key)?.querySelector<HTMLElement>(":scope > .item-row.tree-row") ?? null;
+        const band = row?.querySelector<HTMLElement>(":scope > .progress-band") ?? null;
+        // The colour the page's first gradient stop resolves to in this scheme, read through a probe element.
+        const probe = document.createElement("span"); probe.style.backgroundColor = "var(--prog-from)"; document.body.appendChild(probe);
+        const from = getComputedStyle(probe).backgroundColor; probe.remove();
+        const style = band ? getComputedStyle(band) : null;
+        return {
+          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from,
+          band: band && style ? { width: band.getBoundingClientRect().width, image: style.backgroundImage, size: style.backgroundSize } : null,
+        };
+      }, id);
+      if (!got.row) { v.push(`progress-band (${scheme}): ${id} has no tree row`); continue; }
+      if (status !== "wip" && status !== "idle") { if (got.band) v.push(`progress-band (${scheme}): ${id} (${status}) carries a band`); continue; }
+      if (!got.band) { v.push(`progress-band (${scheme}): ${id} (${status}) carries no band`); continue; }
+      const want = o.r.progressShare(id), ratio = got.band.width / got.rowWidth;
+      if (Math.abs(ratio - want) > 0.01) v.push(`progress-band (${scheme}): ${id} is ${(ratio * 100).toFixed(1)}% of the row wide, not the plan's ${(want * 100).toFixed(1)}%`);
+      const size = parseFloat(got.band.size);
+      if (Math.abs(size - got.rowWidth) > 1) v.push(`progress-band (${scheme}): ${id}'s gradient is ${size}px wide, not the row's ${got.rowWidth}px`);
+      if (!got.band.image.includes("linear-gradient") || !got.band.image.includes(got.from)) v.push(`progress-band (${scheme}): ${id}'s gradient does not start in ${got.from}: ${got.band.image}`);
+    }
+  }
+  await page.emulateMedia({ colorScheme: "light" });
+  return v;
+}

@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkCodeFont, checkEmptyRows, checkTagChips, checkDifficultyChip, checkProgress } from "./invariants.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkCodeFont, checkEmptyRows, checkTagChips, checkDifficultyChip, checkProgress, checkProgressBands } from "./invariants.ts";
 import type { Oracle } from "./invariants.ts";
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.slice(0, 60).join("\n"));
@@ -33,6 +33,7 @@ test("the owner's page lands every click on what it claims", { timeout: 40 * 60_
     ["blue numbers, the 新 number and n", o => checkFresh(bp, o)],
     ["project filters count, show and hide the right items", o => checkFilters(bp, o)],
     ["search finds and shows items and cards", o => checkSearch(bp, o)],
+    ["progress bands: as wide as the plan's share, in both colour schemes", o => checkProgressBands(bp, o)],
   ];
   for (const [name, run] of families) await t.test("fresh page: " + name, async () => {
     await bp.reset(openAll(board));

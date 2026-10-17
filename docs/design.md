@@ -1389,7 +1389,8 @@ The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
 
 The progress line is one line of text under the title and chips of an open item that has
-plan rows, read from `Rules.progress`; the tree rows do not change. Status says
+plan rows, read from `Rules.progress`; the tree rows show no line, only the band
+below. Status says
 whether someone is on the item; the line says how far it is and what holds it up,
 in one of three forms by status:
 
@@ -1402,6 +1403,19 @@ in one of three forms by status:
   just `在做：<rows>`.
 
 A paused, done or cancelled item shows no line.
+
+The left tree draws a band behind the row of each item whose status is wip or
+idle, from the row's left edge over the first `Rules.progressShare` of its
+width. The share is the sum of the weights of the plan rows that count
+(dropped rows excluded) over the number of those rows, 0 when there are none:
+a done row weighs 1, a row in progress ½, a card decided or withdrawn 1 and
+open 0; a sub-item row, owned or shared, weighs by its status: done or
+cancelled 1, wip or idle ½, anything else 0, and its own rows are not counted.
+The band's gradient runs from `--prog-from` to `--prog-to` across the full
+row width, so a short band shows only the start colour: the colour at any
+point of the band is the colour that point has in the whole row. Items of
+other statuses draw no band. The owner asked for this on the board, so the
+left list shows how far each open item is without opening it.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter

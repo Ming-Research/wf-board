@@ -2081,6 +2081,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       getSelection()?.removeAllRanges?.(); setRowOpen(m, it, !open);
     });
     row.appendChild(head);
+    // A row in progress or idle carries its plan's share done as a band behind it (docs/design.md, How the page shows a plan).
+    if (!detail && (st === "wip" || st === "idle")) { const share = derived.progressShare(it.id); if (share > 0) { const band = el("span", "progress-band"); band.style.setProperty("--p", String(share)); row.appendChild(band); } }
     // A parent counts its leaves by status at the right of its row; cancelled ones are left out.
     if ((index().children.get(it.id) || []).length) {
       const n: Record<string,number> = {};
