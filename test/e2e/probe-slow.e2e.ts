@@ -120,18 +120,19 @@ function interval(ratios: number[]) {
 
 
 
-type Cell = { perWrite: number; wBusy: number; wBusy90: number; qBusy: number; qBusy90: number; filterMismatches: number };
+type Cell = { perWrite: number; wBusy: number; wBusy90: number; qBusy: number; qBusy90: number; wLand: number; wLand90: number; filterMismatches: number };
 async function landingsBusy(bp: BoardPage, cdp: CDPSession, wanted: number) {
-  const busy: number[] = [];
+  const busy: number[] = [], land: number[] = [];
   for (let presses = 0; busy.length < wanted && presses < 8 * wanted; presses++) {
     const was = await bp.selected(), before = await busyTime(cdp);
     await bp.page.keyboard.press("n");
     await quiet(bp);
-    const spent = await busyTime(cdp) - before, now = await bp.selected();
-    await take(bp);
-    if (now !== null && now !== was) busy.push(spent);
+    const spent = await busyTime(cdp) - before, now = await bp.selected(), p = await take(bp);
+    if (now === null || now === was) continue;
+    busy.push(spent);
+    const cur = p.curAt.filter(x => x >= p.pressAt); if (cur.length) land.push(Math.min(...cur) - p.pressAt);
   }
-  return busy;
+  return Object.assign(busy, { land });
 }
 async function slowCell(browser: Browser, board: BoardServer, rate: number): Promise<Cell> {
   // Quiet landings on a page of their own, as the press-n check makes them.
@@ -149,7 +150,7 @@ async function slowCell(browser: Browser, board: BoardServer, rate: number): Pro
   await w2.stop(); await quiet(bp);
   const filterMismatches = await bp.page.evaluate(() => { const f = (window as unknown as { __checkFilterCounts?: () => number }).__checkFilterCounts; return f ? f() : -1; });
   await bp.context.close();
-  return { perWrite, wBusy: med(w30), wBusy90: q(w30, 0.9), qBusy: med(q30), qBusy90: q(q30, 0.9), filterMismatches };
+  return { perWrite, wBusy: med(w30), wBusy90: q(w30, 0.9), qBusy: med(q30), qBusy90: q(q30, 0.9), wLand: med(w30.land), wLand90: q(w30.land, 0.9), filterMismatches };
 }
 
 test("probe: base, twin and candidate pages at the runner's speed and throttled twice", { timeout: 80 * 60_000 }, async t => {
@@ -164,12 +165,24 @@ test("probe: base, twin and candidate pages at the runner's speed and throttled 
     const names = rates.flatMap(rate => variants.map(v => [v, rate] as const));
     for (let k = 0; k < names.length; k++) { const [v, rate] = names[(k + i) % names.length]!; row[v + "@" + rate] = await slowCell(browser, served[v], rate); }
     runs.push(row);
-    out(`PAIR ${i}: ` + Object.entries(row).map(([n, c]) => `${n} perWrite ${f(c.perWrite)} writing ${f(c.wBusy)}/${f(c.wBusy90)} quiet ${f(c.qBusy)}/${f(c.qBusy90)}${c.filterMismatches >= 0 ? " filterMismatches " + c.filterMismatches : ""}`).join(" | "));
+    out(`PAIR ${i}: ` + Object.entries(row).map(([n, c]) => `${n} perWrite ${f(c.perWrite)} writing ${f(c.wBusy)}/${f(c.wBusy90)} land ${f(c.wLand)}/${f(c.wLand90)} quiet ${f(c.qBusy)}/${f(c.qBusy90)}${c.filterMismatches >= 0 ? " filterMismatches " + c.filterMismatches : ""}`).join(" | "));
   }
-  for (const rate of rates) for (const metric of ["perWrite", "wBusy", "wBusy90", "qBusy", "qBusy90"] as const) {
+  for (const rate of rates) for (const metric of ["perWrite", "wBusy", "wBusy90", "wLand", "wLand90", "qBusy", "qBusy90"] as const) {
     const at = (v: string) => runs.map(r => r[v + "@" + rate]![metric]);
     const twin = interval(runs.map(r => r["twin@" + rate]![metric] / r["base@" + rate]![metric])), cand = interval(runs.map(r => r["cand@" + rate]![metric] / r["base@" + rate]![metric]));
-    const limit = metric === "wBusy" || metric === "qBusy" ? 200 : metric === "perWrite" ? Infinity : 300;
+    const limit = metric === "wBusy" || metric === "qBusy" || metric === "wLand" ? 200 : metric === "perWrite" ? Infinity : 300;
     out(`CELL rate ${rate} ${metric}: base ${at("base").map(f).join(" ")}, twin ${at("twin").map(f).join(" ")}, cand ${at("cand").map(f).join(" ")}; twin/base ${twin.ratio.toFixed(3)} [${twin.lo.toFixed(3)}, ${twin.hi.toFixed(3)}] noise ±${(twin.half * 100).toFixed(1)}%; cand/base ${cand.ratio.toFixed(3)} [${cand.lo.toFixed(3)}, ${cand.hi.toFixed(3)}]` + (Number.isFinite(limit) ? `; over ${limit}: base ${at("base").filter(x => x > limit).length}, cand ${at("cand").filter(x => x > limit).length} of ${runs.length}` : ""));
+  }
+  // Where the candidate's write still goes, at the runner's speed.
+  {
+    const { bp, cdp } = await openPage(browser, served.cand);
+    const warm = startWriters(board, 3); await sleep(3000); await warm.stop(); await quiet(bp);
+    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 200 });
+    const c0 = await bp.changes();
+    await cdp.send("Profiler.start");
+    const w = startWriters(board, 3); await sleep(20_000); await w.stop(); await quiet(bp);
+    const { profile } = await cdp.send("Profiler.stop") as { profile: CpuProfile };
+    summarize("candidate page, sessions writing 3/s", profile, await bp.changes() - c0, "write");
+    await bp.context.close();
   }
 });
