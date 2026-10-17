@@ -15,7 +15,7 @@ const t = { after: (fn: () => unknown) => { cleanups.push(fn); } };
 const fence = (code: string) => "```mermaid\n" + code + "\n```";
 const OUT = join(process.cwd(), "shots");
 
-interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown>; css?: string; window?: number }
+interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<string, unknown>; css?: string; window?: number; tree?: number }
 const DAGRE = { layout: "dagre", flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 } };
 const CLASSIC = { look: "classic", flowchart: { look: "classic", padding: 6 } };
 const LAYERS = (nn: number, layers: number, edge: number) => ({ "elk.spacing.nodeNode": nn, "elk.layered.spacing.nodeNodeBetweenLayers": layers, "elk.layered.spacing.edgeNodeBetweenLayers": edge, "elk.spacing.edgeNode": edge, "elk.layered.spacing.edgeEdgeBetweenLayers": 10, "elk.spacing.edgeEdge": 10 });
@@ -23,11 +23,15 @@ const PAGE = (padding: number) => ({ look: "classic", flowchart: { look: "classi
 // A diagram as wide as the detail pane rather than the text column: the pane is a container, and a block takes its width.
 const WIDE = "body.wide #item-detail { container-type: inline-size; } .rich .mermaid-block { width: 100cqw; max-width: 100cqw; }";
 const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
+// The page's fit, but never smaller than text 12 px high on the screen (the library writes 16 px text): a wider diagram scrolls sideways.
+const MIN12 = ".mermaid-fig svg { width: calc(max(min(var(--natural), 100%), var(--natural) * 0.75) * var(--zoom, 1)) !important; }";
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
+  { name: "elk-narrow", tree: 2000 },
+  { name: "c-p8-e12-narrow", ...C, tree: 2000 },
+  { name: "c-p8-e12-narrow-min12", ...C, tree: 2000, css: MIN12 },
   { name: "elk" },
-  { name: "classic8", cfg: { look: "classic", flowchart: { look: "classic", padding: 8 } } },
   { name: "c-p8-e12", ...C },
-  { name: "elk-2400", window: 2400 },
+  { name: "c-p8-e12-min12", ...C, css: MIN12 },
   { name: "c-p8-e12-2400", ...C, window: 2400 },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["role-narrow", ROLE_NARROW], ["role-own", ROLE_OWN], ["lanes", LANES], ...SMALL];
@@ -131,6 +135,8 @@ async function main() {
     await bp.page.evaluate(v => {
       const g = globalThis as unknown as Record<string, unknown>; g.__elk = v.elk; g.__mcfg = v.cfg;
       document.getElementById("variant-css")?.remove();
+      const wrap = document.querySelector<HTMLElement>(".wrap");
+      if (wrap) { if (v.tree) wrap.style.setProperty("--tree-width", v.tree + "px"); else wrap.style.removeProperty("--tree-width"); }
       if (v.css) { const style = document.createElement("style"); style.id = "variant-css"; style.textContent = v.css; document.head.append(style); }
     }, v);
     await bp.page.setViewportSize({ width: v.window ?? 1500, height: 4000 });
