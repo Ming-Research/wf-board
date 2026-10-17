@@ -3,6 +3,7 @@ name: tmp-timing
 on:
   push:
     branches: [ci-under-1min-study]
+    paths: [scripts/tmp-micro.ts, scripts/tmp-reporter.mjs, test/e2e/harness.ts, test/e2e/seed.ts]
 permissions:
   contents: read
 jobs:
