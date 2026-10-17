@@ -3143,9 +3143,10 @@ time and draws at most twice, read from the page's performance marks: every draw
 key until the page is quiet counts, those of the rows around the target included. The
 draws depend on when the baselines of the rows around the target answer, because the
 navigation waits for them 100 ms at most, so the test sets that time and does not leave
-it to the machine: it holds those answers for 60 ms, and the landing draws twice at most;
-it holds them for 200 ms, and the landing draws exactly three times, the last for the
-rows alone. The page without the wait, and the page with a wait that has no limit, must be
+it to the machine or the server: it delivers the answers it recorded on a first walk of
+the board, those of the rows around the target after 60 ms and the others after 20 ms,
+and the landing draws twice at most; it delivers the first after 200 ms, and the landing
+draws exactly three times, the last for the rows alone. The page without the wait, and the page with a wait that has no limit, must be
 reported by the first and the second. Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board

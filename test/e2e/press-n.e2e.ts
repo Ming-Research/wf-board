@@ -23,7 +23,7 @@ import { launch, BoardPage, serveBoard, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { startLiveBoard } from "./live-board.ts";
 
-const MEDIAN_MS = 200, P90_MS = 300, LANDINGS = 30, WITNESS_LANDINGS = 8, WRITES_PER_SECOND = 3;
+const MEDIAN_MS = 200, P90_MS = 300, LANDINGS = 30, WITNESS_LANDINGS = 8, WRITES_PER_SECOND = 3, OWN_ANSWER_MS = 20;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
 const p90 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(0.9 * xs.length))]!;
@@ -39,22 +39,22 @@ const INIT = `(() => {
   const fetch0 = window.fetch.bind(window);
   window.fetch = (...args) => {
     const began = performance.now(), url = String(args[0] && args[0].url || args[0]), p = fetch0(...args);
-    if (url.includes("/api/step")) p.then(() => answers.push([began, performance.now()]), () => {});
+    if (url.includes("/api/step")) p.then(() => answers.push([began, performance.now(), url]), () => {});
     return p;
   };
   const bump = entries => { for (const e of entries) if (e.name in counts) { counts[e.name]++; if (e.name === "board:render") { scopes.push(e.detail); lastDraw = e.startTime; } } };
   const observer = new PerformanceObserver(list => bump(list.getEntries()));
   observer.observe({ entryTypes: ["mark"] });
   // The marks counted since the last call; those the observer has not delivered yet are taken from its queue.
-  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes, lastDrawAfter: lastDraw - pressAt, answers: answers.map(([began, end]) => [began - pressAt, end - pressAt]) }; for (const k in counts) counts[k] = 0; scopes = []; answers = []; return seen; };
+  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes, lastDrawAfter: lastDraw - pressAt, answers: answers.map(([began, end, url]) => [began - pressAt, end - pressAt, url]) }; for (const k in counts) counts[k] = 0; scopes = []; answers = []; return seen; };
   const every = window.setInterval.bind(window);
   window.setInterval = (fn, delay, ...rest) => delay >= 30000 ? 0 : every(fn, delay, ...rest);
 })();`;
-interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[]; lastDrawAfter: number; answers: Array<[number, number]> }
+interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[]; lastDrawAfter: number; answers: Array<[number, number, string]> }
 const marks = (bp: BoardPage) => bp.page.evaluate(() => (window as unknown as { __takeMarks(): Marks }).__takeMarks());
 
 /** What one press cost: the main thread's busy time from the key until the page was quiet, and what the page marked meanwhile. */
-interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[]; lastDraw: number; answers: Array<[number, number]> }
+interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[]; lastDraw: number; answers: Array<[number, number, string]> }
 
 async function busyTime(cdp: CDPSession): Promise<number> {
   const { metrics } = await cdp.send("Performance.getMetrics");
@@ -103,23 +103,39 @@ function startWriters(board: BoardServer, perSecond: number) {
   return { stop: async () => { stopped = true; await loop; return count; } };
 }
 
-/**
- * Holds the answers to the baselines that a landing asks for the rows around its target, until `holdMs` after the first of them was
- * asked for. The rows a landing paints besides its target ask for their own baselines (kind item, another item than the target),
- * and when those answer decides how many times the landing draws. `targets` are the items the landings reach, in order, from an
- * earlier walk of the same board; `progress.landed` says which landing is under way. The answers are the server's, delivered
- * together at the time asked (or when the server has answered, if later). `heldFor(k)` tells whether landing k had such a row.
- */
-async function holdRowsAround(bp: BoardPage, targets: string[], progress: { landed: number }, holdMs: number) {
-  const until = new Map<number, Promise<void>>();
-  await bp.context.route(/\/api\/step\?/, async route => {
-    const url = new URL(route.request().url()), k = progress.landed;
-    if (url.searchParams.get("kind") !== "item" || url.searchParams.get("doc") === targets[k]) return route.continue();
-    if (!until.has(k)) until.set(k, sleep(holdMs));
-    const [response] = await Promise.all([route.fetch(), until.get(k)]);
-    await route.fulfill({ response });
+/** What the server answered to a request for a baseline, kept to be delivered later. */
+interface Answer { status: number; contentType: string; body: Buffer }
+/** Records the server's answers to /api/step on the page; `done()` waits until their bodies are read. */
+function recordAnswers(bp: BoardPage, into: Map<string, Answer>) {
+  const reading: Promise<void>[] = [];
+  bp.page.on("response", res => {
+    const url = new URL(res.url());
+    if (url.pathname !== "/api/step") return;
+    reading.push(res.body().then(body => { into.set(url.pathname + url.search, { status: res.status(), contentType: res.headers()["content-type"] ?? "application/json", body }); }, () => {}));
   });
-  return { heldFor: (k: number) => until.has(k) };
+  return { done: () => Promise.all(reading) };
+}
+/**
+ * Delivers the page's baselines (/api/step) from the answers recorded on an earlier walk of the same board, at times the test sets,
+ * whatever the server's speed: the baselines of the rows around a landing's target (kind item, another item than the target) after
+ * `holdMs` from the first of them asked for, all together, and every other baseline after `OWN_ANSWER_MS`. The rows a landing paints
+ * besides its target ask for their own baselines, and when those answer decides how many times the landing draws. `targets` are the
+ * items the landings reach, in order, from that walk; `progress.landed` says which landing is under way. `heldFor(k)` tells whether
+ * landing k had such a row, and `missed()` how many requests had no recorded answer (their timing is the server's, and a test fails
+ * on it).
+ */
+async function deliverBaselines(bp: BoardPage, answers: Map<string, Answer>, targets: string[], progress: { landed: number }, holdMs: number) {
+  const until = new Map<number, Promise<void>>();
+  let missed = 0;
+  await bp.context.route(/\/api\/step\?/, async route => {
+    const url = new URL(route.request().url()), k = progress.landed, answer = answers.get(url.pathname + url.search);
+    const around = url.searchParams.get("kind") === "item" && url.searchParams.get("doc") !== targets[k];
+    if (around && !until.has(k)) until.set(k, sleep(holdMs));
+    if (!answer) { missed++; return route.continue(); }
+    await (around ? until.get(k) : sleep(OWN_ANSWER_MS));
+    await route.fulfill({ status: answer.status, contentType: answer.contentType, body: answer.body });
+  });
+  return { heldFor: (k: number) => until.has(k), missed: () => missed };
 }
 /** Violations of the counts. A press that lands draws at least once, or the page marks nothing and the check proves nothing. */
 function checkCounts(label: string, list: Landing[], drawsToo = true): string[] {
@@ -146,6 +162,10 @@ function checkTime(label: string, list: Landing[], log: (line: string) => void):
 function logAnswers(label: string, list: Landing[], log: (line: string) => void) {
   const last = list.map(l => Math.max(0, ...l.answers.map(a => a[1]))), slowest = list.map(l => Math.max(0, ...l.answers.map(a => a[1] - a[0])));
   const asked = list.map(l => l.answers.length);
+  // The baselines of the rows around each landing's target (kind item, another item than the target): the ones the navigation waits for.
+  const around = list.flatMap(l => l.answers.filter(([, , url]) => { const q = new URL(url, "http://board.invalid").searchParams; return q.get("kind") === "item" && q.get("doc") !== l.item; }).map(a => a[1]));
+  if (around.length) log(`press-n rows around the target (${label}): ${around.length} baselines over ${list.length} landings, answered after the key: median ${ms(median(around))} ms, 90th percentile ${ms(p90(around))}, max ${ms(Math.max(...around))}; ${around.filter(x => x > 100).length} later than 100 ms`);
+  else log(`press-n rows around the target (${label}): none over ${list.length} landings`);
   log(`press-n baselines (${label}): ${list.length} landings, ${median(asked)} baselines asked for per landing (median); the last one answered ${ms(median(last))} ms after the key (median), ${ms(p90(last))} (90th percentile), ${ms(Math.max(...last))} (max); the slowest single answer took ${ms(median(slowest))} ms (median), ${ms(Math.max(...slowest))} (max)`);
 }
 
@@ -186,9 +206,13 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
 
   // The items the landings reach, in order: n walks the unread stops in page order, the same on every page of this board.
   let targets: string[] = [];
+  // The server's answers to the baselines that walk asks for, delivered later by the tests of the draws at the times they set.
+  const answers = new Map<string, Answer>();
   await t.test("the current page: a press that lands rebuilds and recounts nothing, and the time limit holds", async () => {
     const { bp, cdp } = await openPage(browser, board);
+    const recording = recordAnswers(bp, answers);
     const list = await landings(bp, cdp, LANDINGS);
+    await recording.done();
     await bp.context.close();
     assert.equal(list.length, LANDINGS, "n reached " + LANDINGS + " other items");
     logAnswers("quiet", list, log);
@@ -220,11 +244,14 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
   // twice and the row is drawn on its own, which makes exactly three.
   const IN_TIME_MS = 60, LATE_MS = 200, MIN_LANDINGS_WITH_ROW = 3;
   const withRowsHeld = async (served: BoardServer, holdMs: number) => {
-    assert.ok(targets.length === LANDINGS, "the walk of the current page came first");
+    assert.ok(targets.length === LANDINGS && answers.size > 0, "the walk of the current page came first");
     const { bp, cdp } = await openPage(browser, served);
-    const progress = { landed: 0 }, hold = await holdRowsAround(bp, targets, progress, holdMs);
+    const progress = { landed: 0 }, hold = await deliverBaselines(bp, answers, targets, progress, holdMs);
     const list = await landings(bp, cdp, targets.length, progress);
     await bp.context.close();
+    // The times set are the times of the walk's landings only if this walk reached the same items in the same order.
+    assert.deepEqual(list.map(l => l.item), targets, "the landings reached the items of the first walk");
+    assert.equal(hold.missed(), 0, "every baseline asked for had an answer recorded");
     const rows = list.map((_, k) => k).filter(k => hold.heldFor(k));
     log(`press-n rows around the target answering after ${holdMs} ms: ${rows.length} of ${list.length} landings had one; draws of those ${[...new Set(rows.map(k => list[k]!.draws))].join("/")}, of the others ${[...new Set(list.filter((_, k) => !hold.heldFor(k)).map(l => l.draws))].join("/")}`);
     return { list, rows };
