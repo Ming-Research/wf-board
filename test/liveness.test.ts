@@ -233,7 +233,7 @@ test("a no-answer the PM leaves unanswered for an hour tells the owner, and a cl
   wake.onTell(told => notices.push(told));
   wake.push("no-answer", { session: "eng", item: "it1", project: "Whitefoot", title: "做某事", since: iso(T0) });
   clock += wake.receiptLimitMs; wake.checkReceipts();
-  assert.deepEqual(notices, [{ title: "架构师 1 小时没响应", message: "最早没回执的是 #1：没回应：做某事", target: { kind: "item", key: "it1" } }]);
+  assert.deepEqual(notices, [{ title: "PM 1 小时没响应", message: "最早没回执的是 #1：没回应：做某事", target: { kind: "item", key: "it1" } }]);
 });
 
 test("a tool call is a sign of life for the session it is made as: the credential's, else the name the call gives, never the PM's", async t => {
