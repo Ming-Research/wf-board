@@ -5,9 +5,9 @@ import { Liveness } from "./liveness.ts";
 import { answersPushes } from "./model.ts";
 
 /** Where a kind of push goes: the PM's stream; the stream of the session holding the item that `holder` names (an item key
- * among the fields), and the PM's when no session holds it; or the stream of the session that `session` names (the PM's when
- * that is the PM's session) (docs/design.md, The wake streams). */
-export type WakeRoute = "pm" | { holder: string } | { session: string };
+ * among the fields), and the PM's when no session holds it, or nobody's when the route is `only` for the holder; or the stream
+ * of the session that `session` names (the PM's when that is the PM's session) (docs/design.md, The wake streams). */
+export type WakeRoute = "pm" | { holder: string; only?: true } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
  * besides n, at and event, `to` says whose stream it goes to, `external` lists the fields of the request by which another process may ask
