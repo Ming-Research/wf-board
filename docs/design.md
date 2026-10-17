@@ -2633,6 +2633,8 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` a
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below), and the
   board makes the pushes (Deploys and the red main line, below);
+- an item that became done (`item-done`), to the session holding each open item
+  that waits on it; when nobody holds that item nothing is pushed;
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
@@ -2646,9 +2648,10 @@ table and one row below.
 offer, so no push says a slot is free. The PM compares the working count and the candidates
 that `candidates` answers with the limits the owner gave it, and decides whether to start an
 engineer. The PM learns of a slot that frees from the pushes that end an engineer's work:
-`finished` (an item it holds became done, and its session should stop) and `review` (the
-item's review step started, so its engineer waits for a reviewer). An engineer that waits on
-a card, a 14900K run or another item pushes nothing; the PM reads `candidates` when it
+`finished` (an item it holds became done, and its session should stop) and `review` (an
+item's review step started for the first time, with no reviewer on it yet, so its engineer
+waits for a reviewer). An engineer that waits on a card, a 14900K run, another item, or a
+re-review by a reviewer already on the item pushes nothing; the PM reads `candidates` when it
 collects an engineer, on `finished` and on a new list from the architect, and sees the slot
 then. The timed wake does not carry the counts. Rejected: the board holding the limits and pushing a free slot, which keeps a second
 copy of the owner's numbers that can drift from what the owner said; a push naming the next
