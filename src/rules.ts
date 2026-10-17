@@ -1,7 +1,7 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, RETIRED_LEVEL, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
@@ -181,12 +181,20 @@ export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): Us
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
 export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
- * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
- * first rating left out of `after`; any other pair comes back as it is. */
-export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
-  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
-  const { difficulty: _rated, ...rest } = after;
-  return [before, rest as T];
+ * items would show each of them new for one added label. So is the migration that cleared the retired level 「架构师做」
+ * (from that level to none), which touched a dozen items for one removed label. Changing a level that exists is news.
+ * Returns the pair with the rating left out of the side that has it; any other pair comes back as it is. */
+export function withoutRatingBookkeeping<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after) return [before, after];
+  if (before.difficulty === undefined && after.difficulty !== undefined) {
+    const { difficulty: _rated, ...rest } = after;
+    return [before, rest as T];
+  }
+  if (before.difficulty === RETIRED_LEVEL && after.difficulty === undefined) {
+    const { difficulty: _cleared, ...rest } = before;
+    return [rest as T, after];
+  }
+  return [before, after];
 }
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
@@ -1004,7 +1012,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // step waits on nothing, and an unpaused root needs it. While another item is the next step (a study, say), the
         // rating waits too, and what no such root needs (backlog work, what hangs under it, paused work) is not asked for.
         const nextStepReady = rows.some(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
-        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
