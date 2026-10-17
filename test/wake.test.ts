@@ -427,8 +427,8 @@ test("an hour with a push to the architect undelivered tells the owner once, a d
   assert.match(told[1]![1], /最早没送到的是 #3：/);
   // Only the architect's stream is watched for it; a session holding an item is watched by the liveness check.
   const other = new Wake({ now: () => clock });
-  const probeTold: number = told, probeOther: number = other;
-  other.onTell(notice => { const probeNotice: number = notice; told.push([notice.title, notice.message]); });
+  // `told` was narrowed to never[] by the deepEqual above, so the cast names its type again.
+  other.onTell(notice => { (told as Array<[string, string]>).push([notice.title, notice.message]); });
   other.agent("eng").push("item-done", { item: "a", project: "Whitefoot", title: "t", parent: "p" });
   clock += 10 * HOUR; other.checkReceipts();
   assert.equal(told.length, 2);
