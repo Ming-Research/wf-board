@@ -7,6 +7,7 @@ on:
 jobs:
   mutations:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -32,7 +33,7 @@ jobs:
             name="$1"; shift
             git checkout -q -- src test
             mutate "$@" || { echo "::error::$name: mutation did not apply"; failed=1; return; }
-            if node --test test/wake-agents.test.ts test/wake.test.ts > "/tmp/$name.log" 2>&1; then
+            if timeout 120 node --test --test-timeout=30000 test/wake-agents.test.ts test/wake.test.ts > "/tmp/$name.log" 2>&1; then
               echo "::error::$name: the tests still pass"; failed=1
             else
               echo "$name: caught"; grep -E "^✖|^ℹ (pass|fail)" "/tmp/$name.log" | head -6 || true
