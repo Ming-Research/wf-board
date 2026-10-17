@@ -2804,7 +2804,12 @@ successful check makes it `success`; a skipped or neutral check is no failure
 and no pass, since a gate that was skipped ran nothing. A commit with no check
 to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
 runs no pull request check for a pull request with a merge conflict, and a
-commit nobody has run yet looks the same.
+commit nobody has run yet looks the same. A commit status counts like a check
+(`success` passes, `failure` and `error` fail, anything else is pending). The
+full CI of a pull request reaches the board only this way: a run started by
+hand is not among the checks a pull request lists, so it writes its outcome as
+the status `full-ci`, pending until then (section 11, Fast checks while
+writing).
 
 **The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
 requests; a draft's checks are the engineer's. `pr-red`: the checks say
