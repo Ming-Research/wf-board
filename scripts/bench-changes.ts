@@ -13,6 +13,10 @@
 //
 // Checks (only for the tree being measured; a run against an older tree with --report-only prints and never fails):
 //   changes over the last 50 commits, any of the four branches: answers within 1 s, the heap grows by at most 100 MB
+//   the patrol read (changesReport, what `changes` answers by default) over the last 50 commits, the same limits; over about a
+//   day (2,400 commits) it is only reported. The size of the answer is on record: the `report-*` cases print the characters of the
+//   default form and of the form with detail, and the `changes-*` cases print the characters of the listing as it was the default
+//   (formatChanges with the cap of 40 documents), so run on the base commit they give the real "before" for the same board and range
 //   every case: the heap stays at or below half of the budget's line (the margin that lets a normal query pass the budget)
 //   diff with a time: within 1 s
 //
@@ -57,15 +61,13 @@ function board() {
   }
   for (const [n, id] of ids.entries()) if (!rows.get(id)!.length) rows.get(id)!.push({ id: "w", text: "work", state: ["doing", "done", "todo"][n % 3], ...(n % 3 === 0 ? { since: at } : n % 3 === 1 ? { doneAt: at } : {}) });
   const files = new Map<string, string>(), decisions: string[] = [];
+  const noteYaml = (k: number, over: Record<string, unknown> = {}) => yaml({ target: k % 2 === 0 ? `q:c${k % DECISIONS}` : `it:${ids[(k * 5) % ids.length]}`, kind: "comment", text: pad(4000), at, state: "done", sentAt: at, reply: "Handled", repliedAt: at, repliedBy: "Firn", rev: 1, ...over });
   for (let k = 0; k < DECISIONS; k++) {
     const key = `c${k}`, item = ids[(k * 7) % ids.length]!;
     decisions.push(key);
     files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, legacy: { background: pad(5200) }, options: [{ key: "A", text: "", detail: "Do it", recommended: true }, { key: "B", text: "", detail: "Do not" }], status: "ruled", choice: "A", ruling: "A", ruledAt: at, at, updated: at, rev: 1 }));
   }
-  for (let k = 0; k < NOTES; k++) {
-    const onCard = k % 2 === 0;
-    files.set(`notes/n${k}.yaml`, yaml({ target: onCard ? `q:${decisions[k % decisions.length]}` : `it:${ids[(k * 5) % ids.length]}`, kind: "comment", text: pad(4000), at, state: "done", sentAt: at, reply: "Handled", repliedAt: at, repliedBy: "Firn", rev: 1 }));
-  }
+  for (let k = 0; k < NOTES; k++) files.set(`notes/n${k}.yaml`, noteYaml(k));
   const commitTime = (k: number) => start + (k + 1) * 3 * MINUTE;
   const versions = new Map<string, number>();
   const item = (id: string, version: number): string => {
@@ -77,7 +79,11 @@ function board() {
   for (const id of ids) files.set(`items/${id}.yaml`, item(id, 0));
   files.set("board.yaml", yaml({ title: "Synthetic board", projects: projects.map(name => ({ name })) }));
   files.set("numbers.yaml", yaml({ next: ITEMS + DECISIONS + 1 }));
-  return { ids, roots, files, start, commitTime, write };
+  // What a patrol finds in a tail besides the appended logs: an item created with a long title (and so with flags), a note
+  // sent to an item, and a reply that changed on an old note.
+  const fresh = () => yaml({ num: ITEMS + DECISIONS + 1, title: "一个新建条目的标题，写得比二十个字长，像真实的条目那样 and long enough to be flagged", group: projects[0], head: pad(600), plan: [{ id: "accept", text: "passes", state: "todo", accept: true }], created: iso(start + (HISTORY + TAIL) * 3 * MINUTE), updated: iso(start + (HISTORY + TAIL) * 3 * MINUTE), rev: 1 });
+  const sentNote = () => yaml({ target: `it:${ids[3]}`, kind: "comment", text: pad(900), at: iso(start + (HISTORY + TAIL) * 3 * MINUTE), sentAt: iso(start + (HISTORY + TAIL) * 3 * MINUTE), state: "sent", rev: 1 });
+  return { ids, roots, files, start, commitTime, write, fresh, sentNote, repliedNote: () => noteYaml(2, { reply: "Handled again, with more", repliedAt: iso(start + (HISTORY + TAIL) * 3 * MINUTE), rev: 2 }) };
 }
 
 async function writeRepository(dir: string): Promise<void> {
@@ -88,9 +94,9 @@ async function writeRepository(dir: string): Promise<void> {
   const out = (text: string) => new Promise<void>(ok => { if (child.stdin.write(text)) ok(); else child.stdin.once("drain", () => ok()); });
   const blob = (text: string) => `data ${Buffer.byteLength(text)}\n${text}\n`;
   let mark = 0;
-  const commit = async (ref: string, from: number | undefined, at: number, author: string, message: string, puts: Array<[string, string]>, dels: string[] = []) => {
+  const commit = async (ref: string, from: number | undefined, at: number, author: string, message: string, puts: Array<[string, string]>, dels: string[] = [], session?: string) => {
     const seconds = Math.floor(at / 1000);
-    let text = `commit ${ref}\nmark :${++mark}\nauthor ${author} <bench@wf-board.invalid> ${seconds} +0000\ncommitter wf-board <wf-board@wf-board.invalid> ${seconds} +0000\n${blob(message)}`;
+    let text = `commit ${ref}\nmark :${++mark}\nauthor ${author} <bench@wf-board.invalid> ${seconds} +0000\ncommitter wf-board <wf-board@wf-board.invalid> ${seconds} +0000\n${blob(message + (session ? `\n\nSession: ${session}` : ""))}`;
     if (from) text += `from :${from}\n`;
     for (const [path, body] of puts) text += `M 100644 inline ${path}\n${blob(body)}`;
     for (const path of dels) text += `D ${path}\n`;
@@ -105,9 +111,12 @@ async function writeRepository(dir: string): Promise<void> {
     let from = base;
     for (let t = 0; t < TAIL; t++) {
       const at = data.commitTime(HISTORY + t), ref = `refs/heads/tail-${deletions}`;
-      if (t % 10 === 3) { const id = data.roots[t / 10 | 0]!; from = await commit(ref, from, at, "Architect", `append_log ${id}`, [[`items/${id}.yaml`, data.write(id)]]); }
-      else if (t % 5 === 1 && (t / 5 | 0) < deletions) { const note = `notes/n${t * 17 % NOTES}.yaml`; from = await commit(ref, from, at, "owner", `delete_note ${note}`, [], [note]); }
-      else { const id = data.ids[(t * 37 + 11) % data.ids.length]!; from = await commit(ref, from, at, "Whitefoot", `append_log ${id}`, [[`items/${id}.yaml`, data.write(id)]]); }
+      if (t % 10 === 3) { const id = data.roots[t / 10 | 0]!; from = await commit(ref, from, at, "Architect", `append_log ${id}`, [[`items/${id}.yaml`, data.write(id)]], [], "架构师"); }
+      else if (t % 5 === 1 && (t / 5 | 0) < deletions) { const note = `notes/n${t * 17 % NOTES}.yaml`; from = await commit(ref, from, at, "owner", `delete_note ${note}`, [], [note], "owner"); }
+      else if (t === 7) from = await commit(ref, from, at, "Architect", "create_item patrol-new", [["items/patrol-new.yaml", data.fresh()], ["numbers.yaml", yaml({ next: ITEMS + DECISIONS + 2 })]], [], "eng-new");
+      else if (t === 8) from = await commit(ref, from, at, "owner", "send_note note-new", [["notes/note-new.yaml", data.sentNote()]], [], "owner");
+      else if (t === 9) from = await commit(ref, from, at, "Whitefoot", "reply_note n2", [["notes/n2.yaml", data.repliedNote()]], [], "eng-1");
+      else { const id = data.ids[(t * 37 + 11) % data.ids.length]!; from = await commit(ref, from, at, "Whitefoot", `append_log ${id}`, [[`items/${id}.yaml`, data.write(id)]], [], "eng-1"); }
     }
   }
   child.stdin.end();
@@ -116,17 +125,26 @@ async function writeRepository(dir: string): Promise<void> {
   for (const deletions of DELETIONS) execFileSync("git", ["worktree", "add", "-q", join(dir, "..", `tail-${deletions}`), `tail-${deletions}`], { cwd: dir });
 }
 
-interface Case { name: string; branch: string; run(ctx: Context): Promise<unknown> }
-interface Context { store: any; q: any; history: any; git(...a: string[]): string }
+interface Case { name: string; branch: string; run(ctx: Context): Promise<unknown>; /** The characters an answer takes, in the forms a reader can ask for. */ size?(ctx: Context, answer: any): Promise<Record<string, number>> }
+interface Context { store: any; q: any; history: any; mcp: any; git(...a: string[]): string }
+/** The patrol read of the range since `since`, and the sizes of its answers: default, with detail, and the old document listing. */
+const reportCase = (name: string, branch: string, since: (git: Context["git"]) => string): Case => ({ name, branch,
+  run: ({ store, q, git }) => q.changesReport(store, store.snapshot(), since(git), {}, { detail: true }),
+  size: async ({ mcp }, report) => ({ defaultChars: mcp.formatReport(report, {}).length, detailChars: mcp.formatReport(report, { detail: true, limit: 100000 }).length }) });
+/** The old document listing as `changes` answered by default (the cap of 40 documents); on the base commit this is the real "before". */
+const listingSize = async ({ mcp }: Context, groups: unknown): Promise<Record<string, number>> => ({ defaultChars: mcp.formatChanges(groups, 40).length });
 
 /** The cases: a name, the branch it runs on, and the request it makes. */
 const CASES: Case[] = [
   ...DELETIONS.map(deletions => ({ name: `changes-50-delete-${deletions}`, branch: `tail-${deletions}`,
-    run: ({ store, q, git }: Context) => q.changes(store, store.snapshot(), git("rev-parse", `HEAD~${TAIL}`)) })),
+    run: ({ store, q, git }: Context) => q.changes(store, store.snapshot(), git("rev-parse", `HEAD~${TAIL}`)), size: listingSize })),
   // About a day of the live board's writes (it had 2,431 commits in the 24 hours before the study).
-  { name: "changes-2400", branch: "tail-0", run: ({ store, q, git }) => q.changes(store, store.snapshot(), git("rev-parse", `HEAD~2400`)) },
+  { name: "changes-2400", branch: "tail-0", run: ({ store, q, git }) => q.changes(store, store.snapshot(), git("rev-parse", `HEAD~2400`)), size: listingSize },
   // The same range as the last 50 commits, given as the time of the commit before them.
   { name: "changes-by-time", branch: "tail-10", run: ({ store, q, git }) => q.changes(store, store.snapshot(), git("log", "-1", "--format=%aI", `HEAD~${TAIL}`)) },
+  // The patrol read over the last 50 commits on each branch (0, 1, 5, 10 notes deleted among them), and over about a day.
+  ...DELETIONS.map(deletions => reportCase(`report-50-delete-${deletions}`, `tail-${deletions}`, git => git("rev-parse", `HEAD~${TAIL}`))),
+  reportCase("report-2400", "tail-0", git => git("rev-parse", "HEAD~2400")),
   // The page's unread list from a cursor 500 commits back, and from two days back (about 3,100 commits).
   { name: "unread-500", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~500"), {}, store.snapshot().head) },
   { name: "unread-3100", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~3100"), {}, store.snapshot().head) },
@@ -150,7 +168,7 @@ async function measure<T>(run: () => Promise<T>): Promise<{ ms: number; startMB:
 
 async function runCase(name: string, dir: string, src: string): Promise<Record<string, unknown>> {
   const load = (file: string) => import(pathToFileURL(join(src, file)).href);
-  const { Store } = await load("store.ts"), q = await load("query.ts"), history = await load("history.ts");
+  const { Store } = await load("store.ts"), q = await load("query.ts"), history = await load("history.ts"), mcp = await load("mcp.ts");
   // A tree from before the budgets has no budget module, and its requests run under none.
   const budgetModule = await load("budget.ts").catch(() => undefined);
   const opened = await measure(() => Store.open(dir));
@@ -158,13 +176,15 @@ async function runCase(name: string, dir: string, src: string): Promise<Record<s
   const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
   const found = CASES.find(c => c.name === name)!;
   const budget = budgetModule ? new budgetModule.Budget(name, budgetModule.REQUEST_LIMITS) : undefined;
-  const request = () => found.run({ store, q, history, git });
+  const ctx: Context = { store, q, history, mcp, git };
+  const request = () => found.run(ctx);
   const m = await measure(() => budget ? budgetModule.withBudget(budget, request) : request());
   const limit = v8.getHeapStatistics().heap_size_limit, line = limit * (budgetModule ? budgetModule.REQUEST_LIMITS.heapShare : 0.75);
   const documents = Array.isArray(m.value) && m.value.every((g: { documents?: unknown[] }) => Array.isArray(g.documents)) ? m.value.reduce((n: number, g: { documents: unknown[] }) => n + g.documents.length, 0) : Array.isArray(m.value) ? m.value.length : undefined;
   const usage = budget?.usage();
+  const sizes = found.size && m.value !== undefined ? await found.size(ctx, m.value) : undefined;
   return { case: name, branch: found.branch, openMs: opened.ms, openHeapMB: mb(heap()), ms: m.ms, growthMB: m.growthMB, peakUsedMB: m.peakUsedMB, lineMB: mb(line), peakOfLine: +(m.peakUsedMB * 1048576 / line).toFixed(3),
-    ...(usage ? { budgetReadMB: mb(usage.bytes), budgetAllowedMB: mb(usage.allowed), boards: usage.boards } : {}), ...(documents === undefined ? {} : { results: documents }), ...(m.error ? { error: m.error } : {}) };
+    ...(usage ? { budgetReadMB: mb(usage.bytes), budgetAllowedMB: mb(usage.allowed), boards: usage.boards } : {}), ...(documents === undefined ? {} : { results: documents }), ...(sizes ?? {}), ...(m.error ? { error: m.error } : {}) };
 }
 
 if (args.case) {
@@ -209,7 +229,7 @@ const problems: string[] = [];
 for (const r of results) {
   const name = String(r.case);
   if (r.failed || r.error) { problems.push(`${name}: ${r.failed ? `the process ended (exit ${r.exitCode}, signal ${r.signal})` : r.error}`); continue; }
-  if (name.startsWith("changes-50-delete-") && (Number(r.ms) > 1000 || Number(r.growthMB) > 100)) problems.push(`${name}: ${r.ms} ms and ${r.growthMB} MB of heap growth, over the 1000 ms and 100 MB it may take`);
+  if ((name.startsWith("changes-50-delete-") || name.startsWith("report-50-delete-")) && (Number(r.ms) > 1000 || Number(r.growthMB) > 100)) problems.push(`${name}: ${r.ms} ms and ${r.growthMB} MB of heap growth, over the 1000 ms and 100 MB it may take`);
   if (name === "diff-by-time" && Number(r.ms) > 1000) problems.push(`${name}: ${r.ms} ms, over the 1000 ms it may take`);
   if (Number(r.peakOfLine) > 0.5) problems.push(`${name}: the heap reached ${r.peakUsedMB} MB, ${(Number(r.peakOfLine) * 100).toFixed(0)}% of the ${r.lineMB} MB line a budget stops a request at; a normal query must stay at or below half of it`);
 }

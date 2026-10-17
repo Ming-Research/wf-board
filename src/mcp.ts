@@ -83,9 +83,38 @@ export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>, lim
     if (shown >= limit) break;
     const docs = g.documents.slice(0, limit - shown);
     shown += docs.length;
-    out.push(`${g.areaId} · ${g.area}`, ...docs.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.author}: ${oneLine(c.message)}`).join("\n")}`));
+    out.push(`${g.areaId} · ${g.area}`, ...docs.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.session ?? c.author}: ${oneLine(c.message)}`).join("\n")}`));
   }
   if (total > shown) out.push(`… ${total - shown} more changed documents; narrow with since, filters.group or filters.under, or raise limit.`);
+  return out.join("\n");
+}
+/** The patrol read, as `changes` answers it by default: the rows to handle (new flags, new items, notes and cards others wrote),
+ * each at most `limit` rows with the rest counted, then the other changes as counts; with `detail` the documents behind those
+ * counts follow. Every thing appears once (docs/design.md, section 6, Finding things). */
+export function formatReport(report: q.ChangesReport, o: { limit?: number; detail?: boolean } = {}): string {
+  const limit = o.limit ?? 30, { total, dropped } = report.commits;
+  const since = /^[0-9a-f]{40}$/.test(report.since) ? report.since.slice(0, 12) : report.since;
+  const { items, cards, notes, bySession } = report.others, rows = report.flags.length + report.created.length + report.replies.length;
+  if (!total && !rows && !items && !cards && !notes) return `自 ${since} 起没有改动。`;
+  const out = [`自 ${since} 起 ${total} 个提交${report.except.length ? `，去掉 ${report.except.join("、")} 的 ${dropped} 个` : ""}${report.unreadable ? `；${report.unreadable} 个旧版本读不出，按没有算` : ""}${rows ? "" : "，没有要处理的行"}`];
+  const group = <T>(title: string, list: readonly T[], line: (x: T) => string) => {
+    if (!list.length) return;
+    out.push(title, ...list.slice(0, limit).map(line));
+    if (list.length > limit) out.push(`  … 还有 ${list.length - limit} 行；缩小 filters.group 或 filters.under，或加大 limit。`);
+  };
+  const flagCount = Object.values(report.flagCounts).reduce((n, c) => n + c, 0);
+  group(`新标记 ${flagCount} 条（${Object.entries(report.flagCounts).map(([kind, n]) => `${kind} ×${n}`).join("，")}）`, report.flags,
+    x => `  ${x.item} · ${x.project} · ${x.flags.join("、")} · 改的人：${x.by.length ? x.by.join("、") : "范围内没人改它"}`);
+  group(`新建条目 ${report.created.length} 个`, report.created,
+    x => `  ${x.id} · ${x.project} · ${oneLine(x.title)} · 建的人：${x.by}${x.flags.length ? ` · 标记：${x.flags.join("、")}` : ""}`);
+  group(`留言和卡 ${report.replies.length} 个`, report.replies,
+    x => `  ${x.kind === "note" ? "留言" : "卡"} ${x.id} · ${x.item} · ${x.summary} · ${x.by.join("、")}`);
+  const kinds = [["条目", items], ["卡", cards], ["留言", notes]].filter(([, n]) => n).map(([name, n]) => `${name} ${n} 个`);
+  if (kinds.length) {
+    const sessions = Object.entries(bySession).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, n]) => `${name} ${n}`).join("，");
+    out.push(`其它改动：${kinds.join("、")}（${sessions}）${o.detail ? "：" : "。逐个看加 detail。"}`);
+    if (o.detail) out.push(formatChanges(report.others.groups, limit));
+  }
   return out.join("\n");
 }
 function formatGraph(graph: ReturnType<typeof q.graph>): string {
@@ -213,9 +242,10 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("prs", "Which board documents concern this PR? Returns qualified repository references separately from bare numbers whose repository is unknown.", {
     repo: text("Repository name under Ming-Research, such as Whitefoot."), number: z.number().int().positive().describe("Pull request number in that repository."),
   }, a => { const x = read(), refs = q.prs(x.snapshot, x.rules, a.repo, a.number); return [`${a.repo}#${a.number}:`, ...refs.qualified.map(it => `  ${it.kind}: ${formatRow(it)}`), "repository unknown:", ...refs.unknown.map(it => `  ${it.kind}: ${formatRow(it)}`)].join("\n"); });
-  register("changes", "What changed while I was away? Summarizes changed documents by area with net field differences and their commits, since an ISO time or commit.", {
-    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(), limit: limit(40),
-  }, async a => formatChanges(await q.changes(store, read().snapshot, a.since, a.filters), a.limit));
+  register("changes", "What needs handling since I last looked? Answers rows with counts: flags that newly appeared (with the sessions that wrote the item), items created, notes and cards others wrote; the other changes only as counts. since is an ISO time or commit. except drops the commits of the named sessions (your own) from the counts, the new items, and the notes and cards, never from the flags. detail also lists the documents behind the counts.", {
+    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(), limit: limit(30),
+    except: z.array(z.string().trim().min(1).max(80)).max(20).describe("Session names whose commits do not count, such as your own.").optional(), detail: z.boolean().describe("Also list the documents behind the counts of the other changes.").optional(),
+  }, async a => { const x = read(); return formatReport(await q.changesReport(store, x.snapshot, a.since, a.filters, { except: a.except, detail: a.detail, rules: x.rules }), { limit: a.limit, detail: a.detail }); });
   const kind = z.enum(["item", "card", "note"]).default("item").describe("Document kind; card means a decision card; default item.");
   register("history", "How did this document change? Lists its commits newest first; use a commit in diff to inspect the exact text change.", {
     kind, id: text("Exact document id; notes use their original note id."), limit: limit(20),
