@@ -9,7 +9,7 @@ import * as q from "../src/query.ts";
 const at = "2026-10-11T01:02:03Z";
 const doc = (title: string, fields: object = {}) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
 const owns = (item: string) => ({ id: item, item, own: true, after: [] });
-const card = (item: string, question: string) => ({ item, question, background: "Evidence", options: [{ key: "A", text: "A" }], status: "open", at, updated: at });
+const card = (item: string, question: string) => ({ item, question, options: [{ key: "A", text: "A", detail: "Evidence" }], status: "open", at, updated: at });
 const note = (target: string, text: string) => ({ target, kind: "comment", text, at, sentAt: at, state: "sent" });
 const put = (kind: "item" | "decision" | "note", id: string, document: object) => ({ kind, id, expectRev: null, doc: document });
 const remove = (kind: "item" | "decision" | "note", id: string) => ({ kind, id, expectRev: 1 });

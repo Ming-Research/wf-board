@@ -265,7 +265,7 @@ test("a range with nothing to show says so, and one with only commits says there
 
 test("a card or note an excluded session wrote counts as new only to those who did not write it; what others did to it is a change", async t => {
   const { store } = await board(t);
-  const since = store.snapshot().head, card = (question: string, status: string) => ({ item: "a", question, background: "Evidence", options: [{ key: "A", text: "A" }], status, at, updated: at });
+  const since = store.snapshot().head, card = (question: string, status: string) => ({ item: "a", question, options: [{ key: "A", text: "A", detail: "Evidence" }], status, at, updated: at });
   const note = (text: string, extra: object = {}) => ({ target: "it:a", kind: "comment", text, at, sentAt: at, state: "sent", ...extra });
   const putDoc = (session: string, kind: "decision" | "note", id: string, doc: object) => store.commit({ author, session, message: `write ${id}`, puts: [{ kind, id, expectRev: store.snapshot()[kind === "decision" ? "decisions" : "notes"][id]?.rev ?? null, doc }] });
   await putDoc("PM", "decision", "pm-card", card("PM asks", "open"));
@@ -274,7 +274,7 @@ test("a card or note an excluded session wrote counts as new only to those who d
   await putDoc("PM", "note", "pm-note", note("From PM"));
   await putDoc("eng-1", "note", "pm-note", note("From PM", { reply: "Answered", repliedAt: at, repliedBy: "eng-1" }));
   await putDoc("PM", "decision", "pm-edited", card("PM asks a third", "open"));
-  await putDoc("eng-1", "decision", "pm-edited", { ...card("PM asks a third", "open"), background: "More evidence" });
+  await putDoc("eng-1", "decision", "pm-edited", { ...card("PM asks a third", "open"), confidence: { reason: "More evidence" } });
   await putDoc("eng-2", "decision", "eng-card", card("Engineer asks", "open"));
   const kept = await report(store, since, {}, { except: ["PM"] });
   assert.deepEqual(kept.replies.map(x => [x.kind, x.id, x.by, x.summary]).sort(), [["card", "eng-card", ["eng-2"], "new card"], ["card", "pm-ruled", ["owner"], "status open→ruled"], ["note", "pm-note", ["eng-1"], "new reply"]]);

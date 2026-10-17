@@ -184,7 +184,7 @@ test("a sent note is pushed with a number whatever project its item is in, a dra
 test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);
-  await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }], blocks: "合并停着" });
+  await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
   await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
@@ -293,9 +293,9 @@ test("the timed wake lists what changed since the last one without the architect
   const frame = star.events()[0]!;
   assert.deepEqual({ n: frame.n, at: frame.at, event: frame.event, since: frame.since }, { n: 1, at: iso(clock), event: "timed", since: iso(T0) });
   const names = (list: unknown) => (list as Array<{ item: string }>).map(e => e.item).sort();
-  assert.deepEqual(names(frame.changed), ["a", "b", "other"], "a is listed for the owner's comment, b and other for the engineer; the architect's own writes are not why");
+  assert.deepEqual(names(frame.changed), ["b", "other"], "b is listed for the owner's comment on its card and for the engineer, other for the engineer; the architect's own writes are not why");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
-  assert.deepEqual(by, { a: ["owner"], b: ["工程师"], other: ["工程师"] });
+  assert.deepEqual(by, { b: ["owner", "工程师"], other: ["工程师"] });
   assert.deepEqual(names(frame.working), ["work"], "the item with a step being done, outside the Architect project");
   assert.deepEqual(frame.working, [{ item: "work", project: "Whitefoot", title: "在做的条目", status: "wip", flags: [] }]);
   assert.deepEqual(frame.architect, [{ item: "arch", project: "Architect", title: "架构师的条目", status: "todo", flags: [] }]);
@@ -392,7 +392,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   const targets: unknown[] = [];
   wake.onTell(notice => targets.push(notice.target));
   const { op } = await server(t, { wake });
-  const card = { author, key: "gate", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是" }] };
+  const card = { author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] };
   await op.writeCard(card);
   assert.deepEqual(told, [], "a card without blocks tells no one");
   await op.writeCard({ ...card, key: "hard", blocks: "#398 合并停着" });
@@ -405,7 +405,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   assert.equal(told[1]![1], "合并吗？（挡住：现在停了）");
   await op.writeCard({ ...card, key: "gate", rev: 2, blocks: "停的是另一件事" });
   assert.equal(told.length, 3, "changed blocks tell again");
-  await op.ruleCard({ author, key: "hard", choice: "A", ruling: "好" });
+  await op.ruleCard({ author, key: "hard", choice: "A" });
   assert.equal(told.length, 3, "ruling a card says nothing");
 });
 
