@@ -1,20 +1,53 @@
 name: ci
 on:
-  # Each merge to the main line is checked once, by its push run.
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
-concurrency:
-  # A main-line run has a group of its own (its commit), so none is replaced.
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  # A newer push to a pull request cancels the run still going.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    inputs:
+      fail:
+        description: probe a failing run
+        type: boolean
+        default: false
+permissions:
+  contents: read
 jobs:
+  # probe: a pull request push only marks its head commit "full CI not run yet".
+  mark:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          have=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" --jq '[.[]|select(.context=="full-ci")]|length')
+          if [ "$have" = 0 ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=full-ci -f description="not run on this commit; dispatch ci"
+          fi
   test:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - run: echo probe test on ${{ github.sha }} event ${{ github.event_name }}
+      - run: ${{ inputs.fail && 'exit 1' || 'true' }}
   e2e:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - run: echo probe e2e on ${{ github.sha }} event ${{ github.event_name }}
+  result:
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ needs.test.result == 'success' && needs.e2e.result == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$STATE" -f context=full-ci \
+            -f description="full CI by hand" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
