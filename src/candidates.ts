@@ -4,7 +4,7 @@
 
 import { openDispatches, holderOf } from "./dispatch.ts";
 import type { Difficulty, Dispatch, Priority, Snapshot } from "./model.ts";
-import { isReviewStep } from "./rules.ts";
+import { isReviewStep, waitsOnRun } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
 /** The two pools of engineers working at the same time, and the most each holds (set by the owner). */
@@ -59,17 +59,16 @@ function heldElsewhere(s: Snapshot, r: Rules, id: string, agent: string, seen = 
 
 /**
  * Whether the engineer holding `id` is waiting on something the board shows, so its slot is free for another. Waiting: the
- * item is blocked (it waits on another item, a card or the owner), paused or finished; every step it has in progress writes
- * `waits` (what the rules say is for a wait outside the board: CI, a 14900K run) or is the review step; or it has no
- * step in progress and a sub-item on its way is being worked by another session. A fresh engineer, which has marked
- * no step yet, is working.
+ * item is blocked (it waits on another item, a card or the owner), paused or finished; every step it has in progress is the
+ * review step or waits on a 14900K run (a wait for CI leaves it working); or it has no step in progress and a sub-item on
+ * its way is being worked by another session. A fresh engineer, which has marked no step yet, is working.
  */
 function waiting(s: Snapshot, r: Rules, id: string, agent: string): boolean {
   const status = r.statusOf(id);
   if (status !== "wip" && status !== "todo" && status !== "idle") return true;
   const rows = r.planRows(id);
   const doing = rows.flatMap(entry => "text" in entry.row && entry.row.state === "doing" ? [entry.row] : []);
-  if (doing.length) return doing.every(step => step.waits !== undefined || isReviewStep(step));
+  if (doing.length) return doing.every(step => isReviewStep(step) || waitsOnRun(step));
   return rows.some(entry => entry.ready && entry.state === "progress" && "item" in entry.row && heldElsewhere(s, r, entry.row.item, agent));
 }
 

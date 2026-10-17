@@ -113,8 +113,10 @@ test("the pools take items by level and count the engineers that are working, no
   assert.deepEqual(ids(b.pool("2+").listed), ["mid", "high"], "levels 3 and 5 are the second");
   // Engineers of level 3. working: a step in progress that waits on nothing.
   await b.child("w1", "r", { difficulty: 3, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("w1", 3);
-  // waiting on CI: the step in progress writes waits.
-  await b.child("w2", "r", { difficulty: 3, plan: [{ id: "ci", text: "等 CI", state: "doing", waits: "CI" }] }); await b.engineer("w2", 3);
+  // waiting on CI: the step in progress writes waits, and the engineer is still working.
+  await b.child("w2", "r", { difficulty: 3, plan: [{ id: "ci", text: "等 CI", state: "doing", waits: "wf-board#72 的 CI" }] }); await b.engineer("w2", 3);
+  // waiting on a 14900K run: the machine is named in waits, and the engineer is idle.
+  await b.child("w8", "r", { difficulty: 3, plan: [{ id: "run", text: "等跑完", state: "doing", waits: "14900K 排队中" }] }); await b.engineer("w8", 3);
   // waiting on a review: the review step is in progress.
   await b.child("w3", "r", { difficulty: 3, plan: [{ id: REVIEW_STEP, text: "审查（2 级）", state: "doing" }] }); await b.engineer("w3", 3);
   // blocked: its only open row is an item that is paused.
@@ -129,11 +131,11 @@ test("the pools take items by level and count the engineers that are working, no
   await b.engineer("w5", 3); await b.engineer("c5", 3);
   // fresh: it has marked no step yet, so it counts.
   await b.child("w6", "r", { difficulty: 3 }); await b.engineer("w6", 3);
-  // Level 1: one working, one waiting.
+  // Level 1: one working, one waiting for a run.
   await b.child("l1", "r", { difficulty: 1, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("l1", 1);
-  await b.child("l2", "r", { difficulty: 1, plan: [{ id: "ci", text: "等 CI", state: "doing", waits: "CI" }] }); await b.engineer("l2", 1);
+  await b.child("l2", "r", { difficulty: 1, plan: [{ id: "run", text: "等跑完", state: "doing", waits: "14900K 上的测量" }] }); await b.engineer("l2", 1);
   const two = b.pool("2+"), one = b.pool("1");
-  assert.deepEqual([two.limit, two.working, two.free], [6, 3, 3], "w1, c5 and w6 work; w2 w3 w4 w5 w7 wait");
+  assert.deepEqual([two.limit, two.working, two.free], [6, 4, 2], "w1, w2 (CI), c5 and w6 work; w3 w4 w5 w7 w8 wait");
   assert.deepEqual([one.limit, one.working, one.free], [10, 1, 9]);
   assert.deepEqual(ids(two.listed), ["mid", "high"], "a held item is not a candidate");
 });

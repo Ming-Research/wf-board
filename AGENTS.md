@@ -48,6 +48,9 @@ matches what the artifact board offered.
   index of the last two items written is advanced, and the rows (who is listed,
   the state word, the level) derived from it, the steps in progress and the
   dispatch records. Imported by the server and bundled into the page.
+- `src/candidates.ts`: the items an engineer could be started on and the two pools of engineer slots, read from the whole
+  board (the `candidates` tool, and what the push that says work can be handed out reads): the board lists, the architect
+  chooses (design section 6, The candidates read).
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.

@@ -400,6 +400,9 @@ export interface Progress {
 export const REVIEW_STEP = "review";
 /** Whether a plan row is the review step. The one place that knows the convention. */
 export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
+/** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
+ * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
+export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
