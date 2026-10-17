@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Note, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, Message, Note, Numbers, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
@@ -26,7 +26,7 @@ import type { StartupStep } from "./log.ts";
 import { Budget, BudgetError, STARTUP_LIMITS, REQUEST_LIMITS, allowRange, currentBudget, withBudget } from "./budget.ts";
 import { ReadCache } from "./read-cache.ts";
 
-export type DocKind = "item" | "decision" | "note" | "glossary";
+export type DocKind = "item" | "decision" | "note" | "glossary" | "message";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
 /** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
@@ -39,11 +39,13 @@ export interface CommitInfo { commit: string; parents: string[]; at: string; aut
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
-type Doc = Item | Decision | Note | Glossary;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary };
-const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries" } as const;
+type Doc = Item | Decision | Note | Glossary | Message;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary, message: Message };
+const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries", message: "messages" } as const;
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
-const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId, message: Key };
+/** The documents of one kind in a snapshot; a snapshot built outside the store may have no messages. */
+const docsOf = (s: Snapshot, kind: DocKind): Record<string, Doc> => (s[collections[kind]] ?? {}) as Record<string, Doc>;
 const run = promisify(execFile);
 /** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
  * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
@@ -220,7 +222,7 @@ function frozen<T>(value: T): T {
  * they enter it, and the snapshot and its collections are frozen here. A write
  * builds the next snapshot by copying only the collections it changes. */
 function sealed(state: Snapshot): Snapshot {
-  for (const collection of [state.items, state.decisions, state.notes, state.glossaries]) Object.freeze(collection);
+  for (const collection of [state.items, state.decisions, state.notes, state.glossaries, state.messages ?? {}]) Object.freeze(collection);
   frozen(state.board); frozen(state.owner);
   if (state.activity) frozen(state.activity);
   return Object.freeze(state);
@@ -377,7 +379,7 @@ export class Store {
       if (entries.length && !entries.includes(".git")) throw new Error(`${dir} is neither empty nor a git repository; refusing to start a board there`);
       const board = validated(Board, opts.board, "board.yaml");
       await mkdir(dir, { recursive: true });
-      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
+      const initial: Snapshot = { board, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
       const store = new Store(dir, initial);
       if (!entries.includes(".git")) await store.git(["init", "-b", "main"]);
       for (const sub of ["items", "decisions", "notes", "state"]) mkdirSync(join(dir, sub), { recursive: true });
@@ -399,8 +401,8 @@ export class Store {
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> = { items: {}, decisions: {}, notes: {}, glossaries: {} };
-    for (const kind of ["item", "decision", "note", "glossary"] as const) {
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> & { messages: Record<string, Message> } = { items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {} };
+    for (const kind of ["item", "decision", "note", "glossary", "message"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -447,7 +449,7 @@ export class Store {
     if (opts.cacheDelayMs !== undefined) store.cacheDelayMs = opts.cacheDelayMs;
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
-    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries"]);
+    const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries", "messages"]);
     if (dirty.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.trim()}`);
     store.state = sealed({ ...store.state, head: (await store.git(["rev-parse", "HEAD"])).trim() });
     // Owner state can legitimately be newer than HEAD after a daemon restart.
@@ -829,8 +831,8 @@ export class Store {
     const next: Snapshot = { ...this.state };
     const copied = new Set<DocKind>();
     const collection = (kind: DocKind): Record<string, Doc> => {
-      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...this.state[collections[kind]] }; }
-      return next[collections[kind]] as Record<string, Doc>;
+      if (!copied.has(kind)) { copied.add(kind); (next as unknown as Record<string, unknown>)[collections[kind]] = { ...docsOf(this.state, kind) }; }
+      return docsOf(next, kind);
     };
     // Lower-cased ids per collection, built on first use: the letter-case alias check without a scan per put.
     const lowered = new Map<DocKind, Map<string, string[]>>();
@@ -838,7 +840,7 @@ export class Store {
       let byLower = lowered.get(kind);
       if (!byLower) {
         byLower = new Map();
-        for (const id of Object.keys(next[collections[kind]])) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
+        for (const id of Object.keys(docsOf(next, kind))) { const key = id.toLowerCase(), list = byLower.get(key); if (list) list.push(id); else byLower.set(key, [id]); }
         lowered.set(kind, byLower);
       }
       return byLower;
@@ -856,7 +858,7 @@ export class Store {
       const path = docPath(op.kind, op.id);
       if (seen.has(path)) throw new ValidationError([{ path, issues: "Document appears more than once in transaction" }]);
       seen.add(path);
-      const records = this.state[collections[op.kind]] as Record<string, Doc>;
+      const records = docsOf(this.state, op.kind);
       const current = Object.hasOwn(records, op.id) ? records[op.id]! : null;
       if ((current?.rev ?? null) !== op.expectRev) throw new ConflictError(op.kind, op.id, op.expectRev, current);
     }
@@ -864,7 +866,7 @@ export class Store {
     let nextNum = this.nextNum;
     for (const put of txn.puts ?? []) {
       const path = docPath(put.kind, put.id);
-      const records = next[collections[put.kind]] as Record<string, Doc>;
+      const records = docsOf(next, put.kind);
       const before = Object.hasOwn(records, put.id) ? records[put.id]! : null;
       // Check before any filesystem mutation, including earlier puts in this
       // transaction: these names alias on the owner's case-insensitive volume.
@@ -971,7 +973,8 @@ export class Store {
     } finally {
       this.writing = false;
     }
-    if (changed.some(c => c.kind !== "owner")) {
+    // A message changes no item and is no work on the board: like owner state, it starts no active time (docs/design.md, Messages).
+    if (changed.some(c => c.kind !== "owner" && c.kind !== "message")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
       const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
@@ -1195,7 +1198,7 @@ export class Store {
     docPath(kind, id);
     const raw = await this.show(kind, id, commit);
     if (kind !== "item" || raw === null || typeof raw === "object" && "plan" in raw) return raw;
-    return (await this.comparisonSnapshot(commit))[collections[kind]][id] ?? null;
+    return docsOf(await this.comparisonSnapshot(commit), kind)[id] ?? null;
   }
 
   /** The full commit id of `ref` when it is `at` or an ancestor of it; null when either ref is unknown or ancestry fails. */
@@ -1284,7 +1287,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   try { loaded=parsePlanData(raw,""); }
   catch(error){if(error instanceof ValidationError)invalid.push(...error.invalid);else throw error;}
   if(invalid.length||!loaded)throw new ValidationError(invalid);
-  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries"],{cwd:dir});
+  const dirty=await run("git",["status","--porcelain","--","board.yaml",numbersPath,"items","decisions","notes","glossaries","messages"],{cwd:dir});
   if(dirty.stdout.trim())throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
