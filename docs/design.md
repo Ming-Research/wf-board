@@ -3135,7 +3135,9 @@ board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comm
 press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
 (board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
 press that lands on another item draws at most twice, builds the board's rules no
-time and counts the filters no time, read from the page's performance marks. Time:
+time and counts the filters no time, read from the page's performance marks (a draw
+made only of other items' own rows, which a late baseline asks for one row at a time,
+is not one of the two). Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
 quiet and with sessions writing three times a second. The time layer depends on

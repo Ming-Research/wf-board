@@ -89,11 +89,15 @@ function startWriters(board: BoardServer, perSecond: number) {
   return { stop: async () => { stopped = true; await loop; return count; } };
 }
 
+/** The draws of a landing that repaint what it landed on. A draw made of other items' own rows alone is not one of them: those rows
+ * were drawn with the landing's tree and ask for their changes to be marked when their baselines arrive, a row at a time. */
+const landingDraws = (l: Landing) => l.scopes.filter(scope => !scope.split(",").every(key => key.startsWith("item:") && key !== "item:" + l.item));
 /** Violations of the counts. A press that lands draws at least once, or the page marks nothing and the check proves nothing. */
 function checkCounts(label: string, list: Landing[]): string[] {
   const v: string[] = [];
   for (const l of list) {
-    if (l.draws < 1 || l.draws > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${l.draws} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
+    const mine = landingDraws(l).length;
+    if (mine < 1 || mine > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${mine} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
     if (l.rules !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} built the board's rules ${l.rules} times, not 0`);
     if (l.filters !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} counted the filters ${l.filters} times, not 0`);
   }
@@ -121,7 +125,7 @@ const FILTERS_COUNTED_EACH_DRAW: Revert[] = [
   { file: "web/app.ts", edit: "the filter counts are made again at each draw", find: "  function invalidateView() { memo = {}; }", replace: "  function invalidateView() { memo = {}; dataMemo = {}; }" },
 ];
 const SLOW_DRAW: Revert[] = [
-  { file: "web/app.ts", edit: "a draw takes 150 ms more", find: '    countEvent("board:render");\n', replace: '    countEvent("board:render");\n    for (const began = performance.now(); performance.now() - began < 150;) {}\n' },
+  { file: "web/app.ts", edit: "a draw takes 150 ms more", find: '    countEvent("board:render", [...scope].join(","));\n', replace: '    countEvent("board:render", [...scope].join(","));\n    for (const began = performance.now(); performance.now() - began < 150;) {}\n' },
 ];
 const READ_FETCHES_THE_BOARD: Revert[] = [
   { file: "web/app.ts", edit: "after a read the page fetches the board again", find: "    try { await refreshUnread(active,signal); }\n", replace: "    try { await loadSnapshot(active,signal); if (active()) await refreshUnread(active,signal); }\n" },
@@ -143,7 +147,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const list = await landings(bp, cdp, LANDINGS);
     await bp.context.close();
     assert.equal(list.length, LANDINGS, "n reached " + LANDINGS + " other items");
-    log(`press-n counts: draws per landing ${[...new Set(list.map(l => l.draws))].join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
+    log(`press-n counts: draws of the landing ${[...new Set(list.map(l => landingDraws(l).length))].join("/")} (with the late rows of other items: ${[...new Set(list.map(l => l.draws))].join("/")}), rules builds ${list.reduce((a, l) => a + l.rules, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
     // Both layers are run before either is asserted, so a failure of one still shows the other's numbers.
     assert.deepEqual([...checkCounts("quiet", list), ...checkTime("quiet", list, log)], []);
   });
@@ -177,7 +181,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const list = await landings(bp, cdp, WITNESS_LANDINGS);
     await bp.context.close();
     const violations = checkCounts("all three out", list);
-    log(`press-n all three out: draws per landing ${[...new Set(list.map(l => l.draws))].join("/")}`);
+    log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => landingDraws(l).length))].join("/")}`);
     checkTime("all three out", list, log);
     for (const family of ["drew", "built the board's rules", "counted the filters"]) assert.ok(violations.some(v => v.includes(family)), "the counts report: " + family);
   });

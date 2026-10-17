@@ -241,14 +241,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
   function dataCached<T>(name: string, make: () => T): T { return name in dataMemo ? dataMemo[name] as T : (dataMemo[name] = make()) as T; }
-  function index() {
-    return cached("index", () => {
+  // What the views look items, their owned items and cards up by: from the data alone.
+  function dataIndex() {
+    return dataCached("index", () => {
       const byId = new Map(state.items.map(i => [i.id, i]));
       const children = new Map<string, ViewItem[]>();
       for (const id of ["", ...byId.keys()]) children.set(id, (id ? derived.children(id) : derived.areas()).map(k => byId.get(k)!).filter(Boolean));
+      return { byId, children, decById: new Map(state.decisions.map(d => [d.id, d])) };
+    });
+  }
+  function index() {
+    return cached("index", () => {
+      // A draft being sent shows as sent, which is the view's.
       const notesBy = new Map<string, ViewNote[]>();
       state.notes.forEach(n => { const list = notesBy.get(n.target) || []; list.push(n.state === "draft" && sendPending(n) ? {...n,state:"sent"} : n); notesBy.set(n.target, list); });
-      return { byId, children, notesBy, decById: new Map(state.decisions.map(d => [d.id, d])) };
+      return { ...dataIndex(), notesBy };
     });
   }
   function up(it: ViewItem) { return derived.parentOf(it.id) || ""; }
@@ -262,7 +269,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
   function openWorkAncestors() {
-    return cached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
+    return dataCached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
   }
   // Closed owners remain a path to open work, including through other closed owners. A done or cancelled item also
   // shows, dimmed, while it or anything under it holds content the owner has not read (owner, 2026-10-14), so n and the
@@ -276,14 +283,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
-  function sendingChoice(id:string) { return sendingDrafts.has(draftKey("q:"+id,"choice")) || state.notes.some(n => n.target === "q:"+id && n.kind === "choice" && sentNotes.has(n.id)); }
+  function sendingChoice(id:string) { return sendingDrafts.has(draftKey("q:"+id,"choice")) || notesOf("q:"+id).some(n => n.kind === "choice" && sentNotes.has(n.id)); }
   function waitsQ(d: ViewDecision) { return !sendingChoice(d.id) && derived.cardWaiting(d.id); }
   const ended = (it: ViewItem) => /^(done|cancelled)$/.test(statusOf(it) ?? "");
   function ancestors(it: ViewItem) { return derived.ancestors(it.id).map(k => index().byId.get(k)!); }
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
   function groupOf(it: ViewItem) { return derived.groupOf(it.id); }
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
-  function waitedBy() { return cached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
+  function waitedBy() { return dataCached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
   function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).flatMap(e => {
     const id = e.kind === "item" ? e.id : snapshot.decisions[e.id]?.item;
@@ -445,7 +452,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
   function tops() { return derived.areas(id => passes(index().byId.get(id)!)).map(id => index().byId.get(id)!); }
-  function boardOrder() { return cached("boardOrder", boardOrderNow); }
+  function boardOrder() { return dataCached("boardOrder", boardOrderNow); }
   function boardOrderNow() {
     const out: ViewItem[] = [];
     const walk = (list: ViewItem[]) => list.forEach(i => { out.push(i); walk(kids(i.id,true)); });
@@ -2036,6 +2043,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
     return null;
   }
+  // The baseline is a document; status and priority are derived. Restore that document and use the same current reference
+  // targets for comparison. The derivation walks the whole board, and the tree row and the detail both ask, so it is kept
+  // for as long as the data and the baseline stay.
+  function baselineDerived(id: string, before: Item) {
+    const kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined; priority: string } | undefined;
+    if (kept && kept.before === before) return kept;
+    const r = rules({ ...snapshot, items: { ...snapshot.items, [id]: before } });
+    return (dataMemo["baseline:" + id] = { before, status: r.statusOf(id), priority: r.priorityOf(id) }) as { before: Item; status: string | undefined; priority: string };
+  }
   function itemNode(it: ViewItem, headerOnly = false, boxOnly = false, detail = false) {
     const m = mount;
     const retained=m ? undefined : groupReuse?.items.get(it.id);
@@ -2060,13 +2076,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const head = el("button", "item-head");
     head.type = "button";
 
-    // The baseline is a document; status and priority are derived. Restore
-    // that document and use the same current reference targets for comparison.
-    const beforeRules = before ? rules({ ...snapshot, items: { ...snapshot.items, [it.id]: before } }) : undefined;
-    const beforeStatus = beforeRules?.statusOf(it.id) ?? (before ? "record" : undefined);
+    const beforeDerived = before ? baselineDerived(it.id, before) : undefined;
+    const beforeStatus = beforeDerived?.status ?? (before ? "record" : undefined);
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     const pr = priorityOf(it);
-    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeRules && beforeRules.priorityOf(it.id) !== pr ? " chg-add" : ""), pr || "P?"));
+    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeDerived && beforeDerived.priority !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     if (it.plan.length) {
