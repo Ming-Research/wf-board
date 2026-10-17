@@ -13,7 +13,7 @@ jobs:
       - id: p
         env:
           MSG: ${{ github.event.head_commit.message }}
-        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs|shard|replay [a-z0-9-]+)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+        run: echo "cmds=$(printf '%s' "$MSG" | grep -oE '\[(cost|knobs|packs( [a-z,]+)?|shard|replay [a-z0-9-]+)\]' | tr -d '[]' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
   run:
     needs: plan
     if: needs.plan.outputs.cmds != '[]'

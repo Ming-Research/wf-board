@@ -368,23 +368,38 @@ function keepBig(dir: string, bytes: number): number {
   return kept;
 }
 const GRAPH = ["commit-graph", "write", "--split", "--reachable", "--no-progress"];
-function packs(): void {
+function packs(wanted?: string): void {
   const TOTAL = SMOKE ? 60 : 12000, STEPS = SMOKE ? [10] : [100, 300];
   const KEEP_MB = Number(process.env.STUDY_KEEP_MB ?? (SMOKE ? 1 : 8));
+  const MERGE_MB = Number(process.env.STUDY_MERGE_MB ?? (SMOKE ? 1 : 16));
   const { world, base } = prepare("flat", []);
   const changes = world.take(TOTAL);
-  // Each strategy maintains after every STEP commits. All three use git's own geometric repack; they differ in what stays out of it.
-  const strategies: { name: string; step: (dir: string) => number }[] = [
-    { name: "geometric=2 (git's own auto maintenance does this)", step: dir => timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms },
-    { name: `geometric=2, packs of ${KEEP_MB} MB and more kept (.keep)`, step: dir => { keepBig(dir, KEEP_MB * 1048576); return timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms; } },
-    { name: `git auto with gc.bigPackThreshold=${KEEP_MB}m`, step: dir => timed(dir, ["-c", `gc.bigPackThreshold=${KEEP_MB}m`, ...MAINT]).ms },
-  ];
+  // Each strategy maintains after every STEP commits.
+  const all: Record<string, { name: string; step: (dir: string, k: number) => number }> = {
+    geo: { name: "geometric=2 (what git's own auto maintenance runs)", step: dir => timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms },
+    keep: { name: `geometric=2, packs of ${KEEP_MB} MB and more kept (.keep)`, step: (dir, k) => {
+      keepBig(dir, KEEP_MB * 1048576);
+      const trace = join(ROOT, `trace-keep-${k}.jsonl`);
+      const r = timed(dir, ["repack", "-d", "-l", "--geometric=2", "--write-midx", "-q"], k === 3 || k === 60 ? { GIT_TRACE2_EVENT: trace } : {}).ms, g = timed(dir, GRAPH).ms;
+      if (k === 3 || k === 60) {
+        const packDir = join(dir, ".git/objects/pack");
+        note(`E3 keep variant, step ${k}: repack ${f(r)} ms, commit-graph ${f(g)} ms; packs: ${readdirSync(packDir).filter(n => n.endsWith(".pack") || n.endsWith(".keep")).map(n => n.slice(5, 11) + n.slice(-5) + (n.endsWith(".pack") ? ":" + f(statSync(join(packDir, n)).size / 1048576, 1) + "MB" : "")).join(" ")}\ntrace2 (depth| exit time | argv):\n` + traceLines(trace).join("\n"));
+      }
+      return r + g;
+    } },
+    midx: { name: `pack the loose objects, then merge small packs in batches of ${MERGE_MB} MB (multi-pack-index repack)`, step: dir => {
+      let ms = timed(dir, ["repack", "-d", "-l", "--write-midx", "-q"]).ms + timed(dir, GRAPH).ms;
+      if (counts(dir).packs > 8) ms += timed(dir, ["multi-pack-index", "expire", "--no-progress"]).ms + timed(dir, ["multi-pack-index", "repack", `--batch-size=${MERGE_MB}m`, "--no-progress"]).ms;
+      return ms;
+    } },
+  };
+  const strategies = (wanted ? wanted.split(",") : ["geo", "keep", "midx"]).map(k => all[k]!);
   const ends: [string, string][] = [];
   for (const STEP of STEPS) for (const s of strategies) {
     const w = copyRepo(base, "strat"), ms: number[] = [], rows: Record<string, unknown>[] = [];
     for (let k = 0; k < TOTAL / STEP; k++) {
       applyChanges(w, changes.slice(k * STEP, (k + 1) * STEP));
-      const before = counts(w), t = s.step(w), after = counts(w);
+      const before = counts(w), t = s.step(w, k), after = counts(w);
       ms.push(t);
       rows.push({ step: k + 1, ms: f(t), looseBefore: before.count, packsAfter: after.packs, sizePackKB: after["size-pack"], looseAfter: after.count });
     }
@@ -531,7 +546,7 @@ const command = process.argv[2];
 note(`gc-study ${command}${SMOKE ? " (smoke)" : ""}; git ${git(ROOT, ["--version"]).trim()}; ${process.platform} ${process.arch}; cpus ${cpus().length}; scratch ${ROOT}`);
 if (command === "cost") cost();
 else if (command === "knobs") knobs();
-else if (command === "packs") packs();
+else if (command === "packs") packs(process.argv[3]);
 else if (command === "shard") shard();
 else if (command === "replay") await replay(process.argv[3]!);
 else throw new Error("usage: gc-study.ts cost|knobs|packs|shard");
