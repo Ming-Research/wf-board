@@ -52,7 +52,7 @@ interface Started { item: string; dispatch: Dispatch }
 /**
  * The unfinished dispatches on an item whose session is still active at `now`: it wrote to the board, or was started,
  * within AGENT_WINDOW_MS, the agent list's window. A dispatch left open by a session that died is not counted for
- * longer. Item status reads this: a live session holds the item whether or not it marked a row (docs/design.md, Status).
+ * longer. Item status reads this: a live session counts as working on the item whether or not it marked a row (docs/design.md, Status).
  */
 export function liveDispatches(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, item: string, now: number): Dispatch[] {
   return openDispatches(s, item).filter(d => {
@@ -61,7 +61,7 @@ export function liveDispatches(s: Pick<Snapshot, "items"> & { activity?: Snapsho
   });
 }
 
-/** The steps in progress on an item: its own steps, which are what a session holds. */
+/** The steps in progress on an item: its own steps, which are what a session works on. */
 const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "state" in row && row.state === "doing" ? [row] : []);
 
 /**

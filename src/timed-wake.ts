@@ -39,7 +39,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   return {
     since: from,
     changed: capped(changed),
-    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.statusOf(id) === "wip" && r.held(id)).map(entry)),
+    working: capped(open.filter(id => r.projectOf(id) !== ARCHITECT && r.statusOf(id) === "wip" && r.workedOn(id)).map(entry)),
     architect: capped(open.filter(id => r.projectOf(id) === ARCHITECT).map(entry)),
     actions,
   };

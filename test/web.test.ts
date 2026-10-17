@@ -4364,10 +4364,10 @@ test("an item with part done and nobody on it is 停滞: its chip, the parent's 
   s.items.part={...s.items.child!,title:"Part",plan:planWork([planStep("one","One","done"),planStep("two","Two")])};
   s.items.area!.plan=planWork([ownedRow("child"),ownedRow("part")]);
   const p=await page(s,[]); await expand(p,"area");
-  assert.ok(rowOf(p,"part").querySelector(".item-head .st")!.classList.contains("stalled"), "the chip takes the stalled colour");
+  assert.ok(rowOf(p,"part").querySelector(".item-head .st")!.classList.contains("idle"), "the chip takes the idle colour");
   const counts=rowOf(p,"area").querySelector(".counts")!;
-  assert.deepEqual(counts.children.map(e=>e.className),["st stalled","st wip"], "a parent counts the part-done leaf before the one in progress");
-  assert.equal(counts.children[0]!.attributes["aria-label"],"STALLED 1");
+  assert.deepEqual(counts.children.map(e=>e.className),["st idle","st wip"], "a parent counts the part-done leaf before the one in progress");
+  assert.equal(counts.children[0]!.attributes["aria-label"],"IDLE 1");
   const bar=summaryText(p).find(e=>e.className === "sum-stats")!.children.map(e=>e.innerHTML);
   assert.ok(bar.some(t=>/停滞 1$/.test(t)), "the status bar counts it apart from 未开始: "+bar.join(" | "));
   assert.ok(bar.some(t=>/未开始 0$/.test(t)));

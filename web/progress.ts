@@ -1,5 +1,5 @@
 // The progress line under an item's title in the detail column, as a plain function of the item's status and Rules.progress so
-// tests can check it without a page. Status says whether someone is on the item; the line says how far it is and what holds it
+// tests can check it without a page. Status says whether someone is on the item; the line says how far it is and what holds it up
 // (docs/design.md, How the page shows a plan).
 import type { Status } from "../src/model.ts";
 import type { Progress } from "../src/rules.ts";
@@ -15,7 +15,7 @@ export interface ProgressNames {
 export interface ProgressLine { kind: "next" | "blocked" | "doing"; text: string }
 
 export function progressLine(status: Status | undefined, p: Progress, names: ProgressNames): ProgressLine | undefined {
-  if (status === "todo" || status === "stalled") {
+  if (status === "todo" || status === "idle") {
     if (!p.total) return undefined;
     return { kind: "next", text: `做完 ${p.done}/${p.total}${p.next ? `，下一步：${p.next.text}` : ""}` };
   }

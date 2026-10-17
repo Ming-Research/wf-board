@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
-import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.ts";
+import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
@@ -216,7 +216,7 @@ export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   return s.board.projects.map(project => {
     const leaves = Object.keys(s.items).filter(id => r.projectOf(id) === project.name);
     return { ...project, areas: r.areas().filter(id => r.projectOf(id) === project.name).length,
-      openItems: Object.fromEntries((["todo", "stalled", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])) };
+      openItems: Object.fromEntries((["todo", "idle", "wip", "blocked", "paused"] as const).map(st => [st, leaves.filter(id => r.statusOf(id) === st).length])) };
   });
 }
 function sentNotes(s: Snapshot, r: Rules) {
@@ -249,7 +249,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     checks: ids.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id), checks: r.checks(id) })).filter(it => it.checks.length),
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
-    wip: eligible.filter(id => r.statusOf(id) === "wip" && r.held(id)).sort(r.compareSiblings).map(wipRow),
+    wip: eligible.filter(id => r.statusOf(id) === "wip" && r.workedOn(id)).sort(r.compareSiblings).map(wipRow),
     todo: eligible.filter(id => r.startable(id)).sort(r.compareSiblings).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(workRow),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
@@ -260,7 +260,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
   // working on, is counted under its owner instead of listed with its plan: the owner's own plan says what comes first.
   const waitsForTurn = (id: string) => {
     const p = r.progress(id);
-    return r.statusOf(id) === "blocked" && p.behind && !p.ask && !p.waiting.length && !r.held(id);
+    return r.statusOf(id) === "blocked" && p.behind && !p.ask && !p.waiting.length && !r.workedOn(id);
   };
   const queued = new Map<string, number>(), listed: string[] = [];
   for (const id of ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))) {

@@ -253,7 +253,7 @@ test("writes answer with their produced plan state; refusals and context identif
   assert.equal(ruled.isError, undefined, text(ruled));
   const finished = await write("a", "done");
   assert.match(finished, /^a · DONE P1/m);
-  assert.match(finished, /^ancestor area now STALLED P1 \(was BLOCK P1\)$/m);
+  assert.match(finished, /^ancestor area now IDLE P1 \(was BLOCK P1\)$/m);
   assert.match(await write("b", "done"), /^b · DONE P1/m);
   assert.match(await write("area", "doing"), /^area · WIP P1/m);
   assert.match(await write("area", "done"), /^area · DONE P1/m);

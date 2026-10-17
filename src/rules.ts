@@ -274,19 +274,19 @@ export interface Rules {
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
   statusOf(id: string): Status | undefined;
-  /** Someone holds the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
+  /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
    * wrote or was started within the agent list's window). Not inherited from the items it owns. */
-  held(id: string): boolean;
+  workedOn(id: string): boolean;
   /** The sessions of the item's live dispatches, newest start first. */
   sessionsOf(id: string): string[];
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
-  /** Work an agent could be started on now, apart from its rating: status todo or stalled, an unpaused root needs it, and
+  /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
    * a step ready to start that waits on nothing. The one definition the next-task list and the 缺难度 check both read. */
   canStart(id: string): boolean;
   /** `canStart` and rated 1–5: what the next-task list offers. */
   startable(id: string): boolean;
-  /** What the detail line under an item's title says: how far it is, what comes next, what it waits on, who holds it. */
+  /** What the detail line under an item's title says: how far it is, what comes next, what it waits on, who is working on it. */
   progress(id: string): Progress;
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
@@ -635,7 +635,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
 export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after: Pick<Snapshot, "decisions" | "notes">, beforeRules: Rules, afterRules: Rules, changed: ReadonlyArray<{ kind: string; id: string }>, activity?: ActivityDelta): Set<string> | null {
   // Items whose last change or pause spans moved, including a note on a card deleted earlier, which only the store places.
   const seeds = new Set<string>([...Object.keys(activity?.items ?? {}), ...Object.keys(activity?.pauses ?? {})]);
-  // A session's write moves its last-activity time, which the status of every item it holds reads (liveDispatches).
+  // A session's write moves its last-activity time, which the status of every item it works on reads (liveDispatches).
   for (const name of Object.keys(activity?.agents ?? {})) for (const r of [beforeRules, afterRules]) for (const id of r.dispatchedItems(name)) seeds.add(id);
   const card = (key: string) => {
     for (const s of [before, after]) { const owner = Object.hasOwn(s.decisions, key) ? s.decisions[key]!.item : undefined; if (owner) seeds.add(owner); }
@@ -887,13 +887,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       : rows.some(row => row.state === "progress") ? "wip"
       : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id) ? "blocked"
       : liveSessions(id).length ? "wip"
-      : anyBegun(rows) ? "stalled" : "todo";
+      : anyBegun(rows) ? "idle" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
     return status;
   }
   function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
-  function held(id: string): boolean {
-    return cached("held", id, () => (item(id)?.plan ?? []).some(row => "text" in row && row.state === "doing") || liveSessions(id).length > 0);
+  function workedOn(id: string): boolean {
+    return cached("workedOn", id, () => (item(id)?.plan ?? []).some(row => "text" in row && row.state === "doing") || liveSessions(id).length > 0);
   }
   function dispatchedItems(agent: string): string[] {
     const byAgent = cached("dispatched", "", () => {
@@ -909,7 +909,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function canStart(id: string): boolean {
     const st = statusOf(id);
-    return (st === "todo" || st === "stalled") && neededSet().has(id) && nextStep(id) !== undefined;
+    return (st === "todo" || st === "idle") && neededSet().has(id) && nextStep(id) !== undefined;
   }
   function startable(id: string): boolean { return canStart(id) && dispatchable(item(id)?.difficulty); }
   function progress(id: string): Progress {
@@ -1161,7 +1161,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, held, sessionsOf: id => liveSessions(id).slice(), dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, sessionsOf: id => liveSessions(id).slice(), dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

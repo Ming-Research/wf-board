@@ -136,7 +136,7 @@ test("status derives from all plan rows and distinguishes the frontier from late
     legacyAsk: { ask: { text: "Approve" } }, record: { record: true, plan: [own("todo")] },
   });
   const r = rules(s);
-  for (const [id, expected] of Object.entries({ todo: "todo", doing: "wip", done: "done", cancelled: "cancelled", blocked: "blocked", canMove: "todo", ownsDoing: "wip", sharesDoing: "blocked", acceptanceOnly: "todo", completedParts: "stalled", legacyAsk: "blocked" })) assert.equal(r.statusOf(id), expected, id);
+  for (const [id, expected] of Object.entries({ todo: "todo", doing: "wip", done: "done", cancelled: "cancelled", blocked: "blocked", canMove: "todo", ownsDoing: "wip", sharesDoing: "blocked", acceptanceOnly: "todo", completedParts: "idle", legacyAsk: "blocked" })) assert.equal(r.statusOf(id), expected, id);
   assert.equal(r.statusOf("record"), undefined);
   assert.deepEqual(r.planRows("blocked").map(row => row.ready), [true, false, false]);
   assert.deepEqual(r.planRows("canMove").map(row => row.ready), [true, true, false]);
@@ -284,7 +284,7 @@ test("completed acceptance before delivery does not complete the item or raise a
   const s = snapshot({ a: {} });
   s.items.a!.plan = [step("work", "done"), accept("done"), step("merge")];
   const r = rules(s);
-  assert.equal(r.statusOf("a"), "stalled");
+  assert.equal(r.statusOf("a"), "idle");
   assert.deepEqual(r.planRatio("a"), { done: 2, total: 3 });
   assert.deepEqual(r.checks("a"), []);
   s.items.a!.plan[2] = step("merge", "done");
@@ -720,7 +720,7 @@ test("a done acceptance row with an unfinished row before it gets the 验收过�
   // An acceptance row not yet done is not early.
   assert.deepEqual(early([step("work"), accept("todo")]), []);
   // The check flags only: the item stays open and the plan is kept.
-  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "stalled");
+  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "idle");
 });
 
 test("the next-task definition is written once: todo or part way, needed, rated, and a step with no waits", () => {
@@ -735,12 +735,12 @@ test("the next-task definition is written once: todo or part way, needed, rated,
   const r = rules(s);
   const expected: Record<string, [string, boolean, boolean]> = {
     fresh: ["todo", true, true], unrated: ["todo", true, false], held: ["wip", false, false],
-    waits: ["todo", false, false], later: ["stalled", true, true], finished: ["done", false, false],
+    waits: ["todo", false, false], later: ["idle", true, true], finished: ["done", false, false],
   };
   for (const [id, [status, canStart, startable]] of Object.entries(expected)) assert.deepEqual([r.statusOf(id), r.canStart(id), r.startable(id)], [status, canStart, startable], id);
 });
 
-test("held and progress say who is on an item and how far it is, from rows and from live sessions", () => {
+test("workedOn and progress say who is on an item and how far it is, from rows and from live sessions", () => {
   const now = Date.parse("2026-10-17T12:00:00Z"), ago = (hours: number) => new Date(now - hours * 3600_000).toISOString();
   const session = (agent: string, started: string) => ({ agentId: `id-${agent}`, agent, role: "工程师" as const, level: 2, model: "Sonnet", started });
   const s = snapshot({
@@ -753,7 +753,7 @@ test("held and progress say who is on an item and how far it is, from rows and f
     parent: { plan: workPlan([step("first"), own("kid", ["first"]), own("busy")]) }, kid: {}, busy: { plan: workPlan([step("go", "doing")]) },
   }, { q: { item: "stuck" } });
   const r = rules(s, now);
-  assert.deepEqual([r.held("idle"), r.held("stuck"), r.held("working"), r.held("session")], [false, false, true, true]);
+  assert.deepEqual([r.workedOn("idle"), r.workedOn("stuck"), r.workedOn("working"), r.workedOn("session")], [false, false, true, true]);
   assert.deepEqual([r.sessionsOf("idle"), r.sessionsOf("session")], [[], ["eng"]], "a session past the window is not listed");
   assert.deepEqual(r.dispatchedItems("eng"), ["session"]);
   assert.deepEqual(r.progress("idle"), { done: 1, total: 4, next: { id: "two", text: "two" }, waiting: [], ask: false, behind: false, doing: [], sessions: [] });

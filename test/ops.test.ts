@@ -521,7 +521,7 @@ test("acceptance may precede merge and an item finishes only after every row res
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "the fixture's unanswered owner ask still blocks its merge work");
   await op.clearAsk({ author, id: "a", log: "Owner approved; merge can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "stalled");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "idle");
   await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge into main", state: "done" } });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
 });
@@ -557,7 +557,7 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "writing acceptance done does not bypass the fixture's owner ask");
   await op.clearAsk({ author, id: "a", log: "Owner approved; independent work can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "stalled");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "idle");
   const work = store.snapshot().items.a!.plan.find(row => row.id === "work")!;
   assert.ok("state" in work); assert.equal(work.state, "todo");
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "done", after: [] } });

@@ -214,7 +214,7 @@ test("缺难度 waits while the next step is an unfinished sub-item, and comes b
   await op.setPlan({ author, id: "study", row: { id: "build", text: "做调研", state: "done" } });
   await op.setPlan({ author, id: "study", row: { id: "accept", accept: true, text: "通过", state: "done" } });
   // The finished study is part of the root's plan, so the root is part way and nobody holds it.
-  assert.equal(rules(store.snapshot()).statusOf("study-root"), "stalled");
+  assert.equal(rules(store.snapshot()).statusOf("study-root"), "idle");
   assert.equal(missing(b, "study-root").length, 1, "once the sub-item is done, the root's own step is next and it asks");
 });
 
