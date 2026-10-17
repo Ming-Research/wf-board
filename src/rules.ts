@@ -383,7 +383,7 @@ export interface Rules {
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
-  /** The default order of the candidates list, for reading and not a choice: higher priority first; at equal priority more open dependents first; then the earlier item number. */
+  /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. Priority is not part of it. */
   compareCandidates(a: string, b: string): number;
 }
 
@@ -1223,7 +1223,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
     // An item without a number (written before numbers) sorts after the numbered; the key settles what is left.
-    compareCandidates: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || openDependents(b) - openDependents(a)
+    compareCandidates: (a, b) => openDependents(b) - openDependents(a)
       || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),
   };
 }

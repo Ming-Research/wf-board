@@ -3,7 +3,7 @@
 // the architect does. docs/design.md, section 6, "The candidates read", gives the reasons for each rule.
 
 import { openDispatches, holderOf } from "./dispatch.ts";
-import type { Difficulty, Dispatch, Priority, Snapshot } from "./model.ts";
+import type { Difficulty, Dispatch, Snapshot } from "./model.ts";
 import { isReviewStep, waitsOnRun } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
@@ -19,7 +19,7 @@ export const GROUP_OVER = 3;
 export const ROWS_LISTED = 10;
 export const UNDER_LISTED = 10;
 
-export interface Candidate { id: string; num?: number; project: string; title: string; difficulty: Difficulty; priority: Priority | ""; waiters: number }
+export interface Candidate { id: string; num?: number; project: string; title: string; difficulty: Difficulty; waiters: number }
 /** Several candidates under one parent: the parent and how many (of every level), in place of the items. */
 export interface CandidateGroup { parent: string; num?: number; project: string; title: string; count: number }
 export interface PoolView {
@@ -48,7 +48,7 @@ function candidateIds(s: Snapshot, r: Rules): string[] {
 
 function row(s: Snapshot, r: Rules, id: string): Candidate {
   const it = s.items[id]!, waiters = r.openDependents(id);
-  return { id, ...(it.num === undefined ? {} : { num: it.num }), project: r.projectOf(id), title: it.title, difficulty: it.difficulty!, priority: r.priorityOf(id), waiters };
+  return { id, ...(it.num === undefined ? {} : { num: it.num }), project: r.projectOf(id), title: it.title, difficulty: it.difficulty!, waiters };
 }
 
 /** Whether any item in the subtree of `id` is held by a session other than `agent`. */
@@ -126,7 +126,7 @@ export function candidatesUnder(s: Snapshot, r: Rules, parent: string): { parent
 const isGroup = (x: Candidate | CandidateGroup): x is CandidateGroup => "parent" in x;
 const numText = (x: { num?: number }) => x.num === undefined ? "" : ` · #${x.num}`;
 function itemLine(x: Candidate): string {
-  return `${x.id} · ${x.priority || "无优先级"} · ${x.title} · 难度 ${x.difficulty} · ${x.project}${numText(x)}${x.waiters ? ` · 等它 ${x.waiters}` : ""}`;
+  return `${x.id} · ${x.title} · 难度 ${x.difficulty} · ${x.project}${numText(x)}${x.waiters ? ` · 等它 ${x.waiters}` : ""}`;
 }
 
 /** The text a tool answers with: a line per pool, then its rows. */

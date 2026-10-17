@@ -44,22 +44,23 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
 }
 const ids = (rows: Array<Candidate | CandidateGroup>) => rows.map(x => "id" in x ? x.id : x.parent);
 
-test("candidates of every project are listed by priority, then by the open items waiting on them, then by item number", async t => {
+test("candidates are listed by the open items waiting on them, then by item number; priority is not part of the order", async t => {
   const b = await empty(t);
-  // y1 is the oldest and has two waiters, yet a P1 item comes after every P0 item.
-  await b.root("r1", "P1"); await b.child("y1", "r1");
-  // x3 is made before x1, so the item number and the key order disagree.
-  await b.root("r0", "P0"); await b.child("x3", "r0"); await b.child("x1", "r0"); await b.child("x2", "r0");
-  // The waiters of y1 hang under the P1 root, so y1 stays P1: a waiter under r0 would make it P0.
-  for (const [key, owner, on] of [["d1", "r0", "x2"], ["d2", "r0", "x2"], ["e1", "r1", "y1"], ["e2", "r1", "y1"]] as const) await b.child(key, owner, { plan: [{ item: on, own: false }] });
+  // A P2 root and a P0 root: the order below ignores which one an item hangs under.
+  await b.root("low", "P2"); await b.child("z1", "low");
+  await b.root("high", "P0");
+  // a4 is made after z1, so the item number and the key order disagree.
+  await b.child("a4", "high"); await b.child("t2", "high"); await b.child("t3", "high");
+  for (const [key, on] of [["d1", "t3"], ["d2", "t3"], ["d3", "t2"]] as const) await b.child(key, "high", { plan: [{ item: on, own: false }] });
   const s = b.snapshot(), r = rules(s);
   // Only the shared rows count: the owner holds an owned row for every item it owns, which tells the items apart by nothing.
-  assert.deepEqual([r.openDependents("x2"), r.openDependents("x1"), r.openDependents("y1")], [2, 0, 2]);
-  assert.deepEqual(["y1", "x1", "x3", "x2"].sort(r.compareCandidates), ["x2", "x3", "x1", "y1"], "x2 (most waiters) first, then x3 before x1 by number, then the P1 item");
-  assert.deepEqual(ids(b.pool("2+").listed), ["x2", "x3", "x1", "y1"], "listed in that order");
+  assert.deepEqual([r.openDependents("t3"), r.openDependents("t2"), r.openDependents("z1")], [2, 1, 0]);
+  assert.deepEqual(["a4", "z1", "t2", "t3"].sort(r.compareCandidates), ["t3", "t2", "z1", "a4"], "t3 (two waiters), t2 (one), then z1 before a4 by number, whatever the priority under it");
+  assert.deepEqual(ids(b.pool("2+").listed), ["t3", "t2", "z1", "a4"], "listed in that order");
   assert.equal(b.pool("2+").more, 0);
   const row = b.pool("2+").listed[0] as Candidate;
-  assert.deepEqual({ project: row.project, priority: row.priority, difficulty: row.difficulty, waiters: row.waiters }, { project: "Whitefoot", priority: "P0", difficulty: 2, waiters: 2 });
+  assert.deepEqual({ project: row.project, difficulty: row.difficulty, waiters: row.waiters }, { project: "Whitefoot", difficulty: 2, waiters: 2 });
+  assert.equal("priority" in row, false, "a row carries no priority");
 });
 
 test("a paused waiter does not count, and candidates of every project are ordered together", async t => {
@@ -208,8 +209,8 @@ test("candidates answers a few lines, under= answers one parent's items, and an 
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
   const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
-  assert.match(all, /^1 级：上限 10，在干活 0，空 10，候选 1\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6，候选 4\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
-  assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+\n  g2 /);
+  assert.match(all, /^1 级：上限 10，在干活 0，空 10，候选 1\n  solo · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6，候选 4\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
+  assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · g1 · 难度 2 · Whitefoot · #\d+\n  g2 /);
   const bad = await client.callTool({ name: "candidates", arguments: { under: "nope" } });
   assert.equal(bad.isError, true);
 });
