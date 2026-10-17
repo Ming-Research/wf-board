@@ -390,7 +390,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   const listed = await store.log({ since, at: s.head });
   allowRange(listed.length);
   const commits = listed.filter(c => !/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since)).reverse();
-  const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
+  const docs = new Map<string, { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
     if (!match) continue;
@@ -401,7 +401,7 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
   // A document the snapshot no longer holds was deleted in the range. Its last version is its file in the commit before the
   // one that deleted it: one file read, never a rebuilt board.
   const gone: { items: Record<string, unknown>; decisions: Record<string, unknown>; notes: Record<string, unknown> } = { items: {}, decisions: {}, notes: {} };
-  const changed: Array<{ doc: { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }> = [];
+  const changed: Array<{ doc: { kind: Exclude<DocKind, "glossary" | "message">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }> = [];
   for (const doc of docs.values()) {
     const first = doc.commits[0]!, last = doc.commits.at(-1)!, collection = ({ item: "items", decision: "decisions", note: "notes" } as const)[doc.kind];
     const before = first.parents[0] ? await store.showCompared(doc.kind, doc.id, first.parents[0]) : null;

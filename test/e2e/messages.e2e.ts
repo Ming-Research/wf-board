@@ -1,7 +1,7 @@
-// The list of messages in a real browser: the button sits at the top right of the left column, its list opens over the
-// page without moving it, a message sent while the page is open appears in the list, and its item link selects the item.
-// The fake-DOM test in test/web.test.ts covers what the list says; layout and the live stream need a browser. Run by CI's
-// e2e job (npm run test:e2e).
+// The list of messages in a real browser: the button sits at the page's top right beside the shortcut menu and is not
+// covered by it, its list opens over the page without moving it, a message sent while the page is open appears in the
+// list, and its item link selects the item. The fake-DOM test in test/web.test.ts covers what the list says; layout and
+// the live stream need a browser. Run by CI's e2e job (npm run test:e2e).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,10 +14,15 @@ test("the messages button is at the top right, its list opens over the page, and
   const button = bp.page.locator("#messages .messages-toggle");
   await button.waitFor();
   const placed = await bp.page.evaluate(() => {
-    const b = document.querySelector("#messages .messages-toggle")!.getBoundingClientRect(), h = document.querySelector("header.top")!.getBoundingClientRect();
-    return { right: Math.abs(b.right - h.right) <= 2, top: b.top - h.top < 60 };
+    const b = document.querySelector("#messages .messages-toggle")!.getBoundingClientRect(), menu = document.querySelector("#keymenu .keymenu-btn")!.getBoundingClientRect();
+    return { top: b.top < 40, besideMenu: b.right <= menu.left && menu.left - b.right < 20, sameRow: Math.abs(b.top - menu.top) <= 2 };
   });
-  assert.deepEqual(placed, { right: true, top: true }, "at the top right of the header");
+  assert.deepEqual(placed, { top: true, besideMenu: true, sameRow: true }, "at the page's top right, just left of the shortcut menu");
+  // Scrolled down the list, the button stays where it is.
+  await bp.page.evaluate(() => { document.getElementById("page-left")!.scrollTop = 2000; });
+  assert.ok(await bp.page.evaluate(() => document.querySelector("#messages .messages-toggle")!.getBoundingClientRect().top < 40), "fixed at the top");
+  await bp.page.evaluate(() => { document.getElementById("page-left")!.scrollTop = 0; });
+  await bp.settle();
   const areasTop = () => bp.page.evaluate(() => document.getElementById("areas")!.getBoundingClientRect().top);
   const before = await areasTop();
   await button.click();

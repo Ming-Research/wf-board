@@ -128,9 +128,10 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .waitdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blockwait); flex: none; }
 .waitmore { font-size: 12px; color: var(--muted); }
 /* The agent list: one row per session, then the two items it touched last. */
-header.top { position: relative; }
-.messages { position: absolute; top: 22px; right: 0; z-index: 20; display: flex; flex-direction: column; align-items: flex-end; }
-.messages-toggle { font: inherit; font-size: 13px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 2px 10px; color: var(--ink); cursor: pointer; }
+/* The page's top right, beside the shortcut menu (.keymenu, 34px wide at right: 12px). */
+.messages { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 54px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; }
+.messages-toggle { font: inherit; font-size: 13px; height: 30px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 0 10px; color: var(--ink); cursor: pointer; }
+.messages-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .messages-new { color: var(--accent); font-weight: 700; margin-left: 4px; }
 .messages-panel { margin-top: 6px; width: min(560px, 90vw); max-height: 60vh; overflow: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / 12%); padding: 8px 12px; }
 .message-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -518,10 +519,10 @@ details.refsec > .refbody p { margin: 0; }
 <div id="server-banner" role="alert" hidden></div>
 <div id="update-banner" role="status" hidden></div>
 <div id="hint" role="status" hidden></div>
+<div class="messages" id="messages"></div>
 <div class="wrap detail-collapsed">
   <div class="page-left" id="page-left">
   <header class="top">
-    <div class="messages" id="messages"></div>
     <div class="eyebrow" id="eyebrow">状态看板</div>
     <h1 id="goal-title">进度板</h1>
     <p class="goal" id="goal">正在读取看板数据。如果一直停在这句，说明当前视图读不到看板数据。</p>

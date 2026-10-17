@@ -2091,9 +2091,9 @@ level, and whether that someone is working, waiting or has gone quiet.
 
 ### Messages list
 
-At the top right of the header, a button 「消息」 opens the messages agents sent
-each other (section 8, Messages) in a list that lies over the page and moves
-nothing. Each row shows sender（project）→ recipient, the item as a link that
+At the top right of the page, beside the shortcut menu (☰) and fixed there like
+it, a button 「消息」 opens the messages agents sent each other (section 8,
+Messages) in a list that lies over the page and moves nothing. Each row shows sender（project）→ recipient, the item as a link that
 selects it, how long ago, and the text with its inline formatting; the newest
 is first. The button counts, as 「新 n」, the messages that came since the list
 was last open; the newest message seen is kept in the browser, so a reload
