@@ -1,6 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -8,7 +9,7 @@ import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
-import { normalizeTime, startLogLine, finishLogLine } from "./dispatch.ts";
+import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 
 export class OpError extends Error {}
 /** `dropped`: items whose stored priority the write removed because they are non-roots. */
@@ -52,7 +53,11 @@ export interface Ops {
   replyNote(a: { author: string; session?: string; access?: Access; id: string; reply: string; replace?: boolean }): Promise<Result>;
   setTerm(a: { author: string; session?: string; access?: Access; term: string; definition: string }): Promise<Result>;
   deleteTerm(a: { author: string; session?: string; access?: Access; term: string }): Promise<Result>;
+  sendMessage(a: { author: string; session?: string; access?: Access; to: string; text: string; item?: string }): Promise<Result>;
 }
+/** `sessions`: the sessions of the long-lived credentials, which a message may go to besides the architect and the sessions
+ * with an open dispatch (docs/design.md, Messages); none when the board runs without a credentials file. */
+export interface OpsOptions { sessions?: () => Iterable<string> }
 
 // Shared across Ops instances: validation and multi-document writes are one
 // operation. Store.commit still checks revisions against other store callers.
@@ -244,7 +249,7 @@ function updateParts(a: { title?: string; head?: string; links?: unknown; priori
 /** A write that adds a log line, made again by the same session within this long, is the retry of a write whose answer was lost, and is not made again (docs/design.md, section 4). */
 const REPEAT_MS = 60_000;
 
-export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z")): Ops {
+export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), options: OpsOptions = {}): Ops {
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   async function stale(kind: "item" | "decision", id: string, rev: number, current: Item | Decision): Promise<never> {
@@ -314,76 +319,80 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const work = await make(s, at);
         if (work.replayed) return { ...work.replayed, repeated: true as const };
         if (!anyAuthor) requireAuthor(s, a.author);
-        // Validate the prospective board, including indirect effects on children,
-        // dependents and items whose owner actions a card/note write changes.
-        // snapshot() freezes every document. Only these collection slots change;
-        // copying all existing plans and logs is unnecessary for a prospective write.
-        const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, glossaries: { ...s.glossaries } };
-        if (work.board) next.board = parse(Board, work.board);
-        for (const put of work.puts) {
-          if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
-          else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
-          else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
-          else next.notes[put.id] = parse(Note, put.doc);
-        }
-        const beforeRules = rulesOf(s);
-        // Rules of a prospective state are built once per state: again only after a step below changes `next`.
-        const candidate = () => store.derived.candidate(s, next);
-        // For every project a stored priority never outlives rootness: the write drops it from every non-root it writes or makes a non-root, and says so in that item's log.
-        const written = new Set(work.puts.filter(p => p.kind === "item").map(p => p.id)), dropped = [...work.dropped ?? []];
-        let afterRules = candidate();
-        let droppedHere = false;
-        for (const [id, it] of Object.entries(next.items)) {
-          if (!it.priority || afterRules.isRoot(id) || !(written.has(id) || beforeRules.isRoot(id))) continue;
-          const doc = { ...it, ...(written.has(id) ? {} : { updated: at }), log: [...it.log, { at, by: a.author, text: `不再是根：优先级改由依赖它的条目决定，原来写的 ${it.priority} 不再使用` }] };
-          delete doc.priority;
-          dropped.push({ id, priority: it.priority });
-          next.items[id] = doc;
-          const put = work.puts.find(p => p.kind === "item" && p.id === id);
-          if (put) put.doc = doc; else work.puts.push({ kind: "item", id, doc, expectRev: it.rev });
-          droppedHere = true;
-        }
-        // The rules above read `next` before these priority drops; derive the changed state once more.
-        if (droppedHere) afterRules = candidate();
-        // Last of the writes, so the drops above count: they change an item the call did not name.
-        withinScope(s, a, partList, work);
-        const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
-        // Pause permission covers open work resumed through any indirect effect,
-        // including unwritten descendants. Closing work is allowed when its
-        // explicit marker stays intact; reopening will restore that pause.
-        if (!isArchitect(a)) for (const id of checked) {
-          const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
-          const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
-          if (!clearedMarker && !resumedWork) continue;
-          const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
-          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} with session ${ARCHITECT_SESSION} can resume it`);
-        }
-        for (const id of written) {
-          const old = s.items[id], current = next.items[id]!;
-          for (const row of current.plan ?? []) {
-            if (!("item" in row && row.own)) continue;
-            if (next.items[row.item] && current.group !== next.items[row.item]!.group) throw new OpError(`owner: 跨项目拥有 ${row.item}; use a shared row`);
-            // The first item, in key order, whose plan owns it: what rules' parentOf gives.
-            const existing = beforeRules.parentOf(row.item);
-            if (existing && existing !== id && !work.moved?.includes(row.item)) throw new OpError(`owner: 被多个条目拥有 ${row.item}; current owner ${existing}; use move_item`);
+        const dropped = [...work.dropped ?? []];
+        // A write of messages alone changes no item, card or note: no rule of the board reads it, so none is checked.
+        if (work.board || work.puts.some(p => p.kind !== "message")) {
+          // Validate the prospective board, including indirect effects on children,
+          // dependents and items whose owner actions a card/note write changes.
+          // snapshot() freezes every document. Only these collection slots change;
+          // copying all existing plans and logs is unnecessary for a prospective write.
+          const next: Snapshot = { ...s, items: { ...s.items }, decisions: { ...s.decisions }, notes: { ...s.notes }, glossaries: { ...s.glossaries } };
+          if (work.board) next.board = parse(Board, work.board);
+          for (const put of work.puts) {
+            if (put.kind === "item") next.items[put.id] = parse(Item, put.doc);
+            else if (put.kind === "decision") next.decisions[put.id] = parse(Decision, put.doc);
+            else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
+            else if (put.kind === "note") next.notes[put.id] = parse(Note, put.doc);
           }
-          for (const row of old?.plan ?? []) {
-            if (!("item" in row && row.own) || work.moved?.includes(row.item) || !beforeRules.isOpenWork(row.item)) continue;
-            if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
+          const beforeRules = rulesOf(s);
+          // Rules of a prospective state are built once per state: again only after a step below changes `next`.
+          const candidate = () => store.derived.candidate(s, next);
+          // For every project a stored priority never outlives rootness: the write drops it from every non-root it writes or makes a non-root, and says so in that item's log.
+          const written = new Set(work.puts.filter(p => p.kind === "item").map(p => p.id));
+          let afterRules = candidate();
+          let droppedHere = false;
+          for (const [id, it] of Object.entries(next.items)) {
+            if (!it.priority || afterRules.isRoot(id) || !(written.has(id) || beforeRules.isRoot(id))) continue;
+            const doc = { ...it, ...(written.has(id) ? {} : { updated: at }), log: [...it.log, { at, by: a.author, text: `不再是根：优先级改由依赖它的条目决定，原来写的 ${it.priority} 不再使用` }] };
+            delete doc.priority;
+            dropped.push({ id, priority: it.priority });
+            next.items[id] = doc;
+            const put = work.puts.find(p => p.kind === "item" && p.id === id);
+            if (put) put.doc = doc; else work.puts.push({ kind: "item", id, doc, expectRev: it.rev });
+            droppedHere = true;
           }
-        }
-        const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
-        for (const id of Object.keys(next.items)) {
-          if (!checked.has(id)) continue;
-          const oldChecks = new Set(beforeRules.refusals(id).map(c => JSON.stringify(c)));
-          for (const check of afterRules.refusals(id)) {
-            if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
-              const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
-                : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
-                : check.text.startsWith("没有计划") ? "use set_plan to add at least one acceptance step where its check happens"
-                : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
-                : "use move_item to place the item under exactly one same-project owner";
-              throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
+          // The rules above read `next` before these priority drops; derive the changed state once more.
+          if (droppedHere) afterRules = candidate();
+          // Last of the writes, so the drops above count: they change an item the call did not name.
+          withinScope(s, a, partList, work);
+          const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
+          // Pause permission covers open work resumed through any indirect effect,
+          // including unwritten descendants. Closing work is allowed when its
+          // explicit marker stays intact; reopening will restore that pause.
+          if (!isArchitect(a)) for (const id of checked) {
+            const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
+            const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
+            if (!clearedMarker && !resumedWork) continue;
+            const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
+            throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} with session ${ARCHITECT_SESSION} can resume it`);
+          }
+          for (const id of written) {
+            const old = s.items[id], current = next.items[id]!;
+            for (const row of current.plan ?? []) {
+              if (!("item" in row && row.own)) continue;
+              if (next.items[row.item] && current.group !== next.items[row.item]!.group) throw new OpError(`owner: 跨项目拥有 ${row.item}; use a shared row`);
+              // The first item, in key order, whose plan owns it: what rules' parentOf gives.
+              const existing = beforeRules.parentOf(row.item);
+              if (existing && existing !== id && !work.moved?.includes(row.item)) throw new OpError(`owner: 被多个条目拥有 ${row.item}; current owner ${existing}; use move_item`);
+            }
+            for (const row of old?.plan ?? []) {
+              if (!("item" in row && row.own) || work.moved?.includes(row.item) || !beforeRules.isOpenWork(row.item)) continue;
+              if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
+            }
+          }
+          const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
+          for (const id of Object.keys(next.items)) {
+            if (!checked.has(id)) continue;
+            const oldChecks = new Set(beforeRules.refusals(id).map(c => JSON.stringify(c)));
+            for (const check of afterRules.refusals(id)) {
+              if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
+                const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
+                  : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
+                  : check.text.startsWith("没有计划") ? "use set_plan to add at least one acceptance step where its check happens"
+                  : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
+                  : "use move_item to place the item under exactly one same-project owner";
+                throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
+              }
             }
           }
         }
@@ -916,5 +925,27 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!glossary.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${a.author}'s glossary; call glossary to see its terms`);
       return { id: a.author, kind: "glossary", message: `delete_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };
     }),
+    sendMessage: async a => {
+      let sent = "";
+      const result = await run(a, "message.send", (s, at) => {
+        const from = typeof a.session === "string" ? a.session.trim() : "";
+        if (!from) throw new OpError("session: a message says who sent it; give your session name");
+        const to = typeof a.to === "string" ? a.to.trim() : "";
+        const reachable = new Set([ARCHITECT_SESSION, ...openAgents(s), ...options.sessions?.() ?? []]);
+        if (!reachable.has(to)) throw new OpError(`to ${to || "(empty)"}: no session the board can reach has that name; send to one of: ${[...reachable].join(", ")}`);
+        const text = typeof a.text === "string" ? a.text : "";
+        const length = [...text].length;
+        if (length > MESSAGE_TEXT_LIMIT) throw new OpError(`text: ${length} characters, at most ${MESSAGE_TEXT_LIMIT}; a message is only a doorbell: write the content on the item, and say here which item to read and what you wait for`);
+        if (/\p{Cc}/u.test(text)) throw new OpError("text: write one line, without line breaks or other control characters");
+        if (a.item !== undefined && !Object.hasOwn(s.items, a.item)) throw new OpError(`item ${a.item}: not on the board; give the key of the item the message is about, or leave it out`);
+        // The day's messages are one document (model MessageDay): the message joins the end of the day it is sent on.
+        const day = at.slice(0, 10), today = s.messages?.[day];
+        // Named by its time, so ids sort in the order sent, and four random hex digits for two sent in one second.
+        do sent = `${at.replace(/[-:]|\.\d+/g, "")}-${randomBytes(2).toString("hex")}`; while (today?.messages.some(m => m.id === sent));
+        const message = parse(Message, { id: sent, from, project: a.author, to, text, ...(a.item === undefined ? {} : { item: a.item }), at });
+        return { id: day, kind: "message", message: `send_message ${sent} to ${to}`, puts: [{ kind: "message", id: day, doc: { messages: [...today?.messages ?? [], message], rev: today?.rev ?? 1 }, expectRev: today?.rev ?? null }] };
+      });
+      return { ...result, id: sent };
+    },
   };
 }

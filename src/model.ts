@@ -317,6 +317,39 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
+/** The most characters (code points) a message's text may have: its push is one line of at most 200 characters, a prefix of
+ * at most 50 and the whole text (src/wake.ts, LINE_LIMIT; docs/design.md, Messages). Longer text is refused, never cut. */
+export const MESSAGE_TEXT_LIMIT = 150;
+/** A session name as a write records it: 1 to 80 characters without control characters or surrounding spaces. */
+const SessionName = z.string().min(1).max(80).regex(/^\S(.*\S)?$/u).refine(s => !/\p{Cc}/u.test(s), "no control characters");
+
+/** A message's id: the time it was sent, to the second, and four random hex digits, so ids sort in the order sent. */
+export const MessageId = z.string().regex(/^\d{8}T\d{6}Z-[0-9a-f]{4}$/);
+/** A message one agent sends another through the board (docs/design.md, Messages): a doorbell that says which item to read
+ * and what is awaited; the content is written on the item. Written once, never changed. */
+export const Message = z.object({
+  id: MessageId,
+  /** The sending session and the project it writes for. */
+  from: SessionName,
+  project: z.string().min(1),
+  /** The receiving session. */
+  to: SessionName,
+  text: z.string().refine(t => t.trim().length > 0, "a message has text").refine(t => [...t].length <= MESSAGE_TEXT_LIMIT, `at most ${MESSAGE_TEXT_LIMIT} characters`).refine(t => !/\p{Cc}/u.test(t), "one line without control characters"),
+  /** The item the message is about, when there is one. */
+  item: Key.optional(),
+  at: Time,
+}).strict();
+export type Message = z.infer<typeof Message>;
+/** A UTC day, `2026-10-17`: the id and file name of the messages sent on it. */
+export const MessageDayId = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** The messages sent on one UTC day, in the order sent: one file a day, so the board's files and git's index grow by one a
+ * day however many messages there are (docs/design.md, Messages). Each message is sent on the file's day. */
+export const MessageDay = z.object({
+  messages: z.array(Message).min(1).refine(m => new Set(m.map(x => x.id)).size === m.length, "Message ids must be unique"),
+  rev: z.number().int().positive(),
+}).strict();
+export type MessageDay = z.infer<typeof MessageDay>;
+
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
@@ -358,22 +391,24 @@ export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
   "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.priority", "item.order",
   "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row",
-  "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish",
+  "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
 ] as const;
 export type Part = (typeof PARTS)[number];
-/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. */
-export type Scope = "board" | "subtree";
+/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own
+ * project's glossary. `own`: no item at all, only a document of the writer's own (a message it sends). */
+export type Scope = "board" | "subtree" | "own";
 /** What only the architect does: the writes the board has reserved for it since it had an identity (ops `onlyArchitect`), and starting a dispatch. */
 const RESERVED: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.merge-row", "dispatch.start", "dispatch.finish"];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
-  "架构师": partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
-  "观察者": partsAt("board", PARTS.filter(p => !RESERVED.includes(p))),
+  // Every role sends messages: a message changes no item, so its scope is the writer's own.
+  "架构师": { ...partsAt("board", PARTS.filter(p => p !== "item.merge-row" && p !== "message.send")), "message.send": "own" },
+  "观察者": { ...partsAt("board", PARTS.filter(p => !RESERVED.includes(p) && p !== "message.send")), "message.send": "own" },
   // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
-  "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },
+  "资源管理": { "item.log": "board", "dispatch.finish": "board", "message.send": "own", ...partsAt("subtree", ["item.head", "item.plan"]) },
   // An engineer writes the progress of its own work. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
-  "工程师": partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "card.write", "term"]),
-  "审查": partsAt("subtree", ["item.log"]),
+  "工程师": { ...partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "card.write", "term"]), "message.send": "own" },
+  "审查": { ...partsAt("subtree", ["item.log"]), "message.send": "own" },
 };
 /** What a credential grants the ops: the writer's role and project, and the items its subtree starts from. */
 export interface Access { role: Role; project: string; roots: readonly string[] }
@@ -432,6 +467,9 @@ export interface Snapshot {
   notes: Record<string, Note>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
+  /** The messages between agents, by the UTC day they were sent; the store always fills it, snapshots built elsewhere
+   * (tests, history) may leave it out. */
+  messages?: Record<string, MessageDay>;
   owner: OwnerState;
   /** The commit this snapshot reflects. */
   head: string;
