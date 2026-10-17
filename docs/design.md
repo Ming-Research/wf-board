@@ -848,7 +848,7 @@ log:
   the item raises no check until that sub-item is done. A blocked item, or
   one with a step in progress, raises none either. Work is not listed as
   startable (`brief.todo`) without a rating. Whoever may rate the item clears
-  缺难度: the architect, or the engineer whose subtree holds it.
+  缺难度: the architect, or the engineer whose subtree holds it below its root (the root itself is rated by the architect).
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -1255,7 +1255,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect or the engineer whose subtree holds the item; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or a blocked item or one whose next step is another item or card) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or a blocked item or one whose next step is another item or card) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1655,7 +1655,7 @@ that delivers it, joined by a shared row. A write under the retired author
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
 | `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
-| `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused |
+| `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is `Architect`, who runs the process and replaces any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by `Architect` |
 | `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or `Architect`; the main line has no whitespace; order: only `Architect` |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
@@ -2613,7 +2613,7 @@ the writer from it.
     section (item `mcp-sections`); it narrows to the 改动 section then. It also makes
     the sub-items of its tree (`item.create`), rates the ones below its root
     (`item.difficulty` at `below`), tags them and the root (`item.tags`), and replies to the owner's notes on the subtree's items and cards
-    (`note.reply`); it does not close a note without a reply, rule a card, move an item,
+    (`note.reply`), replacing only a reply it wrote itself (the architect replaces any); it does not close a note without a reply, rule a card, move an item,
     or write the tag vocabulary. A new item counts as inside the subtree only when an item
     of the subtree owns it, so an engineer cannot make a top item. Without a credential,
     creating an item and rating one stay the architect's alone (the old way, until the

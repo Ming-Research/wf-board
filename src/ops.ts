@@ -35,7 +35,7 @@ export interface Ops {
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  /** The architect sets a difficulty on an item of any project, an engineer's credential on the items of its subtree; the change is logged with its reason. */
+  /** The architect sets a difficulty on an item of any project, an engineer's credential on the items below the one it was started on; the change is logged with its reason. */
   setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
   setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
@@ -914,9 +914,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }),
     replyNote: a => run(a, "note.reply", (s, at) => {
       const { note } = ownedNote(s, a.id, a);
-      if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
-      // A reply is its author's: replacing it rewrites what another writer said to the owner.
-      if (note.reply !== undefined && note.repliedBy !== a.author) throw new OpError(`note ${a.id}: the reply was written by ${note.repliedBy ?? "an unknown author"}, and replace: true replaces only your own; leave it, or report to the ${ARCHITECT}`);
+      if (note.reply !== undefined) {
+        // A reply is its author's: replacing it rewrites what another writer said to the owner. Only the architect, who runs the process, replaces a reply it did not write, also an old one with no author recorded or a retired author's.
+        const seen = `note ${a.id}: already replied by ${note.repliedBy ?? "an unknown author"} at ${note.repliedAt ?? "unknown time"}`;
+        if (note.repliedBy !== a.author && !isArchitect(a)) throw new OpError(`${seen}; a reply is replaced only by its author, so leave this one`);
+        if (a.replace !== true) throw new OpError(`${seen}; use replace: true for a deliberate replacement`);
+      }
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
     }),

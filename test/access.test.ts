@@ -299,17 +299,32 @@ test("a reply is replaced only by the author who wrote it", async t => {
   const { op, store } = await board(t);
   const engineerOf = (roots: string[]) => ({ author: "Whitefoot", session: "eng", access: engineer(roots) });
   const wrote = (id: string) => [store.snapshot().notes[id]!.reply, store.snapshot().notes[id]!.repliedBy];
-  const notOwn = (by: string) => (e: unknown) => e instanceof OpError && new RegExp(`the reply was written by ${by}`).test(e.message);
+  const notOwn = (by: string) => (e: unknown) => e instanceof OpError && new RegExp(`already replied by ${by} at .*replaced only by its author`).test(e.message);
   // The architect answered note-1; an engineer of the subtree may not overwrite that, with or without replace.
   await op.replyNote({ ...asArchitect, id: "note-1", reply: "架构师的回复" });
   await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-1", reply: "改掉", replace: true }), notOwn("Architect"));
-  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-1", reply: "改掉" }), /already replied by Architect/);
+  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-1", reply: "改掉" }), notOwn("Architect"));
+  // note-2 carries a reply by Whitefoot already: the same author is told how to replace their own reply.
+  await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id: "note-2", reply: "再答" }), /already replied by Whitefoot at .*use replace: true/);
   assert.deepEqual(wrote("note-1"), ["架构师的回复", "Architect"]);
-  // An engineer's own reply is replaced by the same project's author, and the architect may not overwrite it either.
+  // An engineer's own reply is replaced by the same project's author.
   await op.replyNote({ ...engineerOf(["a"]), id: "note-2", reply: "更正", replace: true });
-  assert.deepEqual(wrote("note-2"), ["更正", "Whitefoot"]);
-  await assert.rejects(op.replyNote({ ...asArchitect, id: "note-2", reply: "覆盖工程师", replace: true }), notOwn("Whitefoot"));
   assert.deepEqual(wrote("note-2"), ["更正", "Whitefoot"]);
   // Without a credential the same rule holds: the author is the project.
   await assert.rejects(op.replyNote({ author: "Whitefoot", id: "note-1", reply: "覆盖架构师", replace: true }), notOwn("Architect"));
+  // The architect replaces any reply, but still only on purpose: without replace the reply stays.
+  await assert.rejects(op.replyNote({ ...asArchitect, id: "note-2", reply: "没带 replace" }), /already replied by Whitefoot at .*use replace: true/);
+  await op.replyNote({ ...asArchitect, id: "note-2", reply: "架构师改写", replace: true });
+  assert.deepEqual(wrote("note-2"), ["架构师改写", "Architect"]);
+  // Also a reply with no author recorded (an old one) and one by the retired coordinator, which nobody else can replace.
+  const seed = async (id: string, repliedBy?: string) => {
+    const note = store.snapshot().notes[id]!;
+    await store.commit({ author: "Whitefoot", message: `seed ${id}`, puts: [{ kind: "note", id, expectRev: note.rev, doc: { ...note, reply: "旧回复", repliedAt: note.at, ...(repliedBy ? { repliedBy } : {}), state: "done" } }] });
+  };
+  for (const [id, by] of [["note-1", undefined], ["note-2", "总管"]] as const) {
+    await seed(id, by);
+    await assert.rejects(op.replyNote({ ...engineerOf(["a"]), id, reply: "改", replace: true }), /already replied by .* at .*replaced only by its author/);
+    await op.replyNote({ ...asArchitect, id, reply: "架构师接手", replace: true });
+    assert.deepEqual(wrote(id), ["架构师接手", "Architect"]);
+  }
 });
