@@ -3832,10 +3832,14 @@ only the test jobs.
   GitHub's documentation does not say this. Reopen the choice if GitHub lists
   such runs among a pull request's checks: `result` and `ci-mark.yml` would
   then go, and the wait script and the board would read the run itself. The
-  last job of the full CI (`result`) writes the outcome of its jobs to the
-  head commit as the commit status `full-ci` (success or failure, linking to
-  the run), and `ci-mark.yml` writes `full-ci` as pending on every pull
-  request push, unless the commit already has one. A pull request therefore
+  first job of a run started by hand (`start`) writes `full-ci` as pending
+  again, so the red of an earlier run of the same commit does not stand
+  while the new one runs; its last job (`result`) writes the outcome of the
+  run's jobs as `full-ci` (success or failure, linking to the run). To try a
+  commit again, start the full CI again; rerunning only the failed jobs
+  leaves the earlier red standing until `result` runs. `ci-mark.yml` writes
+  `full-ci` as pending on every pull request push, unless the commit already
+  has one. A pull request therefore
   reads pending until a full CI has run on its head commit, and the board
   does not push "can be merged" for a commit that never had one, except in
   the seconds between a push and the mark (about 8 seconds in the run seen,
