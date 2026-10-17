@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { build } from "esbuild";
 import { ops } from "../../src/ops.ts";
 import { startBoard, launch, BoardPage, ROOT } from "./harness.ts";
-import { ROLE, LANES, SMALL } from "./compact-charts.tmp.ts";
+import { ROLE, ROLE_NARROW, ROLE_OWN, LANES, SMALL } from "./compact-charts.tmp.ts";
 
 const cleanups: Array<() => unknown> = [];
 const t = { after: (fn: () => unknown) => { cleanups.push(fn); } };
@@ -19,19 +19,16 @@ interface Variant { name: string; cfg?: Record<string, unknown>; elk?: Record<st
 const DAGRE = { layout: "dagre", flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 } };
 const CLASSIC = { look: "classic", flowchart: { look: "classic", padding: 6 } };
 const LAYERS = (nn: number, layers: number, edge: number) => ({ "elk.spacing.nodeNode": nn, "elk.layered.spacing.nodeNodeBetweenLayers": layers, "elk.layered.spacing.edgeNodeBetweenLayers": edge, "elk.spacing.edgeNode": edge, "elk.layered.spacing.edgeEdgeBetweenLayers": 10, "elk.spacing.edgeEdge": 10 });
+const PAGE = (padding: number) => ({ look: "classic", flowchart: { look: "classic", padding, nodeSpacing: 20, rankSpacing: 20 } });
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
   { name: "dagre", cfg: DAGRE },
-  { name: "elk-b20", elk: { root: { "spacing.baseValue": 20 } } },
-  { name: "elk-b12", elk: { root: { "spacing.baseValue": 12 } } },
-  { name: "elk-n20-l20-e20", elk: { root: LAYERS(20, 20, 20) } },
-  { name: "elk-n20-l20-e12", elk: { root: LAYERS(20, 20, 12) } },
-  { name: "elk-n16-l12-e12", elk: { root: LAYERS(16, 12, 12) } },
-  { name: "elk-n20-l20-e12-classic6", cfg: CLASSIC, elk: { root: LAYERS(20, 20, 12) } },
-  { name: "elk-n20-l20-e12-classic8", cfg: { ...CLASSIC, flowchart: { ...CLASSIC.flowchart, padding: 8 } }, elk: { root: LAYERS(20, 20, 12) } },
-  { name: "elk-classic6", cfg: CLASSIC },
+  { name: "c-p6-e12", cfg: PAGE(6), elk: { fromConfig: { edge: 12 } } },
+  { name: "c-p8-e12", cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } },
+  { name: "c-p8-e16", cfg: PAGE(8), elk: { fromConfig: { edge: 16 } } },
+  { name: "neo-e12", cfg: { flowchart: { nodeSpacing: 20, rankSpacing: 20 } }, elk: { fromConfig: { edge: 12 } } },
 ];
-const CHARTS: Array<[string, string]> = [["role", ROLE], ["lanes", LANES], ...SMALL];
+const CHARTS: Array<[string, string]> = [["role", ROLE], ["role-narrow", ROLE_NARROW], ["role-own", ROLE_OWN], ["lanes", LANES], ...SMALL];
 
 /** A page directory serving the current page with the library built from the hooked entry. */
 async function pageDir(): Promise<string> {
@@ -148,7 +145,7 @@ async function main() {
       results[`${v.name} ${name}`] = m;
       console.log(`${v.name} ${name}: ${JSON.stringify(m)}`);
       await blocks.nth(i).screenshot({ path: join(OUT, `${name}-${v.name}.png`) });
-      if (name === "role" || name === "lanes") {
+      if (name.startsWith("role") || name === "lanes") {
         // The same drawing at its own size, as the reader sees it zoomed in.
         await blocks.nth(i).evaluate(block => {
           const copy = block.querySelector("svg")!.cloneNode(true) as SVGSVGElement, holder = document.createElement("div");
@@ -162,6 +159,12 @@ async function main() {
         await bp.page.evaluate(() => document.getElementById("natural")?.remove());
       }
     }
+    await bp.page.emulateMedia({ colorScheme: "dark" });
+    await bp.page.waitForTimeout(3_000);
+    await bp.page.waitForFunction(() => [...document.querySelectorAll<HTMLElement>("#item-detail .mermaid-block")].every(b => b.dataset.state === "done" || b.dataset.state === "error"), null, { timeout: 120_000 });
+    await blocks.nth(0).screenshot({ path: join(OUT, `role-${v.name}-dark.png`) });
+    await bp.page.emulateMedia({ colorScheme: "light" });
+    await bp.page.waitForTimeout(3_000);
     const elk = await bp.page.evaluate(() => (globalThis as unknown as { __elkIn?: { layoutOptions?: unknown } }).__elkIn?.layoutOptions);
     console.log(`${v.name} last ELK root options: ${JSON.stringify(elk)}`);
   }

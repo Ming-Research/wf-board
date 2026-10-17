@@ -55,6 +55,11 @@ export const ROLE = [
   "  classDef settled stroke:#2f8a5f,stroke-width:2px",
   "  class N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N11,N12,N13,N13A,N14,N15,N16,N17,N18,N19,N20,N21,P settled",].join("\n");
 
+/** ROLE with the lines of its widest box broken in two, as its author could write it. */
+export const ROLE_NARROW = ROLE.replace(/　(2[468] )/g, "<br/>$1");
+/** ROLE with gaps of its own in its settings block, which must win over the page's. */
+export const ROLE_OWN = ROLE.replace("    wrappingWidth: 640", "    wrappingWidth: 640\n    nodeSpacing: 60\n    rankSpacing: 60");
+
 export const LANES = [
   "flowchart TD",
   '  subgraph 前厅["前厅"]',
