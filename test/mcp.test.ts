@@ -193,7 +193,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 44, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, dispatch_start, dispatch_finish, dispatches, set_difficulty and set_difficulty_many are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 46, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, dispatch_start, dispatch_finish, dispatches, set_difficulty, set_difficulty_many, send_message and messages are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
@@ -253,7 +253,7 @@ test("writes answer with their produced plan state; refusals and context identif
   assert.equal(ruled.isError, undefined, text(ruled));
   const finished = await write("a", "done");
   assert.match(finished, /^a · DONE P1/m);
-  assert.match(finished, /^ancestor area now PARTIAL P1 \(was BLOCK P1\)$/m);
+  assert.match(finished, /^ancestor area now IDLE P1 \(was BLOCK P1\)$/m);
   assert.match(await write("b", "done"), /^b · DONE P1/m);
   assert.match(await write("area", "doing"), /^area · WIP P1/m);
   assert.match(await write("area", "done"), /^area · DONE P1/m);

@@ -20,7 +20,6 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
     if (it.targets?.length) inc("targets");
     if ((it.tags?.length ?? 0) > 1) inc("two or more tags");
     if (typeof it.difficulty === "number") inc("difficulty 1–5");
-    if (it.difficulty === "architect") inc("difficulty 架构师做");
     if (r.checks(id).some(c => c.label === "缺难度")) inc("missing difficulty");
     if (r.ancestors(id).length >= 5) inc("depth 5 or more");
     if (r.children(id).length > 10) inc("more than 10 owned children");
@@ -65,9 +64,9 @@ export function shapeCounts(s: Snapshot): Record<string, number> {
 
 /** Every category the generated board must contain at least once. */
 export const REQUIRED_SHAPES = [
-  "status done", "status cancelled", "status wip", "status partial", "status blocked", "status todo", "status paused", "status record",
+  "status done", "status cancelled", "status wip", "status idle", "status blocked", "status todo", "status paused", "status record",
   "explicit pause", "inherited pause", "pending ask", "answered ask", "provisional plan", "targets",
-  "two or more tags", "difficulty 1–5", "difficulty 架构师做", "missing difficulty", "depth 5 or more", "more than 10 owned children", "owned under a record", "named by a shared row",
+  "two or more tags", "difficulty 1–5", "missing difficulty", "depth 5 or more", "more than 10 owned children", "owned under a record", "named by a shared row",
   "shared across projects", "parallel plan rows", "dropped step", "doing step", "plan over 10 rows",
   "plan names another item's card", "code block in head", "table in head", "reference in head", "log over 20 entries", "links",
   "purple count over 1", "red count over 1", "card open", "card ruled", "open blocking card", "card named by several plans",

@@ -63,6 +63,8 @@ matches what the artifact board offered.
   page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/wake.ts`: the architect's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
+  `src/liveness.ts`: whether the sessions holding items are still there (the
+  ask and the "no answer" push, its silences kept in `state/liveness.json`);
   `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.

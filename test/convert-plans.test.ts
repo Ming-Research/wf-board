@@ -34,7 +34,7 @@ test("phase one preserves original steps, closed acceptance states, dates, own-w
  source.owner.archived.child=at;
  const original=structuredClone(source),result=checked(source);assert.deepEqual(source,original);
  assert.deepEqual(result.snapshot.items.root!.plan.filter(row=>"item"in row).map(row=>row.id),["child","closed"]);
- assert.equal(rules(result.snapshot).statusOf("root"),"partial");assert.equal(rules(result.snapshot).statusOf("child"),"partial");assert.equal(rules(result.snapshot).statusOf("closed"),"cancelled");
+ assert.equal(rules(result.snapshot).statusOf("root"),"idle");assert.equal(rules(result.snapshot).statusOf("child"),"idle");assert.equal(rules(result.snapshot).statusOf("closed"),"cancelled");
  const originalStep=result.snapshot.items.child!.plan.find(row=>row.id==="two");assert.ok(originalStep&&"text"in originalStep&&originalStep.state==="todo");
  assert.equal(finalText(result.snapshot.items.closed!.plan),CLOSED_ACCEPT);
  assert.equal(result.snapshot.items.root!.head,"**问题**：Some problem\n\n**何时**：Today");
@@ -76,7 +76,7 @@ test("record-owned work receives shared open priority, but no priority from its 
 test("verifier checks record-owned priority when an unfinished legacy done waiter becomes open",()=>{
  const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"Queue entry"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.waiter=item({group:"Q",priority:"P0",status:"done",steps:[{id:"prepare",text:"Unfinished preparation",state:"todo"}],deps:[{id:"work",why:"Result"}]});
  const before=legacyRules(source);assert.equal(before.statusOf("waiter"),"done");assert.equal(before.priorityOf("work"),"P1","the legacy closed waiter passes no priority; its record owner passes P1");
- const result=checked(source),after=rules(result.snapshot);assert.equal(after.statusOf("waiter"),"partial");assert.equal(after.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(after.isRoot("work"),false);
+ const result=checked(source),after=rules(result.snapshot);assert.equal(after.statusOf("waiter"),"idle");assert.equal(after.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(after.isRoot("work"),false);
  const change=result.report.priorityChanges.find(change=>change.item==="work");assert.ok(change);assert.equal(change.old,"P1");assert.equal(change.new,"P0");assert.equal(change.cause,"shared plan dependents");assert.match(change.detail,/共用.*waiter.*P0/);
  const wronglySuppressed=structuredClone(result);wronglySuppressed.report.priorityChanges.find(change=>change.item==="work")!.new="";assert.ok(verifyPlans(source,wronglySuppressed).some(error=>error.includes("priority difference report")),"the independent oracle rejects suppressed shared priority on record-owned work");
 });
@@ -102,7 +102,7 @@ test("converted cancellation leaves acceptance open when reopened and other rows
  await store.commit({author:"P",message:"Synthetic converted cancelled item",puts:[{kind:"item",id:"root",expectRev:null,doc:result.snapshot.items.root!}]});
  const write=ops(store,()=>"2026-10-13T02:00:00Z");await write.setStatus({...asArchitect,id:"root",status:"open",log:"Resume the cancelled work"});
  await write.setPlan({author:"P",id:"root",row:{id:"work",text:"Produce the result",state:"done"}});
- assert.equal(rules(store.snapshot()).statusOf("root"),"partial");const reopenedAcceptance=store.snapshot().items.root!.plan.at(-1);assert.ok(reopenedAcceptance&&"text"in reopenedAcceptance);assert.equal(reopenedAcceptance.state,"todo");
+ assert.equal(rules(store.snapshot()).statusOf("root"),"idle");const reopenedAcceptance=store.snapshot().items.root!.plan.at(-1);assert.ok(reopenedAcceptance&&"text"in reopenedAcceptance);assert.equal(reopenedAcceptance.state,"todo");
  await write.setPlan({author:"P",id:"root",row:{id:acceptance.id,text:acceptance.text,accept:true,state:"done"}});assert.equal(rules(store.snapshot()).statusOf("root"),"done");
 });
 

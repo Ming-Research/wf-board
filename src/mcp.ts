@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Key, Time, Status, Priority, Link, Option, NOTE_KINDS, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, isArchitectSession, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
+import { Key, Time, Status, Priority, Link, Option, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, isArchitectSession, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
@@ -15,7 +15,7 @@ import type { SlowOps } from "./slow-ops.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 
-export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", partial: "PARTIAL", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
+export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", idle: "IDLE", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 export function formatRow(it: Pick<q.Row, "id" | "status" | "title"> & Partial<q.Row>): string {
@@ -79,9 +79,38 @@ export function formatChanges(groups: Awaited<ReturnType<typeof q.changes>>, lim
     if (shown >= limit) break;
     const docs = g.documents.slice(0, limit - shown);
     shown += docs.length;
-    out.push(`${g.areaId} · ${g.area}`, ...docs.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.author}: ${oneLine(c.message)}`).join("\n")}`));
+    out.push(`${g.areaId} · ${g.area}`, ...docs.map(d => `  ${d.kind}:${d.id} · ${oneLine(d.title)} · ${d.summary}\n${d.commits.map(c => `    ${c.commit.slice(0, 12)} ${c.at} ${c.session ?? c.author}: ${oneLine(c.message)}`).join("\n")}`));
   }
   if (total > shown) out.push(`… ${total - shown} more changed documents; narrow with since, filters.group or filters.under, or raise limit.`);
+  return out.join("\n");
+}
+/** The patrol read, as `changes` answers it by default: the rows to handle (new flags, new items, notes and cards others wrote),
+ * each at most `limit` rows with the rest counted, then the other changes as counts; with `detail` the documents behind those
+ * counts follow. Every thing appears once (docs/design.md, section 6, Finding things). */
+export function formatReport(report: q.ChangesReport, o: { limit?: number; detail?: boolean } = {}): string {
+  const limit = o.limit ?? 30, { total, dropped } = report.commits;
+  const since = /^[0-9a-f]{40}$/.test(report.since) ? report.since.slice(0, 12) : report.since;
+  const { items, cards, notes, bySession } = report.others, rows = report.flags.length + report.created.length + report.replies.length;
+  if (!total && !rows && !items && !cards && !notes) return `自 ${since} 起没有改动。`;
+  const out = [`自 ${since} 起 ${total} 个提交${report.except.length ? `，去掉 ${report.except.join("、")} 的 ${dropped} 个` : ""}${report.unreadable ? `；${report.unreadable} 个旧版本读不出，按没有算` : ""}${rows ? "" : "，没有要处理的行"}`];
+  const group = <T>(title: string, list: readonly T[], line: (x: T) => string) => {
+    if (!list.length) return;
+    out.push(title, ...list.slice(0, limit).map(line));
+    if (list.length > limit) out.push(`  … 还有 ${list.length - limit} 行；缩小 filters.group 或 filters.under，或加大 limit。`);
+  };
+  const flagCount = Object.values(report.flagCounts).reduce((n, c) => n + c, 0);
+  group(`新标记 ${flagCount} 条（${Object.entries(report.flagCounts).map(([kind, n]) => `${kind} ×${n}`).join("，")}）`, report.flags,
+    x => `  ${x.item} · ${x.project} · ${x.flags.join("、")} · 改的人：${x.by.length ? x.by.join("、") : "范围内没人改它"}`);
+  group(`新建条目 ${report.created.length} 个`, report.created,
+    x => `  ${x.id} · ${x.project} · ${oneLine(x.title)} · 建的人：${x.by}${x.flags.length ? ` · 标记：${x.flags.join("、")}` : ""}`);
+  group(`留言和卡 ${report.replies.length} 个`, report.replies,
+    x => `  ${x.kind === "note" ? "留言" : "卡"} ${x.id} · ${x.item} · ${x.summary} · ${x.by.join("、")}`);
+  const kinds = [["条目", items], ["卡", cards], ["留言", notes]].filter(([, n]) => n).map(([name, n]) => `${name} ${n} 个`);
+  if (kinds.length) {
+    const sessions = Object.entries(bySession).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, n]) => `${name} ${n}`).join("，");
+    out.push(`其它改动：${kinds.join("、")}（${sessions}）${o.detail ? "：" : "。逐个看加 detail。"}`);
+    if (o.detail) out.push(formatChanges(report.others.groups, limit));
+  }
   return out.join("\n");
 }
 function formatGraph(graph: ReturnType<typeof q.graph>): string {
@@ -142,7 +171,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
     // Every tool takes the session, reads too: a call from the architect's session is the receipt for what the board pushed it
-    // (docs/design.md, The wake stream), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
+    // (docs/design.md, The wake streams), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
     const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
     const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
@@ -157,15 +186,20 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
         // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
+        // Another agent's call is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
+        const caller = credential?.ok ? (credential.who.access.role === "架构师" ? undefined : credential.who.session) : typeof args.session === "string" && !isArchitectSession(args.session) ? args.session.trim() : undefined;
+        if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        return { content: [{ type: "text" as const, text: await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "") }] };
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
+        const pushed = caller && wake ? wake.footer(caller) : "";
+        return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
       finally { timed?.(outcome, () => summarize(a)); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));
-  register("brief", "Start or resume a project: unhandled owner notes, checks, owner cards, current work, next tasks (only items rated 1–5 that an unpaused root needs; unrated items and 「架构师做」 items are not listed), outgoing work (open items of other projects its open items wait on) and glossary terms. Item rows carry the item's difficulty when it has one, and relevant ones include compact plan rows with levels, ownership and dates, doing days and waits, and target numbers with comparison baselines and measurement dates; progress also covers records and active work omitted from those rows.", { project: text("Exact configured project name from projects.") }, a => { const x = read(); return JSON.stringify(q.brief(x.snapshot,x.rules,a.project)); });
+  register("brief", "Start or resume a project: unhandled owner notes, checks, owner cards, current work, next tasks (only items rated 1–5 that an unpaused root needs; unrated items are not listed), outgoing work (open items of other projects its open items wait on) and glossary terms. Item rows carry the item's difficulty when it has one, and relevant ones include compact plan rows with levels, ownership and dates, doing days and waits, and target numbers with comparison baselines and measurement dates; progress also covers records and blocked work omitted from those rows, except items blocked only because they wait for their turn in their owner's plan: queued counts those per owner.", { project: text("Exact configured project name from projects.") }, a => { const x = read(); return JSON.stringify(q.brief(x.snapshot,x.rules,a.project)); });
   register("followups", "Coordinator follow-up: sent owner notes older than the given age, with their projects.", { minutes: z.number().nonnegative().describe("Age threshold in minutes, exclusive; zero returns all older pending work.") }, a => { const x = read(); return JSON.stringify(q.followups(x.snapshot,x.rules,a,now?.())); });
   register("search", "Where is this text mentioned? Search Chinese or other substrings across titles, heads, plan text, target goals, target values, current values, comparison baselines, logs, decisions and owner notes. Read context for a hit before editing it.", {
     query: text("Case-insensitive substring to find, including Chinese text."), filters: z.object({ ...scope, status: statuses, kind: z.array(z.enum(["item", "card", "note"])).describe("Search only these document kinds.").optional(), since: Time.describe("Only fields with timestamps at or after this ISO time; logs and notes use their own times.").optional(), limit: limit(20) }).strict().describe("Narrow the matches to relevant board context.").optional(),
@@ -196,6 +230,13 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("notes", "What did the owner say? Find notes by state, kind, subtree or time, with project replies, before handling or replying to them.", {
     filters: z.object({ under: scope.under, state: z.array(z.enum(["draft", "sent", "done"])).describe("Include these note states; sent finds unhandled owner messages.").optional(), kind: z.array(z.enum(NOTE_KINDS)).describe("Include these kinds of owner note.").optional(), since: Time.describe("Notes sent, created or replied to at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Narrow owner notes to relevant messages.").optional(),
   }, a => q.notes(read().snapshot, a.filters).map(formatNote).join("\n") || "No notes.");
+  register("messages", "Who told whom what? Lists the messages agents sent each other through the board, newest first, one per line: time, sender (its project) → recipient, the item, the text. A message only says which item to read and what is awaited; the content is on the item. since is inclusive, until exclusive.", {
+    filters: z.object({ to: text("Only messages to this session.").optional(), from: text("Only messages from this session.").optional(), item: Key.describe("Only messages about this item.").optional(), since: dispatchTime("Only messages sent at or after this UTC time.").optional(), until: dispatchTime("Only messages sent before this UTC time.").optional(), limit: limit(50) }).strict().describe("Narrow the messages listed.").optional(),
+  }, a => {
+    const f = a.filters ?? {};
+    return q.messages(read().snapshot, { ...f, since: f.since && normalizeTime(f.since), until: f.until && normalizeTime(f.until) })
+      .map(m => `${m.at} · ${m.from}（${m.project}）→ ${m.to}${m.item ? ` · it:${m.item}` : ""}：${m.text}`).join("\n") || "No messages.";
+  });
   register("glossary", "What does a word a project coined mean? Lists glossary terms with their definitions: one project's, or every project's that has terms.", {
     project: text("Exact configured project name; omit for every project.").optional(),
   }, a => q.glossary(read().snapshot, a.project).map(g => [`${g.project}:${g.terms.length ? "" : " no terms"}`, ...g.terms.map(t => `  ${t.term}: ${oneLine(t.definition)}`)].join("\n")).join("\n") || "No terms.");
@@ -205,9 +246,10 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("prs", "Which board documents concern this PR? Returns qualified repository references separately from bare numbers whose repository is unknown.", {
     repo: text("Repository name under Ming-Research, such as Whitefoot."), number: z.number().int().positive().describe("Pull request number in that repository."),
   }, a => { const x = read(), refs = q.prs(x.snapshot, x.rules, a.repo, a.number); return [`${a.repo}#${a.number}:`, ...refs.qualified.map(it => `  ${it.kind}: ${formatRow(it)}`), "repository unknown:", ...refs.unknown.map(it => `  ${it.kind}: ${formatRow(it)}`)].join("\n"); });
-  register("changes", "What changed while I was away? Summarizes changed documents by area with net field differences and their commits, since an ISO time or commit.", {
-    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(), limit: limit(40),
-  }, async a => formatChanges(await q.changes(store, read().snapshot, a.since, a.filters), a.limit));
+  register("changes", "What needs handling since I last looked? Answers rows with counts: flags that newly appeared (with the sessions that wrote the item), items created, notes and cards others wrote; the other changes only as counts. since is an ISO time or commit. except drops the commits of the named sessions (your own) from the counts, the new items, and the notes and cards, never from the flags. detail also lists the documents behind the counts.", {
+    since: text("Exclusive starting point: ISO time or git commit/ref you last read."), filters: z.object(scope).strict().describe("Only changes in this group or item subtree.").optional(), limit: limit(30),
+    except: z.array(z.string().trim().min(1).max(80)).max(20).describe("Session names whose commits do not count, such as your own.").optional(), detail: z.boolean().describe("Also list the documents behind the counts of the other changes.").optional(),
+  }, async a => { const x = read(); return formatReport(await q.changesReport(store, x.snapshot, a.since, a.filters, { except: a.except, detail: a.detail, rules: x.rules }), { limit: a.limit, detail: a.detail }); });
   const kind = z.enum(["item", "card", "note"]).default("item").describe("Document kind; card means a decision card; default item.");
   register("history", "How did this document change? Lists its commits newest first; use a commit in diff to inspect the exact text change.", {
     kind, id: text("Exact document id; notes use their original note id."), limit: limit(20),
@@ -236,8 +278,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     }
     return lines.join("\n");
   };
-  register("create_item", "Only author Architect with session 架构师 may create items. Create an item with initial plan rows and one acceptance step appended from accept; use set_plan to add more acceptance steps or move them. owner adds an owned row before its first acceptance step. children deliberately moves existing items into the new plan. Only new roots store priority; records require no acceptance. Only the architect creates items, so only the architect can rate the new one with difficulty.", {
-    author, session, key: Key.describe("Unused key for the new item."), title: text("What completion delivers."), head: text("Stable problem, why and approach.").optional(), accept: text("Completion check or number appended as one acceptance step; required for work, refused for records.").optional(), owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional(), plan: PlanInput.describe("Initial ordered rows, which may include acceptance steps; accept appends one more at the end. No caller dates.").optional(), children: z.array(Key).describe("Existing same-project items deliberately moved into this new plan.").optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional(), record: z.boolean().describe("A record has no work status or acceptance; it passes no priority.").optional(), group: text("Project for a top item; otherwise owner's project.").optional(), links: links.optional(), data: text("Key numbers.").optional(), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(), tags: tagList.optional(), difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself; logged as the first rating. Refused for a record.").optional(),
+  register("create_item", "Create an item with initial plan rows and one acceptance step appended from accept; use set_plan to add more acceptance steps or move them. owner adds an owned row before its first acceptance step. children deliberately moves existing items into the new plan. Only new roots store priority; records require no acceptance. Only author Architect with session 架构师 creates items in any project; the one other writer is an engineer, which creates them only inside its own subtree (owner must be an item of that subtree, and so must any children) and rates and tags them as it makes them.", {
+    author, session, key: Key.describe("Unused key for the new item."), title: text("What completion delivers."), head: text("Stable problem, why and approach.").optional(), accept: text("Completion check or number appended as one acceptance step; required for work, refused for records.").optional(), owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional(), plan: PlanInput.describe("Initial ordered rows, which may include acceptance steps; accept appends one more at the end. No caller dates.").optional(), children: z.array(Key).describe("Existing same-project items deliberately moved into this new plan.").optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional(), record: z.boolean().describe("A record has no work status or acceptance; it passes no priority.").optional(), group: text("Project for a top item; otherwise owner's project.").optional(), links: links.optional(), data: text("Key numbers.").optional(), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(), tags: tagList.optional(), difficulty: Difficulty.describe("1–5; logged as the first rating. Refused for a record.").optional(),
   }, a => result(ops.createItem(a)), true);
   register("journal_entry", "Add one timed entry to today's architect journal (local date) and create that day's record under the architect notes if it does not exist yet. Only author Architect with session 架构师 may call it; the entry goes to the end of the record's text and marks it new for the owner.", { author, session, text: text("The entry text, possibly several lines; kept as written after the time stamp.") }, a => result(ops.journalEntry(a)), true);
   register("append_log", "Append historical detail without reading a revision. Appends are retried on concurrent writes and stamped by the server. Logs never mark an item new for the owner; use set_plan to keep progress current.", { author, session, id, text: text("Evidence, detail or stop reason to append; nonempty.") }, a => result(ops.appendLog(a)), true);
@@ -263,10 +305,10 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("set_tags_many", "Set the whole tag lists of many of your items in one commit, for backfilling the 缺标签 check: each entry is checked as set_tags checks it, and one refused entry refuses the whole write. Entries whose list is unchanged write nothing; when none changes, no commit is made.", {
     author, session, items: z.array(z.object({ id, tags: tagList }).strict()).min(1).describe("Each item once, with its whole tag list."),
   }, a => result(ops.setTagsMany(a)), true);
-  register("set_difficulty", "Only author Architect with session 架构师, for an item of any project: set the item's difficulty, 1–5, which decides the agent that does it, or \"architect\" (shown as 「架构师做」) for an item the architect does itself, such as a discussion, a walkthrough or a design. Work items only; a record has none. reason is required, also for the first rating, and is logged with the change as 「难度：2 → 3，理由：…」 (the first rating from 未评). An unchanged value is a no-op. No revision is required. Open work without a difficulty shows the 缺难度 check when only its rating is missing, and is not startable; 「架构师做」 is rated, so it shows no check, and it is not listed as startable either.", { author, session, id, difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself."), reason: text("Why the difficulty is this; logged with the change.") }, a => result(ops.setDifficulty(a)), true);
-  register("set_difficulty_many", "Set the difficulty of many items in one commit, for rating a backlog of items without one: each entry is checked and logged as set_difficulty checks and logs it, and one refused entry refuses the whole write. Only author Architect with session 架构师. reason is the default for entries that give none; an entry with neither is refused. Entries whose difficulty is unchanged write nothing; when none changes, no commit is made.", {
+  register("set_difficulty", "Set the item's difficulty, 1–5, which decides the agent that does it. Author Architect with session 架构师 rates an item of any project; an engineer rates the items below the one it was started on, in its own subtree, and never that item itself. Work items only; a record has none. reason is required, also for the first rating, and is logged with the change as 「难度：2 → 3，理由：…」 (the first rating from 未评). An unchanged value is a no-op. No revision is required. Open work without a difficulty shows the 缺难度 check when only its rating is missing, and is not startable.", { author, session, id, difficulty: Difficulty.describe("1–5."), reason: text("Why the difficulty is this; logged with the change.") }, a => result(ops.setDifficulty(a)), true);
+  register("set_difficulty_many", "Set the difficulty of many items in one commit, for rating a backlog of items without one: each entry is checked and logged as set_difficulty checks and logs it, and one refused entry refuses the whole write. Written by the same writers as set_difficulty, each for its own items. reason is the default for entries that give none; an entry with neither is refused. Entries whose difficulty is unchanged write nothing; when none changes, no commit is made.", {
     author, session, reason: text("Default reason for entries without their own.").optional(),
-    items: z.array(z.object({ id, difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself."), reason: text("This item's reason; overrides the default.").optional() }).strict()).min(1).describe("Each item once, with its difficulty."),
+    items: z.array(z.object({ id, difficulty: Difficulty.describe("1–5."), reason: text("This item's reason; overrides the default.").optional() }).strict()).min(1).describe("Each item once, with its difficulty."),
   }, a => result(ops.setDifficultyMany(a)), true);
   register("set_tag", "Vocabulary change, only author Architect with session 架构师 and only after the owner approved it on a decision card: add a tag or change an existing tag's meaning or projects. meaning is one sentence telling agents when to apply the tag. projects limits the tag to those projects; null makes it apply to every project; omitted keeps the current setting (a new tag then applies to every project). Narrowing projects is refused while an item of another project carries the tag.", { author, session, name: TagName.describe("Short Chinese label, 1–12 characters without whitespace or commas; unique."), meaning: text("One sentence telling agents when to apply the tag."), projects: z.array(text("Configured project name.")).min(1).nullable().optional().describe("Projects that may use the tag; null for every project.") }, a => result(ops.setTag(a)), true);
   register("rename_tag", "Vocabulary change, only author Architect with session 架构师 and only after the owner approved it on a decision card: rename a tag and every item carrying it in one commit, logging the rename on each item.", { author, session, name: TagName.describe("Existing tag."), to: TagName.describe("Unused new name.") }, a => result(ops.renameTag(a)), true);
@@ -281,7 +323,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card; leave it out when sessions proceed on the recommendation. A card with blocks is blocking: the page shows it purple and the owner is told in the open board pages. When revising, text sets it, null clears it, omitted keeps it."),
   }, a => result(ops.writeCard(a)), true);
   register("rule_card", "Record the owner's ruling on an open decision card. A choice must name one of its option keys; a prose ruling may omit choice. Rulings may complete paused work; the retained pause marker stays unchanged, and author ownership checks apply.", { author, session, key: Key.describe("Existing open decision card key."), choice: text("Chosen option key, if the owner selected an option.").optional(), ruling: text("Owner's ruling and its reasons.") }, a => result(ops.ruleCard(a)), true);
-  register("reply_note", "Answer an owner's note and mark it done. The server stamps repliedAt and records your project as repliedBy.", { author, session, id: text("Existing owner note id found with notes or context."), reply: text("Answer to the owner's note."), replace: z.boolean().describe("Explicitly replace an existing reply; otherwise an already answered note is refused.").optional() }, a => result(ops.replyNote(a)), true);
+  register("reply_note", "Answer an owner's note and mark it done. The server stamps repliedAt and records your project as repliedBy.", { author, session, id: text("Existing owner note id found with notes or context."), reply: text("Answer to the owner's note."), replace: z.boolean().describe("Explicitly replace an existing reply; otherwise an already answered note is refused. Only author Architect with session 架构师 replaces a reply it did not write; everyone else replaces only their own.").optional() }, a => result(ops.replyNote(a)), true);
   register("create_project", "Configure a new project with its optional repository; accepts any author string when appending last. Only Architect with session 架构师 may supply after to place it immediately after an existing project in page order. Creation and placement are one commit.", { author, session, name: text("New unique project name, used by area group fields."), repo: text("Optional repository identifier, e.g. Ming-Research/Halo-wf.").optional(), after: text("Existing project name this new project should immediately follow; only Architect with session 架构师. Omit to append last.").optional() }, a => result(ops.createProject(a)), true);
   register("update_project", "Update the project's repository or mainline; Architect with session 架构师 may update any project and reorder it with after. All projects derive priority from plans.", { author, session, name: text("Configured project name."), repo: text("Repository identifier.").optional(), mainline: clearableText("The branch merges land on, when it is not the repository's default branch; the GitHub watch reads its checks. null clears it."), after: text("Project immediately before it; Architect with session 架构师 only.").optional() }, a => result(ops.updateProject(a)), true);
   register("close_note", "Close a sent owner note without reply text and record what handled it in its item's log, in one commit.", { author, session, id: text("Owner note id on your project's item or card."), log: text("What handled this note; appended to the item's historical log.") }, a => result(ops.closeNote(a)), true);
@@ -291,5 +333,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     author, session, term: text("The coined word exactly as board text writes it, on one line; occurrences are matched as plain substrings."), definition: text("What the word means, in plain Chinese that a reader outside the project understands."),
   }, a => glossaryResult(ops.setTerm(a)), true);
   register("delete_term", "Remove a term from your own project's glossary, such as a word no longer used or an industry-standard term added by mistake.", { author, session, term: text("Existing term in your project's glossary.") }, a => glossaryResult(ops.deleteTerm(a)), true);
+  register("send_message", `Ring another agent's doorbell through the board. to: the architect (架构师), a session with an open dispatch, or the session of a long-lived credential; another name is refused with the names that work. text: at most ${MESSAGE_TEXT_LIMIT} characters on one line, saying which item to read and what you wait for; write the content on the item. The recipient gets it as one push line: at once when its wait script is connected, else in the result of its next board call. Every message stays on the board (messages lists them).`, {
+    author, session, to: text("The receiving session's name."), text: text(`At most ${MESSAGE_TEXT_LIMIT} characters on one line: which item to read and what you wait for.`), item: Key.describe("The item the message is about, if there is one.").optional(),
+  }, async a => { const res = await ops.sendMessage(a); return `${res.summary} · commit ${res.commit}`; }, true);
   return server;
 }

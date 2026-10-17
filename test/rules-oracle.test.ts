@@ -22,23 +22,24 @@ test("independent row-state table covers normal, cancelled, record and missing t
   const cases: Array<{ row: PlanRow; target?: Partial<Item>; card?: "open" | "ruled" | "withtree" | "elsewhere"; expected: [string, string, boolean, boolean, Status] }> = [
     { row: { id: "x", text: "X", state: "todo" }, expected: ["open", "○", false, false, "todo"] },
     { row: { id: "x", text: "X", state: "doing", since: at }, expected: ["progress", "●", false, false, "wip"] },
-    { row: { id: "x", text: "X", state: "done", doneAt: at }, expected: ["resolved", "✓", false, false, "partial"] },
+    { row: { id: "x", text: "X", state: "done", doneAt: at }, expected: ["resolved", "✓", false, false, "idle"] },
     { row: { id: "x", text: "X", state: "dropped", reason: "Replaced", droppedAt: at }, expected: ["resolved", "✗", true, true, "todo"] },
     { row: { id: "target", item: "target", own: true }, expected: ["open", "○", false, false, "todo"] },
     { row: { id: "target", item: "target", own: true }, target: { plan: [{ id: "work", text: "Work", state: "doing", since: at }, acceptance()] }, expected: ["progress", "●", false, false, "wip"] },
     { row: { id: "target", item: "target", own: true }, target: { ask: { text: "Approve" } }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    { row: { id: "target", item: "target", own: true }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "partial"] },
+    { row: { id: "target", item: "target", own: true }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "idle"] },
     { row: { id: "target", item: "target", own: true }, target: { status: "cancelled" }, expected: ["resolved", "✗", true, true, "todo"] },
     { row: { id: "target", item: "target", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "target", item: "target", own: false }, target: { status: "cancelled" }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    { row: { id: "target", item: "target", own: false }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "partial"] },
+    // What others finished is not this item's own work: a done shared target leaves the item at todo.
+    { row: { id: "target", item: "target", own: false }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "todo"] },
     { row: { id: "target", item: "target", own: true }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, true, "todo"] },
-    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, false, "partial"] },
+    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, false, "todo"] },
     { row: { id: "gone", item: "gone", own: true }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", item: "gone", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "q", card: "q" }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", card: "gone" }, expected: ["waiting", "⏸", false, false, "blocked"] },
-    ...(["ruled", "withtree", "elsewhere"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "partial"] as [string, string, boolean, boolean, Status] })),
+    ...(["ruled", "withtree", "elsewhere"] as const).map(card => ({ row: { id: "q", card: "q" } as PlanRow, card, expected: ["resolved", "✓", false, false, "todo"] as [string, string, boolean, boolean, Status] })),
   ];
   for (const c of cases) {
     const r = rules(fixture([c.row, acceptance()], c.target, c.card)), first = r.planRows("subject")[0]!;
@@ -54,7 +55,7 @@ test("independent frontier examples distinguish sequential waits, parallel work 
     [[wait, step, acceptance()], "blocked", [true, false, false]],
     [[wait, { ...step, after: [] }, acceptance()], "todo", [true, true, false]],
     [[{ ...step, state: "doing", since: at }, wait, acceptance()], "wip", [true, true, false]],
-    [[{ ...step, state: "done", doneAt: at }, acceptance()], "partial", [false, true]],
+    [[{ ...step, state: "done", doneAt: at }, acceptance()], "idle", [false, true]],
     [[{ ...step, state: "done", doneAt: at }, acceptance("done")], "done", [false, false]],
   ];
   for (const [plan, status, ready] of cases) { const r = rules(fixture(plan)); assert.equal(r.statusOf("subject"), status); assert.deepEqual(r.planRows("subject").map(row => row.ready), ready); }
@@ -72,11 +73,11 @@ test("production and independent oracle use ordinary acceptance prerequisites be
     assert.deepEqual(derivePlanOracle(s).rows("subject").map(row => row.ready), expected);
   }
   s.items.subject!.plan = [checked, acceptance("done"), { id: "scenario", text: "Second acceptance scenario", accept: true, state: "todo" }, { id: "merge", text: "Deliver work", state: "todo" }];
-  assert.equal(rules(s).statusOf("subject"), "partial");
-  assert.equal(derivePlanOracle(s).statusOf("subject"), "partial");
+  assert.equal(rules(s).statusOf("subject"), "idle");
+  assert.equal(derivePlanOracle(s).statusOf("subject"), "idle");
   s.items.subject!.plan[2] = { id: "scenario", text: "Second acceptance scenario", accept: true, state: "done", doneAt: at };
-  assert.equal(rules(s).statusOf("subject"), "partial");
-  assert.equal(derivePlanOracle(s).statusOf("subject"), "partial");
+  assert.equal(rules(s).statusOf("subject"), "idle");
+  assert.equal(derivePlanOracle(s).statusOf("subject"), "idle");
   s.items.subject!.plan[3] = { id: "merge", text: "Deliver work", state: "done", doneAt: at };
   assert.equal(rules(s).statusOf("subject"), "done");
   assert.equal(derivePlanOracle(s).statusOf("subject"), "done");
@@ -94,14 +95,14 @@ test("status table: held, part way and untouched, with sessions inside and outsi
   interface Case { name: string; plan: PlanRow[]; dispatches?: ReturnType<typeof session>[]; wrote?: string; expected: Status }
   const cases: Case[] = [
     { name: "nothing done and nobody on it", plan: [work("todo"), acceptance()], expected: "todo" },
-    { name: "a row done, nobody on it", plan: [work("done"), acceptance()], expected: "partial" },
+    { name: "a row done, nobody on it", plan: [work("done"), acceptance()], expected: "idle" },
     { name: "a row in progress", plan: [work("doing"), acceptance()], expected: "wip" },
     { name: "a dropped row is not progress", plan: [work("todo", { state: "dropped", reason: "No longer needed", droppedAt: at } as Partial<PlanRow>), acceptance()], expected: "todo" },
     { name: "nothing done, a session started an hour ago", plan: [work("todo"), acceptance()], dispatches: [session(ago(1))], expected: "wip" },
     { name: "nothing done, a session started seven hours ago and wrote nothing since", plan: [work("todo"), acceptance()], dispatches: [session(ago(7))], expected: "todo" },
     { name: "the same session wrote an hour ago", plan: [work("todo"), acceptance()], dispatches: [session(ago(7))], wrote: ago(1), expected: "wip" },
     { name: "a row done and a live session", plan: [work("done"), acceptance()], dispatches: [session(ago(2))], expected: "wip" },
-    { name: "a row done and the session has ended", plan: [work("done"), acceptance()], dispatches: [session(ago(3), "工程师", ago(1))], expected: "partial" },
+    { name: "a row done and the session has ended", plan: [work("done"), acceptance()], dispatches: [session(ago(3), "工程师", ago(1))], expected: "idle" },
     { name: "a live review holds the item too", plan: [work("done"), acceptance()], dispatches: [session(ago(1), "审查")], expected: "wip" },
     { name: "every row that could go next waits, session or not", plan: [wait, work("todo"), acceptance()], dispatches: [session(ago(1))], expected: "blocked" },
     { name: "waiting beside work that can start", plan: [wait, work("todo", { after: [] } as Partial<PlanRow>), acceptance()], expected: "todo" },
@@ -127,8 +128,8 @@ test("the item's two examples: a plan done but for two unheld parts is part way,
   const part = (title: string, state: "todo" | "done") => Item.parse({ title, group: "P", updated: at, rev: 1, plan: [acceptance(state)] });
   const first: Snapshot = { head: "0".repeat(40), board: { title: "Examples", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
     items: { costs, study: part("Study", "done"), private: part("Private content", "todo"), usage: part("Usage push", "todo") } };
-  assert.equal(rules(first, now).statusOf("costs"), "partial");
-  assert.equal(derivePlanOracle(first, undefined, now).statusOf("costs"), "partial");
+  assert.equal(rules(first, now).statusOf("costs"), "idle");
+  assert.equal(derivePlanOracle(first, undefined, now).statusOf("costs"), "idle");
   // The PR is ready: the implementation is done; the merge row is marked by the board and the acceptance by the architect.
   const session = (started: string) => ({ agentId: "e1", agent: "eng", role: "工程师" as const, level: 2, model: "Sonnet", started });
   const pr = (dispatches: ReturnType<typeof session>[], wrote?: string): Snapshot => ({
@@ -139,11 +140,29 @@ test("the item's two examples: a plan done but for two unheld parts is part way,
   for (const [name, snap, expected] of [
     ["the engineer was started two hours ago", pr([session(ago(2))]), "wip"],
     ["started seven hours ago and wrote an hour ago", pr([session(ago(7))], ago(1)), "wip"],
-    ["started seven hours ago and wrote nothing since", pr([session(ago(7))]), "partial"],
-    ["no dispatch record at all", pr([]), "partial"],
+    ["started seven hours ago and wrote nothing since", pr([session(ago(7))]), "idle"],
+    ["no dispatch record at all", pr([]), "idle"],
   ] as const) {
     assert.equal(rules(snap, now).statusOf("pr"), expected, `production: ${name}`);
     assert.equal(derivePlanOracle(snap, undefined, now).statusOf("pr"), expected, `oracle: ${name}`);
+  }
+});
+
+// "Part done" is the item's own work: its steps, and the items it owns. What others finished (a shared dependency, a ruled card,
+// a shared record) is not, though the progress count still includes those rows.
+test("status table: only the item's own work makes it part way", () => {
+  const step: PlanRow = { id: "work", text: "Work", state: "todo", after: [] };
+  const cases: Array<{ name: string; plan: PlanRow[]; target?: Partial<Item>; card?: "ruled"; expected: Status }> = [
+    { name: "a shared dependency is done", plan: [{ id: "target", item: "target", own: false, after: [] }, step, acceptance()], target: { plan: [acceptance("done")] }, expected: "todo" },
+    { name: "a shared record", plan: [{ id: "target", item: "target", own: false, after: [] }, step, acceptance()], target: { record: true, plan: [] }, expected: "todo" },
+    { name: "a card is ruled", plan: [{ id: "q", card: "q", after: [] }, step, acceptance()], card: "ruled", expected: "todo" },
+    { name: "an owned item is done", plan: [{ id: "target", item: "target", own: true, after: [] }, step, acceptance()], target: { plan: [acceptance("done")] }, expected: "idle" },
+    { name: "an own step is done", plan: [{ ...step, state: "done", doneAt: at } as PlanRow, acceptance()], expected: "idle" },
+  ];
+  for (const c of cases) {
+    const s = fixture(c.plan, c.target, c.card);
+    assert.equal(rules(s).statusOf("subject"), c.expected, `production: ${c.name}`);
+    assert.equal(derivePlanOracle(s).statusOf("subject"), c.expected, `oracle: ${c.name}`);
   }
 });
 
@@ -157,7 +176,7 @@ test("status table: an owned item waits for the rows before its row, and part wa
     { name: "its row comes after a row that is done, though an earlier one is not", owner: [step("first", "todo"), step("second", "done", { after: [] }), owns({ after: ["second"] }), acceptance()], expected: "todo" },
     { name: "its row is first", owner: [owns(), acceptance()], expected: "todo" },
     { name: "a record's rows are a list, not an order", owner: [step("first", "todo") as PlanRow, owns()], record: true, expected: "todo" },
-    { name: "part way below makes the owner part way", owner: [owns(), acceptance()], subject: [step("work", "done"), acceptance()], expected: "partial", ownerExpected: "partial" },
+    { name: "part way below makes the owner part way", owner: [owns(), acceptance()], subject: [step("work", "done"), acceptance()], expected: "idle", ownerExpected: "idle" },
     { name: "nothing done below leaves the owner untouched", owner: [owns(), acceptance()], expected: "todo", ownerExpected: "todo" },
   ];
   for (const c of cases) {
@@ -187,5 +206,30 @@ test("status table: owned items each waiting on the other's earlier row stay blo
   for (const id of ["c", "w"]) {
     assert.equal(rules(s).statusOf(id), "blocked", `production ${id}`);
     assert.equal(derivePlanOracle(s).statusOf(id), "blocked", `oracle ${id}`);
+  }
+});
+
+test("status table: a pause marker holds the item and what it owns in its project, and a paused part leaves its owner waiting", () => {
+  const paused = { reason: "Hold", at };
+  const owned = (item: string, extra: Partial<PlanRow> = {}): PlanRow => ({ id: item, item, own: true, after: [], ...extra } as PlanRow);
+  const work = (): PlanRow => ({ id: "work", text: "Work", state: "todo", after: [] });
+  const item = (group: string, plan: PlanRow[], extra: Partial<Item> = {}) => Item.parse({ title: "T", group, priority: "P1", updated: at, rev: 1, plan, ...extra });
+  const s: Snapshot = {
+    head: "0".repeat(40), board: { title: "Pause", projects: [{ name: "P" }, { name: "Q" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
+    items: {
+      top: item("P", [owned("held"), owned("freeKid"), acceptance()]),
+      held: item("P", [owned("heldKid"), owned("otherProject"), acceptance()], { paused }),
+      heldKid: item("P", [work(), acceptance()]),
+      otherProject: item("Q", [work(), acceptance()]),
+      freeKid: item("P", [work(), acceptance()]),
+      // Only ready row is a paused part: the owner waits.
+      waiter: item("P", [owned("pausedPart"), acceptance()]),
+      pausedPart: item("P", [work(), acceptance()], { paused }),
+    },
+  };
+  const expected: Record<string, Status> = { held: "paused", heldKid: "paused", otherProject: "todo", freeKid: "todo", top: "todo", waiter: "blocked", pausedPart: "paused" };
+  for (const [id, status] of Object.entries(expected)) {
+    assert.equal(rules(s).statusOf(id), status, `production ${id}`);
+    assert.equal(derivePlanOracle(s).statusOf(id), status, `oracle ${id}`);
   }
 });

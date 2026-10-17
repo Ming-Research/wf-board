@@ -521,7 +521,7 @@ test("acceptance may precede merge and an item finishes only after every row res
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "the fixture's unanswered owner ask still blocks its merge work");
   await op.clearAsk({ author, id: "a", log: "Owner approved; merge can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "partial");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "idle");
   await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge into main", state: "done" } });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
 });
@@ -557,7 +557,7 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "writing acceptance done does not bypass the fixture's owner ask");
   await op.clearAsk({ author, id: "a", log: "Owner approved; independent work can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "partial");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "idle");
   const work = store.snapshot().items.a!.plan.find(row => row.id === "work")!;
   assert.ok("state" in work); assert.equal(work.state, "todo");
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "done", after: [] } });
@@ -1116,6 +1116,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     replyNote: () => op.replyNote({ author: retired, id: "note-1", reply: "Answer" }),
     setTerm: () => op.setTerm({ author: retired, term: "术语", definition: "定义" }),
     deleteTerm: () => op.deleteTerm({ author: retired, term: "术语" }),
+    sendMessage: () => op.sendMessage({ author: retired, session: "s", to: "架构师", text: "看 a" }),
   };
   for (const [name, call] of Object.entries(calls)) {
     await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, /^author 总管: this identity is retired; write as Architect$/, name); return true; });

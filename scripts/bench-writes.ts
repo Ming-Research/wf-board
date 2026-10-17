@@ -7,10 +7,14 @@
 // the daemon's pieces as main.ts does (store, ops, MCP server, HTTP server with one page connected to /api/events),
 // then replays set_tags writes through MCP, the path agent sessions use. It prints CPU milliseconds per write
 // (process.cpuUsage, this process only; git children excluded), garbage-collection milliseconds per write, the bytes
-// of each change event the page receives, and peak RSS.
+// of each change event the page receives, and peak RSS. It also prints the characters of each project's brief on that board.
 //
 // Usage: node scripts/bench-writes.ts [--src <dir>] [--label <text>] [--items N] [--writes N] [--history N]
+//          [--messages N] [--write set_tags|send_message]
 //   --src names the src directory to measure (default: this tree's), so the same script measures older code.
+//   --messages seeds N messages between agents (docs/design.md, Messages), and --write send_message replays sending
+//   messages instead of set_tags: what a board holding a year of messages costs to open, to hold, to send to the page
+//   (snapshot bytes, whole and as the page gets it) and per write.
 //   A quick smoke run: --items 150 --writes 50 --history 600.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -30,7 +34,10 @@ const { values: args } = parseArgs({ options: {
   src: { type: "string", default: join(here, "../src") }, label: { type: "string", default: "this tree" },
   items: { type: "string", default: "1500" }, writes: { type: "string", default: "1000" }, history: { type: "string", default: "12000" },
   decisions: { type: "string" }, notes: { type: "string" }, warmup: { type: "string", default: "20" },
+  messages: { type: "string", default: "0" }, write: { type: "string", default: "set_tags" },
 } });
+const MESSAGES = Number(args.messages), WRITE = args.write!;
+if (WRITE !== "set_tags" && WRITE !== "send_message") throw new Error("--write is set_tags or send_message");
 const ITEMS = Number(args.items), WRITES = Number(args.writes), HISTORY = Number(args.history), WARMUP = Number(args.warmup);
 const DECISIONS = Number(args.decisions ?? Math.round(ITEMS * 0.4)), NOTES = Number(args.notes ?? Math.round(ITEMS * 0.5));
 const src = resolve(args.src!);
@@ -70,6 +77,16 @@ function board() {
     files.set(`notes/n${k}.yaml`, yaml({ target: onCard ? `q:${decisions[k % decisions.length]}` : `it:${ids[(k * 5) % ids.length]}`, kind: onCard ? "choice" : "comment", ...(onCard ? { choice: "A" } : {}),
       text: `Note ${k}`, at, state: done ? "done" : "sent", sentAt: at, ...(done ? { reply: "Handled", repliedAt: at, repliedBy: "Firn" } : {}), rev: 1 }));
   }
+  // Messages as agents write them, 140 a day before the history starts: a sentence naming an item, from an engineer to the
+  // architect, one file per UTC day (docs/design.md, Messages).
+  const days = new Map<string, unknown[]>();
+  for (let k = 0; k < MESSAGES; k++) {
+    const id = ids[(k * 3) % ids.length]!, time = iso(start - (MESSAGES - k) * Math.floor(86_400_000 / 140));
+    const list = days.get(time.slice(0, 10)) ?? [];
+    list.push({ id: `${time.replace(/[-:]/g, "")}-${(k % 65536).toString(16).padStart(4, "0")}`, from: `eng-${id}`, project: group.get(id), to: "架构师", text: `${id} 的 PR 可以看了：读条目日志最后一条，等你验收，审查的发现都改了`, item: id, at: time });
+    days.set(time.slice(0, 10), list);
+  }
+  for (const [day, messages] of days) files.set(`messages/${day}.yaml`, yaml({ messages, rev: 1 }));
   const commitTime = (k: number) => start + (k + 1) * 3 * MINUTE;
   // Item `n` is written by history commits n, n + ITEMS, ...; version v carries the log entries of its first v + 1 writes.
   const item = (n: number, versions: number): string => {
@@ -116,6 +133,9 @@ try {
   t0 = Date.now();
   const store = await Store.open(dir);
   const opened = Date.now() - t0, op = ops(store);
+  // The size of each project's brief, which an agent reads at the start of a session: the status-shows-progress change must not grow it.
+  const { brief } = await load("query.ts"), { rules } = await load("rules.ts"), start = store.snapshot(), derived = rules(start);
+  const briefChars: Record<string, number> = Object.fromEntries(start.board.projects.map((p: { name: string }) => [p.name, JSON.stringify(brief(start, derived, p.name)).length]));
   const server: http.Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(src, "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
   await new Promise<void>(ok => server.listen(0, "127.0.0.1", ok));
   const port = (server.address() as AddressInfo).port;
@@ -134,7 +154,9 @@ try {
   await mcp.connect(serverSide); await client.connect(clientSide);
   const write = async (n: number) => {
     const id = data.ids[n % data.ids.length]!;
-    const result = await client.callTool({ name: "set_tags", arguments: { author: data.group.get(id), id, tags: [n % 2 ? "健全性" : "报错信息"] } });
+    const result = WRITE === "send_message"
+      ? await client.callTool({ name: "send_message", arguments: { author: data.group.get(id), session: `eng-${id}`, to: "架构师", text: `${id} 的 PR 可以看了，等你验收`, item: id } })
+      : await client.callTool({ name: "set_tags", arguments: { author: data.group.get(id), id, tags: [n % 2 ? "健全性" : "报错信息"] } });
     if (result.isError) throw new Error(JSON.stringify(result.content));
   };
   for (let n = 0; n < WARMUP; n++) await write(n);
@@ -154,11 +176,17 @@ try {
     cpuMsPerWrite: +((used.user + used.system) / 1000 / WRITES).toFixed(1), userMsPerWrite: +(used.user / 1000 / WRITES).toFixed(1), systemMsPerWrite: +(used.system / 1000 / WRITES).toFixed(1),
     gcMsPerWrite: +(gc / WRITES).toFixed(1), wallMsPerWrite: +(wall / WRITES).toFixed(1),
     eventBytesPerChange: Math.round((bytes - bytesBefore) / Math.max(1, events - eventsBefore)), changeEvents: events - eventsBefore,
-    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened,
+    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened, briefChars,
+    messages: Object.values(store.snapshot().messages ?? {}).reduce((n: number, day) => n + (day as { messages: unknown[] }).messages.length, 0), write: WRITE,
+    snapshotBytes: JSON.stringify(store.snapshot()).length,
+    // What GET /api/snapshot sends the page; code from before messages has no such function and sends the snapshot whole.
+    pageSnapshotBytes: JSON.stringify((await load("http.ts")).pageSnapshot?.(store.snapshot()) ?? store.snapshot()).length,
   };
-  console.log(`bench-writes ${result.label}: ${result.items} items, ${result.decisions} cards, ${result.notes} notes, ${result.activityWrites} activity writes, ${WRITES} set_tags writes`);
+  console.log(`bench-writes ${result.label}: ${result.items} items, ${result.decisions} cards, ${result.notes} notes, ${result.messages} messages, ${result.activityWrites} activity writes, ${WRITES} ${WRITE} writes`);
   console.log(`  CPU ms/write ${result.cpuMsPerWrite} (user ${result.userMsPerWrite}, system ${result.systemMsPerWrite}); GC ms/write ${result.gcMsPerWrite}; wall ms/write ${result.wallMsPerWrite}`);
   console.log(`  event bytes/change ${result.eventBytesPerChange} over ${result.changeEvents} events; peak RSS ${result.peakRssMB} MB; build ${built} ms, open ${opened} ms`);
+  console.log(`  snapshot ${result.snapshotBytes} bytes, as the page gets it ${result.pageSnapshotBytes} bytes`);
+  console.log(`  brief characters per project: ${Object.entries(briefChars).map(([name, n]) => `${name} ${n}`).join(", ")}; total ${Object.values(briefChars).reduce((a, b) => a + b, 0)}`);
   console.log(`BENCH ${JSON.stringify(result)}`);
   await client.close(); await mcp.close(); stream.destroy();
   await new Promise<void>(ok => server.close(() => ok()));

@@ -22,7 +22,7 @@
   --cur: #fff1df;
   --bar-wip: #f59e0b;
   --bar-done: #34c759;
-  --bar-partial: #5aa0c8;
+  --bar-idle: #5aa0c8;
   --bar-todo: #c9d1ce;
   --bar-cancel: #9aa4a0;
   --bar-block: #8b5cf6;
@@ -39,8 +39,8 @@
   --done-soft: #e3f2e6;
   --todo: #66706d;
   --todo-soft: #eceeed;
-  --partial: #1f6590;
-  --partial-soft: #e0eef7;
+  --idle: #1f6590;
+  --idle-soft: #e0eef7;
   --note-bg: #f6f8f7;
   --ask: #b3261e;
   --ask-soft: #fdeceb;
@@ -59,9 +59,9 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
-    --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-partial: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
+    --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
-    --partial: #7db8dc; --partial-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
+    --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
     --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
     --amber: #f0c060; --amber-soft: #3a2d0a;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
@@ -70,9 +70,9 @@
 }
 :root[data-theme="dark"] {
   --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
-  --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-partial: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
+  --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
-  --partial: #7db8dc; --partial-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
+  --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
   --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
   --amber: #f0c060; --amber-soft: #3a2d0a;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
@@ -131,6 +131,19 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .waitdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blockwait); flex: none; }
 .waitmore { font-size: 12px; color: var(--muted); }
 /* The agent list: one row per session, then the two items it touched last. */
+/* The page's top right, beside the shortcut menu (.keymenu, 34px wide at right: 12px). */
+.messages { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 54px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; }
+.messages-toggle { font: inherit; font-size: 13px; height: 30px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 0 10px; color: var(--ink); cursor: pointer; }
+.messages-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.messages-new { color: var(--accent); font-weight: 700; margin-left: 4px; }
+.messages-panel { margin-top: 6px; width: min(560px, 90vw); max-height: 60vh; overflow: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / 12%); padding: 8px 12px; }
+.message-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.message { border-bottom: 1px solid var(--rule); padding-bottom: 6px; }
+.message:last-child { border-bottom: 0; }
+.message-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); }
+.message-who { color: var(--ink); font-weight: 600; }
+.message-ago { margin-left: auto; }
+.message-text { font-size: 13.5px; overflow-wrap: anywhere; }
 .agents { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .agents[hidden] { display: none; }
 .agents-head { margin: 0; font-size: 15px; }
@@ -215,9 +228,6 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 /* The difficulty is not a tag: a plain outline in the ink colour, so it reads apart from the teal tags. */
 .diffchip { background: transparent; color: var(--ink); border-color: var(--rule); margin-right: 4px; }
 .item-tags { margin: 2px 0 4px 20px; }
-.progress-line { margin: 2px 0 4px 20px; font-size: 13.5px; color: var(--muted); }
-.progress-line.doing { color: var(--wip); }
-.progress-line.blocked { color: var(--block); }
 .tagfilter { font-weight: 400; }
 .checktag { font-size: 11px; padding: 0 5px; vertical-align: 1px; }
 .plan-link { color: var(--ink); text-decoration: none; }
@@ -321,7 +331,7 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .item.wip { --bar: var(--bar-wip); }
 .item.done { --bar: var(--bar-done); }
 .item.todo { --bar: var(--bar-todo); }
-.item.partial { --bar: var(--bar-partial); }
+.item.idle { --bar: var(--bar-idle); }
 .item.cancelled { --bar: var(--bar-cancel); }
 .item.blocked { --bar: var(--bar-block); }
 .item.paused { --bar: var(--bar-cancel); }
@@ -345,13 +355,13 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .st.paused { flex: none; min-width: max-content; }
 .st.todo, .st.cancelled, .st.paused { background: var(--todo-soft); }
 .st.wip { background: var(--wip-soft); }
-.st.partial { background: var(--partial-soft); }
+.st.idle { background: var(--idle-soft); }
 .st.blocked { background: var(--block-soft); }
 .st.done { background: var(--done-soft); }
 .st.wip { color: var(--wip); font-weight: 700; }
 .st.done { color: var(--done); font-weight: 600; }
 .st.todo { color: var(--todo); font-weight: 600; }
-.st.partial { color: var(--partial); font-weight: 600; }
+.st.idle { color: var(--idle); font-weight: 600; }
 .st.cancelled, .st.paused { color: var(--muted); font-weight: 600; }
 .st.blocked { color: var(--block); font-weight: 700; }
 .blocktag { font-size: 12px; font-weight: 600; background: var(--bar-block); color: #fff; padding: 0 6px; border-radius: 4px; }
@@ -517,6 +527,7 @@ details.refsec > .refbody p { margin: 0; }
 <div id="server-banner" role="alert" hidden></div>
 <div id="update-banner" role="status" hidden></div>
 <div id="hint" role="status" hidden></div>
+<div class="messages" id="messages"></div>
 <div class="wrap detail-collapsed">
   <div class="page-left" id="page-left">
   <header class="top">

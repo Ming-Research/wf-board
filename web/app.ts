@@ -8,12 +8,11 @@ import { drawMermaid, watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
-import { progressLine } from "./progress.ts";
 import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch, Message, MessageDay } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -22,10 +21,10 @@ type ViewNote = Note & { id: string };
 interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDecision[]; notes: ViewNote[] }
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
-  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", partial: "PARTIAL", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
+  const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", idle: "IDLE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
   // Keeps the parsed activity times across snapshots, so each new Rules object reads them without rescanning every log.
   const activityCache = new DerivedCache();
   let derived = rules(snapshot);
@@ -348,7 +347,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ["wip", "进行中", "进行中的条目", it => statusOf(it) === "wip"],
     ["blocked", "卡住", "卡住的条目", it => statusOf(it) === "blocked"],
     ["paused", "暂停", "由主人暂停的条目，包括暂停条目的下级", it => statusOf(it) === "paused"],
-    ["partial", "待续", "做完了一部分、现在没人在做的条目", it => statusOf(it) === "partial"],
+    ["idle", "停滞", "做完了一部分、现在没人在做的条目", it => statusOf(it) === "idle"],
     ["todo", "未开始", "什么都还没做、也没人在做的条目", it => statusOf(it) === "todo"],
     ["done", "完成", "所有完成的条目", it => statusOf(it) === "done"],
     ["done7", "7 天内完成", "最近 7 天完成的条目", it => statusOf(it) === "done" && Date.parse(latestOf(it)) > Date.now() - WEEK],
@@ -1629,9 +1628,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
 
-    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, partial: 0, todo: 0, done: 0, cancelled: 0 };
+    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, idle: 0, todo: 0, done: 0, cancelled: 0 };
     state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
-    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["partial", "待续", "--bar-partial"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
+    ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["idle", "停滞", "--bar-idle"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
       .filter(([k]) => (k !== "cancelled" && k !== "blocked" && k !== "paused") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
     view.appendChild(stats);
@@ -1762,6 +1761,52 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     running.forEach(r => list.appendChild(agentRow(r)));
     if (others.length) list.appendChild(agentOthers(others));
     host.appendChild(list);
+  }
+  // The messages agents send each other (docs/design.md, Messages): a button at the top right that counts those that came since
+  // the list was last open, and the list, newest first, which new messages join as they arrive.
+  let messagesOpen = false, messagesSignature = "";
+  // The newest message the owner has seen in the open list. Ids begin with the time sent, so a later message has a greater id.
+  let messagesSeen = "";
+  try { messagesSeen = localStorage.getItem("board-messages-seen") ?? ""; } catch (e) {}
+  function messageList(): Message[] {
+    return cached("messages", () => Object.values(snapshot.messages ?? {}).flatMap(day => day.messages).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)));
+  }
+  function renderMessages() {
+    const host = get("messages"); if (!host) return;
+    const list = messageList();
+    if (messagesOpen && list.length && list[0]!.id > messagesSeen) {
+      messagesSeen = list[0]!.id;
+      try { localStorage.setItem("board-messages-seen", messagesSeen); } catch (e) {}
+    }
+    const fresh = list.filter(m => m.id > messagesSeen).length;
+    const signature = JSON.stringify([messagesOpen, fresh, messagesOpen ? list.map(m => [m.id, agoText(m.at), m.item ? snapshot.items[m.item]?.title ?? null : 0]) : 0]);
+    if (signature === messagesSignature) return;
+    messagesSignature = signature;
+    host.innerHTML = "";
+    const toggle = el("button", "messages-toggle", "消息" + (fresh ? ' <span class="messages-new">新 ' + fresh + "</span>" : ""));
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(messagesOpen)); toggle.title = messagesOpen ? "收起消息" : "代理之间发的消息";
+    toggle.addEventListener("click", () => { messagesOpen = !messagesOpen; renderNow("messages"); });
+    host.appendChild(toggle);
+    if (!messagesOpen) return;
+    const panel = el("div", "messages-panel");
+    panel.id = "messages-panel";
+    if (!list.length) panel.appendChild(el("p", "empty", "还没有消息。"));
+    else {
+      const ul = el("ul", "message-list");
+      for (const m of list) {
+        const li = el("li", "message");
+        li.dataset.message = m.id;
+        const head = el("div", "message-head");
+        head.appendChild(el("span", "message-who", esc(m.from + "（" + m.project + "）→ " + m.to)));
+        if (m.item) head.appendChild(el("span", "message-item", inline("[[it:" + m.item + "]]")));
+        head.appendChild(el("span", "message-ago", esc(agoText(m.at)))).title = m.at;
+        li.appendChild(head);
+        li.appendChild(el("div", "message-text", inline(m.text)));
+        ul.appendChild(li);
+      }
+      panel.appendChild(ul);
+    }
+    host.appendChild(panel);
   }
   // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
   function waitPanel() {
@@ -2101,7 +2146,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
       // Done and cancelled parts are not counted on the row: only what is still open.
-      ["todo", "partial", "wip", "blocked", "paused"].forEach(k => { if (n[k]) {
+      ["todo", "idle", "wip", "blocked", "paused"].forEach(k => { if (n[k]) {
         const count=el("span", "st " + k, String(n[k]));
         count.setAttribute("aria-label",(STATUS[k] || k)+" "+n[k]);
         cs.appendChild(count);
@@ -2112,14 +2157,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
     if (detail && (it.tags?.length || it.difficulty !== undefined)) {
       const chips = el("div", "tagchips item-tags");
-      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有架构师能改";
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级：1–5，决定派哪一级的代理来做";
       for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
       box.appendChild(chips);
-    }
-    // Then how far the item is and what holds it, on a line of its own; the tree rows show neither.
-    if (detail) {
-      const line = progressLine(statusOf(it), derived.progress(it.id), { item: id => index().byId.get(id)?.title ?? id, card: key => snapshot.decisions[key]?.question ?? key });
-      if (line) box.appendChild(el("div", "progress-line " + line.kind, esc(plain(line.text))));
     }
     if (detail) { const pause = pauseControl(it); if (pause) box.appendChild(pause); }
     if (headerOnly) { li.appendChild(box); return li; }
@@ -2520,7 +2560,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       waitingOrder=order;
       for (const root of [get("areas"),get("cards"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
-    renderHeader(); renderAgents(); renderSend(); renderMenu();
+    renderHeader(); renderAgents(); renderMessages(); renderSend(); renderMenu();
     get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
@@ -2937,7 +2977,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const relocated:string[]=[], retitled:string[]=[];
       // The rules of the snapshot before this change: the affected items are found by comparing with them.
       const base=snapshot, baseRules:Rules=derived;
-      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
+      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries},messages:{...snapshot.messages}};
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
         if (doc.kind === "note") {
@@ -2967,10 +3007,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           scope.add("card:"+doc.id);
 
         }
+        // A message shows only in the list of messages.
+        else if (doc.kind === "message") scope.add("messages");
         else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
         else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
+        else if (doc.kind === "message") { if (doc.after === null) delete snapshot.messages![doc.id]; else snapshot.messages![doc.id] = doc.after as MessageDay; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });
