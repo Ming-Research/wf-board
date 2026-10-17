@@ -321,7 +321,7 @@ test("something more to hand out than the PM was last told pushes dispatch, with
   await tick();
   assert.deepEqual(dispatches(), [], "its own start only lowers the offer");
   // A new candidate appears.
-  const fresh = ({ title: "新的可开工条目", group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later });
+  const fresh = ({ title: "新的可开工条目", group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later });
   await store.commit({ author, message: "a new item", puts: [{ kind: "item", id: "fresh", expectRev: null, doc: fresh }] });
   await tick();
   assert.deepEqual(dispatches(), [{ event: "dispatch", pool: "2+", free: starting.free - 1, limit: 6, candidates: starting.candidates }], "one more candidate than after the start; no item is named");
@@ -365,7 +365,7 @@ test("the offers count the candidates a group stands for and those past the rows
   // Five startable parts under one parent are listed as the parent and 5, not as five rows.
   const grouped = await board(t), children = Array.from({ length: 5 }, (_, i) => `part${i}`);
   await grouped.store.commit({ author, message: "Seed", puts: [
-    { kind: "item", id: "parent", expectRev: null, doc: doc("有五个部分的条目", { priority: "P0", plan: [...children.map(id => ({ id, item: id, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    { kind: "item", id: "parent", expectRev: null, doc: doc("有五个部分的条目", { plan: [...children.map(id => ({ id, item: id, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
     ...children.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`部分 ${id}`) })),
   ] });
   const g = grouped.store.snapshot(), gr = grouped.store.derived.rules(g, T0), gpool = candidates(g, gr).pools.find(p => p.pool === "2+")!;
@@ -375,7 +375,7 @@ test("the offers count the candidates a group stands for and those past the rows
   // A parent whose parts are of two levels is one group in each pool, and each pool counts only its own parts.
   const mixed = await board(t), levels = [2, 2, 2, 1, 1];
   await mixed.store.commit({ author, message: "Seed", puts: [
-    { kind: "item", id: "mparent", expectRev: null, doc: doc("两个级别的部分", { priority: "P0", plan: [...levels.map((_, i) => ({ id: `m${i}`, item: `m${i}`, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    { kind: "item", id: "mparent", expectRev: null, doc: doc("两个级别的部分", { plan: [...levels.map((_, i) => ({ id: `m${i}`, item: `m${i}`, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
     ...levels.map((difficulty, i) => ({ kind: "item" as const, id: `m${i}`, expectRev: null, doc: doc(`部分 m${i}`, { difficulty }) })),
   ] });
   const m = mixed.store.snapshot(), mr = mixed.store.derived.rules(m, T0);
@@ -384,7 +384,7 @@ test("the offers count the candidates a group stands for and those past the rows
   assert.equal(ofLevel(d => d === 1), 2, "the two level 1 parts");
   // Twelve loose candidates are more than the rows listed for a pool: the rest are only counted.
   const crowded = await board(t), loose = Array.from({ length: 12 }, (_, i) => `loose${i}`);
-  await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`, { priority: "P1" }) })) });
+  await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`) })) });
   const c = crowded.store.snapshot(), cr = crowded.store.derived.rules(c, T0), cpool = candidates(c, cr).pools.find(p => p.pool === "2+")!;
   assert.ok(cpool.more > 0, "some candidates are past the rows listed");
   assert.deepEqual(offers(c, cr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(c, cr) });

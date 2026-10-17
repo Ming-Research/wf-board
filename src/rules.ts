@@ -383,7 +383,7 @@ export interface Rules {
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
-  /** The default order of the candidates list, for reading and not a choice: higher priority first; at equal priority more open dependents first; then the earlier item number. */
+  /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. Priority is not part of it. */
   compareCandidates(a: string, b: string): number;
 }
 
@@ -410,15 +410,15 @@ export interface Progress {
 export const REVIEW_STEP = "review";
 /** Whether a plan row is the review step. The one place that knows the convention. */
 export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
+/** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
+ * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
+export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
 /** The text of the item's review step while it is in progress: the engineer's request for a review. Undefined when the item has no
  * such step or it is not in progress. */
 export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
   const step = item?.plan.find(isReviewStep);
   return step && "text" in step && step.state === "doing" ? step.text : undefined;
 }
-/** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
- * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
-export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
@@ -1229,7 +1229,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     refusals: id => copyChecks(checks(id)),
     compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
     // An item without a number (written before numbers) sorts after the numbered; the key settles what is left.
-    compareCandidates: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || openDependents(b) - openDependents(a)
+    compareCandidates: (a, b) => openDependents(b) - openDependents(a)
       || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),
   };
 }

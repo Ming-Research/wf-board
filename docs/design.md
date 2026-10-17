@@ -1829,11 +1829,11 @@ and the push that says work can be handed out reads it too.
   `canStart`) and that nobody holds. It is held when an engineer dispatch is open on it, even
   when that session has gone quiet: the PM takes such an item over, and listing it again
   would start a second engineer beside a stopped one.
-- *Default order.* One comparison, `compareCandidates`, over all projects: higher priority first;
-  at equal priority, the item more open, unpaused work items hold a shared dependency row for
-  first (its owner holds an owned row for every item it owns, which tells none apart, so it is
-  not counted); then the earlier item number. `brief`'s todo list uses the same order, so there
-  is one.
+- *Default order.* One comparison, `compareCandidates`, over all projects: the item more open,
+  unpaused work items hold a shared dependency row for first (its owner holds an owned row for
+  every item it owns, which tells none apart, so it is not counted); then the earlier item
+  number. Priority is not part of it: choosing among the candidates, by priority or any other
+  principle, is the architect's. `brief`'s todo list uses the same order, so there is one.
 - *Pools.* Level 1 holds at most 10 engineers, level 2 and above at most 6; the owner sets
   the numbers (`POOLS`). An item belongs to the pool of its difficulty, an engineer to the pool
   of its dispatch's level.
@@ -1850,14 +1850,14 @@ and the push that says work can be handed out reads it too.
 - *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
   knows this). The review that waits for a reviewer is that step in progress.
 - *Answer.* Per pool: the limit, the engineers working, the free slots, the number of candidates
-  of the pool (`total`, counted whether or not a slot is free); while a slot is free,
+  of the pool (`total`, written 候选 N in the text; counted whether or not a slot is free); while a slot is free,
   the first 10 rows in the default order, then the number of candidates not listed. More than 3
   candidates under one parent, of any level, are one row naming the parent and the count of all
   of them, at the place of the best of them in each pool they fall in; the free slots and the
   candidates a pool counts are counted apart from the groups. `under=<parent>` lists the
   parent's candidates of every level one by one (at most 10).
   The answer is a few lines of text. Measured on the two generated boards of 176 items
-  (`generateBoard`, seeds 1 and 2; 28 and 34 startable items, all slots free): 1259 and 1112
+  (`generateBoard`, seeds 1 and 2; 28 and 34 startable items, all slots free): 1087 and 996
   characters, where the todo lists of `brief` over the five projects are 8316 and 10199
   characters of JSON. `test/candidates.test.ts` bounds it at 1500.
 
