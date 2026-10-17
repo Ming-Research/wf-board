@@ -513,6 +513,7 @@ wf-board-data/
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
+  messages/<day>.yaml     one file per UTC day: the messages agents sent each other that day (section 8, Messages)
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the architect's wake stream: events, receipts and marks (not a board document; excluded from git)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
@@ -756,7 +757,7 @@ log:
   items in, and a restart gives the list live writes gave.
   Content commits touching board metadata,
   items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
-  owner reading cursors or read-ahead marks do not. Current document timestamps
+  owner reading cursors, read-ahead marks or messages do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   A live update carries the activity index's change, not the index: the
   commit's content-write time, the items whose last change moved, the
@@ -808,6 +809,17 @@ log:
   stamps `updated` and `by`. A replaced term keeps its place. A glossary is
   not an unread document: its changes neither count as 新 nor appear in
   `changes`.
+- **Messages.** A file `messages/2026-10-17.yaml` is `{messages, rev}`: the
+  messages sent on that UTC day, in the order sent. A message is `{id, from,
+  project, to, text, item?, at}`: its id, the sending session and its project,
+  the receiving session, one line of at most 150 characters, the item it is
+  about, and the time sent. The id is that time to the second, then four random
+  hex digits (`20261017T160512Z-3fa9`), so ids sort in the order sent. A
+  message is written once and never changed: sending one adds it to the end of
+  its day's file. One file a day keeps the number of files, and so git's index,
+  growing by one a day however many messages are sent (section 8, Messages).
+  Like a glossary, messages are not unread documents, and they are no work on
+  the board.
 - **Tags.** The board keeps one approved vocabulary, `tags: [{name, meaning,
   projects?}]`, in `board.yaml`; each item carries `tags: [name]`. A name is 1–12
   characters without whitespace or commas and unique; `meaning` is one sentence
@@ -1647,6 +1659,7 @@ instructions within the limit and free of rule text.
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
+| `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
 `changes`, `history` and `diff` read the git history, so each call runs under a request budget
@@ -1770,6 +1783,7 @@ that delivers it, joined by a shared row. A write under the retired author
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
+| `send_message(to, text, item?)` | Sends a message from the caller's session (section 8, Messages) | A session name; `to` the architect's session, a session with an open dispatch, or a long-lived credential's session, else refused naming those that work; `text` one line of at most 150 characters, refused, never cut, when longer; `item` exists |
 
 ## 7. The page
 
@@ -2194,6 +2208,19 @@ level, and whether that someone is working, waiting or has gone quiet.
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
 
+### Messages list
+
+At the top right of the page, beside the shortcut menu (☰) and fixed there like
+it, a button 「消息」 opens the messages agents sent each other (section 8,
+Messages) in a list that lies over the page and moves nothing. Each row shows sender（project）→ recipient, the item as a link that
+selects it, how long ago, and the text with its inline formatting; the newest
+is first. The button counts, as 「新 n」, the messages that came since the list
+was last open; the newest message seen is kept in the browser, so a reload
+keeps the count. A message joins the list from the change event that carries
+it and repaints only the list. The page is sent, with the board, the days of
+messages that hold the newest 200 (`PAGE_MESSAGES` in `src/http.ts`), so the page
+does not grow with the board's history; `messages` finds older ones.
+
 ### Updating the page
 
 The page's live updates carry data, never code, so a page left open through a
@@ -2254,8 +2281,10 @@ push, and how it listens, is in its rules and in `~/dev/wf/AGENTS.md`, section
 "Board".
 
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
-architect's stream, or `{holder: <field>}`, the stream of the session holding
-the item that field names, and the architect's when nobody holds it. A session
+architect's stream; `{holder: <field>}`, the stream of the session holding
+the item that field names, and the architect's when nobody holds it; or
+`{session: <field>}`, the stream of the session that field names, the
+architect's when it names the architect. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
 names it as `agent` and has not ended; when several have not ended, the newest
 start wins, so a takeover holds the item from its start (`holderOf` in
@@ -2269,9 +2298,10 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Fourteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
-All go to the architect except `item-done`, which goes to the holder:
+All go to the architect except `item-done`, which goes to the holder, and
+`message`, which goes to its recipient:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
@@ -2293,7 +2323,8 @@ All go to the architect except `item-done`, which goes to the holder:
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below);
 - an item that became done (`item-done`), to the session holding each open item
-  that waits on it.
+  that waits on it;
+- a message one agent sent another (`message`; Messages, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -2337,6 +2368,7 @@ the forms the server sends:
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the architect's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the architect's when `to` is the architect's session |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -2413,7 +2445,8 @@ and leaves the details to a read. Its one line (`lineOf` in `src/wake.ts`) is
 the number, the kind's label and what it is about (an item or pull request
 with its project, a title, counts instead of lists), at most 200 characters,
 cut with … past that; the tests measure it for every kind with the longest
-fields. An event reaches an agent once (above).
+fields. A message's line cuts only what comes before its text (Messages,
+below). An event reaches an agent once (above).
 
 **No receipt.** When the oldest unanswered event on the architect's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「架构师 1 小时没响应」,
@@ -2455,6 +2488,54 @@ transport, so a thin stdio channel that relays `/wake` can replace the
 Monitor once channels allow it, without changing the server. Until then the
 architect runs a small client under Monitor, which lasts 30 minutes at most and
 is started again: the numbers and `after` carry it across the gap.
+
+### Messages
+
+An agent tells another which item to read and what it waits for with a
+message through the board, not with a message between sessions: the recipient
+gets it whether or not its process is running, and the message stays on the
+board, where the owner and later readers find it.
+
+- **Sending.** `send_message(to, text, item?)` adds one message to the end of
+  its day's file (section 5) under the caller's session and project, in one
+  commit. The
+  recipient is the architect's session, a session with an open dispatch of any
+  role (an engineer or a review; `openAgents` in `src/dispatch.ts`), or the
+  session of a long-lived credential (the observer, the resource agent).
+  Another name is refused with the names that work, so a mistyped name fails at
+  once instead of filling a stream nobody reads. The text is one line of at most
+  150 characters (`MESSAGE_TEXT_LIMIT` in `src/model.ts`); longer text is
+  refused, never cut: a message is a doorbell, and the content belongs on the
+  item. Every role may send (part `message.send`, section 9).
+- **Delivery.** The write pushes one `message` event to the recipient's
+  stream: the architect's for the architect, else the session's own. With no
+  process connected it waits there, and reaches the session once, on its wait
+  script's next connection or in the result of its next board call (The wake
+  streams, above).
+- **Size.** Its line is the number, 「消息」, the sender with its project and
+  the item, cut at 49 characters (`MESSAGE_PREFIX_LIMIT` in `src/wake.ts`), then
+  a colon and the whole text: at most 200 characters, the line limit, because
+  the text is at most 150.
+- **Reading.** `messages(filters)` lists them (section 6). The page shows the
+  newest at its top right (section 7, Messages list).
+- **No work.** A message changes no item: it starts no active time, moves no
+  session's items in the agent list, reaches no check and is not unread for the
+  owner. Its write skips the item rules' checks for the same reason.
+
+Rejected: keeping messages only in the recipient's stream (a local state file
+outside git), which keeps only the newest few hundred and loses them with the
+machine, so the owner's history of messages could not be complete; writing a
+message into an item's log, which has no place for a message about no item
+(asking for the 14900K, reporting a rule problem) and gives the page no list by
+time; 500 characters cut when pushed, because a cut text may lose the item to
+read, and the line limit would then not hold; one file per message, because
+every file is one more for the board to read at start and for git to check on
+every commit: with 50,000 messages (about a year at 140 a day) on a board of the
+live one's size, opening took 17.2–17.8 s instead of 5.3–5.4 s and an ordinary
+write 153–158 ms instead of 73–76 (three interleaved rounds on a GitHub-hosted
+runner, a rough measure; the write benchmark, `scripts/bench-writes.ts
+--messages`); archiving old messages into monthly files instead, because it
+keeps a second place to read messages from and a job that moves them.
 
 ### Watching GitHub
 
@@ -2775,7 +2856,7 @@ the writer from it.
 - **What each role may write** is one table, `ACCESS` in `src/model.ts`, from role to the
   *parts* of the board a write changes and how far: `board` (any item of any project),
   `subtree` (the items the credential names, with everything they own, and the writer's own
-  project's glossary) or `below` (a `subtree` without the items the credential names). `ops.run` takes the parts of every write as an argument, so a write
+  project's glossary), `below` (a `subtree` without the items the credential names) or `own` (no item, only the writer's own message). `ops.run` takes the parts of every write as an argument, so a write
   cannot omit them, and refuses a part the role lacks before it reads anything; for a
   `subtree` or `below` part it then checks, once the write is complete, that every document it changes
   is inside the subtree. The check counts the board's own effects on other items as well
@@ -2807,6 +2888,9 @@ the writer from it.
     creating an item and rating one stay the architect's alone (the old way, until the
     old tools are removed).
   - A review writes the log of its subtree.
+  - Every role sends messages (`message.send`, section 8, Messages). Its scope is `own`: a
+    message changes no item, so no project or subtree bounds it, and it does not make a role
+    one that writes any project.
 - **Rejected.** Passing the credential in an environment variable: a background session
   does not receive the environment of the command that started it (tested 2026-10-16). A
   per-directory MCP configuration (`claude mcp add --scope local`): it applies to the

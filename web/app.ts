@@ -12,7 +12,7 @@ import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch, Message, MessageDay } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -24,7 +24,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", idle: "IDLE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
   const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
-  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, owner: {}, head: "" };
+  let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
   // Keeps the parsed activity times across snapshots, so each new Rules object reads them without rescanning every log.
   const activityCache = new DerivedCache();
   let derived = rules(snapshot);
@@ -1748,6 +1748,52 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     rows.forEach(r => list.appendChild(agentRow(r)));
     host.appendChild(list);
   }
+  // The messages agents send each other (docs/design.md, Messages): a button at the top right that counts those that came since
+  // the list was last open, and the list, newest first, which new messages join as they arrive.
+  let messagesOpen = false, messagesSignature = "";
+  // The newest message the owner has seen in the open list. Ids begin with the time sent, so a later message has a greater id.
+  let messagesSeen = "";
+  try { messagesSeen = localStorage.getItem("board-messages-seen") ?? ""; } catch (e) {}
+  function messageList(): Message[] {
+    return cached("messages", () => Object.values(snapshot.messages ?? {}).flatMap(day => day.messages).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)));
+  }
+  function renderMessages() {
+    const host = get("messages"); if (!host) return;
+    const list = messageList();
+    if (messagesOpen && list.length && list[0]!.id > messagesSeen) {
+      messagesSeen = list[0]!.id;
+      try { localStorage.setItem("board-messages-seen", messagesSeen); } catch (e) {}
+    }
+    const fresh = list.filter(m => m.id > messagesSeen).length;
+    const signature = JSON.stringify([messagesOpen, fresh, messagesOpen ? list.map(m => [m.id, agoText(m.at), m.item ? snapshot.items[m.item]?.title ?? null : 0]) : 0]);
+    if (signature === messagesSignature) return;
+    messagesSignature = signature;
+    host.innerHTML = "";
+    const toggle = el("button", "messages-toggle", "消息" + (fresh ? ' <span class="messages-new">新 ' + fresh + "</span>" : ""));
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(messagesOpen)); toggle.title = messagesOpen ? "收起消息" : "代理之间发的消息";
+    toggle.addEventListener("click", () => { messagesOpen = !messagesOpen; renderNow("messages"); });
+    host.appendChild(toggle);
+    if (!messagesOpen) return;
+    const panel = el("div", "messages-panel");
+    panel.id = "messages-panel";
+    if (!list.length) panel.appendChild(el("p", "empty", "还没有消息。"));
+    else {
+      const ul = el("ul", "message-list");
+      for (const m of list) {
+        const li = el("li", "message");
+        li.dataset.message = m.id;
+        const head = el("div", "message-head");
+        head.appendChild(el("span", "message-who", esc(m.from + "（" + m.project + "）→ " + m.to)));
+        if (m.item) head.appendChild(el("span", "message-item", inline("[[it:" + m.item + "]]")));
+        head.appendChild(el("span", "message-ago", esc(agoText(m.at)))).title = m.at;
+        li.appendChild(head);
+        li.appendChild(el("div", "message-text", inline(m.text)));
+        ul.appendChild(li);
+      }
+      panel.appendChild(ul);
+    }
+    host.appendChild(panel);
+  }
   // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
   function waitPanel() {
     const rows = stops().filter(blockingStop).map(st => {
@@ -2500,7 +2546,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       waitingOrder=order;
       for (const root of [get("areas"),get("cards"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
-    renderHeader(); renderAgents(); renderSend(); renderMenu();
+    renderHeader(); renderAgents(); renderMessages(); renderSend(); renderMenu();
     get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();
@@ -2917,7 +2963,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       const relocated:string[]=[], retitled:string[]=[];
       // The rules of the snapshot before this change: the affected items are found by comparing with them.
       const base=snapshot, baseRules:Rules=derived;
-      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries}};
+      snapshot={...snapshot,items:{...snapshot.items},decisions:{...snapshot.decisions},notes:{...snapshot.notes},glossaries:{...snapshot.glossaries},messages:{...snapshot.messages}};
       for (const doc of change.changed) {
         const previous=doc.kind === "item" ? snapshot.items[doc.id] : doc.kind === "decision" ? snapshot.decisions[doc.id] : snapshot.notes[doc.id];
         if (doc.kind === "note") {
@@ -2947,10 +2993,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           scope.add("card:"+doc.id);
 
         }
+        // A message shows only in the list of messages.
+        else if (doc.kind === "message") scope.add("messages");
         else scope.add("all"); // the board, owner state, or a glossary, whose terms any text may link
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
         else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
+        else if (doc.kind === "message") { if (doc.after === null) delete snapshot.messages![doc.id]; else snapshot.messages![doc.id] = doc.after as MessageDay; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });
