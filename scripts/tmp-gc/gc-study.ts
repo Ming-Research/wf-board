@@ -478,7 +478,11 @@ async function replay(name: string): Promise<void> {
   for (const [k, v] of def.config) git(dir, ["config", k, v]);
   note(`replay start state, as the live repository was on 10-17: ${shape(dir)}`);
   const remote = join(ROOT, "remote.git");
-  if (PUSH) { git(ROOT, ["init", "-q", "--bare", remote]); git(dir, ["remote", "add", "origin", remote]); git(dir, ["push", "-q", "origin", "main"]); }
+  if (PUSH) {
+    // The remote's own automatic maintenance (receive.autogc) would show in the same trace as the board's; the check is about the data repository.
+    git(ROOT, ["init", "-q", "--bare", remote]); git(remote, ["config", "receive.autogc", "false"]); git(remote, ["config", "gc.auto", "0"]);
+    git(dir, ["remote", "add", "origin", remote]); git(dir, ["push", "-q", "origin", "main"]);
+  }
   const trace = join(ROOT, "trace2.jsonl");
   process.env.GIT_TRACE2_EVENT = trace;
   GITENV.GIT_TRACE2_EVENT = trace;
@@ -493,9 +497,17 @@ async function replay(name: string): Promise<void> {
   const store = await Store.open(dir);
   const q = store as unknown as { enqueue<T>(fn: () => Promise<T>): Promise<T>; git(args: string[]): Promise<string> };
   const r = new Rng(4242), keys = Object.keys(store.snapshot().items);
-  const N = SMOKE ? 60 : 1566;
-  const bins: [number, number, number][] = [[0, 1, 1075], [1, 2, 470], [2, 3, 5], [3, 5, 5], [5, 10, 6], [10, 15, 4]], total = bins.reduce((a, b) => a + b[2], 0);
-  const gap = (): number => { let u = r.next() * total; for (const [lo, hi, w] of bins) { if (u < w) return (lo + (hi - lo) * r.next()) * (SMOKE ? 100 : 1000); u -= w; } return 500; };
+  // The busiest ten minutes of the live board: 596 seconds, in which 105 seconds had no commit and the others 1 (44), 2 (56), 3 (162), 4 (221)
+  // or 5 (8) commits; the commits of a second are spread over it at random.
+  const perSecond: [number, number][] = [[0, 105], [1, 44], [2, 56], [3, 162], [4, 221], [5, 8]], secTotal = perSecond.reduce((a, b) => a + b[1], 0);
+  const offsets: number[] = [];
+  for (let sec = 0; sec < (SMOKE ? 8 : 596); sec++) {
+    let u = r.next() * secTotal, k = 0;
+    for (const [kk, w] of perSecond) { if (u < w) { k = kk; break; } u -= w; }
+    const inSec = Array.from({ length: k }, () => r.next()).sort((a, b) => a - b);
+    for (const x of inSec) offsets.push((sec + x) * (SMOKE ? 100 : 1000));
+  }
+  const N = offsets.length;
   const lat: number[] = [], maint: { at: number; ms: number; commits: number }[] = [], slow: string[] = [];
   let since = def.start > 0 ? Math.floor(counts(dir).count / 4) : 0, pending = false, nextAt = def.start, msPerCommit = 3, idleTimer: NodeJS.Timeout | undefined, pushes = 0, pushErrors = 0;
   const t0 = performance.now();
@@ -519,10 +531,8 @@ async function replay(name: string): Promise<void> {
   const writes: Promise<void>[] = [];
   let pushTimer: NodeJS.Timeout | undefined;
   if (PUSH) pushTimer = setInterval(() => { pushes++; store.push().catch(() => { pushErrors++; }); }, SMOKE ? 500 : 3000);
-  let at = 0;
   for (let i = 0; i < N; i++) {
-    at += gap();
-    const wait = t0 + at - performance.now();
+    const wait = t0 + offsets[i]! - performance.now();
     if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
     const id = keys[Math.floor(keys.length * r.next() ** 2)]!, sent = performance.now();
     writes.push((async () => {
@@ -556,7 +566,7 @@ async function replay(name: string): Promise<void> {
   const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.time);
   const overlaps = adds.filter(a => procs.some(m => a >= m.from && a < m.to)).length;
   const after = counts(dir);
-  emit(`E4 replay, policy ${def.name}, ${N} writes at the busiest ten minutes' rhythm${PUSH ? ", with a push every 3 s" : ""}`, [{
+  emit(`E4 replay, policy ${def.name}, ${N} writes at the busiest ten minutes' rhythm (live: 1566 commits in 596 s)${PUSH ? ", with a push every 3 s" : ""}`, [{
     policy: def.name, writes: N, p50: f(pct(0.5)), p90: f(pct(0.9)), p99: f(pct(0.99)), max: f(sorted.at(-1)!), over1s: lat.filter(x => x > 1000).length, over3s: lat.filter(x => x > 3000).length,
     maintRuns: maint.length, maintMaxMs: f(Math.max(0, ...maint.map(m => m.ms))), maintMedianMs: f(median(maint.map(m => m.ms))), maintTotalMs: f(maint.reduce((a, m) => a + m.ms, 0)), maintCommits: maint.map(m => m.commits).join("/"),
     looseEnd: after.count, packsEnd: after.packs, gitAddsDuringMaintenance: overlaps, pushes, pushErrors,
