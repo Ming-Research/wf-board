@@ -4,7 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
-import { board, author, architect, asArchitect, later } from "./helpers.ts";
+import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
+import { board, author, architect, asArchitect, later, retired, rx } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 test("changes output stops at the limit and says how many documents it left out", () => {
@@ -30,16 +31,16 @@ test("project MCP after parameters reorder existing and newly created projects w
   }
   const moved = await client.callTool({ name: "update_project", arguments: { ...asArchitect, name: "Whitefoot", after: "Firn" } });
   assert.equal(moved.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管", "Architect"]);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管", "Architect", "PM"]);
   const created = await client.callTool({ name: "create_project", arguments: { ...asArchitect, name: "New", after: "Firn" } });
   assert.equal(created.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect"]);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect", "PM"]);
   const refused: Array<[string, Record<string, unknown>, RegExp]> = [
-    ["update_project", { author: "Firn", name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
-    ["create_project", { author: "Firn", name: "Refused", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
-    ["update_project", { author: architect, name: "Firn", after: "New" }, /after: only Architect with session 架构师 may reorder projects/],
+    ["update_project", { author: "Firn", name: "Firn", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
+    ["create_project", { author: "Firn", name: "Refused", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
+    ["update_project", { author: architect, name: "Firn", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     ["update_project", { ...asArchitect, name: "Firn", after: "Missing" }, /after Missing: choose a configured project/],
-    ["update_project", { author: "总管", name: "Firn", after: "New" }, /author 总管: this identity is retired; write as Architect/],
+    ["update_project", { author: "总管", name: "Firn", after: "New" }, retired],
   ];
   for (const [name, args, message] of refused) {
     const before = store.snapshot(), result = await client.callTool({ name, arguments: args });
@@ -193,7 +194,7 @@ async function connected(t: { after(fn: () => void | Promise<void>): void }) {
 
 test("MCP replaces legacy fields and tools with plan semantics and refuses removed arguments", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 44, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, dispatch_start, dispatch_finish, dispatches, set_difficulty and set_difficulty_many are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
+  assert.equal(tools.length, 47, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, withdraw_card, dispatch_start, dispatch_finish, dispatches, set_difficulty, set_difficulty_many, send_message and messages are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
   for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
@@ -249,11 +250,11 @@ test("writes answer with their produced plan state; refusals and context identif
     assert.match(text(result), new RegExp(`rev ${store.snapshot().items[id]!.rev} · commit ${store.snapshot().head}`));
     return text(result);
   };
-  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "choice", choice: "A", ruling: "Owner accepted" } });
+  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "choice", choice: "A" } });
   assert.equal(ruled.isError, undefined, text(ruled));
   const finished = await write("a", "done");
   assert.match(finished, /^a · DONE P1/m);
-  assert.match(finished, /^ancestor area now TODO P1 \(was BLOCK P1\)$/m);
+  assert.match(finished, /^ancestor area now IDLE P1 \(was BLOCK P1\)$/m);
   assert.match(await write("b", "done"), /^b · DONE P1/m);
   assert.match(await write("area", "doing"), /^area · WIP P1/m);
   assert.match(await write("area", "done"), /^area · DONE P1/m);
@@ -286,17 +287,17 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
 });
 
-test("MCP moves an item and what it owns to another project, and only Architect with session 架构师 may", async t => {
+test("MCP moves an item and what it owns to another project, and only the PM or the architect may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
   assert.deepEqual([...tool.inputSchema.required!].sort(), ["id", "project"], "author is left out when the connection has a credential, so no tool requires it");
-  assert.match(tool.description!, /^Only author Architect with session 架构师 may use it\./);
+  assert.match(tool.description!, rx`^Only author ${PROCESS_WRITERS} may use it\.`);
   const before = store.snapshot();
   // The item's own project, another project, Architect without the session and Architect from another session all get the same refusal.
   for (const who of [{ author }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }]) {
     const refused = await client.callTool({ name: "move_item_project", arguments: { ...who, id: "area", project: "Firn" } });
-    assert.equal(refused.isError, true); assert.match(text(refused), /author: only Architect with session 架构师 may move an item to another project/);
+    assert.equal(refused.isError, true); assert.match(text(refused), rx`author: only ${PROCESS_WRITERS} may move an item to another project`);
     assert.deepEqual(store.snapshot(), before);
   }
   const moved = await client.callTool({ name: "move_item_project", arguments: { ...asArchitect, id: "area", project: "Firn" } });
@@ -356,7 +357,7 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   assert.equal(store.snapshot().head, head, "crossing the active-time threshold changes no document or commit");
 });
 
-test("MCP set_pause is Architect-only and paused status works in list and overview", async t => {
+test("MCP set_pause is for the PM and the architect only, and paused status works in list and overview", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Pause test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
@@ -364,10 +365,10 @@ test("MCP set_pause is Architect-only and paused status works in list and overvi
   const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const tool = (await client.listTools()).tools.find(tool => tool.name === "set_pause");
   assert.ok(tool, "the pause operation is available to Architect");
-  assert.match(tool.description!, /Only author Architect/);
+  assert.match(tool.description!, rx`Only author ${PROCESS_WRITERS}`);
   const before = store.snapshot();
   const refused = await client.callTool({ name: "set_pause", arguments: { author, id: "area", paused: true, reason: "Pause" } });
-  assert.equal(refused.isError, true); assert.match(text(refused), /only Architect/); assert.deepEqual(store.snapshot(), before);
+  assert.equal(refused.isError, true); assert.match(text(refused), rx`only ${PROCESS_WRITERS}`); assert.deepEqual(store.snapshot(), before);
   const missingReason = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true } });
   assert.equal(missingReason.isError, true); assert.match(text(missingReason), /reason.*required/);
   const paused = await client.callTool({ name: "set_pause", arguments: { ...asArchitect, id: "area", paused: true, reason: "Owner paused project" } });
@@ -383,19 +384,23 @@ test("MCP set_pause is Architect-only and paused status works in list and overvi
   assert.ok(!resumed.isError, text(resumed)); assert.equal(store.snapshot().items.area!.paused, undefined);
 });
 
-test("MCP names Architect on the tools it reserves, lets it write another project's item, and refuses 总管 with the tool error", async t => {
+test("MCP names the PM and Architect on the tools it reserves, lets them write another project's item, and refuses 总管 with the tool error", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  for (const name of ["create_item", "set_status", "set_tag", "rename_tag", "remove_tag", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, /[Oo]nly author Architect with session 架构师/, name);
-  assert.match(tools.find(tool => tool.name === "update_item")!.description!, /Only author Architect with session 架构师 may change the title, and turn a cancelled item into a record/);
+  for (const name of ["set_status", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${PROCESS_WRITERS}`, name);
+  // The engineer writes these two inside its own subtree (its credential), so they name the process writers as the ones who write anywhere.
+  for (const [name, verb] of [["create_item", "creates items in any project"], ["set_difficulty", "rates an item of any project"]] as const) assert.match(tools.find(tool => tool.name === name)!.description!, rx`Author ${PROCESS_WRITERS} ${verb}`, name);
+  assert.match(tools.find(tool => tool.name === "set_difficulty_many")!.description!, /Written by the same writers as set_difficulty/);
+  for (const name of ["set_tag", "rename_tag", "remove_tag", "journal_entry"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${ARCHITECT_WRITER}`, `${name}: still the architect's alone`);
+  assert.match(tools.find(tool => tool.name === "update_item")!.description!, rx`Only author ${PROCESS_WRITERS} may change the title, and turn a cancelled item into a record`);
   assert.doesNotMatch(tools.map(tool => tool.description).join("\n"), /only author 总管|Only author 总管|Only 总管|总管 only|总管 may/, "no tool still names 总管 as the one who may");
   const written = await client.callTool({ name: "append_log", arguments: { ...asArchitect, id: "other", text: "Architect evidence" } });
   assert.equal(written.isError, undefined, text(written));
   assert.deepEqual(store.snapshot().items.other!.log.at(-1), { at: later, by: architect, text: "Architect evidence" });
   const before = store.snapshot();
   const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
-  assert.equal(sessionless.isError, true); assert.match(text(sessionless), /item other belongs to project Whitefoot.*Architect writes other projects' items only with session 架构师/); assert.deepEqual(store.snapshot(), before);
-  const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
-  assert.equal(retired.isError, true); assert.match(text(retired), /author 总管: this identity is retired; write as Architect/); assert.deepEqual(store.snapshot(), before);
+  assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*only ${PROCESS_WRITERS} write other projects' items`); assert.deepEqual(store.snapshot(), before);
+  const retiredCall = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
+  assert.equal(retiredCall.isError, true); assert.match(text(retiredCall), retired); assert.deepEqual(store.snapshot(), before);
 });
 
 test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {
@@ -426,4 +431,51 @@ test("context and graph accept a short number, rows show it, and an exact key wi
   assert.match((await call("context", { id: "#1" })).text, /^area · /m);
   const brief = JSON.parse((await call("brief", { project: "Whitefoot" })).text) as { cards: Array<{ id: string; num?: number }> };
   assert.equal(brief.cards.find(c => c.id === "choice")?.num, 5);
+});
+
+test("write_card takes a question, options with their grounds and a confidence, rule_card a choice or the owner's words, and withdraw_card a reason; context shows the card", async t => {
+  const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
+  const properties = (name: string) => Object.keys(tools.find(tool => tool.name === name)!.inputSchema.properties!).sort();
+  assert.deepEqual(properties("write_card"), ["after", "author", "before", "blocks", "confidence", "item", "key", "options", "question", "rev", "session"]);
+  assert.deepEqual(properties("rule_card"), ["author", "choice", "key", "ruling", "session"]);
+  assert.deepEqual(properties("withdraw_card"), ["author", "key", "log", "session"]);
+  const optionProperties = (tools.find(tool => tool.name === "write_card")!.inputSchema.properties!.options as { items: { properties: object } }).items.properties;
+  assert.deepEqual(Object.keys(optionProperties).sort(), ["detail", "recommended", "text"], "the board gives the option keys");
+  const options = [{ text: "First", detail: "Does the first; costs more; recommended because it is measured", recommended: true }, { text: "Second", detail: "Does the second" }, { text: "Third", detail: "Does the third" }];
+  const confidence = { score: 4, reason: "Measured on the old run" };
+  // The removed argument is refused, not ignored; a card without confidence or an option without detail is refused too.
+  for (const extra of [{ background: "Why" }, { confidence: undefined }, { options: [{ text: "A" }] }]) {
+    const refused = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, ...extra } });
+    assert.equal(refused.isError, true, JSON.stringify(extra));
+  }
+  assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "choice" } })).isError, true, "neither a choice nor words");
+  const created = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, blocks: "The work stops" } });
+  assert.equal(created.isError, undefined, text(created));
+  const card = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
+  assert.match(card, /^q1 · OPEN · Which\? · rev 1/m); assert.match(card, /^  A \(recommended\): First — Does the first; costs more; recommended because it is measured$/m); assert.match(card, /^  B: Second — Does the second$/m);
+  assert.match(card, /^confidence 4\/5：Measured on the old run$/m); assert.doesNotMatch(card, /legacy|background/i);
+  assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["q1", "accept"]);
+  const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "q1", choice: "B", ruling: "B, as the owner wrote" } });
+  assert.equal(ruled.isError, undefined, text(ruled));
+  const closed = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
+  assert.match(closed, /^chosen B: Second · 2026-10-11T02:03:04Z$/m); assert.match(closed, /^ruling: B, as the owner wrote$/m);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /^q1 · RULED · Which\? · #\d+\nchosen B: Second · /m);
+  // A card the owner settled in words, without choosing an option.
+  await client.callTool({ name: "write_card", arguments: { author, key: "q2", item: "a", question: "Or?", options, confidence } });
+  assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "q2", ruling: "Settled in chat" } })).isError, undefined);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "q2" } })), /^ruling: Settled in chat$/m);
+  const withdrawn = await client.callTool({ name: "withdraw_card", arguments: { author, key: "choice", log: "No longer needed" } });
+  assert.equal(withdrawn.isError, undefined, text(withdrawn));
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "choice" } })), /^choice · WITHDRAWN · 中文方案？/m);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "b" } })), /撤回了决策卡「中文方案？」：No longer needed/);
+});
+
+test("a card migrated from the old shape shows its old text as legacy lines in context", async t => {
+  const { client, text, store } = await connected(t);
+  const card = store.snapshot().decisions.ruled!;
+  await store.commit({ author, message: "Legacy text", puts: [{ kind: "decision", id: "ruled", expectRev: card.rev, doc: { ...card, legacy: { background: "Old background" } } }] });
+  const context = text(await client.callTool({ name: "context", arguments: { id: "ruled" } }));
+  assert.match(context, /^legacy background: Old background$/m);
+  const found = text(await client.callTool({ name: "search", arguments: { query: "Old background" } }));
+  assert.match(found, /ruled/);
 });

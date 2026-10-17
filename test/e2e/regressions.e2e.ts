@@ -6,12 +6,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops } from "../../src/ops.ts";
-import { rules } from "../../src/rules.ts";
+import { rules, placedCards } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
 import { checkReload, checkWriting, checkLoop } from "./update.ts";
 import { setHead, checkFit, FIT_HEAD } from "./mermaid-checks.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks } from "./invariants.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks, checkIdleStatus } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -114,16 +114,12 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => { const base = await bp.changes(), n = await burst(b, 1); await bp.waitChanges(base + n); return checkBadges(bp, await oracle(b.store)); },
   },
   {
-    bug: "a card row in a plan jumped to the card's own item, even a done one, instead of unfolding in place (fixed in 3a337e8 and 517c448)",
-    // 3a337e8's app.ts hunks around the card row were rewritten by the card-box change, so that part is a targeted
-    // edit: no row unfolds its card, every card row links to the card's own item instead.
-    reverts: [{ commit: "517c448", file: "web/app.ts" },
-      { file: "web/app.ts", edit: "a card row links to the card's item instead of unfolding", find: "const home = card && snapshot.items[card.item] ? index().decById.get(stored.card) : undefined;", replace: "const home = undefined as ViewDecision | undefined;" },
-      { file: "web/app.ts", edit: "no plan names a card as its host", find: "    if (selectedItem && cardRowOf(selectedItem, id)) return selectedItem;\n    return cardRowOf(d.item, id) ? d.item : null;", replace: "    return null;" },
-      { commit: "3a337e8", file: "web/index.html" }], family: "plan-card-row",
-    // The items whose plans name a card that lives in another item: the card named by three plans, by a done item's
-    // plan, and only by another item's plan.
-    run: async (bp, b) => { const o = await oracle(b.store); return checkPlanRows(bp, o, Object.keys(o.s.items).filter(id => o.s.items[id]!.plan.some(row => "card" in row && o.s.decisions[row.card]?.item !== id))); },
+    bug: "a card row in a plan did not go to the card in the item's body (feature, card-in-plan)",
+    // The click handler keeps its default-prevention and does nothing else: the row stays put.
+    reverts: [{ file: "web/app.ts", edit: "a card row does not go to the card", find: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); jump(\"q-\" + stored.card); };", replace: "const jumpToCard = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };" }],
+    family: "plan-card-row",
+    // The items whose plans hold the witness cards: blocking and placed in the head, ruled on a done item, blocking and not placed, converted from the old form.
+    run: async (bp, b) => { const o = await oracle(b.store), w = b.gen.witness; return checkPlanRows(bp, o, [...new Set([w.multiPlanCard, w.donePlanCard, w.rowCard, w.openLegacyCard].map(c => o.s.decisions[c]!.item))]); },
   },
   {
     bug: "code blocks were not set in Monaco: the global code rule overrode the block's font (fixed in 8f3ed75)",
@@ -149,12 +145,92 @@ const WITNESSES: Witness[] = [
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
-    bug: "a card row in a plan showed its title again in a second box when unfolded, and a folded card row took several lines instead of one bold truncated line (owner, 2026-10-14)",
-    // The unfolded card gets its title heading back, and the folded row loses its one-line bold ellipsis style.
-    reverts: [{ file: "web/app.ts", edit: "the unfolded card carries no title", find: "if (!inlined) top.appendChild(h); else if (pc) top.appendChild(pc);", replace: "top.appendChild(h);" },
-      { file: "web/index.html", edit: "a folded card row is one bold line", find: ".plan-row.cardrow .cardtoggle { font-weight: 700; min-width: 0; flex: 1 1 auto; }\n.plan-row.cardrow .cardtoggle[aria-expanded=\"false\"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }", replace: "" }],
+    bug: "a card's old background showed unfolded instead of folded under 原卡的背景 (feature, card-in-plan)",
+    // The fold starts open whatever the reader chose before.
+    reverts: [{ file: "web/app.ts", edit: "old card text starts unfolded", find: "fold.open = refOpen[key] ?? !closed;", replace: "fold.open = true;" }],
+    family: "card-legacy",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard, w.openLegacyCard], true); },
+  },
+  {
+    bug: "an open card's old background started folded although the reader decides from it (owner, 2026-10-16)",
+    // The fold starts closed whatever the card's state.
+    reverts: [{ file: "web/app.ts", edit: "old card text starts folded on an open card", find: "fold.open = refOpen[key] ?? !closed;", replace: "fold.open = refOpen[key] ?? false;" }],
+    family: "card-legacy-open",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.openLegacyCard], true); },
+  },
+  {
+    bug: "a ruled card filled the item's body with its whole pick and old text instead of being one line (owner, 2026-10-16)",
+    // The card's line is not a fold: everything under it shows at once.
+    reverts: [{ file: "web/app.ts", edit: "a closed card shows all of its content", find: "fold.dataset.ref = key; fold.open = !!refOpen[key];\n      fold.appendChild(top)", replace: "fold.dataset.ref = key; fold.open = true;\n      fold.appendChild(top)" }],
+    family: "card-fold",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.legacyCard, w.proseCard, w.donePlanCard], true); },
+  },
+  {
+    bug: "a card whose line stands in the item's head showed after the head instead of at that line (feature, card-in-plan)",
+    // No line is taken as a place for a card, so every card follows the head.
+    reverts: [{ file: "web/app.ts", edit: "a line holding only a card key places no card", find: "key => own.has(key) && !placed.has(key) && !!placed.add(key)", replace: "key => false" }],
+    family: "card-place",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.multiPlanCard, w.commentCard]); },
+  },
+  {
+    bug: "a card showed its question, options or pick wrongly: an open card without its option buttons and 发送, a ruled one without what was chosen (feature, card-in-plan)",
+    // A ruled card's pick line is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "a ruled card shows no pick", find: "else if (d.status === \"ruled\") top.appendChild(el(\"span\", \"pick pickshort\"", replace: "else if (false as boolean) top.appendChild(el(\"span\", \"pick pickshort\"" }],
     family: "card-box",
-    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.donePlanCard]); },
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard, w.legacyCard, w.proseCard, w.withdrawnCard, w.otherPlanCard, w.rowCard]); },
+  },
+  {
+    bug: "a card its item's head does not place was not drawn at all, so a card written without its line vanished from the page (architect, 2026-10-16)",
+    // Only the cards the head places are drawn.
+    reverts: [{ file: "web/app.ts", edit: "a card with no place is not drawn", find: "cardOrder(it.id).filter(key => !placed.has(key)).forEach(key => {", replace: "cardOrder(it.id).filter(key => false).forEach(key => {" }],
+    family: "card-unplaced",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "a card its item's head does not place was drawn without the line that tells the writer it has no place (architect, 2026-10-16)",
+    // The line before the card is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "a card with no place has no note", find: "body.appendChild(el(\"div\", \"unplacednote\", \"这张卡在正文里没标位置：补上一行 <code>[[q:\" + esc(key) + \"]]</code>\" + (d.status === \"open\" ? \"，或者撤回它。\" : \"。\")));", replace: "" }],
+    family: "card-unplaced",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.otherPlanCard, w.rowCard], true); },
+  },
+  {
+    bug: "the line before a closed card with no place told the reader to withdraw it, which the board refuses for a card that is not open (review of card-in-plan)",
+    // Every such line offers to withdraw the card.
+    reverts: [{ file: "web/app.ts", edit: "a closed card with no place is told to be withdrawn", find: "(d.status === \"open\" ? \"，或者撤回它。\" : \"。\")", replace: "\"，或者撤回它。\"" }],
+    family: "card-unplaced",
+    run: async (bp, b) => {
+      const o = await oracle(b.store), closed = Object.keys(o.s.decisions).find(key => { const d = o.s.decisions[key]!; return d.status === "ruled" && !placedCards(o.s.items[d.item]!.head).includes(key); });
+      assert.ok(closed, "the generated board has a closed card its head does not place");
+      return checkCardBox(bp, o, [closed!], true);
+    },
+  },
+  {
+    bug: "a card showed its question twice, once in its heading and again in a second heading (owner, 2026-10-14)",
+    // The heading is added twice.
+    reverts: [{ file: "web/app.ts", edit: "a card draws its heading twice", find: "top.appendChild(h);", replace: "top.appendChild(h); top.appendChild(h.cloneNode(true));" }],
+    family: "card-question",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.donePlanCard]); },
+  },
+  {
+    bug: "an open card showed its option names without what each option does, costs and risks (feature, card-in-plan)",
+    // The detail of an option is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "an option shows no detail", find: "const detail = o.detail ? '<div class=\"rich optdetail\">'", replace: "const detail = o.detail && !o.detail ? '<div class=\"rich optdetail\">'" }],
+    family: "card-option-detail",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard, w.openLegacyCard], true); },
+  },
+  {
+    bug: "an open card did not show how sure its writer is of the recommended option (feature, card-in-plan)",
+    // The confidence line of an open card is not drawn.
+    reverts: [{ file: "web/app.ts", edit: "an open card shows no confidence", find: "if (confidence) c.appendChild(confidence);", replace: "" }],
+    family: "card-confidence",
+    run: async (bp, b) => { const w = b.gen.witness; return checkCardBox(bp, await oracle(b.store), [w.commentCard, w.multiPlanCard], true); },
+  },
+  {
+    bug: "a ruled card's plan row showed no question when the pick it names is long: the pick would not shrink and squeezed the question to nothing (feature, card-in-plan)",
+    // The pick takes its full width again.
+    reverts: [{ file: "web/index.html", edit: "the pick of a card row does not shrink", find: ".plan-row.cardrow > .plan-main > span:not(.cardpick) { flex: none; }", replace: ".plan-row.cardrow > .plan-main > span { flex: none; }" }],
+    family: "plan-card-row",
+    run: async (bp, b) => { const o = await oracle(b.store); return checkPlanRows(bp, o, [o.s.decisions[b.gen.witness.donePlanCard]!.item]); },
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
@@ -174,7 +250,7 @@ const WITNESSES: Witness[] = [
   },
   {
     bug: "a 参考 section the reader opened folded again after the item re-rendered (ref-fold)",
-    reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    refOpen[d.dataset.ref!] = d.open;\n    try { localStorage.setItem("board-refs", JSON.stringify(refOpen)); } catch (e) {}\n', replace: "" }], family: "ref-fold-keep",
+    reverts: [{ file: "web/app.ts", edit: "open 参考 sections are not saved", find: '    rememberRef(d.dataset.ref!, d.open);\n', replace: "" }], family: "ref-fold-keep",
     run: async (bp, b) => checkRefFold(bp, b),
   },
   {
@@ -195,7 +271,8 @@ const WITNESSES: Witness[] = [
       const id = rows.find(x => !s.items[x]!.record && s.items[x]!.group && r.children(x).some(c => rows.includes(c)));
       if (!id) return ["witness setup: the board draws no item with a drawn sub-item"];
       const base = await bp.changes();
-      await ops(b.store).appendLog({ author: s.items[id]!.group, session: "agent-x", id, text: "agent-x wrote here" });
+      // An unfinished dispatch record makes the session running, so its row is unfolded and not behind 其他 N 个.
+      await ops(b.store).dispatchStart({ author: s.items[id]!.group, id, role: "工程师", level: 2, model: "Sonnet", agent: "agent-x", agentId: "agent-x-id" });
       await bp.waitChanges(base + 1);
       await bp.page.locator('#agents [data-agent="agent-x"] .agitem-caret').first().click();
       await bp.settle();
@@ -268,6 +345,18 @@ const WITNESSES: Witness[] = [
     reverts: [{ file: "web/index.html", edit: n.edit, find: n.find, replace: n.replace }], family: n.family,
     run: async bp => checkFullWidth(bp),
   })),
+  {
+    bug: "an item with part done and nobody on it was counted and filtered as 未开始, with no 停滞 filter (owner, 2026-10-16)",
+    // The project's 停滞 button is gone, so part-done items fall back under 未开始 alone.
+    reverts: [{ file: "web/app.ts", edit: "the 停滞 filter", find: "    [\"idle\", \"停滞\", \"做完了一部分、现在没人在做的条目\", it => statusOf(it) === \"idle\"],\n", replace: "" }], family: "idle-status",
+    run: async (bp, b) => checkIdleStatus(bp, await oracle(b.store)),
+  },
+  {
+    bug: "the chip of a part-done item had no colour of its own, so it read as nothing (owner, 2026-10-16)",
+    // Without its background rule the chip is bare text beside the coloured chips of the other statuses.
+    reverts: [{ file: "web/index.html", edit: "the background of a part-done chip", find: ".st.idle { background: var(--idle-soft); }\n", replace: "" }], family: "idle-status",
+    run: async (bp, b) => checkIdleStatus(bp, await oracle(b.store)),
+  },
   {
     bug: "a diagram wider than the text was drawn at its own width, so its right part was cut off by a box that scrolled sideways without showing it could (owner, 2026-10-17)",
     // Every diagram at its own width again, whatever its box.

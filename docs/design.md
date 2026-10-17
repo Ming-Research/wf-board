@@ -70,8 +70,9 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process. It keeps no session:
    each request stands alone (see *MCP without a session*).
-3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
-   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
+3. **The wake streams** (WebSocket): `/wake` pushes the PM's session what
+   needs it (owner notes, stalled work, a timed wake, the results of deploys; the architect, which keeps every right the PM has, answers it too), and
+   `/wake/<session name>` pushes another agent what needs it (section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -136,7 +137,7 @@ while it was still sending. The shutdown asks for the push's end the same way.
 
 **A copy that falls behind is told.** A stuck push no longer slows a write, so its harm
 is a remote copy that is out of date without anyone seeing it. When the copy has lacked
-commits for an hour, the architect gets one `backup-behind` push (section 8) with the
+commits for an hour, the PM gets one `backup-behind` push (section 8) with the
 number of commits left, the time of the last success (null if none since the start) and
 the last failure's reason. The hour counts from the last time the copy was known current:
 a push that sent or found nothing to send, or a round that found nothing to send; after a
@@ -248,7 +249,7 @@ request that matches no row of it, so a route cannot be served without a class,
 and the classes are never out of step with the routes.
 
 An operation over its limit is logged on a `slow` warning line with a summary of
-its parameters, and told to the architect as a `slow-op` push (section 8): its
+its parameters, and told to the PM as a `slow-op` push (section 8): its
 name, its time, its limit and the summary. One operation is told once an hour;
 its later slow calls are only logged, so one slow stretch does not become a string
 of pushes. The hour is counted from the pushes the board keeps, so a restart does
@@ -265,7 +266,7 @@ write queue (Storage).
 
 **Why at the entries.** The request handler and `register` are the places every
 operation already passes. A timer inside each tool or route would miss the next
-one someone adds. Logging alone leaves the architect to read the log; a timed
+one someone adds. Logging alone leaves the PM to read the log; a timed
 probe of `/health` from outside cannot say which operation was slow.
 
 **Request budgets.** What a request that reads the history costs follows the range it
@@ -403,7 +404,7 @@ restart.
   the packages whatever the lock file says. So a job that died part way, or a
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
-  When going back does not finish, the architect is told once; the owner is told
+  When going back does not finish, the PM is told once; the owner is told
   on the Mac by a macOS notification, only when the daemon does not answer, since
   then no daemon can push. The job only undoes what it did to a checkout that is
   still the one it moved: on the main line's
@@ -418,7 +419,7 @@ restart.
   says why, when it is on another branch, has local changes to tracked
   files (untracked files do not count) or has a commit the main line lacks: the
   edit or commit is someone's, not the job's to move or undo.
-- The pushes reach the architect through `POST /api/wake` (section 8). One the
+- The pushes reach the PM through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
   next run. A fetch that still fails after three tries ten seconds apart (or killed at its cap), and a
   failure of the job itself, are pushed once with `version` null. Each kind of
@@ -434,8 +435,8 @@ Known limit: if a reset itself fails (a stale `index.lock`) and someone then
 repairs the board in place by hand, or launchd restarts the daemon, before the
 next run, finishing the rollback can leave a half deploy: the daemon runs the
 target's code while the checkout and the page are back on the last healthy
-commit. The failure push is the signal; the architect checks the checkout and
-the daemon by hand. Recording the daemon's process id in the pending record
+commit. The failure push is the signal; the PM is told, and the checkout and
+the daemon are checked by hand. Recording the daemon's process id in the pending record
 would close it; that was judged not worth the added recovery logic.
 
 **Why the page's version is a hash of its files.** A commit id would change on
@@ -479,15 +480,18 @@ derivation design that replaced this:
   while an item's derived summary changes, plus every reached item's
   ancestors, and the items whose doing steps name a reached item or one of its
   ancestors (their stalled clock reads it, see the stalled-work rule). A
-  change of elapsed time alone is left to the minute timers, which rescan and
-  repaint everything as before.
+  session's write moves its place in the activity index, which can change
+  whether it still holds the items it was started on (status), so the items
+  carrying its unfinished dispatch records are reached too. A change of elapsed
+  time alone is left to the minute timers, which rescan and repaint everything
+  as before; a session's six-hour window running out is such a change.
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory); the `bench` workflow runs it by hand on this tree and on a base
-commit, without gating.
+peak memory, and the characters of each project's brief); the `bench` workflow
+runs it by hand on this tree and on a base commit, without gating.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -509,8 +513,10 @@ wf-board-data/
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
+  messages/<day>.yaml     one file per UTC day: the messages agents sent each other that day (section 8, Messages)
   state/owner.yaml        the owner's read cursor and read-ahead marks
-  state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
+  state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
@@ -623,7 +629,7 @@ log:
   creation and `update_item` can set it. Records are defined with the plan in
   [Item plans](#item-plans).
 - **Dispatch records.** An item may carry `dispatches`, oldest first: one
-  entry per agent session the architect started on it (a dispatch), in the
+  entry per agent session the PM or the architect started on it (a dispatch), in the
   columns of the dispatch format the architect keeps. An entry holds
   `agentId` (the session's full id, unique on the whole board), `agent` (its
   name), `role` (`工程师` or `审查`), `level` (1–5), `model`, optional
@@ -742,7 +748,7 @@ log:
   attribution; a later one replaces it; a restart derives it from the
   trailers in history. This is an observation of who wrote, never an
   assignment of work to a session: no document stores a session, and
-  `history` and `changes` show the message without the trailer.
+  `history` shows the message without the trailer, and `changes` names the session of each commit.
   The same walk keeps, per session name, the last two distinct items it wrote
   to, newest first (`activity.agents`, read by the agent list, section 7). A
   write names the items it touched (an item, its card or a note on either)
@@ -751,7 +757,7 @@ log:
   items in, and a restart gives the list live writes gave.
   Content commits touching board metadata,
   items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
-  owner reading cursors or read-ahead marks do not. Current document timestamps
+  owner reading cursors, read-ahead marks or messages do not. Current document timestamps
   also supply the available dating evidence for imported or synthetic data.
   A live update carries the activity index's change, not the index: the
   commit's content-write time, the items whose last change moved, the
@@ -779,19 +785,21 @@ log:
   one the owner only should know goes in the architect's journal. Notice files
   in history still count as content writes. The one commit that deleted them
   is not a write, and activity skips it.
-- A decision file holds its status, item, confidence, time and options in the
-  front matter, and background and ruling as body sections. `confidence`
-  becomes `{score?: 1-5, reason}`, and a ruled card records `ruledAt`.
+- A decision card (see [Decision cards](#decision-cards)) holds its `item`,
+  `question`, options (a name and a detail each), confidence, status and times,
+  and the owner's ruling once ruled. Cards converted from the earlier form
+  also keep their old background in `legacy`.
 - Each fact is stored once. The export shows what duplication costs: 27 cards
   whose `item` names an item whose `qs` omits them, 572 items carrying both
   `parent` and `area`, 13 notes whose stored title went stale. So a card's
   place is its `item` alone (an item's cards are derived), an item's place is
   the one plan row that owns it (its owner is derived), and a note's title is
   derived from its target.
-- A plan row may name a decision card as well as an item. Four blocked items
-  in the export waited on an open card, which the model before card
-  dependencies could not express; a card row makes such an item blocked by
-  derivation (see [Item plans](#item-plans)).
+- A card that blocks is a row of its own item's plan, so an item waiting on
+  it is blocked by derivation (see [Item plans](#item-plans)); a card that does
+  not block has no row, because the work goes on without it. Four blocked
+  items in the export waited on an open card, which the model before card
+  dependencies could not express.
 - Empty strings are absent fields (`ask: ""` on 117 items, `parent: ""` on
   161).
 - A note keeps its original id, so ids that sessions recorded and anchors
@@ -803,6 +811,17 @@ log:
   stamps `updated` and `by`. A replaced term keeps its place. A glossary is
   not an unread document: its changes neither count as 新 nor appear in
   `changes`.
+- **Messages.** A file `messages/2026-10-17.yaml` is `{messages, rev}`: the
+  messages sent on that UTC day, in the order sent. A message is `{id, from,
+  project, to, text, item?, at}`: its id, the sending session and its project,
+  the receiving session, one line of at most 150 characters, the item it is
+  about, and the time sent. The id is that time to the second, then four random
+  hex digits (`20261017T160512Z-3fa9`), so ids sort in the order sent. A
+  message is written once and never changed: sending one adds it to the end of
+  its day's file. One file a day keeps the number of files, and so git's index,
+  growing by one a day however many messages are sent (section 8, Messages).
+  Like a glossary, messages are not unread documents, and they are no work on
+  the board.
 - **Tags.** The board keeps one approved vocabulary, `tags: [{name, meaning,
   projects?}]`, in `board.yaml`; each item carries `tags: [name]`. A name is 1–12
   characters without whitespace or commas and unique; `meaning` is one sentence
@@ -820,29 +839,40 @@ log:
   existed; the 缺标签 check lists such items until a session backfills them.
   A tag change is a real change in `changes` and in unread, unlike `num`.
 - **Difficulty.** A work item may carry `difficulty`: an integer 1–5, which
-  decides the agent that does it (the architect's rules map levels to agents,
-  so the board keeps no such table), or `architect` for an item the architect
-  does itself (a discussion, a walkthrough, a design), which is rated but
-  never dispatched. Text outputs write it as 「难度 N」 or 「架构师做」. A record
-  has none. It is a field of the item, not of a plan row, because the unit
-  dispatched to an agent is the item; it replaces the temporary 「（难度 N）」
-  that plan rows carried in their text. Only `Architect` sets it, with
-  `set_difficulty` on an item of any project, and every change appends a log
-  line `难度：<from> → <to>，理由：<reason>` (from 未评 the first time), because
-  changing the level changes who does the work. `create_item`, which only
-  `Architect` calls, takes `difficulty` and logs it as the first rating
-  (reason 建条目时评). `changes` shows every change
-  of difficulty; unread shows a changed level but not a first rating (below).
+  decides the agent that does it (the rules map levels to agents, so the board
+  keeps no such table). Text outputs write it as 「难度 N」. A record has none.
+  It is a field of the item, not of a plan row, because the unit dispatched to
+  an agent is the item; it replaces the temporary 「（难度 N）」 that plan rows
+  carried in their text. The PM and the architect set it with `set_difficulty` on an
+  item of any project, and an engineer on the items below the one it was started on
+  (never that item itself: it was handed over at that level); every change
+  appends a log line `难度：<from> → <to>，理由：<reason>` (from 未评 the first
+  time), because changing the level changes who does the work. `create_item`,
+  which the PM and the architect call anywhere and an engineer inside its subtree, take
+  `difficulty` and logs it as the first rating (reason 建条目时评). `changes`
+  with `detail` lists every change of difficulty (its default answer counts it
+  among the other changes); unread shows a changed level but not a first
+  rating (below).
+  The board once had a level `architect` (shown as 「架构师做」) for the
+  architect's own work, rated but never dispatched. It is retired: every item
+  is rated 1–5. No schema accepts the value, but old versions of an item in
+  history hold it as `difficulty: architect`, and historical comparison omits
+  exactly that value, as it omits the retired fields (section 9). A
+  board whose files still hold it refuses to start, naming the one-time
+  migration that clears it (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
-  dispatched: the item is todo, and one of its ready steps (every step before
-  it done) is a todo text step with no `waits` text. A step that is another
-  item or a card, such as an unfinished study sub-item, is not such a step, so
-  the item raises no check until that sub-item is done. A blocked item, or
-  one with a step in progress, raises none either. Work is not listed as
-  startable (`brief.todo`) without a rating; a work item rated `architect`
-  raises no check and is not listed either, since the architect schedules its
-  own items itself. Only the architect clears 缺难度.
+  dispatched. "Can be dispatched" is defined once, as `canStart`: the status is
+  todo or idle, an unpaused root needs the item, and one of its ready steps
+  (every step before it done) is a todo text step with no `waits` text. The
+  next-task list (`brief.todo`) lists what `canStart` allows and has a rating;
+  the check asks for the rating of what `canStart` allows and has none. A step
+  that is another item or a card, such as an unfinished study sub-item, is not
+  such a step, so the item raises no check until that sub-item is done. A
+  blocked item, or one someone is working on (a step in progress or a live
+  session), raises none either. Whoever may
+  rate the item clears 缺难度: the PM or the architect, or the engineer whose subtree
+  holds it below its root (the root itself is rated by the PM or the architect).
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -859,10 +889,10 @@ log:
   its own. An item's head shows one 新 chip counting the items with something
   new in its subtree, itself included; a card shows no chip of its own unless
   no item holds it. The header total and the kind buttons count the same way.
-  `n` walks page order, top to bottom: an item, each card its plan unfolds
-  (in plan order) with that card's comments, the item's comments, then each of
-  its other cards and that card's comments, with documents the page does not place last,
-  oldest first. Inside a changed item it visits each new place in turn (a
+  `n` walks page order, top to bottom: an item, then each of its cards in the
+  order the body shows them (the cards the head places, then the others in
+  plan order) with that card's comments, then the item's comments, with
+  documents the page does not place last, oldest first. Inside a changed item it visits each new place in turn (a
   changed status, title or body block, a new or changed plan or target row, an
   added link); a new item is one stop at its start. After `m`, `n` goes on below
   where it was. A 新 chip jumps to the first new place in its subtree.
@@ -881,7 +911,9 @@ log:
   blue line on their left, like the one beside an item's headline, and no colour of
   their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
-  plan row, link, target row, ask or card option. Multi-paragraph card questions use the same
+  plan row, link, target row, ask or card option. A changed recommendation
+  marks the option; a changed question and the closing of a card mark the
+  question and the 已裁定 tag. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
   status and priority rows, and added or changed link rows, are not
   coloured either.
@@ -908,7 +940,8 @@ log:
   A first rating, an item's `difficulty` going from none to a level, is not
   unread either, alone or beside another change (which still counts as
   itself): rating hundreds of items would show each new for one added label.
-  Changing a level that exists is unread.
+  Neither is the migration that cleared the retired level (from `architect` to
+  none). Changing a level that exists is unread.
   A new reply marks the reply alone, never the
   owner's comment above it, since the owner wrote that. Note
   changes appear only in the comment-list row, never as bookkeeping-field
@@ -948,7 +981,7 @@ tree, status, priority and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the architect (`author: Architect`) sets or clears it through
+the server's time. Only the PM and the architect (`author: PM`, session `PM`, or `author: Architect`, session `架构师`) set or clear it through
 `set_pause`, at the owner's request in a comment (the page has no pause or
 resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
@@ -962,7 +995,7 @@ is one of four kinds:
 | step | `id`, `text`, `state: done \| doing \| todo \| dropped`, `waits?`, `reason?` (required when dropped), `after?`, server dates `doneAt`, `since`, `droppedAt` | Part of this item's own work, as steps were; `waits` belongs on a doing step, and a todo step carrying it gets the 在等文字 check |
 | owned item | `id` = `item` (the target key), `item`, `own: true`, `after?` | A part of this item's plan that is an item of its own: the target is this item's sub-item, drawn under it in the tree |
 | shared item | `id` = `item`, `item`, `own: false`, `after?` | Someone else's item whose result this item waits for; the tree does not draw it here, and the page marks it 「共用 · 归属在 <owner>」 |
-| card | `id` = `card`, `card`, `after?` | A decision card this item waits for; never owned |
+| card | `id` = `card`, `card`, `after?` | A decision card of this item; never owned, never another item's card |
 | acceptance | `id`, `accept: true`, `text`, `state`, `reason?`, server dates | A number or check that decides completion, placed where that check happens. It is an ordinary step with the acceptance marker |
 
 - **Ids.** A step's or acceptance step's `id` is caller-chosen and follows the
@@ -1006,9 +1039,9 @@ Each row is in one derived state, which status and display use:
 | Row | resolved | in progress | waiting | open |
 |---|---|---|---|---|
 | step | done, or dropped with its reason | doing | — | todo |
-| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo |
+| owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or idle |
 | shared item | target done | — | target open (any status) | — |
-| card | card not open (ruled, with the tree, elsewhere) | — | card open | — |
+| card | card not open (ruled or withdrawn) | — | card open | — |
 | owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
 
 A shared row whose target is cancelled is not resolved: someone else dropped
@@ -1040,13 +1073,44 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    on the board) is still in progress. A todo step with `waits` is not in
    progress, and its check (在等文字) asks for the wait to be written as a
    shared row, a card, the backlog, or a doing step.
-5. `blocked` when nothing is in progress and either every frontier row is
-   waiting (a shared item still open, an open card, an owned item that is
-   itself blocked or paused) or the item has a pending legacy ask. A paused
-   child is waiting on the owner; a parent that is not paused can therefore
-   be blocked by it, under the ordinary frontier rule.
-6. `todo` otherwise: some frontier row is a step or an owned item that can be
-   started.
+5. `blocked` when nothing is in progress and the item has a pending legacy
+   ask, or every frontier row is waiting (a shared item still open, an open
+   card, an owned item that is itself blocked or paused), or the row that owns
+   the item in its owner's plan comes after a row that is not resolved (an
+   owner that is a record has no order, so a backlog item is never blocked
+   this way). Whether the rows before it are resolved reads only whether their
+   items are done or cancelled, never their full status: a full status asks
+   back whether the owned item's turn has come, and two plans that each wait
+   on the other's earlier row would loop. Such a pair is blocked. A paused
+   child is waiting on the owner; a parent that is not paused can therefore be
+   blocked by it, under the ordinary frontier rule.
+6. `wip` when a session is working on the item: it has an unfinished dispatch
+   record, of either role, and that session was started or wrote on the board
+   within the agent list's window (`AGENT_WINDOW_MS`, six hours), so status and
+   the agent list agree on which sessions are on an item. A session that has
+   gone quiet for the window is no longer working on it. The records are read
+   by `openDispatches`, the one reading of an item's unfinished dispatches.
+   This is not the push's holder (The wake streams, Where a push goes): a push
+   goes to the one engineer session that holds the item, whatever the window.
+   Status counts a session of either role, because a reviewer is working on the
+   item too, and only within the window.
+7. `idle` when nobody is working on the item and part of its own work is done: a
+   step of its own is done, or an item it owns is done, or an open item it owns
+   has begun in this same sense (a dropped step, a cancelled owned item and an
+   owned record do not count). What others finished does not count: a shared
+   dependency that is done, a ruled card and a shared record leave the item at
+   `todo`, though the progress count still includes those rows. A parent
+   therefore leaves `todo` as its parts progress.
+8. `todo` otherwise: nothing is done and nobody is working on the item.
+
+The three live states answer three different questions: `wip` says someone is on
+it, `idle` says work was done and nobody is on it now, `todo` says nothing
+was done. How far an item is and what its rows wait on is not a status; the page
+shows them in 计划和进展 (How the page shows a plan). That an item waits for
+its turn in its owner's plan shows in the owner's plan, not in its own detail. `idle` is not
+the 无人推进 check (Stalled work): `idle` says nobody is working on the item;
+无人推进 flags an item someone is working on, with a step in progress, that has
+been quiet for an hour.
 
 So a parent is done only when its own steps, acceptance steps and delivery rows are resolved,
 not merely when its children are (owner decision 6), and an item is blocked
@@ -1059,7 +1123,7 @@ conversion). The checks that existed only because status was set by hand go
 away: 卡住了，但没写在等什么, 可解除阻塞：等的都已完成 and 标为进行中，但还在等别的.
 
 Every work item has a plan with at least one acceptance step, so no work item
-has a stored `todo`, `wip`, `blocked` or `done` any more. An item with an
+has a stored `todo`, `idle`, `wip`, `blocked` or `done` any more. An item with an
 empty plan (none exists after conversion; the schema allows it only on a
 record) shows the check 没有计划：至少要有一个验收步骤.
 
@@ -1070,22 +1134,22 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. A write by any author but `Architect` that changes an item from effectively paused
+pause. A write by any author but the PM and the architect (`PM` from session `PM`, or `Architect` from session `架构师`) that changes an item from effectively paused
 to open, not-paused work is refused, naming its pause source and requiring
-the owner or `Architect` to resume it. This covers moves out of a paused chain
+the owner, the PM or the architect to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
 are closure, not resume: a project's author may complete paused work and
-`Architect` may cancel it (cancelling is reserved for `Architect`), either
+the PM or the architect may cancel it (cancelling is reserved for them), either
 keeping the marker. Becoming a record is also not open work, but clearing an
-explicit marker, including an inactive one, still requires the owner or
-`Architect`. Converting a cancelled item to a record is reserved for
-`Architect` too, since converting it back to work would reopen it without
+explicit marker, including an inactive one, still requires the owner, the PM or
+the architect. Converting a cancelled item to a record is reserved for
+them too, since converting it back to work would reopen it without
 `set_status`. Moving work into a paused chain is allowed.
-A project edits only its own items and cards; `Architect` edits any
+A project edits only its own items and cards; the PM and the architect edit any
 project's. That reach lifts only the check that the author is the item's
 project. Ownership still stays inside one project, and removing an open
 owned row still requires moving or cancelling its target first, for
-`Architect` as for every other author.
+them as for every other author.
 
 #### Ownership, the tree, roots and top items
 
@@ -1248,7 +1312,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the PM or the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1334,18 +1398,30 @@ The detail column of a selected item reads, top to bottom:
 
 1. the head row: status, priority, title, ratio, chips (unchanged); the left
    tree already shows the owner, so the detail has no ownership line;
+   under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
-3. 计划和进展, the plan, with the cards it names unfolded under their rows;
-4. the head (问题 / 为什么 / 做法) and the `data` line;
+3. 计划和进展, the plan;
+4. the head (问题 / 为什么 / 做法), with each card the head places inside it
+   (see Decision cards), and the `data` line;
 5. 被依赖: the items holding a shared row for this item (the owner is
    already on line 1, so it is not repeated);
 6. the item's comment entry and comment list (see Comments below);
 7. 日志, folded as today;
-8. the ask, the open and shown ruled cards its plan does not name, checks and
-   references.
+8. the ask, checks and references.
 
 The owner set this order on 2026-10-13: progress first, then the stable head,
 then the comments on it, then history.
+
+The detail shows no separate progress line: status says whether someone is on the item,
+and 计划和进展 at the top of the detail says how far it is and what its rows wait on, so a
+line under the title would say the same twice. An item that only waits for its turn in its
+owner's plan shows that in the owner's plan, not in its own detail.
+
+The status chip, the tree's left bar, the parent's counts, the status bar and
+the project's filter buttons all carry 停滞 as a status of its own: the filter
+reads "做完了一部分、现在没人在做的条目" and 未开始 reads "什么都还没做、也没人在做的条目".
+Its colour is a blue between the grey of 未开始 and the amber of 进行中, the tokens
+`--idle`, `--idle-soft` and `--bar-idle`, defined for both themes.
 
 The plan's look, row by row. One line per row, a 16-pixel gutter on the left
 carries the row's glyph in its state colour, the same colours as the status
@@ -1369,22 +1445,16 @@ follow the existing tokens with no new colours:
   own ratio `2/5`, on one line; there is no status chip and no second line.
 - **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
   link, on one line; there is no owner or project line under it.
-- **Card row.** ⏸ or ✓, the card tag (阻塞 purple or 决策卡 red, as cards
-  show today) and the question. In any item's plan, whichever item holds the
-  card, clicking the question unfolds the whole card right under the row and
-  keeps the shown item selected (background,
-  options and their choice buttons, confidence, the ruling when ruled, its
-  comment list and comment button) and selects it, so `c` and `m` act on it;
-  a second click folds it. It starts folded, and each card's fold is
-  remembered in browser localStorage like other folds, so it is the same card
-  with the same choices, comments and unread state wherever it unfolds. Only
-  the shown item's body is drawn, and a card its own item's plan names is not
-  drawn again in that item's card list at the end of the body, so it exists
-  once on the page. Any route to the card (the 等你 row, `n`/`N`, a reference
-  or the item's 决策 buttons) unfolds it under the shown item's row when that
-  item's plan names it, and otherwise opens the card's own item and unfolds
-  it there. A card whose own item no longer exists stays a link to the card
-  list.
+- **Card row.** ⏸ or ✓ (a withdrawn card counts as ✓), the card tag (阻塞
+  purple, 决策卡 red, 已裁定 or 已撤回) and the question's first line as a link.
+  A ruled card's row adds the pick: `· 选 B：<option name>`. A click on the
+  link or anywhere on the row goes to the card in the item's body (selecting
+  it, so `c` and `m` act on it) and keeps the shown item selected; a link
+  inside the row keeps its own action. The card is always drawn in the body,
+  never under its row, so it exists once on the page and has no fold state.
+  Any route to the card (the 等你 row, `n`/`N`, a reference or the item's 决策
+  buttons) opens the card's own item and goes to the card there. A card row
+  whose card is missing stays a link showing the key.
 - **Acceptance row.** Placed where its check happens, labelled 验收 in a
   small tag, full text (it may wrap), with the same glyphs as a step
   (○ ● ✓ ✗). It has no extra separator or spacing; the tag identifies it.
@@ -1463,6 +1533,99 @@ Unread changed rows carry the existing blue bar to the left of the gutter.
 The tree row of an item shows its plan ratio (`1/7`) where the steps ratio
 was; leaf counts count owned descendants that own no work items, by status.
 
+#### Decision cards
+
+A decision card asks the owner one question and lays out the ways to answer
+it, each with its grounds, so the owner decides where the head gives the
+reasoning. Every decision a design makes is one card, standing in the head
+where the design reaches it.
+
+- **Shape.** `item`, `question` (one line, one bold sentence in the head),
+  `options` (at least one; a check flags an open card with fewer than three), `confidence`, `status`, `blocks?`, `choice?`, `ruling?`,
+  `ruledAt?`, times and `num`. An option is `{key, text, detail?,
+  recommended?}`: the board assigns the keys A, B, C… in order; `text` is the
+  option's name, one line of at most 20 characters (spaces not counted); `detail`
+  says what the option does, its cost and risks, and why it is or is not
+  recommended, with no length limit. At most one option is recommended.
+  `confidence` is `{score?, reason}`: a score from 1 to 5 (5: the evidence
+  settles it; 1: judgment only) and the reason, with what could overturn it. A
+  status is `open`, `ruled` or `withdrawn`. `write_card` requires a name and a
+  detail for every option and a confidence on a new card, and refuses
+  anything else, naming the field and the fix. A card has no background: the
+  head is the background.
+- **Where it lives.** A card is stored once in `decisions/<key>.yaml` with its
+  `item`. Only a card that blocks (`blocks`) is also a row of that item's plan,
+  because the work goes on without any other card. `write_card` writes both in
+  one commit: the row goes before the plan row named by `before` (default: the
+  first acceptance step, which then also waits for the card, keeping the rows
+  it already waited for), after the rows named by `after`. Setting `blocks` on a
+  revision adds the row in the same way; clearing it removes the row, and rows
+  that waited for it wait for what it waited for. The plan tools refuse to add
+  or remove a card row, `create_item` refuses card rows, and a row for another
+  item's card is refused. The check 卡和计划对不上 reports an open blocking card
+  without a row, an open card that does not block but has one, and a row for
+  a card of another item; only a write that bypasses the tools can raise it. A
+  closed card keeps the row it had, which counts as resolved.
+- **Placement.** The head places a card with a line holding only `[[q:key]]`
+  (outside a code fence): the card is drawn there, inside the head. A key inside
+  a sentence stays a link. The check 卡没标位置 flags an open card the head does
+  not place. A placement is a convention of the head's text, not a stored field,
+  so a rewritten head can move it with no card write; a revision of the head
+  that drops a decision drops its card (`withdraw_card`).
+- **Cards with no place.** A card the head does not place (a new card written
+  without its line, which raises 卡没标位置, or a closed card whose line a
+  rewrite of the head dropped, which the check does not flag) is still drawn
+  once in the body, after the head, under a line saying it has no place there
+  and how to give it one: add the line, or, for an open card only, withdraw it,
+  since `withdraw_card` refuses a card that is not open. Every card is drawn once, in the body: its plan row, its 决策 button and
+  any link go to that card, wherever it stands, and nothing expands under a
+  row. A closed card is one folded line wherever it stands.
+- **Ruling.** The owner's pick on the page is recorded by the board itself:
+  sending a choice note sets `status: ruled`, `choice` and `ruledAt` (the send
+  time) on the open card in the same commit, so no session has to rule it
+  afterwards and a pick can no longer sit sent but unrecorded. `rule_card(key,
+  choice?, ruling?)` is for a decision the owner made in chat: it takes the
+  option chosen, the owner's own words, or both, and the words are kept in
+  `ruling` for the design log's approval line. A card ruled in words alone has
+  no `choice`.
+- **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
+  any more: the status becomes `withdrawn`, the log text goes to the item's
+  log, and a row counts as resolved. It is the one way to retire a card;
+  nothing deletes one.
+- **Legacy text.** Cards converted from the earlier form (see
+  [Card conversion](#card-conversion)) keep their old `background` in
+  `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
+  and search covers it. An open card's fold starts open, because its reader
+  decides from the background; a closed card's starts folded. Their options
+  have no name: the old option text is the detail, and the page shows its
+  first line where it needs a name.
+- **Closed cards.** A ruled or withdrawn card is one line in the body: its
+  tag, its question and its pick (the name of the chosen option, or the first
+  line of its detail; the ruling when the owner answered in words). The
+  options with their details, the confidence, the ruling and the legacy fold
+  open under the line on a click; the open state is remembered per card like a
+  参考 section, and going to a card from a plan row or a reference opens it.
+  Hundreds of converted cards each carry long text, and an item with a dozen of
+  them filled the page. Open cards, their checks and the comment block are
+  always shown. Rejected: folding all of an item's closed cards under one
+  heading (a click to see one card's pick, and the plan row and reference
+  could not open a single card); shortening what the migration stores
+  (nothing the owner wrote is dropped).
+- **Blocking.** A card with `blocks` is blocking: the owner is told on the
+  Mac, the page shows it purple and the item waits on its row.
+
+Rejected: keeping the grounds in a long background on the card and only
+names in the options (the owner decides where the head gives the reasoning,
+and each option's cost belongs beside its name); a stored placement field or an
+index per card (the head already says where each question belongs, and a
+stored index could disagree with it); a separate decisions section on the page
+(a card outside its item is read without the text that asks it); a row in the
+plan of every item that waits on the card (a card of another item is a shared
+dependency of the item that owns it; migration removed the 73 such rows, all
+pointing at ruled cards); a row in the plan for every card (a card that does
+not block would hold the item's status for a question the work does not wait
+on).
+
 #### Comments
 
 The owner comments on the whole item, not on plan rows. The page puts the
@@ -1526,17 +1689,19 @@ Without a credential a write takes `author`, the name of the project the
 session works for, selected from `projects` by matching `repo` to its
 repository's GitHub remote (until the old tools are removed), and a write with
 neither is refused. The
-architect writes as `Architect`, a configured project like the others, from
-the session `架构师` (section 9). Several sessions may share a project and
+PM writes as `PM`, a project of its own with no repository, from the session `PM`, and the
+architect as `Architect`, the project of the agents_config repository, from the session
+`架构师` (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-architect's session (`架构师`) is also a receipt for the wake stream (section 8).
+PM's or the architect's session (`PM`, `架构师`) is also a receipt for the wake stream, and another
+session's call carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
-same text, so the architect sees whether work is being pushed and what a
+same text, so the PM sees whether work is being pushed and what a
 closed session left behind. Omitting `session` is allowed; a call without it is no receipt.
 
 ### Server instructions
@@ -1573,19 +1738,20 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (open in full, ruled as question and ruling); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (an open card whole, with its `rev`; a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
-| `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
+| `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
-| `dispatches(filters?, rows?)` | How have the sessions the architect started done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
+| `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP, next TODOs, paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
+| `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
 `changes`, `history` and `diff` read the git history, so each call runs under a request budget
@@ -1594,41 +1760,100 @@ and says to narrow `since` or the filters. In `changes` a deleted document is pl
 the current board and by the documents deleted in the range; an item whose owner was
 deleted before the range is its own area.
 
+**The patrol read.** What a reader gets from `changes` stays in its context until it is
+compacted, so the default answer holds only what needs handling, and each thing appears
+once. A range is the commits after `since` (a time or a commit); `except` names sessions
+whose commits do not count.
+
+- *New flags.* A check flag is derived from the whole board and written by no commit, so
+  a flag is new when the head board carries it and the board when the range began did
+  not. That board is built from the head: each item, card and note the range wrote is put
+  back to its version before the range (the `changes` read already holds those), those the
+  range created are taken away, those it deleted are brought back, and the board settings
+  (projects, tag vocabulary) are put back when a range commit wrote them. Its rules are
+  worked out at the time the range began, so a flag that comes with time and no commit (a
+  step in progress that stands still) is new when it was not there at that time. The
+  session activity that the status of an old-board item reads (a session counts as
+  working on an item when it started or wrote within six hours) is the current one,
+  not the one of the range's start: the board keeps only each session's latest
+  writes, and the earlier ones need a scan of the six hours before the range that
+  this case does not justify. A session that wrote after the range began therefore
+  counts as working at its start, however long it had been quiet. Only 缺难度 reads
+  the difference, on an unrated item with an unfinished dispatch, and the error is a
+  flag reported as new that was already there. Both
+  boards' checks are worked out in full, so the cost of a call is that of two rule builds
+  plus the range's reads; `scripts/bench-changes.ts` measures it against the lines of
+  section 4 on a hosted CI runner, and those figures, not a run on another machine, are
+  the reference. An earlier version of a document that does not fit today's schema (a
+  field since removed) cannot be put back: the document counts as absent from the old
+  board, and the answer's first line says how many versions that was. The same holds for
+  the board settings of before the range: the head's settings stand, and the version is
+  counted. The flags that settings change brings (a newly approved tag vocabulary, say)
+  are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
+  flag on both boards when its short label (else its text without the count of the
+  title-length flag) and the item or card it points at are equal. A new flag's row names
+  every session that wrote the item in the range, its cards and notes included, whether or
+  not `except` names it; with no writer the row says no session wrote it in the range (the
+  flag came from another item's change, or from time). Flags are never left out by
+  `except`: a flag its own writer caused, such as a pause others still wait on, is exactly
+  what a patrol must still see.
+- *New items.* Items whose first commit in the range is not an excluded session's, each
+  with its creator, its project and title, and its flags on the same row (so they are not
+  listed again as new flags).
+- *Notes and cards.* A note or card that is new, a note that gained a reply or changed
+  state, a card whose status changed, each with the item it is on, a short summary and the
+  sessions that wrote it. A draft is not listed (no one has it yet). A note or card an
+  excluded session created is not new to the reader, so only how it ended up counts: a
+  note with a reply, a card no longer open.
+- *The first line* counts every commit of the range, board-settings-only ones included,
+  and says how many `except` took out.
+- *The rest* only as counts by kind and by session; with `detail`, as the documents
+  grouped by area with their commits and each commit's session. Created items and the rows
+  above are not listed again.
+- *Size.* Each group lists at most `limit` rows (default 30) and counts the rest, so the
+  answer follows the rows to handle and not the documents changed.
+- The timed wake and this read share one function that tells who wrote to each item in a
+  list of commits.
+
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
 `<glyph>` as on the page (✓ ● ○ ⏸ ◌ ✗); an item row adds `[own]` or
 `[shared @<owner key>]`, the target's title and status, and for an owned item
-its current doing step; a card row adds the card's status; `‖` marks rows of
+its current doing step; a card row adds the card's status and, once ruled, the
+pick; `‖` marks rows of
 a 可同时进行 group. `brief` folds resolved rows into `✓ N 项已完成` for
 done rows (including owned records) and `✗ M 项已放弃` for dropped steps
 and cancelled owned items. Plans
 replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
-In this document `Architect` as a writer means author `Architect` writing from
-the session `架构师` (section 9). `Architect` may write any project's items,
-cards and note replies; every other writer only its own project's. Some
-operations are reserved for `Architect`, and every other writer is refused
-before any ownership check: `create_item`, `set_status`, `set_pause`,
-`move_item_project`, `journal_entry`, a changed title in `update_item`, the tag
-vocabulary tools, and the page order and other projects' repositories in
-`create_project` and `update_project`.
-Turning a cancelled item into a record in `update_item` is reserved too, but
-its refusal comes after the ownership and revision checks, because it depends
-on the item's state. Work another project needs is not filed by a tool: the
-session that needs it reports it, and `Architect` creates it in the project
-that delivers it, joined by a shared row. A write under the retired author
-`总管` is refused by every tool.
+In this document the architect as a writer means author `Architect` writing from
+the session `架构师`, and the PM author `PM` writing from the session `PM`
+(section 9). Both may write any project's items, cards and note replies; every
+other writer only its own project's. Some operations are reserved for the process, which the PM does and the architect may do too, and every other writer
+is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
+a changed title in `update_item`, and the page order in `create_project` and
+`update_project`. `create_item`, `set_difficulty` and `set_difficulty_many` are
+the process's too, except that an engineer's credential makes the items of its own
+subtree and rates the ones below its root (section 9). Some are the architect's
+alone: `journal_entry`, the tag vocabulary tools, creating a project over a
+credential, and other projects' repositories in `update_project`.
+Turning a cancelled item into a record in `update_item` is reserved for the
+process too, but its refusal comes after the ownership and revision checks,
+because it depends on the item's state. Work another project needs is not filed
+by a tool: the session that needs it reports it, and the PM creates it in the
+project that delivers it, joined by a shared row. A write under the retired
+author `总管` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; only `Architect`; owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the PM or the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the PM or the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the PM and the architect create items |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
 | `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |
-| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5 or `architect`) and appends the log line for the change | Only `Architect`, whatever the item's project; a work item, not a record; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
+| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5) and appends the log line for the change | The PM and the architect for an item of any project, an engineer's credential for the items below the one it was started on (`item.difficulty` at the scope `below`: the root itself is refused), nobody else; a work item, not a record; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
 | `set_difficulty_many(items: [{id, difficulty, reason?}], reason?)` | Sets many items' difficulty in one commit, for rating a backlog of unrated items | Each entry checked and logged as `set_difficulty` does, naming the entry it refuses; `reason` is the default for entries without their own, and an entry with neither is refused; one refused entry refuses the whole write; each item once; unchanged entries write nothing, and no commit is made when none changes |
 | `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
 | `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `Architect`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
@@ -1638,20 +1863,22 @@ that delivers it, joined by a shared row. A write under the retired author
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
-| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only `Architect`; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only `Architect`, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the PM and the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
-| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only `Architect`, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because `Architect` can resume it |
+| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because the PM and the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
-| `write_card(key, item, question, background, options, confidence, blocks?)` | Adds or revises an open decision card; `blocks` makes it blocking (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it) | One recommended option at most; item exists; `blocks` nonempty |
-| `rule_card(key, choice, ruling)` | Records the owner's ruling | Choice is an option key |
-| `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement |
-| `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by `Architect` |
-| `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or `Architect`; the main line has no whitespace; order: only `Architect` |
+| `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
+| `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
+| `withdraw_card(key, log)` | Closes an open card nobody needs; the reason goes to the item's log | The card is open and not answered |
+| `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is the PM or the architect, who run the process and replace any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |
+| `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by the PM and the architect |
+| `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or the architect; the main line has no whitespace; order: only the PM and the architect |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
+| `send_message(to, text, item?)` | Sends a message from the caller's session (section 8, Messages) | A session name; `to` the PM's or the architect's session, a session with an open dispatch, or a long-lived credential's session, else refused naming those that work; `text` one line of at most 150 characters, refused, never cut, when longer; `item` exists |
 
 ## 7. The page
 
@@ -1686,7 +1913,7 @@ own marker offers only 恢复, so the owner can also release open descendants
 under a record without asking an agent to clear the marker. Records have
 no pause control.
 The detail shows an item's difficulty and tags on their own line directly under
-the title: the difficulty first, as a plain outlined chip (「难度 3」, or 「架构师做」)
+the title: the difficulty first, as a plain outlined chip (「难度 3」)
 so it reads apart from the teal tags, then the tags; an item with a difficulty
 and no tags still has the line. Tree rows show no difficulty.
 Each project's filter row also offers one button per tag applicable to the
@@ -1706,7 +1933,7 @@ tags as small neutral grey chips (never a status colour; the tooltip is the tag'
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
 highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
-A tree row's right-hand counts show only open parts (todo, in progress,
+A tree row's right-hand counts show only open parts (todo, idle, in progress,
 blocked, paused); done and cancelled parts are not counted there, and a cancelled
 item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
 and counts. The tree draws each item's owned items under it in plan order
@@ -1716,8 +1943,7 @@ items; the counts leave out cancelled ones and
 show numbers in their status color, with status names in accessibility labels. They shrink and clip away
 completely before the title truncates with an ellipsis, retaining a minimum width of 6ch and
 a full-title tooltip. New-content and owner-action chips remain visible.
-The separate decisions section
-and send box remain available.
+The send box remains available.
 
 In tree rows, the blue new-content chip, the filled dark purple chip (blocking
 waits in the item and below it, asks included) and the filled dark red chip
@@ -1765,9 +1991,8 @@ project links wrap.
 The right column is sticky, fills the viewport height and scrolls independently.
 It shows the selected item's head row with the same marks and chip, followed
 by the order given in section 5 under "How the page shows a plan": the
-目标, 计划和进展 with its unfolded cards, head text and data,
-被依赖, the comment entry and comment list, collapsed 日志, ask, the open and
-shown ruled cards the plan does not name, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
+目标, 计划和进展, head text with its cards and data,
+被依赖, the comment entry and comment list, collapsed 日志, ask, checks and refs. 被依赖 leaves out cancelled items. Clicking blank space clears both
 the tree highlight and the detail selection and collapses the right column.
 Clicks on controls or the divider and drags that select text preserve selection.
 All change marks, fresh lines, notes and
@@ -1791,8 +2016,7 @@ selection, j/k followed by Enter or an unread/wait jump opens detail again.
 `n`, `N` and 新 chips select the stop's item and open its detail. When its
 tree node is visible, they unfold its ancestors and bring that row into view;
 closed-item stops do not change the filters or require a tree node. They then
-scroll the right column to the exact fresh mark, card or note. A card held by no item keeps its existing
-navigation behavior in the separate decisions section. Dependency links,
+scroll the right column to the exact fresh mark, card or note. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
 
@@ -1890,9 +2114,9 @@ affected subtree and summaries; unrelated cards keep their DOM elements.
 These same scoped render paths update the selected item's
 detail in place and preserve its scroll position. Unrelated changes do not
 rebuild the detail column.
-Scoped card updates also reconcile membership and order: an unread reply can
-reveal a ruled card, and clearing unread state hides a card that was open only
-by that default. Explicit owner choices to open or fold it remain in effect.
+A card of the shown item is replaced in place when it changes; a card added to
+or removed from the item redraws the item's body, and the plan order moves the
+cards without rebuilding the others.
 The header counts and send box update with the affected content. Unread
 refreshes are debounced across each burst, and superseded results cannot
 replace newer state. Rendering preserves the editor's focus and caret and
@@ -1994,9 +2218,9 @@ library's `dark` theme when the page shows its dark colors (the owner's
 `data-theme` attribute on the root element, else the system's) and `default` otherwise,
 and are drawn again when either changes.
 
-Glossary links. In item heads, steps and log entries, card questions, backgrounds,
-options and rulings, and note texts and replies, a glossary term links to its
-definition. The page has no glossary section. Titles are not linked. Terms
+Glossary links. In item heads, steps and log entries, card questions, option names
+and details, a card's ruling and legacy text, and note texts and replies, a glossary
+term links to its definition. The page has no glossary section. Titles are not linked. Terms
 match as plain substrings, the longest at each position; the text's own
 project's glossary wins over another project's for the same term. Text inside
 code, code blocks and links is never matched. Only the first occurrence of each
@@ -2043,7 +2267,7 @@ level, and whether that someone is working, waiting or has gone quiet.
 - **Who is listed.** A session whose last activity is at most six hours old.
   Activity is a write with its session name, or the start of a dispatch record
   naming it (`agent`), whichever is later; a reviewer that only reads has a row
-  from its start. The architect's own session is left out: on 2026-10-16 it made
+  from its start. The PM's and the architect's own sessions are left out: on 2026-10-16 the architect's made
   521 of the 1158 board writes since 00:00 UTC and would head the list every
   time. A name
   whose newest dispatch record has ended is not listed until it writes again
@@ -2056,8 +2280,8 @@ level, and whether that someone is working, waiting or has gone quiet.
   The level is the one in the newest dispatch record naming the session, which
   is what it was started at (「审查 3 级」 for a review); with no record, the
   difficulty (1 to 5) of the newest of its items that has a step in progress
-  and a difficulty in that range: an item the architect does itself, or an
-  unrated one, is passed over for an older item that has one.
+  and a difficulty in that range: an unrated item is passed over for an older
+  item that has one.
 - **State word.** Read from the steps in progress on its two items, never from
   the host. A step with `waits` text: 「在等：」 and that text, whatever the
   time (the text is the session's own); amber when it has not written for over
@@ -2076,6 +2300,37 @@ level, and whether that someone is working, waiting or has gone quiet.
   seen silent for longer. The word is
   inferred from declarations, so the list says so on its face and every row
   carries the time since the session wrote.
+- **Who is expanded.** Listed is not drawn: on 2026-10-16 at 20:40 UTC the list
+  held 37 rows, many of them finished sessions nobody had closed out, and the
+  running ones were hard to find. Only running rows are drawn in full; the
+  others are one last line, 「其他 N 个」, that opens them in the same order and form
+  (the choice is kept in the browser like the list's own fold). The heading
+  counts the running rows. A row is running when the session has an unfinished
+  dispatch record, of either role, and is alive, meaning it started or wrote
+  within the list's window (`liveDispatches`, the reading that rule 6 of Status
+  uses for a session working on an item, either role and the same window, not
+  the push's holder). So an engineer just started or waiting for the merge with
+  every row done, and a review still being read, are running although they
+  marked no step, and 「可能停了」 stays expanded, being the exception the owner most
+  needs to see. Nothing else makes a row running. A session with no dispatch
+  record (the observer, one opened by hand) or whose dispatch has ended is
+  folded, even when the items it touched have a step in progress: those steps
+  are another session's, and its state word is still read from them. A review is
+  not given a shorter bound than the window, so a review nobody closed out stays
+  expanded until six hours after its last activity, which is when Status stops
+  counting its record as a session working on the item too. Rejected: hiding the
+  other rows, because a session that finished but was never closed out could
+  then not be found, and the owner would not notice the unclosed record; telling
+  running by the time since the last write alone, because a session waiting for
+  CI or for the architect writes nothing for an hour and is running; inferring
+  it from a step in progress on the items it touched, because a session whose
+  dispatch ended and that wrote a later log on an item another session holds
+  would be taken for running, the board having no way to tell whose step it is;
+  a bound of 30 minutes since the last write for a review, because no review run
+  was measured, a review writes nothing until its report, and a second
+  definition of alive would disagree with Status about the same record; folding
+  「可能停了」 with the rest, because it holds a step in progress and is the case the
+  list exists to show.
 - **Reading a row with the tree.** Each item cell has the status chip and
   number, the title (a click selects the item and shows its detail), the time
   it was touched, an arrow and 「在树中」. The arrow unfolds the item's
@@ -2095,6 +2350,19 @@ level, and whether that someone is working, waiting or has gone quiet.
   shows changed (its inputs are compared). The minute timer that re-derives
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
+
+### Messages list
+
+At the top right of the page, beside the shortcut menu (☰) and fixed there like
+it, a button 「消息」 opens the messages agents sent each other (section 8,
+Messages) in a list that lies over the page and moves nothing. Each row shows sender（project）→ recipient, the item as a link that
+selects it, how long ago, and the text with its inline formatting; the newest
+is first. The button counts, as 「新 n」, the messages that came since the list
+was last open; the newest message seen is kept in the browser, so a reload
+keeps the count. A message joins the list from the change event that carries
+it and repaints only the list. The page is sent, with the board, the days of
+messages that hold the newest 200 (`PAGE_MESSAGES` in `src/http.ts`), so the page
+does not grow with the board's history; `messages` finds older ones.
 
 ### Updating the page
 
@@ -2144,18 +2412,45 @@ the background. Sending still waits for every pending draft save; a failed
 save prevents sending. A failed save or send restores the previous controls
 and draft text and shows the error; the committed snapshot stays authoritative.
 
-### The wake stream
+### The wake streams
 
-The wake stream is the board's one push channel. It has one listener, the
-architect, who is told only what needs it; every other session reads the board.
-What the architect does with an event, and how it listens, is in the
-architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
+The board pushes on one stream per recipient. The PM's stream, at
+`/wake`, carries what the PM must handle, and any call from its session
+answers it (Receipts, below); the architect, which keeps every right the PM has,
+answers it as well when it works before the PM does. Every other agent the board
+pushes to (a session holding an item, later a reviewer or the observer) has its
+own stream at `/wake/<session name>` (Agents' streams, below), with its own
+numbers and retention and a record of how far it was delivered. What an agent
+does with a push, and how it listens, is in its rules and in
+`~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Twelve kinds, defined in one table (`WAKE_KINDS` in
-`src/wake.ts`; `push` refuses a kind or field set the table does not list):
+**Where a push goes.** The kinds table gives each kind `to`: `pm`, the
+PM's stream; `{holder: <field>}`, the stream of the session holding
+the item that field names, and the PM's when nobody holds it; or
+`{session: <field>}`, the stream of the session that field names, the
+PM's when it names the PM or the architect. A session
+*holds* an item while an engineer dispatch record on the item (section 5)
+names it as `agent` and has not ended; when several have not ended, the newest
+start wins, so a takeover holds the item from its start (`holderOf` in
+`src/dispatch.ts`). This is not what status calls
+someone working on an item (Item plans, Status rule 6): that counts a session of
+either role, within a window. The dispatch record is written by the script that starts
+the engineer and ended when it is finished, so holding needs no call of the
+engineer's own and is never forgotten. Rejected: a claim and a release tool the
+engineer calls, which adds two calls an engineer can forget and a second record
+that can disagree with the dispatch; inferring the holder from who last wrote an
+item with a step in progress (the agent list's inference), which another
+session's single write turns to the wrong session.
+
+**What is pushed.** Sixteen kinds, defined in one table (`WAKE_KINDS` in
+`src/wake.ts`; `push` refuses a kind or field set the table does not list).
+All go to the PM except `item-done` and `ask-alive`, which go to a holder,
+and `message`, which goes to its recipient:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
-  owner's comments on an engineer's item reach the architect too;
+  owner's comments on an engineer's item reach the PM too. A sent choice
+  note also rules its open card in the same commit (see Decision cards), so the
+  PM does not rule it afterwards;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
 - the timed wake, every 30 minutes, with a line of the month's Actions usage;
@@ -2172,7 +2467,13 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below).
+  deploy did not happen. The job asks through `POST /api/wake` (below);
+- an item that became done (`item-done`), to the session holding each open item
+  that waits on it;
+- a session holding an item that has given no sign of life for 30 minutes
+  (`ask-alive`), to that session; and one that has given none for 30 minutes
+  after being asked (`no-answer`), to the PM (Liveness, below);
+- a message one agent sent another (`message`; Messages, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -2205,7 +2506,7 @@ the forms the server sends:
 |---|---|
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. `working` lists the open items outside the Architect project that have a step being done, and `architect` every open item of the Architect project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
+| `{n, at, event:"timed", since, changed, working, architect, pm, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. `working` lists the open items outside the Architect and PM projects that someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is left out), `architect` every open item of the Architect project and `pm` every open item of the PM project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
@@ -2215,10 +2516,16 @@ the forms the server sends:
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the PM's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
+| `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
+| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's or the architect's session |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
-`connected` and `gap` carry no number and are not events.
+`connected` and `gap` carry no number and are not events. A frame on an
+agent's stream also carries `line`, the one line the agent is shown for it (Size,
+below); the architect's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
@@ -2227,22 +2534,133 @@ handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
 event missed or sent twice between replay and live. A client drops an event
 numbered at or below the one it remembers (a repeat); a gap frame sets that number
-first, as above. Without `after` the client gets live events only. Every connected client gets every event. The server pings every 25
+first, as above. Without `after` the client gets live events only. Every client connected to the PM's stream gets every event of it, and none of an agent's. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.
 
-**Receipts.** A call to any MCP tool whose `session` is `架构师` answers every
-event pushed before the call arrived; the call counts when its arguments pass
+**Receipts.** A call to any MCP tool whose `session` is `PM` or `架构师`, or that
+carries a credential of either role (the role decides then, whatever session the
+call names), answers every event pushed to the PM's stream before the call arrived; the call counts when its arguments pass
 the tool's schema, whatever the tool then does. A receipt writes a line to the
-file only when it answers something new. The architect is expected to make such
+file only when it answers something new. The PM is expected to make such
 a call after handling a wake, which it does anyway by reading or writing the
-board. The timed wake comes every 30 minutes, so an architect that is running
+board. The timed wake comes every 30 minutes, so a PM that is running
 answers within the hour.
 
-**No receipt.** When the oldest unanswered event is one hour old (the limit is
-an option for tests), the board tells the owner once: 「架构师 1 小时没响应」,
-naming that event. The architect has stopped: its session crashed, waits at a
+**Agents' streams.** A client opens a WebSocket to
+`ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
+Host and Origin rules are those of `/wake`. The server answers 400 for an empty
+name, one longer than 80 characters, one holding a slash or a control character,
+the name of the PM or the architect (their stream is `/wake`), a name that does not decode, and
+any query string. The board, not the client, keeps how far the stream was
+delivered, so the client sends no number: it gets `connected`, then `gap` when
+events never delivered were dropped by retention (it reads the board for what
+it missed), then every kept event not yet delivered, then live events of this
+stream only. Once it has printed the events up to `n`, the client sends the
+text frame `{"ack": n}`; from then on they are delivered and never sent again,
+on any connection or in any tool result. An ack at or below the delivered
+number, above the newest, or not a whole number changes nothing. The frame
+`{"alive": true}` is a sign of life of the session (Liveness, below); any other
+message is ignored. A client killed between printing and acking gets those
+events once more: a repeat, never a loss. An agent's stream keeps its newest
+200 events, at most 256 KiB, with the delivered number and the session name, in
+`state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
+SHA-256: a name of 80 Chinese characters would be 720 bytes percent-encoded,
+past the 255 a file name may hold, and two names that differ only in case would
+share one file on a disk that ignores case. Numbers and delivery survive a
+restart. A stream with everything delivered, no push or delivery for seven
+days, whose session holds no item and has no socket on it, is dropped with its
+file; an `ask-alive` left undelivered counts as delivered here, since a call
+answers it and a session that died with one pending would otherwise leave its
+stream for good.
+
+Rejected, for agents: a per-event receipt the agent sends with a tool call after
+handling the event, resending every unanswered event on each connection
+(the resource agent's earlier design), because the same event would reach the
+agent's context several times and each event would cost a call; the
+rule of the PM's stream that any call answers everything, because an engineer calls
+the board all the time while it works, and would answer events it never saw.
+
+**In a tool result.** A session that is working is not running its wait script,
+so the board gives it its undelivered events in the next tool result it gets:
+any tool, read or write, whose caller is a session other than the PM's or the architect's
+(the credential's session when the connection has one, else the `session` the
+call names, trimmed). After the tool's own text and a blank line come the line
+`【看板推送】` and one line per event, oldest first, at most five; more are
+counted by kind in one more line and wait for the next call. The events shown
+are delivered. A kind the table marks `answeredByCall` (`ask-alive`) is not
+shown: the call that would carry it is its answer, so a line would only add to
+the agent's context. It counts as delivered, and a wait script prints it. Rejected: waiting for the wait script alone, which leaves an
+owner's change of direction unseen through hours of implementation; an inbox
+tool the agent must remember to call, which costs a call each time and is
+mostly empty.
+
+**Liveness.** The board asks whether a session holding an item in progress is
+still there (`src/liveness.ts`, from the server's minute timer). Only an item
+whose status is in progress counts: a session holding a paused, done, cancelled
+or blocked item is waiting or finished, not silent (a blocked item waits on a
+card or another item, and the PM looks for its session when that wait ends). The
+status is the board's derived one, so what counts as in progress follows it. A
+*sign of life* is a call to any tool as that session (the same name the tool
+result uses), or an `{"alive": true}` frame from its wait script on its stream.
+A connection is none, and neither is its end. A session that gives no sign for
+30 minutes is asked: an `ask-alive` goes into its stream, and any sign answers
+it. If it gives none for another 30 minutes, `no-answer` goes to the PM
+with the session, item, project and the time its silence began. A sign ends the
+silence; the next one starts over, so one silence is asked once and told once.
+If the PM does not answer `no-answer`, the no-receipt alert below tells
+the owner an hour later, with the item as its target. A session holding no item
+in progress (a reviewer, the observer, the holder of a paused item) is not
+watched, what the board knew of it is dropped, and its silence starts when it
+holds an item in progress.
+
+The silences are kept in `state/liveness.json` beside the board (git excludes
+it), written at every round with the time of the round. A restart counts the
+time the board was stopped since its last round as no silence: it is added to the
+time every silence is counted from, so a session silent for 20 minutes before a
+restart is silent for 20 minutes after it. Restarts, which follow every merge,
+thus neither delay nor repeat a push, and a told silence stays told until a
+sign. Rejected: counting every silence from the restart, which lets restarts
+less than 30 minutes apart postpone the ask for good.
+
+The connection of a wait script is no sign, because it outlives its session. On
+2026-10-17 a probe held a connection to a copy of the board from a background
+command of a session; `claude stop` ended the session at 17:51:40, the probe's
+shell was taken over by process 1, and the connection was still open in the copy's
+log at 17:53:11, 1.5 minutes after the stop (the session itself was never
+idle, since a command was running, so the reclaiming of an idle session was not
+observed). So the script sends the alive frame only while the session that
+started it is running, at least every 10 minutes (a silence is asked at 30), and
+ends when that session is gone; the board counts the frame and not the
+connection, so a script that outlives its session, or is an older one that sends
+none, makes the session look as silent as it is. Rejected: counting the
+connection, which the measurement refutes; counting calls only, which makes a
+session that waits on a script call the board by hand every 30 minutes or be
+reported; the script calling a tool as the session every 25 minutes, which hands
+the script the session's credential and costs a tool call for what one frame says.
+
+The 30 and 30 minutes are a provisional choice. The architect then knows within
+an hour of a session's last sign. On 2026-10-16, over thirteen sessions at work, a session was
+more than 30 minutes past its last board write 0.2 % of the time (15 minutes:
+11 %); only writes were counted, and reads now count too. Rejected: 15 and 15
+minutes, which would call the architect to engineers at work; 60 and 30 minutes,
+which leaves a stopped session unknown for an hour and a half. Reopen if more
+than a tenth of the `no-answer` pushes of the first week come while the session
+was working.
+
+**Size.** Whatever the board pushes or returns stays in the receiving agent's
+context until it is compacted, so a push to an agent says what needs handling
+and leaves the details to a read. Its one line (`lineOf` in `src/wake.ts`) is
+the number, the kind's label and what it is about (an item or pull request
+with its project, a title, counts instead of lists), at most 200 characters,
+cut with … past that; the tests measure it for every kind with the longest
+fields. A message's line cuts only what comes before its text (Messages,
+below). An event reaches an agent once (above).
+
+**No receipt.** When the oldest unanswered event on the PM's stream is one hour old (the limit is
+an option for tests), the board tells the owner once: 「PM 1 小时没响应」,
+naming that event. The PM has stopped: its session crashed, waits at a
 permission prompt, or no longer holds the Monitor that carries the stream.
 No more alerts follow until a receipt arrives and a later event goes unanswered
 for an hour. The receipts and the alert state are in the same file, so a restart
@@ -2264,8 +2682,8 @@ the deploy job's notice on the Mac (section 4, Deploying) is the only one that r
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
-or card of its oldest unanswered event: a `stalled` event's item, or the item or
-card a `note` event is on; a `timed` event names neither, so its notice has no
+or card of its oldest unanswered event: the item of a `stalled` or `no-answer`
+event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
 target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
@@ -2278,13 +2696,61 @@ with `--dangerously-load-development-channels`, which the desktop app's Code
 sessions cannot pass. The wake events are therefore defined independently of
 transport, so a thin stdio channel that relays `/wake` can replace the
 Monitor once channels allow it, without changing the server. Until then the
-architect runs a small client under Monitor, which lasts 30 minutes at most and
+PM runs a small client under Monitor, which lasts 30 minutes at most and
 is started again: the numbers and `after` carry it across the gap.
+
+### Messages
+
+An agent tells another which item to read and what it waits for with a
+message through the board, not with a message between sessions: the recipient
+gets it whether or not its process is running, and the message stays on the
+board, where the owner and later readers find it.
+
+- **Sending.** `send_message(to, text, item?)` adds one message to the end of
+  its day's file (section 5) under the caller's session and project, in one
+  commit. The
+  recipient is the PM's session, the architect's session, a session with an open dispatch of any
+  role (an engineer or a review; `openAgents` in `src/dispatch.ts`), or the
+  session of a long-lived credential (the observer, the resource agent).
+  Another name is refused with the names that work, so a mistyped name fails at
+  once instead of filling a stream nobody reads. The text is one line of at most
+  150 characters (`MESSAGE_TEXT_LIMIT` in `src/model.ts`); longer text is
+  refused, never cut: a message is a doorbell, and the content belongs on the
+  item. Every role may send (part `message.send`, section 9).
+- **Delivery.** The write pushes one `message` event to the recipient's
+  stream: the PM's for the PM or the architect, else the session's own. With no
+  process connected it waits there, and reaches the session once, on its wait
+  script's next connection or in the result of its next board call (The wake
+  streams, above).
+- **Size.** Its line is the number, 「消息」, the sender with its project and
+  the item, cut at 49 characters (`MESSAGE_PREFIX_LIMIT` in `src/wake.ts`), then
+  a colon and the whole text: at most 200 characters, the line limit, because
+  the text is at most 150.
+- **Reading.** `messages(filters)` lists them (section 6). The page shows the
+  newest at its top right (section 7, Messages list).
+- **No work.** A message changes no item: it starts no active time, moves no
+  session's items in the agent list, reaches no check and is not unread for the
+  owner. Its write skips the item rules' checks for the same reason.
+
+Rejected: keeping messages only in the recipient's stream (a local state file
+outside git), which keeps only the newest few hundred and loses them with the
+machine, so the owner's history of messages could not be complete; writing a
+message into an item's log, which has no place for a message about no item
+(asking for the 14900K, reporting a rule problem) and gives the page no list by
+time; 500 characters cut when pushed, because a cut text may lose the item to
+read, and the line limit would then not hold; one file per message, because
+every file is one more for the board to read at start and for git to check on
+every commit: with 50,000 messages (about a year at 140 a day) on a board of the
+live one's size, opening took 17.2–17.8 s instead of 5.3–5.4 s and an ordinary
+write 153–158 ms instead of 73–76 (three interleaved rounds on a GitHub-hosted
+runner, a rough measure; the write benchmark, `scripts/bench-writes.ts
+--messages`); archiving old messages into monthly files instead, because it
+keeps a second place to read messages from and a job that moves them.
 
 ### Watching GitHub
 
-The board looks at GitHub itself and does with the answer what the architect
-would otherwise do by hand on each round: it tells the architect when a pull
+The board looks at GitHub itself and does with the answer what the PM
+would otherwise do by hand on each round: it tells the PM when a pull
 request can merge or the checks went red, and it marks the merge row of a
 merged pull request done (`src/watch.ts`, `src/github.ts`).
 
@@ -2380,7 +2846,7 @@ tried at the next look.
 The organization's GitHub Actions minutes are shared by all its private
 repositories, and nothing else shows how many are used or how fast. The board
 reads the billing itself, keeps an account of the month, and tells the
-architect before the included minutes run out (`src/usage-watch.ts`,
+PM before the included minutes run out (`src/usage-watch.ts`,
 `src/billing.ts`; the account, the levels and the line are pure functions in
 `src/rules.ts`).
 
@@ -2456,17 +2922,17 @@ area with an absent or unconfigured group gets a shared rules check; older
 boards without `projects` load with an empty list.
 
 At a repository root, a session calls `projects`, picks the project whose
-`repo` matches its repository’s GitHub remote (the architect uses
-`Architect`, from the session `架构师`), uses that project’s name as `author` in every write, then reads
+`repo` matches its repository’s GitHub remote (the PM uses `PM`, from
+the session `PM`, and the architect uses `Architect`, from the session `架构师`), uses that project’s name as `author` in every write, then reads
 `brief(project)`. No claim or session registration is needed.
 The page displays configured projects in `board.yaml`'s project list order.
 `create_project` configures `{name, repo?}` and accepts any author string
 when appending the project last. Its optional `after` names an existing
-project to place the new project immediately after; only `Architect` may supply it.
+project to place the new project immediately after; only the PM and the architect may supply it.
 `update_project(author, name, repo?, mainline?, after?)` sets or changes a repository
 or main line branch (`mainline: null` clears the branch): a project may change
-its own repo and mainline, and `Architect` may change any project’s. Only
-`Architect` may set `after` to move a project immediately
+its own repo and mainline, and the architect may change any project’s. Only
+the PM and the architect may set `after` to move a project immediately
 after another configured project; omitting it preserves the current order.
 An unknown `after` or moving a project after itself is refused. An order-only
 update needs no `repo` or `mainline`. Ordering is defined in `src/rules.ts`.
@@ -2478,15 +2944,16 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-`author === Architect`; this applies to items, their cards and owner-note
-replies or closures. Only `Architect` creates items, in any project.
+the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师`); this applies to items, their cards and owner-note
+replies or closures. Only the PM and the architect create items in any project; an
+engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
 `Architect`'s included. Moving work requires the source and destination to
-belong to one project, which the author must own unless it is `Architect`
-(`move_item_project` leaves its source project, so only `Architect` may use
+belong to one project, which the author must own unless it is the PM or the architect
+(`move_item_project` leaves its source project, so only the PM and the architect may use
 it, section 6), and revising a card’s owning item checks both owners the same
 way. A refusal names the item’s project
-and directs the caller to report what it needs from the item to `Architect`. Cross-project
+and directs the caller to report what it needs from the item to the PM. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
 owner-note, send and read operations are separate from agent
 operations and remain unrestricted. This is how a call that carries no
@@ -2496,25 +2963,31 @@ authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
-`架构师` (`isArchitect` in `src/model.ts`). Both are needed because
-`Architect` is also the project of the agents_config repository, and an
-engineer who does an Architect item there writes as author `Architect`, as
-every project's engineer writes as its project. Without the session such a
-write is an ordinary project author's: it may write the Architect project's own
-items and nothing reserved. The session name is not authenticated, as no
-project name is; the rule stops misuse, not impersonation. The architect's
-writes carry `Architect` as commit author and log `by`, so history and logs
-show the architect made the change, not the item's project. The operations
-reserved for it are listed with the tools (section 6); the check is
-`onlyArchitect` in `src/ops.ts`, and project order uses the same judgement in
+`架构师` (`isArchitect` in `src/model.ts`), and the PM's is author `PM`
+writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both names
+are needed because each author name is also a project: `Architect` is the
+project of the agents_config repository, `PM` the project of the PM's own
+records (it has no repository), and an engineer who does an item there writes as
+that project's author, as every project's engineer writes as its project.
+Without the session such a write is an ordinary project author's: it may write
+that project's own items and nothing reserved. The project `PM` is created
+once by the architect (`create_project`); until it exists the PM's writes are
+refused like any author that is not a configured project. The session name is not
+authenticated, as no project name is; the rule stops misuse, not impersonation.
+Their writes carry `PM` or `Architect` as commit author and log `by`, so history and logs
+show that the PM or the architect made the change, not the item's project. The
+operations reserved for the process are listed with the tools (section 6); the
+check is `onlyProcess` in `src/ops.ts` and what only the architect does is
+`onlyArchitect`; project order uses the same judgement as the process in
 `src/rules.ts`. The coordinator project `总管` stays configured, so
 its items, glossary and history remain readable, but `run` in `src/ops.ts`,
 the one path every agent write takes, refuses any write under that author
-with a message naming `Architect`. Store migrations commit under `总管`
+with a message naming `PM` (session `PM`) for the process and `Architect` for the rules
+and the architect's own entries. Store migrations commit under `总管`
 directly and do not pass through it; the historical authors stay as written.
 
 There is no inbox. Work another project needs is not filed into that
-project: the session that needs it reports it to `Architect`, who creates the
+project: the session that needs it reports it to the PM, who creates the
 item in the project that delivers it and joins it to the needing item by a
 shared row. The board once had `create_request` and `triage_request`, which
 filed an item into another project's inbox with a `request: {by, at}` marker;
@@ -2528,14 +3001,16 @@ start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
-still awaiting the owner, items in progress with a doing step of their own,
-the next ten items rated 1–5 that an unpaused root needs and whose frontier holds a step that can start, by priority,
+still awaiting the owner, items someone is working on (a doing step of their own or a live session),
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), by priority,
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
 `{id, title, plan?, targets?}` rows for records and blocked items
 that are not already represented in the checks, WIP, TODO or
-outgoing rows. It does not repeat those rows or add closed work and the TODO
+outgoing rows, except blocked items that only wait for their turn in their
+owner's plan and that nobody is working on: `brief.queued` counts those per
+owner as `{owner, num, title, count}`. It does not repeat those rows or add closed work and the TODO
 backlog. The outgoing list holds the open items
 targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
@@ -2575,19 +3050,21 @@ the writer from it.
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
-  - A *long-lived credential* belongs to the architect (`架构师`), the observer (`观察者`) or the
+  - A *long-lived credential* belongs to the architect (`架构师`), the PM (`PM`), the observer (`观察者`) or the
     resource agent (`资源管理`): session name, role, project and, for the resource agent, the
     records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
     `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session name `架构师`** is the architect's alone: without a credential the board takes
-  author `Architect` writing from that session for the architect (section 6) and skips
-  checks for it. A file entry of another role under that name is refused, and so is
-  `dispatch_start` for an agent of that name (spaces around it are ignored, as everywhere the
-  board compares it). With a credential, a write is the architect's when the credential's
-  role is, whatever names it carries.
+- **The session names `架构师` and `PM`** are the architect's and the PM's alone: without a
+  credential the board takes author `Architect` writing from `架构师` for the architect, and
+  author `PM` writing from `PM` for the PM (section 6), and skips the process checks for them. A
+  file entry of another role under either name is refused, so is an entry of the architect's role
+  under another name or in another project than `Architect`, an entry of the PM's role under another
+  name or in another project than `PM`, and so is `dispatch_start` for an agent of either name
+  (spaces around it are ignored, as everywhere the board compares it). With a credential, a
+  write is the architect's or the PM's when the credential's role is, whatever names it carries.
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads
@@ -2595,31 +3072,51 @@ the writer from it.
   author would otherwise write on. One with a valid credential writes as the credential's
   project and session, whatever it names itself; the call is told when it named another.
 - **What each role may write** is one table, `ACCESS` in `src/model.ts`, from role to the
-  *parts* of the board a write changes and how far: `board` (any item of any project) or
+  *parts* of the board a write changes and how far: `board` (any item of any project),
   `subtree` (the items the credential names, with everything they own, and the writer's own
-  project's glossary). `ops.run` takes the parts of every write as an argument, so a write
+  project's glossary), `below` (a `subtree` without the items the credential names) or `own` (no item, only the writer's own message). `ops.run` takes the parts of every write as an argument, so a write
   cannot omit them, and refuses a part the role lacks before it reads anything; for a
-  `subtree` part it then checks, once the write is complete, that every document it changes
+  `subtree` or `below` part it then checks, once the write is complete, that every document it changes
   is inside the subtree. The check counts the board's own effects on other items as well
   as what the call names: a row that makes a root with a stored priority wait on another
   item changes that root (the board drops its priority and logs it), so a subtree
   credential cannot add such a row. It also counts what a plan row takes in: a row that owns
   an item puts it under the writer, so a subtree credential may own only items it already
-  writes.
+  writes. A write with a `below` part that changes a named item is refused: the engineer was
+  handed that item at its level, and the architect changes the level of what it hands out.
   - The architect has every part but `item.merge-row`, on the whole board. No role has
     `item.merge-row`: only the GitHub watch marks a merge row done, and it writes without a
     credential.
-  - The observer has every part but the ones only the architect has: `project.create`,
-    `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`, `item.cancel`,
-    `item.pause`, `item.move-project` and starting or ending a dispatch. It writes items of
+  - The PM has every part but the ones only the architect has: `project.create`,
+    `tag-vocab`, `journal` and `item.merge-row`. It writes items of any project, and
+    does the process: creating, rating, retitling, cancelling, pausing and moving items,
+    the page order, and starting or ending a dispatch.
+  - The observer has every part but the ones only the architect and the PM have:
+    `project.create`, `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`,
+    `item.cancel`, `item.pause`, `item.move-project` and starting or ending a dispatch (an engineer has
+    `item.create` inside its subtree and `item.difficulty` below its root). It writes items of
     any project, recorded under its credential's project and session.
   - The resource agent writes the log of any item and ends dispatches; it writes the head
     and plan of the records its credential names. This is a first answer, to be revised
     when the resource agent's own design (item `resource-ops-study`) says what it needs.
   - An engineer writes the log, plan, targets, links, cards and glossary terms of its
     subtree, and the head of its items, which is the whole body until bodies are stored by
-    section (item `mcp-sections`); it narrows to the 改动 section then.
+    section (item `mcp-sections`); it narrows to the 改动 section then. It also makes
+    the sub-items of its tree (`item.create`), rates the ones below its root
+    (`item.difficulty` at `below`), tags them and the root (`item.tags`), and replies to the owner's notes on the subtree's items and cards
+    (`note.reply`), replacing only a reply it wrote itself (the architect replaces any); it does not close a note without a reply, rule a card, move an item,
+    or write the tag vocabulary. A new item counts as inside the subtree only when an item
+    of the subtree owns it, so an engineer cannot make a top item. Without a credential,
+    creating an item and rating one stay the architect's alone (the old way, until the
+    old tools are removed).
+    `write_card` names `card.write`, `item.plan` (a blocking card is also a row of its
+    item's plan) and `item.log` (clearing `blocks` on a revision logs the removed row);
+    `withdraw_card` names `card.write` and `item.log` (the reason goes to the item's log);
+    `rule_card` is `card.rule`, which an engineer lacks.
   - A review writes the log of its subtree.
+  - Every role sends messages (`message.send`, section 8, Messages). Its scope is `own`: a
+    message changes no item, so no project or subtree bounds it, and it does not make a role
+    one that writes any project.
 - **Rejected.** Passing the credential in an environment variable: a background session
   does not receive the environment of the command that started it (tested 2026-10-16). A
   per-directory MCP configuration (`claude mcp add --scope local`): it applies to the
@@ -2961,6 +3458,22 @@ pointers, not findings, and phase 2 settles each in passing:
 Every work item has an acceptance step from phase 1 on, so 没有计划：至少要有一个
 验收步骤 is empty from the first day and stays a refused write.
 
+### Clearing the retired difficulty level
+
+`npm run migrate:architect-level -- --data DIR` clears the retired level
+`architect` (「架构师做」, section 5, Difficulty) from the item files that hold
+it. It runs offline, with the daemon stopped or on a copy: the board refuses to
+start on a file that holds the level, and `Store.open(dir, { clearArchitectLevel:
+true })`, which the command calls, reads those files without it and writes one
+commit, `clear_architect_level N items`, in which each such item has no
+difficulty and one more log line, `难度：架构师做 → 未评，理由：迁移：…`. The
+commit is bookkeeping for the owner: unread shows nothing for it. Items cleared this way raise 缺难度 once they qualify
+(section 5, Difficulty) and are rated 1–5 by whoever may rate them. A second run
+writes nothing. The command, its module, its test, the npm script and the start
+option are deleted after the run on the live board; what stays is the omission of
+the value from old versions in historical comparison, and unread's reading of
+the clearing as bookkeeping.
+
 ### Owner-wide rules to change
 
 Changes to the owner-wide rules that follow from this design are tracked on
@@ -3003,6 +3516,54 @@ the board.
     grow while a project rewrites. Proceeding on: accept it; the owner can
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
+
+### Card conversion
+
+The card shape of section 5 (Decision cards) replaces cards whose option text
+was long, whose background, confidence and ruling were text of the same kind,
+and plans that named cards of other items. `npm run migrate:cards -- --data
+DIR [--apply]` converts a data directory in one commit, `Migrate decision cards
+into item plans`. It is a one-time offline command, not a startup step: it
+reads the raw files (the current schemas refuse the old cards), prints a
+report without `--apply`, and with `--apply` writes only when the working tree
+is clean, the daemon is stopped and the report has no error. A commit with this
+message is not work on the items: activity and the owner's unread list skip
+it, as they skip the numbering commit. The command is deleted once it has run
+on the live board.
+
+- Each card keeps `item`, `question`, `status`, `blocks`, `choice`, `ruledAt`,
+  `confidence`, `ruling`, `num` and times. Each option's text becomes its
+  `detail` and its name stays empty. The old `background` moves to `legacy`;
+  `order` is dropped. A status other than open and ruled is an error.
+- An open card whose owner pick was already sent closes with that pick and the
+  send time as `ruledAt`.
+- Only a card that blocks has a row. An open blocking card with no row gets
+  one before the first acceptance step, which then also waits for it. An open
+  card that has a row but no `blocks` becomes a blocking card: in the old plans
+  a card's row made the step after it wait, so `blocks` names that step (the row
+  waiting for the card, else the row after it; a step's text, an item's title or
+  a card's question) and the row stays. No item changes status because of it,
+  and the report lists these cards. A closed card keeps the row it has and gets
+  none: the row records the step that once waited for it.
+- A row for a card of another item is dropped (an open one is an error: place
+  it by hand). Every such card was ruled, so the row was resolved. Each
+  affected item's log gets one entry naming the card and what was chosen. A
+  dropped id is removed from later rows' `after`, and a row that implicitly
+  followed a dropped row gets `after: []`, so it was ready before and stays ready.
+- The head of every item with cards the head does not place gets a section at
+  its end, before its first 参考 section: the bold line **以前的决定**, then
+  one line `[[q:key]]` per card, in the order the cards were written, so the
+  converted cards show in the body without the reader having to ask for them.
+  A card the head already places keeps its line and is not listed again.
+- The report lists every item whose status, priority or ready rows differ
+  between the board before and after, both read with the same current rules,
+  and prints the text of one section it added. The expected differences are an
+  item that waits on an open blocking card it never named (that card now has its
+  row) and an item whose answered card now closes; anything else is a fault in
+  the conversion.
+- Open cards the head does not place are placed by the section above, so the
+  conversion raises no 卡没标位置. Cards written afterwards are placed by the
+  head that asks the question.
 
 ## 11. Testing
 
@@ -3067,12 +3628,17 @@ generated board. The categories come from a survey of the real board on
 ownership up to six levels deep, 27 items owning more than ten; 119 items
 owned under a record; 272 items named by shared rows, 151 of them across
 projects; 707 plans with parallel rows; 596 cards (83 open, 24 open and
-blocking), 6 named by two plans and 8 by three, 66 named by a done item's
-plan, 19 named only by other items' plans, 8 open cards no plan names (one on
-a record), 2 open cards on done items; 754 notes (603 on cards, 201 with
+blocking), 2 open cards on done items, one on a record; 754 notes (603 on cards, 201 with
 replies, 23 anchored); 257 heads with code blocks; 28 tags, every item
-tagged. Shapes the real board lacks today but the schema allows and the page
-handles (pending asks) are generated too.
+tagged. The generated cards have the shape of section 5 (Decision cards),
+which the real board has once the card conversion has run: options with a name
+and a detail and a confidence; a row in the plan only for a card that blocks (and
+for some closed cards that had one); some cards placed in the head, the converted
+old cards in a section at its end, and some not placed at all; some ruled by an
+option, some in words, some with a nameless option and a legacy background, some
+withdrawn. Shapes the real
+board lacks today but the schema allows and the page handles (pending asks) are
+generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
@@ -3083,8 +3649,15 @@ server's unread history:
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
-  unfolds that card right under the row and keeps the selected item; a step
-  row selects the step and keeps the item;
+  names its question (and the pick once ruled) and goes to that card in the
+  body, never drawing it under the row, keeping the selected item; a step row
+  selects the step and keeps the item;
+- each card shows once in its item's body with its question once, its option
+  names and details (the recommended one marked) and its confidence or, once
+  closed, one line with its pick and the rest folded under it, its old
+  background folded (open on an open card), and at the line of the head that
+  places it; a card the head does not place follows the head under a line that
+  says so;
 - each 被依赖 row goes to its dependent and 返回 comes back;
 - the purple and red numbers after a title equal the blocking and other waits
   in the item's owned subtree, and clicking a number as often as it says

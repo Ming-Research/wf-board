@@ -1,11 +1,12 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
+import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the architect may place a project after another. */
+/** Project list order is page order; only the PM and the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
-  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
+  if (!mayRunProcess(who)) throw new Error(`after: only ${PROCESS_WRITERS} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -161,7 +162,7 @@ export function usageKey(f: Pick<UsagePushFields, "org" | "reason" | "level" | "
   return f.reason === "month" ? `actions-usage ${f.org} month ${f.month} ${f.level}` : f.reason === "day" ? `actions-usage ${f.org} day ${f.day}` : `actions-usage ${f.org} cap ${f.month}`;
 }
 
-/** What to tell the architect now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
+/** What to tell the PM now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
  * it as well, so a first look at 88% is one push, not two). Day: more than the day limit counted today. Cap: all the included
  * minutes used and a budget of 0, which stops the private repositories' CI. `announced` holds the keys already told. */
 export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): UsagePush[] {
@@ -181,12 +182,20 @@ export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): Us
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
 export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
- * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
- * first rating left out of `after`; any other pair comes back as it is. */
-export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
-  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
-  const { difficulty: _rated, ...rest } = after;
-  return [before, rest as T];
+ * items would show each of them new for one added label. So is the migration that cleared the retired level 「架构师做」
+ * (from that level to none), which touched a dozen items for one removed label. Changing a level that exists is news.
+ * Returns the pair with the rating left out of the side that has it; any other pair comes back as it is. */
+export function withoutRatingBookkeeping<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after) return [before, after];
+  if (before.difficulty === undefined && after.difficulty !== undefined) {
+    const { difficulty: _rated, ...rest } = after;
+    return [before, rest as T];
+  }
+  if (before.difficulty === RETIRED_LEVEL && after.difficulty === undefined) {
+    const { difficulty: _cleared, ...rest } = before;
+    return [rest as T, after];
+  }
+  return [before, after];
 }
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
@@ -237,8 +246,39 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** The plan without a card's row, for a card that does not block. Rows that waited for the row wait for what it waited for. */
+export function withoutCardRow(plan: PlanRow[], key: string): PlanRow[] {
+  const i = plan.findIndex(r => "card" in r && r.card === key);
+  if (i < 0) return plan;
+  const waited = plan[i]!.after ?? (i > 0 ? [plan[i - 1]!.id] : []);
+  return plan.filter((_, n) => n !== i).map((r, n) => {
+    if (r.after?.includes(key)) return { ...r, after: [...new Set([...r.after.filter(x => x !== key), ...waited])] };
+    return r.after === undefined && n === i ? { ...r, after: waited } : r;
+  });
+}
+
 /** A title longer than this many characters (spaces not counted) gets a check. */
 export const TITLE_MAX_CHARS = 20;
+/** An option name longer than this many characters (spaces not counted) is refused when a card is written; its detail has no limit. */
+export const OPTION_MAX_CHARS = 20;
+/** An open card its item's head does not place carries this label; a card and its plan row that disagree, the next. */
+export const CARD_UNPLACED_LABEL = "卡没标位置";
+export const CARD_MISMATCH_LABEL = "卡和计划对不上";
+/** A line holding only [[q:key]] places that card in the head there; the same token inside a sentence is a link. */
+const CARD_MARKER = /^[ \t]*\[\[q:([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\][ \t]*$/;
+/** The card key a head line places, if it is such a line. */
+export function cardMarker(line: string): string | undefined { return CARD_MARKER.exec(line)?.[1]; }
+/** The keys of the cards a head places, in the order of their lines; a line inside a code fence places nothing. */
+export function placedCards(head: string | undefined): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of (head ?? "").replace(/\r/g, "").split("\n")) {
+    if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
+    const key = fenced ? undefined : cardMarker(line);
+    if (key !== undefined && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
@@ -272,6 +312,18 @@ export interface Rules {
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
   statusOf(id: string): Status | undefined;
+  /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
+   * wrote or was started within the agent list's window). Not inherited from the items it owns. */
+  workedOn(id: string): boolean;
+  /** The items that carry an unfinished dispatch of this session. */
+  dispatchedItems(agent: string): string[];
+  /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
+   * a step ready to start that waits on nothing. The one definition the next-task list and the 缺难度 check both read. */
+  canStart(id: string): boolean;
+  /** `canStart` and rated 1–5: what the next-task list offers. */
+  startable(id: string): boolean;
+  /** What the item waits on: the brief tells a sub-item that only waits for its turn from one blocked for its own reason. */
+  progress(id: string): Progress;
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
   /** Effective pause on open work; done and cancelled always win. */
@@ -330,6 +382,15 @@ export interface DerivedPlanRow {
   glyph: string;
   dropped: boolean;
   excluded: boolean;
+}
+/** What an item waits on (docs/design.md, Status). */
+export interface Progress {
+  /** The rows the frontier waits on: items and cards. */
+  waiting: Array<{ kind: "item" | "card"; id: string }>;
+  /** The item's own request to the owner is still unanswered. */
+  ask: boolean;
+  /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
+  behind: boolean;
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -546,13 +607,13 @@ export function sameStatusAndPriority(a: Item, b: Item): boolean {
 export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {
   const it = r.item(id);
   const label = (kind: string, key: string): unknown[] => {
-    if (kind === "card") return [decisions[key]?.question, decisions[key]?.status, decisions[key]?.blocks];
+    if (kind === "card") { const d = decisions[key]; const o = d?.options.find(o => o.key === d.choice); return [d?.question, d?.status, d?.blocks, d?.choice, o?.text, o?.detail]; }
     const owner = r.parentOf(key);
     return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
   };
   const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
   const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
-  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
     r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
 }
 
@@ -599,6 +660,8 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
 export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after: Pick<Snapshot, "decisions" | "notes">, beforeRules: Rules, afterRules: Rules, changed: ReadonlyArray<{ kind: string; id: string }>, activity?: ActivityDelta): Set<string> | null {
   // Items whose last change or pause spans moved, including a note on a card deleted earlier, which only the store places.
   const seeds = new Set<string>([...Object.keys(activity?.items ?? {}), ...Object.keys(activity?.pauses ?? {})]);
+  // A session's write moves its last-activity time, which the status of every item it works on reads (liveDispatches).
+  for (const name of Object.keys(activity?.agents ?? {})) for (const r of [beforeRules, afterRules]) for (const id of r.dispatchedItems(name)) seeds.add(id);
   const card = (key: string) => {
     for (const s of [before, after]) { const owner = Object.hasOwn(s.decisions, key) ? s.decisions[key]!.item : undefined; if (owner) seeds.add(owner); }
     for (const r of [beforeRules, afterRules]) for (const waiter of r.cardDependents(key)) seeds.add(waiter.id);
@@ -612,13 +675,16 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
         if (target?.startsWith("it:")) seeds.add(target.slice(3));
         else if (target?.startsWith("q:")) card(target.slice(2));
       }
-    } else return null;
+    }
+    // A message changes no item, card or note, so it reaches no rule; any other kind (the board, owner state, a glossary) may reach every item.
+    else if (doc.kind !== "message") return null;
   }
   return seeds;
 }
 
 /** Rules objects shared by every reader of one snapshot. A Rules object reads
- * `now` only for elapsed time (active time, doing days); readers within the
+ * `now` only for elapsed time (active time, doing days, and the six-hour window
+ * of a live session, which status reads); readers within the
  * same minute share the one built at the first read of that minute, so its
  * results are exactly `rules(s, t)` for that first read's time `t`. The
  * activity index is advanced from the newest one instead of rebuilt. */
@@ -682,11 +748,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const list = notes.get(n.target) || [];
         list.push(n); notes.set(n.target, list);
       }
-      for (const [key, d] of Object.entries(s.decisions)) {
-        const list = cards.get(d.item) || [];
-        list.push(key); cards.set(d.item, list);
+      // An item's cards follow its plan; a card whose row is missing still belongs to its item and comes last.
+      const listed = new Set<string>();
+      for (const [id, it] of items) for (const row of it.plan) {
+        if (!("card" in row) || s.decisions[row.card]?.item !== id || listed.has(row.card)) continue;
+        listed.add(row.card); cards.set(id, [...cards.get(id) || [], row.card]);
       }
-      for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
+      for (const [key, d] of Object.entries(s.decisions)) if (!listed.has(key)) cards.set(d.item, [...cards.get(d.item) || [], key]);
       return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
@@ -771,9 +839,67 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return groups;
   }
+  // Whether a plan row is resolved, reading only whether items are done or cancelled. The rows before an owned item in its
+  // owner's plan decide whether its turn has come, and that must not ask the items' full statuses, which ask it back.
+  function rowResolved(row: PlanRow, seen: Set<string>): boolean {
+    if ("text" in row) return row.state === "done" || row.state === "dropped";
+    if ("card" in row) { const card = s.decisions[row.card]; return !!card && card.status !== "open"; }
+    const target = item(row.item);
+    if (!target) return false;
+    if (target.record) return true;
+    const closed = closedWalk(row.item, seen);
+    return closed === "done" || (row.own && closed === "cancelled");
+  }
+  const closedMemo = new Map<string, "done" | "cancelled" | undefined>();
+  // Done or cancelled, by the same rules as the status; an item met again on the path is not done (a cycle never completes).
+  // A value is kept only when no such guard was hit while computing it: one that was depends on where the walk began, and
+  // the order edges ownerRowReady follows are not in cycles(), so that set cannot tell.
+  let closedGuards = 0;
+  function closedWalk(id: string, seen: Set<string>): "done" | "cancelled" | undefined {
+    if (closedMemo.has(id)) return closedMemo.get(id);
+    const it = item(id);
+    if (!it || it.record) return undefined;
+    if (it.status === "cancelled") return "cancelled";
+    if (seen.has(id)) { closedGuards++; return undefined; }
+    const before = closedGuards;
+    seen.add(id);
+    const closed = it.plan.length > 0 && it.plan.every(row => rowResolved(row, seen)) ? "done" : undefined;
+    seen.delete(id);
+    if (closedGuards === before) closedMemo.set(id, closed);
+    return closed;
+  }
+  // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
+  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready.
+  function ownerRowReady(id: string): boolean {
+    const owner = parentOf(id), plan = owner ? item(owner) : undefined;
+    if (!owner || !plan || plan.record) return true;
+    const resolved = new Map<string, boolean>(), seen = new Set([id]);
+    let previous = true;
+    for (const row of plan.plan) {
+      if ("item" in row && row.item === id) return (row.after === undefined ? [previous] : row.after.map(key => resolved.get(key) ?? false)).every(Boolean);
+      previous = rowResolved(row, seen);
+      resolved.set(row.id, previous);
+    }
+    return true;
+  }
+  // Something of its own is done: a step of the plan, an item it owns that is done, or an open item it owns that has itself
+  // begun. What others finished does not count: a shared row, a card and an owned record are not this item's work.
+  const beginning = new Set<string>();
+  function begunOf(id: string): boolean {
+    return cached("begun", id, () => {
+      if (beginning.has(id)) return false;
+      beginning.add(id);
+      try { return anyBegun(planRows(id)); } finally { beginning.delete(id); }
+    });
+  }
+  function anyBegun(rows: readonly DerivedPlanRow[]): boolean {
+    return rows.some(entry => !entry.excluded && ("text" in entry.row ? entry.state === "resolved" : "item" in entry.row && entry.row.own && (entry.state === "resolved" || begunOf(entry.row.item))));
+  }
+  const liveSessions = (id: string): string[] => cached("sessions", id, () => [...new Set(liveDispatches(s, id, now).map(d => d.agent))]);
   // Cycle members keep the path-sensitive guard; acyclic targets have the same
   // result in every caller and are evaluated once per immutable snapshot.
   const targetStatuses = new Map<string, Status | undefined>();
+  // The first rule that holds decides (docs/design.md, Status).
   function statusWalk(id: string, seen: Set<string>): Status | undefined {
     if (targetStatuses.has(id)) return targetStatuses.get(id);
     const it = item(id);
@@ -788,11 +914,39 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       : pausedBy(id) ? "paused"
       : !rows.length ? "todo"
       : rows.some(row => row.state === "progress") ? "wip"
-      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
+      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id) ? "blocked"
+      : liveSessions(id).length ? "wip"
+      : anyBegun(rows) ? "idle" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
     return status;
   }
   function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
+  function workedOn(id: string): boolean {
+    return cached("workedOn", id, () => (item(id)?.plan ?? []).some(row => "text" in row && row.state === "doing") || liveSessions(id).length > 0);
+  }
+  function dispatchedItems(agent: string): string[] {
+    const byAgent = cached("dispatched", "", () => {
+      const out = new Map<string, string[]>();
+      for (const id of index().items.keys()) for (const d of (item(id)?.dispatches ?? [])) if (!d.finish) { const list = out.get(d.agent) ?? []; if (!list.includes(id)) list.push(id); out.set(d.agent, list); }
+      return out;
+    });
+    return (byAgent.get(agent) ?? []).slice();
+  }
+  // The step an agent would start with: ready, still to do, and waiting on nothing.
+  function nextStep(id: string): DerivedPlanRow | undefined {
+    return planRows(id).find(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
+  }
+  function canStart(id: string): boolean {
+    const st = statusOf(id);
+    return (st === "todo" || st === "idle") && neededSet().has(id) && nextStep(id) !== undefined;
+  }
+  function startable(id: string): boolean { return canStart(id) && item(id)?.difficulty !== undefined; }
+  function progress(id: string): Progress {
+    return {
+      waiting: planRows(id).filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
+      ask: askPending(id), behind: !ownerRowReady(id),
+    };
+  }
   function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
   function isStatusLeaf(id: string): boolean { return isLeaf(id); }
   function ended(id: string): boolean { const st = statusOf(id); return st === "done" || st === "cancelled"; }
@@ -823,9 +977,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const ask = item(id)?.ask;
     return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && (n.answerText ?? n.text) === ANSWER[n.kind] + ask.text);
   }
-  function cardWaiting(key: string): boolean {
-    return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
-  }
+  function cardWaiting(key: string): boolean { return index().decisions.get(key)?.status === "open"; }
   function cardBlocking(key: string): boolean { return cardWaiting(key) && !!index().decisions.get(key)?.blocks; }
   function ownerBlocking(id: string): boolean { return askPending(id) || cardsOf(id).some(cardBlocking); }
   function subtreeCount(id: string, own: (id: string) => number): number {
@@ -983,6 +1135,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
         else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
       }
+      // A card and its row are one fact stored twice: an open blocking card has its row in its item's plan, an open card
+      // that does not block has none (the work goes on without it), and each card row names a card of this item. A card
+      // that is closed keeps the row it had. Only a write that bypasses write_card can break that.
+      const own = cardsOf(id), rowCards = it.plan.flatMap(row => "card" in row ? [row.card] : []);
+      const apart = [...own.filter(key => cardBlocking(key) && !rowCards.includes(key)).map(key => `${key} 挡事，却没有计划行`), ...own.filter(key => cardWaiting(key) && !cardBlocking(key) && rowCards.includes(key)).map(key => `${key} 不挡事，却有计划行`),
+        ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
+      if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
+      const placed = placedCards(it.head);
+      for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });
       if (cycles().has(id)) out.push({ text: "依赖成环" });
       if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
@@ -1009,11 +1170,11 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
-        // Asked for only when the rating is the one thing left before the item can be dispatched: it is todo, its next own
-        // step waits on nothing, and an unpaused root needs it. While another item is the next step (a study, say), the
-        // rating waits too, and what no such root needs (backlog work, what hangs under it, paused work) is not asked for.
-        const nextStepReady = rows.some(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
-        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        // Asked for only when the rating is the one thing left before the item can be dispatched (canStart): it is todo or
+        // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
+        // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
+        // it, paused work) is not asked for.
+        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
@@ -1027,7 +1188,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

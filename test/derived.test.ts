@@ -108,24 +108,33 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async s => { const id = pick(itemsOf(s)), group = s.items[id]!.group, to = pick(itemsOf(s, group)); return op.moveItem({ author: group, id, owner: to }); },
     async s => { const id = pick(itemsOf(s)), it = s.items[id]!; return op.setStatus({ ...asArchitect, id, status: it.status === "cancelled" ? "open" : "cancelled", log: "because" }); },
     async s => {
+      // The card's row joins its item's plan in the same commit; the item then waits for it while it is open.
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
-      await op.writeCard({ author: group, key, item: id, question: "Which?", background: "b", options: [{ key: "A", text: "a", recommended: true }, { key: "B", text: "b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
-      const waiter = pick(itemsOf(s, group));
-      return op.setPlan({ author: group, id: waiter, row: { card: key } });
+      return op.writeCard({ author: group, key, item: id, question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
     },
     async s => {
       const open = Object.entries(s.decisions).filter(([, d]) => d.status === "open");
       if (!open.length) return;
-      const [key, card] = pick(open), group = s.items[card.item]!.group;
-      // A revision may move the card to another item of the project: its notes then reset that item's clock.
-      if (rand() < 0.5) return op.writeCard({ author: group, key, rev: card.rev, item: pick(itemsOf(s, group)), question: card.question, background: card.background, options: card.options });
-      return op.ruleCard({ author: group, key, choice: "A", ruling: "A it is" });
+      const [key, card] = pick(open), group = s.items[card.item]!.group, action = rand();
+      // A revision keeps the card's item and row; a ruling or a withdrawal resolves the row.
+      if (action < 0.4) return op.writeCard({ author: group, key, rev: card.rev, item: card.item, question: "Which now?", options: card.options.map(o => ({ text: o.text, detail: o.detail ?? "detail", ...(o.recommended ? { recommended: true } : {}) })) });
+      if (action < 0.8) return op.ruleCard({ author: group, key, choice: "A" });
+      return op.withdrawCard({ author: group, key, log: "not needed" });
     },
     async s => { const id = pick(itemsOf(s)); return op.setPause({ ...asArchitect, id, paused: !s.items[id]!.paused, ...(s.items[id]!.paused ? {} : { reason: "wait" }) }); },
     async s => {
       const cards = Object.keys(s.decisions);
       const target = cards.length && rand() < 0.5 ? `q:${pick(cards)}` : `it:${pick(itemsOf(s))}`;
       await owner.createNote({ target, kind: target.startsWith("q:") ? "choice" : "comment", text: "note", ...(target.startsWith("q:") ? { choice: "A" } : {}) });
+    },
+    // A session started on an item, and one ended: an unfinished dispatch holds the item while its session is within the window.
+    // Half of them started seven hours ago: the session's next write anywhere brings the item back inside the window.
+    async s => { const id = pick(itemsOf(s)); return op.dispatchStart({ ...asArchitect, id, role: pick(["工程师", "审查"] as const), level: 2, model: "Sonnet", agent: pick(["session-a", "session-b", "session-c"]), agentId: `d${made++}`, ...(rand() < 0.5 ? { startedAt: iso(now() - 7 * 60 * MINUTE) } : {}) }); },
+    async s => {
+      const open = Object.entries(s.items).flatMap(([id, it]) => (it.dispatches ?? []).filter(d => !d.finish).map(d => ({ id, d })));
+      if (!open.length) return;
+      const { id, d } = pick(open), usage = { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 };
+      return op.dispatchFinish({ ...asArchitect, id, agentId: d.agentId, result: "一次通过", usage, cost: 0, ...(d.role === "工程师" ? { reports: 0, kickbacks: 0 } : { rounds: 1 }) });
     },
     async () => owner.send({}),
     async s => { const group = pick(["Whitefoot", "Firn"]), ids = itemsOf(s, group).filter(() => rand() < 0.3); if (ids.length) return op.setTagsMany({ author: group, items: ids.map(id => ({ id, tags: [pick(["健全性", "报错信息"])] })) }); },
@@ -164,7 +173,8 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
 
     // Shared rules (store.derived, with the advanced activity index), candidate rules and the page's equal a fresh scan.
     const synthetic = now();
-    for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE]) {
+    // The last two are after the six-hour window of a session started in the sequence has passed.
+    for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE, synthetic + 7 * 60 * MINUTE, Date.now() + 8 * 60 * MINUTE]) {
       const expected = derivedView(rules(after, at), after);
       assert.deepEqual(derivedView(store.derived.rules(after, at), after), expected, `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);

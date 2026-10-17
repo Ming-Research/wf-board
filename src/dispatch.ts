@@ -1,4 +1,4 @@
-// Dispatch records: the agent sessions the architect started on items. A dispatch lives on its item (`Item.dispatches`);
+// Dispatch records: the agent sessions the PM (or the architect) started on items. A dispatch lives on its item (`Item.dispatches`);
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
@@ -126,4 +126,27 @@ export function startLogLine(d: Dispatch): string {
 export function finishLogLine(d: Dispatch, corrected: boolean): string {
   const f = d.finish!;
   return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${f.result}，${countsText(d)}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
+}
+
+/** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf
+ * reads for the pushes (docs/design.md, The wake streams). */
+export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
+  return (s.items[item]?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+}
+/** The session holding an item: the agent of the newest open engineer dispatch on it, or none. A takeover's dispatch is newer
+ * than the one it replaces, so it holds the item from its start; a review holds nothing. */
+export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
+  return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
+}
+/** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
+export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
+  const out = new Set<string>();
+  for (const item of Object.values(s.items)) for (const d of item.dispatches ?? []) if (!d.finish) out.add(d.agent);
+  return out;
+}
+/** Every session holding an item, with the items it holds in the board's item order; `only` narrows it to the items it accepts. */
+export function holders(s: Pick<Snapshot, "items">, only: (item: string) => boolean = () => true): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const id of Object.keys(s.items)) { const h = only(id) ? holderOf(s, id) : undefined; if (h !== undefined) out.set(h, [...(out.get(h) ?? []), id]); }
+  return out;
 }

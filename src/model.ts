@@ -25,7 +25,7 @@ export function numRef(text: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export const STATUSES = ["todo", "wip", "blocked", "paused", "done", "cancelled"] as const;
+export const STATUSES = ["todo", "idle", "wip", "blocked", "paused", "done", "cancelled"] as const;
 export const Status = z.enum(STATUSES);
 export type Status = z.infer<typeof Status>;
 
@@ -121,19 +121,20 @@ export const tagApplies = (tag: Tag, project: string): boolean => tag.projects =
 export const tagsRequired = (tags: readonly Tag[] | undefined, project: string): boolean => (tags ?? []).some(tag => tagApplies(tag, project));
 
 /**
- * An item's difficulty, which decides the agent that does it: 1–5, or "architect" for an item the architect does itself
- * (a discussion, a walkthrough, a design), which is rated but never dispatched. Only the architect sets it.
+ * An item's difficulty, which decides the agent that does it: 1–5. Every item is rated; one without a rating raises the
+ * 缺难度 check and is not startable. (The level 「架构师做」, for the architect's own work, no longer exists; old versions of
+ * an item may still hold it as `difficulty: architect`, which historical comparison omits, see src/store.ts.)
  */
-export const Difficulty = z.union([z.number().int().min(1).max(5), z.literal("architect")]);
+export const Difficulty = z.number().int().min(1).max(5);
 export type Difficulty = z.infer<typeof Difficulty>;
-/** How agents and the page write a difficulty: 「难度 2」, or 「架构师做」. */
-export const difficultyText = (difficulty: Difficulty): string => difficulty === "architect" ? "架构师做" : `难度 ${difficulty}`;
-/** Whether an item with this difficulty can be handed to an agent: rated 1–5, not the architect's own. */
-export const dispatchable = (difficulty: Difficulty | undefined): boolean => typeof difficulty === "number";
+/** The value of the retired level 「架构师做」 in a stored item: no schema accepts it; reading old versions and the owner's unread list know it (src/store.ts, src/rules.ts). */
+export const RETIRED_LEVEL = "architect";
+/** How agents and the page write a difficulty: 「难度 2」. */
+export const difficultyText = (difficulty: Difficulty): string => `难度 ${difficulty}`;
 
 /**
- * One dispatch: an agent session the architect started on an item, recorded in the columns of the dispatch format the
- * architect keeps (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
+ * One dispatch: an agent session the PM (or the architect) started on an item, recorded in the columns of the dispatch format
+ * (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
  * accepted for them.
  */
 export const DISPATCH_ROLES = ["工程师", "审查"] as const;
@@ -221,14 +222,14 @@ export const Item = z.object({
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
-  /** Explicit owner/architect pause; descendants inherit it through ownership. */
+  /** Explicit owner, PM or architect pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
   /**
    * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
    * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
    */
   tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
-  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
+  /** Set by whoever creates the item or by set_difficulty; absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
@@ -258,31 +259,56 @@ export const Item = z.object({
   }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none");
 export type Item = z.infer<typeof Item>;
 
+/**
+ * One choice on a card: `key` is A, B, C… in order for a card written now, `text` its name (a short phrase, empty on a
+ * card converted from the old form), `detail` what it does, what it costs and risks, and why it is or is not recommended.
+ */
 export const Option = z.object({
   key: z.string().min(1),
-  text: z.string().min(1),
+  text: z.string(),
+  detail: z.string().min(1).optional(),
   recommended: z.boolean().optional(),
-}).strict();
+}).strict().refine(o => o.text !== "" || o.detail !== undefined, "An option needs a name or a detail");
 export type Option = z.infer<typeof Option>;
 
-export const DECISION_STATUSES = ["open", "ruled", "withtree", "elsewhere"] as const;
+/** A card is open until the owner's pick is recorded (ruled) or it is withdrawn. */
+export const DECISION_STATUSES = ["open", "ruled", "withdrawn"] as const;
 
-/** A decision card. Its place on the board is `item` alone; an item's cards are derived. */
+/**
+ * What a card carried before the form it has now: its background, kept word for word on the cards written then. Only
+ * the migration writes it; the page shows it folded. The grounds of a card written now stand in its item's head.
+ */
+export const LegacyCard = z.object({
+  background: z.string().min(1),
+}).strict();
+export type LegacyCard = z.infer<typeof LegacyCard>;
+
+/** How sure the card's author is of the recommended option: a score of 1 to 5 and the reason (and what would overturn it). */
+export const Confidence = z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict();
+export type Confidence = z.infer<typeof Confidence>;
+
+/**
+ * A decision card: one question, its options with their grounds and the confidence in the recommended one. It stands in
+ * its item's head on a line of its own; a blocking card (with `blocks`) is also a row of that item's plan. Its item is
+ * stored here and its row, when it has one, in that item's plan; write_card writes both together and the 卡和计划对不上
+ * check reports them apart.
+ */
 export const Decision = z.object({
   num: Num.optional(),
   item: Key,
   question: z.string().min(1),
-  background: z.string().min(1),
   options: z.array(Option).min(1),
-  confidence: z.object({ score: z.number().int().min(1).max(5).optional(), reason: z.string() }).strict().optional(),
+  confidence: Confidence.optional(),
   status: z.enum(DECISION_STATUSES),
   /** One sentence naming the work that stops until the owner rules; present makes the card blocking (src/rules.ts cardBlocking). */
   blocks: z.string().min(1).optional(),
-  /** The chosen option's key, when the ruling picked one. */
+  /** The chosen option's key. Absent on an open or withdrawn card, and on a card the owner answered in words. */
   choice: z.string().min(1).optional(),
+  /** The owner's own words when they ruled in chat, quoted by the session that recorded them. */
   ruling: z.string().min(1).optional(),
+  /** When the card closed: the owner's send time for a pick made on the page, else the time of the call that closed it. */
   ruledAt: Time.optional(),
-  order: z.number().optional(),
+  legacy: LegacyCard.optional(),
   /** When the card was written. */
   at: Time.optional(),
   updated: Time,
@@ -317,6 +343,39 @@ export const Note = z.object({
 }).strict();
 export type Note = z.infer<typeof Note>;
 
+/** The most characters (code points) a message's text may have: its push is one line of at most 200 characters, a prefix of
+ * at most 50 and the whole text (src/wake.ts, LINE_LIMIT; docs/design.md, Messages). Longer text is refused, never cut. */
+export const MESSAGE_TEXT_LIMIT = 150;
+/** A session name as a write records it: 1 to 80 characters without control characters or surrounding spaces. */
+const SessionName = z.string().min(1).max(80).regex(/^\S(.*\S)?$/u).refine(s => !/\p{Cc}/u.test(s), "no control characters");
+
+/** A message's id: the time it was sent, to the second, and four random hex digits, so ids sort in the order sent. */
+export const MessageId = z.string().regex(/^\d{8}T\d{6}Z-[0-9a-f]{4}$/);
+/** A message one agent sends another through the board (docs/design.md, Messages): a doorbell that says which item to read
+ * and what is awaited; the content is written on the item. Written once, never changed. */
+export const Message = z.object({
+  id: MessageId,
+  /** The sending session and the project it writes for. */
+  from: SessionName,
+  project: z.string().min(1),
+  /** The receiving session. */
+  to: SessionName,
+  text: z.string().refine(t => t.trim().length > 0, "a message has text").refine(t => [...t].length <= MESSAGE_TEXT_LIMIT, `at most ${MESSAGE_TEXT_LIMIT} characters`).refine(t => !/\p{Cc}/u.test(t), "one line without control characters"),
+  /** The item the message is about, when there is one. */
+  item: Key.optional(),
+  at: Time,
+}).strict();
+export type Message = z.infer<typeof Message>;
+/** A UTC day, `2026-10-17`: the id and file name of the messages sent on it. */
+export const MessageDayId = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** The messages sent on one UTC day, in the order sent: one file a day, so the board's files and git's index grow by one a
+ * day however many messages there are (docs/design.md, Messages). Each message is sent on the file's day. */
+export const MessageDay = z.object({
+  messages: z.array(Message).min(1).refine(m => new Set(m.map(x => x.id)).size === m.length, "Message ids must be unique"),
+  rev: z.number().int().positive(),
+}).strict();
+export type MessageDay = z.infer<typeof MessageDay>;
+
 export const Project = z.object({
   name: z.string().min(1),
   repo: z.string().min(1).optional(),
@@ -325,55 +384,88 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
-/** The architect's author name, a configured project like any other. */
+/** The author name of the architect: the project of the agents_config repository, a configured project like any other. */
 export const ARCHITECT = "Architect";
-/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
+/** The session name the architect writes from (docs/design.md, section 9). */
 export const ARCHITECT_SESSION = "架构师";
+/** The author name of the PM: a project of its own, with no repository, that holds the PM's records; a configured project like any other. */
+export const PM_AUTHOR = "PM";
+/** The session name the PM writes from, as author `PM`. */
+export const PM_SESSION = "PM";
+/** The role names of the architect and the PM, as a credential and the access table name them. */
+export const ARCHITECT_ROLE = "架构师";
+export const PM_ROLE = "PM";
+/** The architect alone, as an error text or a tool description names it (ops `onlyArchitect`, the journal and tag tools). */
+export const ARCHITECT_WRITER = `${ARCHITECT} with session ${ARCHITECT_SESSION}`;
+/** The PM, as an error text or a tool description names it. */
+export const PM_WRITER = `${PM_AUTHOR} with session ${PM_SESSION}`;
+/** The writers that do the process, in English: the one definition every such text is built from (ops `onlyProcess`, the tool descriptions, the errors that say who may). */
+export const PROCESS_WRITERS = `${PM_WRITER} or ${ARCHITECT_WRITER}`;
+type Writer = { author: string; session?: string; access?: { role: string } };
 /**
- * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
- * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
- * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
- * project author. A write over a credential is the architect's when the credential's role is, whatever names it carries
- * (src/credentials.ts); the names of a write without one are not authenticated: that stops misuse, not impersonation.
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may do what the board
+ * reserves for the architect alone (the journal, the tag vocabulary; ops `onlyArchitect`). An engineer who works in the Architect
+ * project writes as author `Architect` from another session and is then an ordinary project author. A write over a credential is
+ * the architect's when the credential's role is, whatever names it carries (src/credentials.ts); the names of a write without one
+ * are not authenticated: that stops misuse, not impersonation.
  */
-export const isArchitect = (who: { author: string; session?: string; access?: { role: string } }): boolean =>
-  who.access ? who.access.role === "架构师" : who.author === ARCHITECT && isArchitectSession(who.session);
+export const isArchitect = (who: Writer): boolean =>
+  who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a write speaks for the PM: author `PM` from the session 「PM」, or a credential of role `PM`, by the same rule. */
+export const isPM = (who: Writer): boolean =>
+  who.access ? who.access.role === PM_ROLE : who.author === PM_AUTHOR && isPMSession(who.session);
+/**
+ * Whether a write may do the process: change any project's items, cards and note replies, create and cancel items, set their
+ * difficulty, pause, move and retitle them, place projects in the page order (ops `onlyProcess`). The PM does it, and the
+ * architect, which keeps every right it had.
+ */
+export const mayRunProcess = (who: Writer): boolean => isArchitect(who) || isPM(who);
 /** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** Whether a session name is the PM's, ignoring spaces around it. */
+export const isPMSession = (session: string | undefined): boolean => session?.trim() === PM_SESSION;
+/** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of either's role. */
+export const answersPushes = (call: { role: string } | { session?: string }): boolean =>
+  "role" in call ? call.role === PM_ROLE || call.role === ARCHITECT_ROLE : isPMSession(call.session) || isArchitectSession(call.session);
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 
 /**
  * Who may write what (docs/design.md, section 9). A credential names a role; the role names, for each part of the board a write
  * can change, how far the writer may go. This table is the one place that is defined: `ops.run` asks it for every write.
- * The roles of the long-lived credentials are the architect, the observer and the resource agent; the roles of a dispatch
+ * The roles of the long-lived credentials are the architect, the PM, the observer and the resource agent; the roles of a dispatch
  * credential are the dispatch's own (an engineer or a review).
  */
-export const ROLES = ["架构师", "观察者", "资源管理", ...DISPATCH_ROLES] as const;
+export const ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源管理", ...DISPATCH_ROLES] as const;
 export type Role = (typeof ROLES)[number];
 /** The roles a long-lived credential (kept in a file outside the data directory) can name. */
-export const LONG_LIVED_ROLES = ["架构师", "观察者", "资源管理"] as const;
+export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源管理"] as const;
 /** One part for each kind of write; a write names the parts it changes. */
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
   "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.priority", "item.order",
   "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row",
-  "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish",
+  "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
 ] as const;
 export type Part = (typeof PARTS)[number];
-/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. */
-export type Scope = "board" | "subtree";
-/** What only the architect does: the writes the board has reserved for it since it had an identity (ops `onlyArchitect`), and starting a dispatch. */
-const RESERVED: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.merge-row", "dispatch.start", "dispatch.finish"];
+/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. `below`: the same without the items the credential names: the writer has been handed those and does not rewrite the hand-off. `own`: no item at all, only a document of the writer's own (a message it sends). */
+export type Scope = "board" | "subtree" | "below" | "own";
+/** What the board reserves for the PM and the architect (ops `onlyProcess`), and starting a dispatch: the process. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
+const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "dispatch.start", "dispatch.finish"];
+/** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating a project. No role has the merge row. */
+const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
+const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
-  "架构师": partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
-  "观察者": partsAt("board", PARTS.filter(p => !RESERVED.includes(p))),
+  // Every role sends messages: a message changes no item, so its scope is the writer's own.
+  [ARCHITECT_ROLE]: { ...partsAt("board", PARTS.filter(p => p !== "item.merge-row" && p !== "message.send")), "message.send": "own" },
+  [PM_ROLE]: { ...partsAt("board", PARTS.filter(p => !ARCHITECT_ONLY.includes(p) && p !== "message.send")), "message.send": "own" },
+  "观察者": { ...partsAt("board", PARTS.filter(p => !RESERVED.includes(p) && p !== "message.send")), "message.send": "own" },
   // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
-  "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },
-  // An engineer writes the progress of its own work. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
-  "工程师": partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "card.write", "term"]),
-  "审查": partsAt("subtree", ["item.log"]),
+  "资源管理": { "item.log": "board", "dispatch.finish": "board", "message.send": "own", ...partsAt("subtree", ["item.head", "item.plan"]) },
+  // An engineer writes the progress of its own work, makes the sub-items of its tree and rates and tags them, and replies to the notes the PM forwards. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
+  "工程师": { ...partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "item.create", "item.tags", "card.write", "note.reply", "term"]), "item.difficulty": "below", "message.send": "own" },
+  "审查": { ...partsAt("subtree", ["item.log"]), "message.send": "own" },
 };
 /** What a credential grants the ops: the writer's role and project, and the items its subtree starts from. */
 export interface Access { role: Role; project: string; roots: readonly string[] }
@@ -432,6 +524,9 @@ export interface Snapshot {
   notes: Record<string, Note>;
   /** Keyed by project name. */
   glossaries: Record<string, Glossary>;
+  /** The messages between agents, by the UTC day they were sent; the store always fills it, snapshots built elsewhere
+   * (tests, history) may leave it out. */
+  messages?: Record<string, MessageDay>;
   owner: OwnerState;
   /** The commit this snapshot reflects. */
   head: string;
