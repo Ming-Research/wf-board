@@ -1738,14 +1738,14 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (an open card whole, with its `rev`; a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
-| `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
+| `overview(group?, status?, detail?)` | The board at a glance | By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged; `detail` gives every area with its counts, owner actions waiting, blocked items and flags; status narrows those results while retaining area headings (below, Lean replies) |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
@@ -1814,6 +1814,78 @@ whose commits do not count.
   answer follows the rows to handle and not the documents changed.
 - The timed wake and this read share one function that tells who wrote to each item in a
   list of commits.
+
+### Lean replies
+
+What a tool returns stays in the caller's context until it is compacted, as the patrol read
+says, so the two reads that returned the most carry a summary by default and the detail is
+asked for. The architect's session between 15 and 17 October 2026 (counted from its
+transcripts) made 433 `context` calls that returned 1.59 million characters (3.7k on average,
+32k at most), and `overview` returned 24k characters a call. The same sessions' calls were
+refused again and again for a parameter name the tool lacked (18 of 88 `create_item`, 10 of
+290 `set_plan`, 8 of 263 `update_item`), and the refusal named no name that would have worked.
+This is a temporary trim (item `mcp-lean`); the redesign of the tools (item `mcp-redesign`) may
+replace it.
+
+**`context` by default** answers with:
+
+- *The head*, as the first paragraph of each section. A section opens at a line that begins
+  with a bold title standing alone or followed by a colon or a bracket (`**问题**：…`,
+  `**参考：…**`), or with a `#` heading; the text before the first title is a section called
+  `开头`; a line inside a fenced block opens none. The sections laid end to end are the head,
+  character for character. A section shows its title line and the paragraph up to the first
+  blank line (below a title that stands alone, the paragraph under it), at most 400
+  characters; a 参考 section shows its title only. A section with 100 characters or fewer left
+  over is shown whole, and a head with nothing cut prints as before. What is left out is
+  counted on the line that follows.
+- *The plan* with finished rows (done, dropped) folded into `✓ N 项已完成` and `✗ M 项已放弃`
+  as `brief` folds them; other rows, targets, relations and flags as before.
+- *Open cards* with the question, `rev`, `blocks`, the option names, the recommendation and
+  the confidence (its reason cut at 160 characters); the options' grounds are left out.
+  A ruled or withdrawn card is as before.
+- *Notes* that are handled (state `done`) as the text and the reply, each cut at 160
+  characters; an unhandled note whole.
+- *Pull requests*: the first five references and the count of the rest (`prs` lists the rest).
+- *The log*: the latest five entries, each cut at 240 characters with its full length.
+  A call that gives `log` gets the entries it asked for whole.
+
+Cuts end with the full length of the text (`… (N characters in all)`), so a reader knows how
+much it did not see. The parameters that get the rest: `section` answers with the head alone,
+the one section of it named by its title (or by the start of its title, so `参考` finds every
+参考 section) or `all` for the whole head, with the `rev` that an edit of the head needs;
+`full: true` answers whole, with nothing cut or folded; the card's key given to `context`
+answers with the card whole.
+
+**`overview` by default** answers with one line for each project (areas, leaf counts by
+status, owner actions waiting, blocked items, checks) and, under it, only the areas with an
+owner waiting or a check flagged: a line of counts, then at most five rows of each kind, a
+row being the item's key, status and title (and, for a check, the check's short label), and
+the count of the rest. Blocked items are counted, not listed. `detail: true` gives every
+area with all its rows, as the answer was.
+
+**A call the tool refuses.** The MCP SDK checks a call's arguments before the tool runs and
+answers a mistake with the bare check text; the board turns that check off (it overrides the
+SDK's private `validateToolInput` on the server object; the SDK is pinned, and the test in
+`test/lean.test.ts` fails if the bare text comes back) and checks the arguments in the tool's
+own handler. A schema loosened for the SDK would not do: it would drop the `required` list
+the client is shown, and the SDK would still check what is nested in it. The refusal says what
+is wrong in plain words (an unknown parameter, a missing required one, a value of the wrong
+type or outside the allowed words, the row of a plan that fails and why), then the tool's
+parameter table (name, type, required or optional, the first sentence of its description,
+built from the same schema the client is shown) and an example call (built from the required
+parameters; written by hand for `create_item`, `set_plan` and `update_item`).
+
+**Names the tools read as others.** A parameter the tool lacks is read as the name it has,
+and the answer ends with `note: <name> read as <name>`: `key` and `id` for each other,
+`item` and `note` as `id`, `project` as `group`, `plan` and `steps` as `rows` in `set_plan`;
+and a parameter written beside a tool's `filters` that the `filters` take (`limit`, `state`,
+`since`, `group` …) is moved into them. Nothing is read when the right name is also given,
+and a name that matches none stays unknown and is refused as above.
+
+**Measured** (a copy of the live board's snapshot on 17 October 2026, computed once by the
+engineer outside the repository): the 19 items the architect's `context` calls named most
+often, 130,157 characters whole and 60,918 by default (47%); `overview` of the whole board
+170,878 characters with `detail` and 24,976 by default.
 
 ### Changing things
 

@@ -169,7 +169,7 @@ export function planLines(s: Snapshot, r: Rules, id: string, fold = false): stri
 export function optionName(o: { text: string; detail?: string } | undefined): string | undefined {
   return o === undefined ? undefined : o.text || (o.detail ?? "").split("\n").find(l => l.trim())?.trim();
 }
-export function context(s: Snapshot, r: Rules, ref: string, options: { log?: number | "all" } = {}) {
+export function context(s: Snapshot, r: Rules, ref: string, options: { log?: number | "all"; foldPlan?: boolean } = {}) {
   const { kind, id } = requireId(s, ref);
   if (kind === "card") {
     const card = s.decisions[id]!;
@@ -181,7 +181,7 @@ export function context(s: Snapshot, r: Rules, ref: string, options: { log?: num
   for (let i = 0; i < levels.length; i++) if (levels[i] !== levels[i - 1]) { if (seen.has(levels[i]!)) repeated.add(levels[i]!); seen.add(levels[i]!); }
   const lastPush = s.activity?.sessions?.[id];
   const pauseOwner = r.pausedBy(id), pause = pauseOwner ? s.items[pauseOwner]?.paused : undefined;
-  return { ...row(s, r, "item", id), ...(lastPush ? { lastPush } : {}), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
+  return { ...row(s, r, "item", id), ...(lastPush ? { lastPush } : {}), ...(pause && r.isPaused(id) ? { pausedBy: { id: pauseOwner!, title: s.items[pauseOwner!]!.title, ...pause } } : {}), plan: planLines(s, r, id, options.foldPlan), groups: r.planGroups(id), planWarnings: [...repeated].map(level => `level ${level}: non-adjacent parallel rows are shown in stored order`), targets: (it.targets ?? []).map(targetLine), item: { ...it, log }, earlierLogs: it.log.length - log.length,
     ancestors: r.ancestors(id).map(a => row(s, r, "item", a)),
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {

@@ -66,7 +66,7 @@ test("project MCP onboarding, close and coordinator reads use the configured con
   const brief=JSON.parse(await call("brief",{project:"Third"})); assert.equal(Object.hasOwn(brief,"inbox"),false);
   const pending=JSON.parse(await call("followups",{minutes:1}));assert.equal(Object.hasOwn(pending,"requests"),false);assert.ok(pending.notes.some((r:{id:string})=>r.id==="note-1"));
   await call("close_note",{author,id:"note-1",log:"Handled"});assert.equal(store.snapshot().notes["note-1"]!.state,"done");
-  const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:|inbox/);assert.match(summary,/^Whitefoot$/m);
+  const summary=await call("overview",{group:"Whitefoot"});assert.doesNotMatch(summary,/agents:|inbox/);assert.match(summary,/^Whitefoot · /m);
   for (const name of ["create_item","update_item"]) {
     const schema=(await client.listTools()).tools.find(t=>t.name===name)!.inputSchema;
     assert.ok(!Object.hasOwn(schema.properties!,"agent"));
@@ -236,8 +236,11 @@ test("MCP exposes acceptance anywhere, several scenarios and first-acceptance ro
   const inserted = await client.callTool({ name: "set_plan", arguments: { author, id: "a", row: { id: "prepare", text: "Prepare release", state: "todo", after: [] } } });
   assert.equal(inserted.isError, undefined, text(inserted));
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["prepare", "scenario-a", "scenario-b", "merge"]);
-  const context = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  // The default answer folds finished rows into a count; full keeps every row, scenario A's among them.
+  const context = text(await client.callTool({ name: "context", arguments: { id: "a", full: true } }));
   assert.match(context, /验收.*Scenario A passes/); assert.match(context, /验收.*Scenario B passes/); assert.match(context, /Merge into main/);
+  const folded = text(await client.callTool({ name: "context", arguments: { id: "a" } }));
+  assert.match(folded, /✓ 1 项已完成/); assert.doesNotMatch(folded, /Scenario A passes/); assert.match(folded, /验收.*Scenario B passes/);
 });
 
 test("writes answer with their produced plan state; refusals and context identify open owned parts", async t => {
