@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { PushRefused, deployOnce } from "../src/deploy.ts";
+import { PushRefused, deployOnce, refusesRequest } from "../src/deploy.ts";
 import type { DeployState } from "../src/deploy.ts";
 import { macNotify } from "../src/notify.ts";
 import { NET_GIT_CAP_MS, netGitOutput } from "../src/net-git.ts";
@@ -52,8 +52,7 @@ await deployOnce({
     const res = await fetch(`${base}/api/wake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(push), signal: AbortSignal.timeout(5000) });
     if (res.ok) return;
     const answer = `POST /api/wake answered ${res.status}: ${(await res.text()).slice(0, 200)}`;
-    // A 4xx says the request itself is wrong, except when the daemon asks for time (408, 429).
-    throw res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429 ? new PushRefused(answer) : new Error(answer);
+    throw refusesRequest(res.status) ? new PushRefused(answer) : new Error(answer);
   },
   notify: macNotify(),
   load: () => {

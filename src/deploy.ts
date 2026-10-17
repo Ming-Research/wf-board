@@ -14,6 +14,9 @@ export interface Push { event: "deployed" | "deployFailed"; [field: string]: unk
 /** The daemon turned a request down for what it says (a 4xx answer, as for a request in the shape an older job sent): asking
  * again gets the same answer. */
 export class PushRefused extends Error {}
+/** Whether an HTTP status says the request itself is wrong, so sending it again is pointless: a 4xx, except when the daemon asks for
+ * time (408, 429). */
+export const refusesRequest = (status: number): boolean => status >= 400 && status < 500 && status !== 408 && status !== 429;
 
 /** A deploy that began and did not end, or a rollback that did not finish: the commit to go back to. The next run finishes it
  * before it does anything else, so a failure part way is never left as the new state of the checkout. */

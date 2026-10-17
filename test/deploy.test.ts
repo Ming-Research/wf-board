@@ -10,7 +10,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { NO_RESTART, PushRefused, deployOnce } from "../src/deploy.ts";
+import { NO_RESTART, PushRefused, deployOnce, refusesRequest } from "../src/deploy.ts";
 import type { DeployDeps, DeployOutcome, DeployState, Push } from "../src/deploy.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
@@ -334,6 +334,11 @@ test("a push the daemon does not take is kept and sent first on the next run", a
   assert.equal(await deploy(), "current");
   assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]]);
   assert.deepEqual(w.saved.outbox, []);
+});
+
+test("only a 4xx other than a request for time says the request is wrong", () => {
+  for (const status of [400, 403, 404, 413, 422, 499]) assert.equal(refusesRequest(status), true, String(status));
+  for (const status of [200, 204, 301, 408, 429, 500, 502, 503]) assert.equal(refusesRequest(status), false, String(status));
 });
 
 test("a push the daemon refuses is dropped and the pushes behind it are sent; one it could not take stays", async t => {
