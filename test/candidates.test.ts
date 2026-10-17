@@ -167,7 +167,7 @@ test("the review step is the plan step whose id is review", () => {
   const step = (id: string) => ({ id, text: "t", state: "doing" as const });
   assert.equal(isReviewStep(step("review")), true);
   assert.equal(isReviewStep(step("code-review")), false);
-  assert.equal(isReviewStep({ item: "review", own: false }), false, "an item row is not a step");
+  assert.equal(isReviewStep({ id: "review", item: "review", own: false }), false, "an item row is not a step");
 });
 
 test("brief.todo follows the same order", async t => {
@@ -184,7 +184,7 @@ test("candidates answers a few lines, under= answers one parent's items, and an 
   const server = createMcpServer({ store: b.store, ops: b.op });
   const client = new Client({ name: "t", version: "1" }); const [c, sv] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
-  const text = async (args: object) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
+  const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
   assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+ · 等它 1\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
   assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+ · 等它 1\n  g2 /);
