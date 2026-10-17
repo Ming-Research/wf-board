@@ -1,5 +1,6 @@
 import { ARCHITECT, PM_AUTHOR, answersPushes } from "./model.ts";
 import type { Snapshot } from "./model.ts";
+import type { Offer } from "./offers.ts";
 import type { Rules } from "./rules.ts";
 import { itemOfFile, writersByItem } from "./query.ts";
 import type { Store } from "./store.ts";
@@ -17,6 +18,8 @@ export interface TimedFields {
   working: number;
   architect: number;
   pm: number;
+  /** The pools that have a free slot and candidates, as the PM was last told: a reminder when that push went unhandled. */
+  dispatch: Offer[];
   /** What the Actions usage watch says when it needs handling (the billing cannot be read, or has a sku the account does not know); empty otherwise (src/usage-watch.ts). */
   actions: string;
 }
@@ -28,7 +31,7 @@ function capped<T>(rows: T[]): Array<T | { more: number }> {
 /** What one timed wake carries: the items changed since the last one (not those only the PM or the architect itself wrote,
  * which it already knows) and how many items are being worked on and open in the Architect and PM projects. The lists of those
  * items are not repeated: `list` gives them when wanted. `since` is the last timed wake's mark; without one, the daemon's start. */
-export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, actions = ""): Promise<TimedFields> {
+export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, dispatch: Offer[] = [], actions = ""): Promise<TimedFields> {
   const from = since?.at ?? started;
   const commits = await store.log({ since: since?.head ?? from, at: s.head }).catch(() => store.log({ since: from, at: s.head }));
   // The log is newest first, so items come out most recently changed first.
@@ -42,6 +45,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
     working: open.filter(id => r.projectOf(id) !== ARCHITECT && r.projectOf(id) !== PM_AUTHOR && r.statusOf(id) === "wip" && r.workedOn(id)).length,
     architect: open.filter(id => r.projectOf(id) === ARCHITECT).length,
     pm: open.filter(id => r.projectOf(id) === PM_AUTHOR).length,
+    dispatch,
     actions,
   };
 }

@@ -3,18 +3,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { agentSocket, board, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { agentSocket, board, server, wakeSocket, asArchitect, author, later } from "./helpers.ts";
 import { ARCHITECT_SESSION, MESSAGE_TEXT_LIMIT, PM_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
 import { holderOf, openDispatches } from "../src/dispatch.ts";
+import { offers } from "../src/offers.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Resolved } from "../src/credentials.ts";
 
@@ -40,7 +42,7 @@ test("every kind says where it goes, and a holder or session route names one of 
     assert.ok(to === "pm" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
-  for (const kind of ["review", "finished", "stalled", "no-answer", "note", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  for (const kind of ["dispatch", "review", "finished", "stalled", "no-answer", "note", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
   assert.deepEqual(WAKE_KINDS.deployed.to, { holder: "item", only: true });
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
@@ -54,7 +56,8 @@ const L = "长".repeat(1000), many = Array.from({ length: 500 }, (_, i) => `x${i
 const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
-  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, actions: L },
+  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, dispatch: many, actions: L },
+  dispatch: { pool: L, free: 99999, limit: 99999, candidates: 99999 },
   review: { item: L, project: L, title: L, level: 5 },
   finished: { item: L, project: L, title: L, session: L },
   "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },
@@ -290,6 +293,44 @@ test("an item becoming done tells the session holding each open item that waits 
   await pm.sync();
   assert.equal(wake.agent("b-worker").latest(), 1, "a done item is announced once");
   assert.deepEqual(pm.events().filter(f => f.event === "item-done"), [], "nobody holds area, so no push is made for it");
+});
+
+test("the offers are the pools with a free slot and candidates, counted by an independent reading of what can start", async t => {
+  const { store } = await board(t);
+  const s = store.snapshot(), r = store.derived.rules(s, T0);
+  const starters = Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined);
+  assert.ok(starters.length >= 1, "the fixture has an item to start");
+  const [pool1, pool2] = [starters.filter(id => s.items[id]!.difficulty === 1), starters.filter(id => s.items[id]!.difficulty! >= 2)];
+  assert.deepEqual(offers(s, r), [...(pool1.length ? [{ pool: "1", free: 10, limit: 10, candidates: pool1.length }] : []), { pool: "2+", free: 6, limit: 6, candidates: pool2.length }]);
+});
+
+test("something more to hand out than the PM was last told pushes dispatch, with no item named; its own starts, which only lower it, push nothing; what stood at the start is not announced", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const wake = new Wake({ now: () => T0 });
+  const { url, store, op } = await server(t, { wake, checkIntervalMs: 1000 });
+  const pm = await wakeSocket(t, url);
+  const dispatches = () => pm.events().filter(f => f.event === "dispatch").map(({ n, at, line, ...f }) => f);
+  const tick = async () => { t.mock.timers.tick(1000); await pm.sync(); await setImmediate(); };
+  const starting = offers(store.snapshot(), store.derived.rules(store.snapshot(), T0)).find(o => o.pool === "2+")!;
+  await tick();
+  assert.deepEqual(dispatches(), [], "what stood at the start is not announced");
+  // The PM starts an engineer on a candidate: a free slot and a candidate fewer.
+  const candidate = Object.keys(store.snapshot().items).find(id => store.derived.rules(store.snapshot(), T0).startable(id) && store.snapshot().items[id]!.difficulty! >= 2)!;
+  await op.dispatchStart({ ...asArchitect, id: candidate, role: "工程师", level: 2, model: "Sonnet", agent: "c-worker", agentId: "agent-c" });
+  await tick();
+  assert.deepEqual(dispatches(), [], "its own start only lowers the offer");
+  // A new candidate appears.
+  const fresh = ({ title: "新的可开工条目", group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later });
+  await store.commit({ author, message: "a new item", puts: [{ kind: "item", id: "fresh", expectRev: null, doc: fresh }] });
+  await tick();
+  assert.deepEqual(dispatches(), [{ event: "dispatch", pool: "2+", free: starting.free - 1, limit: 6, candidates: starting.candidates }], "one more candidate than after the start; no item is named");
+  await tick();
+  assert.equal(dispatches().length, 1, "the same offer is not pushed again");
+  // The engineer finishes: a slot is free again.
+  await op.dispatchFinish({ ...asArchitect, id: candidate, agentId: "agent-c", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 1, reports: 0, kickbacks: 0 });
+  await tick();
+  assert.equal(dispatches().at(-1)!.free, starting.free, "a slot freed");
+  assert.equal(dispatches().length, 2);
 });
 
 test("an item a session holds becoming done tells the PM which session to stop, once; one nobody holds tells nothing", async t => {
