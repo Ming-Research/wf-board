@@ -100,6 +100,7 @@ test("candidates of different levels under one parent are grouped together, and 
   assert.deepEqual(group("1").map(x => "parent" in x ? [x.parent, x.count] : x.id), [["m", 4]], "four under m in all: one row in the level 1 pool, with the count of all four");
   assert.deepEqual(group("2+").map(x => "parent" in x ? [x.parent, x.count] : x.id), [["m", 4]], "and the same row in the other pool");
   assert.deepEqual([b.pool("1").more, b.pool("2+").more], [0, 0], "what a pool lists is counted, not read from the group");
+  assert.deepEqual([b.pool("1").total, b.pool("2+").total], [2, 2], "the group says 4, each pool has 2 of them");
   const under = candidatesUnder(b.snapshot(), rules(b.snapshot()), "m");
   assert.deepEqual(under.rows.map(x => [x.id, x.difficulty]), [["m1", 1], ["m2", 1], ["m3", 2], ["m4", 2]], "under=m lists all four, as many as the row says");
 });
@@ -146,7 +147,7 @@ test("a pool with no free slot lists no rows and counts its candidates", async t
   for (let k = 1; k <= 7; k++) { await b.child(`w${k}`, "r", { plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer(`w${k}`, 2); }
   await b.child("p", "r"); await b.child("q", "r");
   const two = b.pool("2+");
-  assert.deepEqual([two.working, two.free, two.listed, two.more], [7, 0, [], 2], "seven working over the limit of six: no slot, no rows, two candidates");
+  assert.deepEqual([two.working, two.free, two.listed, two.more, two.total], [7, 0, [], 2, 2], "seven working over the limit of six: no slot, no rows, two candidates, counted all the same");
   const text = candidatesText(b.view());
   assert.match(text, /2 级以上：上限 6，在干活 7，空 0/);
   assert.match(text, /还有 2 条能开工没列出/);

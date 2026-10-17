@@ -31,6 +31,8 @@ export interface PoolView {
   free: number;
   /** The first rows in the default order, at most ROWS_LISTED, while a slot is free; none when no slot is free. */
   listed: Array<Candidate | CandidateGroup>;
+  /** The candidates of the pool, listed or not, whether or not a slot is free. A group row counts a parent's candidates of every level, so the pool's own count is this and not read from the rows. */
+  total: number;
   /** Candidates of the pool that `listed` does not cover. */
   more: number;
 }
@@ -110,7 +112,7 @@ export function candidates(s: Snapshot, r: Rules): Candidates {
       rows.push({ row: { parent: p, ...(parent.num === undefined ? {} : { num: parent.num }), project: r.projectOf(p), title: parent.title, count: perParent.get(p)! }, items: mine.filter(x => r.parentOf(x) === p).length });
     }
     const free = Math.max(0, limit - working.get(pool)!), shown = free ? rows.slice(0, ROWS_LISTED) : [];
-    return { pool, limit, working: working.get(pool)!, free, listed: shown.map(x => x.row), more: mine.length - shown.reduce((n, x) => n + x.items, 0) };
+    return { pool, limit, working: working.get(pool)!, free, listed: shown.map(x => x.row), total: mine.length, more: mine.length - shown.reduce((n, x) => n + x.items, 0) };
   }) };
 }
 

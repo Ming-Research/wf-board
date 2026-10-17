@@ -1847,7 +1847,8 @@ and the push that says work can be handed out reads it too.
   its first mark. A session that has stopped keeps its slot until the PM closes its dispatch.
 - *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
   knows this). The review that waits for a reviewer is that step in progress.
-- *Answer.* Per pool: the limit, the engineers working, the free slots; while a slot is free,
+- *Answer.* Per pool: the limit, the engineers working, the free slots, the number of candidates
+  of the pool (`total`, counted whether or not a slot is free); while a slot is free,
   the first 10 rows in the default order, then the number of candidates not listed. More than 3
   candidates under one parent, of any level, are one row naming the parent and the count of all
   of them, at the place of the best of them in each pool they fall in; the free slots and the
