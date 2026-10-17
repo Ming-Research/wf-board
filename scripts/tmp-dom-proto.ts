@@ -43,7 +43,7 @@ w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListen
 w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
 w.EventSource = class { addEventListener() {} close() {} };
-w.CSS = { escape: (s: string) => String(s).replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c) };
+try { w.CSS = { escape: (s: string) => String(s).replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c) }; } catch { /* the window has its own */ }
 w.structuredClone = structuredClone;
 for (const proto of [w.Element?.prototype, w.HTMLElement?.prototype]) if (proto) {
   proto.scrollIntoView ??= function () {};
@@ -51,6 +51,7 @@ for (const proto of [w.Element?.prototype, w.HTMLElement?.prototype]) if (proto)
   proto.scrollBy ??= function () {};
 }
 w.scrollTo ??= () => {}; w.scrollBy ??= () => {};
+w.performance.clearMarks ??= () => {};
 const mark0 = w.performance.mark?.bind(w.performance);
 w.performance.mark = (name: string, ...rest: unknown[]) => { if (name === "board:render") draws++; return mark0?.(name, ...rest); };
 w.addEventListener("error", (e: any) => { errors.push("window error " + (e.message ?? e)); });
