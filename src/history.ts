@@ -161,6 +161,9 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
     // An owner action breaks consecutiveness even though it is not a step.
     // Format migrations (the plan conversion, numbering existing documents) are not news to the owner.
     if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE || commit.message === NUMBERING_MESSAGE) { previous = undefined; continue; }
+    // A message is no change the owner reads and no work on an item (docs/design.md, Messages): a commit of messages alone
+    // is passed over, so the same author's changes to one item on either side of it still read as one step.
+    if (commit.files.length && commit.files.every(file => file.startsWith("messages/"))) continue;
     const docs: Step["docs"] = commit.files.flatMap(file => {
       const m = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
       if (!m) return [];

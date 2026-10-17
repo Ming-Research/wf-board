@@ -85,6 +85,17 @@ test("commits that change no item, card or note are not steps", async t => {
   assert.deepEqual(steps.map(s => s.commits), [[a.commit], [b.commit]]);
 });
 
+test("a message is never an unread step and does not split the same author's consecutive changes to one item", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head;
+  const first = await op.setPlan({ author, session: "eng", id: "a", row: { id: "progress", state: "todo", text: "first" } });
+  const message = await op.sendMessage({ author, session: "eng", to: "架构师", text: "a 的计划改了，看一下", item: "a" });
+  const second = await op.setPlan({ author, session: "eng", id: "a", row: { id: "progress", state: "doing", text: "second" } });
+  const steps = await unreadSteps(store, cursor);
+  assert.deepEqual(steps.map(s => s.commits), [[first.commit, second.commit]], "one step around the message");
+  assert.ok(!steps.some(s => s.commits.includes(message.commit)));
+  assert.equal((await stepDiff(store, steps[0]!, "item", "a")).before !== null, true, "the step's diff still spans the item's change");
+});
+
 test("the one-time numbering commit is never an unread step", async t => {
   const { dir, store, op } = await board(t);
   const git = async (...args: string[]) => (await promisify(execFile)("git", args, { cwd: dir })).stdout.trim();
