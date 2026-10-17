@@ -210,7 +210,8 @@ async function checkIds(bp: BoardPage, wait: number): Promise<string[]> {
   const got = await bp.page.evaluate(() => {
     const figs = [...document.querySelectorAll<HTMLElement>("#item-detail .mermaid-fig")];
     const ids = figs.flatMap(f => [...f.querySelectorAll("[id]")].map(e => e.id));
-    const shown = figs.filter(f => f.offsetParent !== null);
+    // The content of a folded section has boxes in current Chromium (it is skipped, not removed), so offsetParent cannot tell it apart.
+    const shown = figs.filter(f => !f.closest("details:not([open])"));
     // The markers (arrowheads) the visible diagram's lines point at, and whether each is inside it.
     const foreign: string[] = [];
     let markers = 0;
