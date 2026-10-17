@@ -831,8 +831,8 @@ log:
   line `难度：<from> → <to>，理由：<reason>` (from 未评 the first time), because
   changing the level changes who does the work. `create_item`, which only
   `Architect` calls, takes `difficulty` and logs it as the first rating
-  (reason 建条目时评). `changes` shows every change
-  of difficulty; unread shows a changed level but not a first rating (below).
+  (reason 建条目时评). `changes` with `detail` lists
+  every change of difficulty (its default answer counts it among the other changes); unread shows a changed level but not a first rating (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
   dispatched: the item is todo, and one of its ready steps (every step before
@@ -1607,8 +1607,12 @@ whose commits do not count.
   (projects, tag vocabulary) are put back when a range commit wrote them. Its rules are
   worked out at the time the range began, so a flag that comes with time and no commit (a
   step in progress that stands still) is new when it was not there at that time. Both
-  boards' checks are worked out in full: 75–84 ms on a synthetic board of 1,347 items,
-  637 cards and 670 notes, the old board and the difference included. A flag is the same
+  boards' checks are worked out in full, so the cost of a call is that of two rule builds
+  plus the range's reads; `scripts/bench-changes.ts` measures it against the lines of
+  section 4 on a hosted CI runner, and those figures, not a run on another machine, are
+  the reference. An earlier version of a document that does not fit today's schema (a
+  field since removed) cannot be put back: the document counts as absent from the old
+  board, and the answer's first line says how many versions that was. A flag is the same
   flag on both boards when its short label (else its text without the count of the
   title-length flag) and the item or card it points at are equal. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
@@ -1619,9 +1623,13 @@ whose commits do not count.
 - *New items.* Items whose first commit in the range is not an excluded session's, each
   with its creator, its project and title, and its flags on the same row (so they are not
   listed again as new flags).
-- *Notes and cards.* The notes and cards a non-excluded session created, a note that
-  gained a reply or changed state, a card whose status changed, each with the item it is
-  on, a short summary and the sessions that wrote it.
+- *Notes and cards.* A note or card that is new, a note that gained a reply or changed
+  state, a card whose status changed, each with the item it is on, a short summary and the
+  sessions that wrote it. A draft is not listed (no one has it yet). A note or card an
+  excluded session created is not new to the reader, so only how it ended up counts: a
+  note with a reply, a card no longer open.
+- *The first line* counts every commit of the range, board-settings-only ones included,
+  and says how many `except` took out.
 - *The rest* only as counts by kind and by session; with `detail`, as the documents
   grouped by area with their commits and each commit's session. Created items and the rows
   above are not listed again.
