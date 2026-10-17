@@ -1,7 +1,8 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status, priority and progress.
+import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, dispatchable, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
@@ -245,6 +246,7 @@ export const CHECK_LABEL = "需核对";
 export const STALLED_LABEL = "无人推进";
 /** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
 export const WAITS_TEXT_LABEL = "在等文字";
+export const EARLY_ACCEPT_LABEL = "验收过早";
 /** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
 export const CARD_MIN_OPTIONS = 3;
 export const OPTIONS_LABEL = "选项不足";
@@ -272,6 +274,20 @@ export interface Rules {
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
   statusOf(id: string): Status | undefined;
+  /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
+   * wrote or was started within the agent list's window). Not inherited from the items it owns. */
+  workedOn(id: string): boolean;
+  /** The sessions of the item's live dispatches, newest start first. */
+  sessionsOf(id: string): string[];
+  /** The items that carry an unfinished dispatch of this session. */
+  dispatchedItems(agent: string): string[];
+  /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
+   * a step ready to start that waits on nothing. The one definition the next-task list and the 缺难度 check both read. */
+  canStart(id: string): boolean;
+  /** `canStart` and rated 1–5: what the next-task list offers. */
+  startable(id: string): boolean;
+  /** What the detail line under an item's title says: how far it is, what comes next, what it waits on, who is working on it. */
+  progress(id: string): Progress;
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
   /** Effective pause on open work; done and cancelled always win. */
@@ -330,6 +346,37 @@ export interface DerivedPlanRow {
   glyph: string;
   dropped: boolean;
   excluded: boolean;
+}
+/** The progress line of an item (docs/design.md, How the page shows a plan). */
+export interface Progress {
+  done: number;
+  total: number;
+  /** The first step ready to start, when the plan has one. */
+  next?: { id: string; text: string };
+  /** The rows the frontier waits on: items and cards. */
+  waiting: Array<{ kind: "item" | "card"; id: string }>;
+  /** The item's own request to the owner is still unanswered. */
+  ask: boolean;
+  /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
+  behind: boolean;
+  /** The rows in progress, in plan order: steps in progress, and owned items that are themselves in progress. */
+  doing: Array<{ id: string; text: string }>;
+  /** The sessions of the live dispatches. */
+  sessions: string[];
+}
+/** The rows the row at `at` comes after, through `after` or the previous-row default, all the way back. */
+function comesBefore(rows: readonly DerivedPlanRow[], at: number): DerivedPlanRow[] {
+  const byId = new Map(rows.map(entry => [entry.row.id, entry])), seen = new Set<string>(), out: DerivedPlanRow[] = [];
+  const visit = (index: number): void => {
+    const after = rows[index]!.row.after, before = after === undefined ? (index > 0 ? [rows[index - 1]!.row.id] : []) : after;
+    for (const key of before) {
+      const entry = byId.get(key);
+      if (!entry || seen.has(key)) continue;
+      seen.add(key); out.push(entry); visit(rows.indexOf(entry));
+    }
+  };
+  visit(at);
+  return out;
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -541,7 +588,7 @@ export function presentationSignature(r: Rules, decisions: Readonly<Record<strin
   };
   const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
   const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
-  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
     r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
 }
 
@@ -588,6 +635,8 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
 export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after: Pick<Snapshot, "decisions" | "notes">, beforeRules: Rules, afterRules: Rules, changed: ReadonlyArray<{ kind: string; id: string }>, activity?: ActivityDelta): Set<string> | null {
   // Items whose last change or pause spans moved, including a note on a card deleted earlier, which only the store places.
   const seeds = new Set<string>([...Object.keys(activity?.items ?? {}), ...Object.keys(activity?.pauses ?? {})]);
+  // A session's write moves its last-activity time, which the status of every item it works on reads (liveDispatches).
+  for (const name of Object.keys(activity?.agents ?? {})) for (const r of [beforeRules, afterRules]) for (const id of r.dispatchedItems(name)) seeds.add(id);
   const card = (key: string) => {
     for (const s of [before, after]) { const owner = Object.hasOwn(s.decisions, key) ? s.decisions[key]!.item : undefined; if (owner) seeds.add(owner); }
     for (const r of [beforeRules, afterRules]) for (const waiter of r.cardDependents(key)) seeds.add(waiter.id);
@@ -607,7 +656,8 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
 }
 
 /** Rules objects shared by every reader of one snapshot. A Rules object reads
- * `now` only for elapsed time (active time, doing days); readers within the
+ * `now` only for elapsed time (active time, doing days, and the six-hour window
+ * of a live session, which status reads); readers within the
  * same minute share the one built at the first read of that minute, so its
  * results are exactly `rules(s, t)` for that first read's time `t`. The
  * activity index is advanced from the newest one instead of rebuilt. */
@@ -760,9 +810,67 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return groups;
   }
+  // Whether a plan row is resolved, reading only whether items are done or cancelled. The rows before an owned item in its
+  // owner's plan decide whether its turn has come, and that must not ask the items' full statuses, which ask it back.
+  function rowResolved(row: PlanRow, seen: Set<string>): boolean {
+    if ("text" in row) return row.state === "done" || row.state === "dropped";
+    if ("card" in row) { const card = s.decisions[row.card]; return !!card && card.status !== "open"; }
+    const target = item(row.item);
+    if (!target) return false;
+    if (target.record) return true;
+    const closed = closedWalk(row.item, seen);
+    return closed === "done" || (row.own && closed === "cancelled");
+  }
+  const closedMemo = new Map<string, "done" | "cancelled" | undefined>();
+  // Done or cancelled, by the same rules as the status; an item met again on the path is not done (a cycle never completes).
+  // A value is kept only when no such guard was hit while computing it: one that was depends on where the walk began, and
+  // the order edges ownerRowReady follows are not in cycles(), so that set cannot tell.
+  let closedGuards = 0;
+  function closedWalk(id: string, seen: Set<string>): "done" | "cancelled" | undefined {
+    if (closedMemo.has(id)) return closedMemo.get(id);
+    const it = item(id);
+    if (!it || it.record) return undefined;
+    if (it.status === "cancelled") return "cancelled";
+    if (seen.has(id)) { closedGuards++; return undefined; }
+    const before = closedGuards;
+    seen.add(id);
+    const closed = it.plan.length > 0 && it.plan.every(row => rowResolved(row, seen)) ? "done" : undefined;
+    seen.delete(id);
+    if (closedGuards === before) closedMemo.set(id, closed);
+    return closed;
+  }
+  // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
+  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready.
+  function ownerRowReady(id: string): boolean {
+    const owner = parentOf(id), plan = owner ? item(owner) : undefined;
+    if (!owner || !plan || plan.record) return true;
+    const resolved = new Map<string, boolean>(), seen = new Set([id]);
+    let previous = true;
+    for (const row of plan.plan) {
+      if ("item" in row && row.item === id) return (row.after === undefined ? [previous] : row.after.map(key => resolved.get(key) ?? false)).every(Boolean);
+      previous = rowResolved(row, seen);
+      resolved.set(row.id, previous);
+    }
+    return true;
+  }
+  // Something of its own is done: a step of the plan, an item it owns that is done, or an open item it owns that has itself
+  // begun. What others finished does not count: a shared row, a card and an owned record are not this item's work.
+  const beginning = new Set<string>();
+  function begunOf(id: string): boolean {
+    return cached("begun", id, () => {
+      if (beginning.has(id)) return false;
+      beginning.add(id);
+      try { return anyBegun(planRows(id)); } finally { beginning.delete(id); }
+    });
+  }
+  function anyBegun(rows: readonly DerivedPlanRow[]): boolean {
+    return rows.some(entry => !entry.excluded && ("text" in entry.row ? entry.state === "resolved" : "item" in entry.row && entry.row.own && (entry.state === "resolved" || begunOf(entry.row.item))));
+  }
+  const liveSessions = (id: string): string[] => cached("sessions", id, () => [...new Set(liveDispatches(s, id, now).map(d => d.agent))]);
   // Cycle members keep the path-sensitive guard; acyclic targets have the same
   // result in every caller and are evaluated once per immutable snapshot.
   const targetStatuses = new Map<string, Status | undefined>();
+  // The first rule that holds decides (docs/design.md, Status).
   function statusWalk(id: string, seen: Set<string>): Status | undefined {
     if (targetStatuses.has(id)) return targetStatuses.get(id);
     const it = item(id);
@@ -777,11 +885,45 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       : pausedBy(id) ? "paused"
       : !rows.length ? "todo"
       : rows.some(row => row.state === "progress") ? "wip"
-      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) ? "blocked" : "todo";
+      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id) ? "blocked"
+      : liveSessions(id).length ? "wip"
+      : anyBegun(rows) ? "idle" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
     return status;
   }
   function statusOf(id: string): Status | undefined { return cached("status", id, () => statusWalk(id, new Set())); }
+  function workedOn(id: string): boolean {
+    return cached("workedOn", id, () => (item(id)?.plan ?? []).some(row => "text" in row && row.state === "doing") || liveSessions(id).length > 0);
+  }
+  function dispatchedItems(agent: string): string[] {
+    const byAgent = cached("dispatched", "", () => {
+      const out = new Map<string, string[]>();
+      for (const id of index().items.keys()) for (const d of (item(id)?.dispatches ?? [])) if (!d.finish) { const list = out.get(d.agent) ?? []; if (!list.includes(id)) list.push(id); out.set(d.agent, list); }
+      return out;
+    });
+    return (byAgent.get(agent) ?? []).slice();
+  }
+  // The step an agent would start with: ready, still to do, and waiting on nothing.
+  function nextStep(id: string): DerivedPlanRow | undefined {
+    return planRows(id).find(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
+  }
+  function canStart(id: string): boolean {
+    const st = statusOf(id);
+    return (st === "todo" || st === "idle") && neededSet().has(id) && nextStep(id) !== undefined;
+  }
+  function startable(id: string): boolean { return canStart(id) && dispatchable(item(id)?.difficulty); }
+  function progress(id: string): Progress {
+    const rows = planRows(id), ratio = planRatio(id), first = rows.find(entry => entry.ready && entry.state === "open");
+    const text = (entry: DerivedPlanRow): string => "text" in entry.row ? entry.row.text : "item" in entry.row ? item(entry.row.item)?.title ?? entry.row.item : entry.row.card;
+    return {
+      done: ratio.done, total: ratio.total,
+      ...(first ? { next: { id: first.row.id, text: text(first) } } : {}),
+      waiting: rows.filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
+      ask: askPending(id), behind: !ownerRowReady(id),
+      doing: rows.filter(entry => entry.state === "progress").map(entry => ({ id: entry.row.id, text: text(entry) })),
+      sessions: liveSessions(id).slice(),
+    };
+  }
   function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
   function isStatusLeaf(id: string): boolean { return isLeaf(id); }
   function ended(id: string): boolean { const st = statusOf(id); return st === "done" || st === "cancelled"; }
@@ -992,17 +1134,20 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
         if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
+        // An acceptance step marked done while a row it comes after is still open: the check ran before the work it checks.
+        const early = rows.flatMap((entry, at) => "text" in entry.row && entry.row.accept && entry.row.state === "done" ? [comesBefore(rows, at).filter(before => before.state !== "resolved").map(before => before.row.id)] : []).flat();
+        if (early.length) out.push({ text: `验收步骤已标完成，它前面的行还有没完成的：${[...new Set(early)].join("、")}。验收要等它检查的行都做完再标；做不了的行先丢弃并写理由，不属于这件交付物的移出去`, label: EARLY_ACCEPT_LABEL });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
-        // Asked for only when the rating is the one thing left before the item can be dispatched: it is todo, its next own
-        // step waits on nothing, and an unpaused root needs it. While another item is the next step (a study, say), the
-        // rating waits too, and what no such root needs (backlog work, what hangs under it, paused work) is not asked for.
-        const nextStepReady = rows.some(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
-        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        // Asked for only when the rating is the one thing left before the item can be dispatched (canStart): it is todo or
+        // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
+        // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
+        // it, paused work) is not asked for.
+        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
@@ -1016,7 +1161,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, sessionsOf: id => liveSessions(id).slice(), dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
