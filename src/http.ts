@@ -5,8 +5,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
-import { answersPushes } from "./model.ts";
+import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds, reviewRequested } from "./rules.ts";
+import type { Rules } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -20,11 +21,11 @@ import { NotFoundError } from "./owner-ops.ts";
 import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
-import type { AgentStream } from "./wake.ts";
+import type { AgentStream, ReceiptStream } from "./wake.ts";
 import { hasReviewer, holderOf, holders } from "./dispatch.ts";
 import { deliveries } from "./merges.ts";
 import type { Delivery } from "./merges.ts";
-import { timedWake } from "./timed-wake.ts";
+import { architectTimedWake, timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
 import type { UsageWatch } from "./usage-watch.ts";
@@ -48,7 +49,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -60,8 +61,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const wake = deps.wake ?? new Wake({ now });
   // A push routed to an item's holder goes to the session holding it now (docs/design.md, The wake streams).
   wake.routeBy(item => holderOf(store.snapshot(), item));
-  // Each wake socket, with the agent stream it reads; none for the PM's stream at /wake.
-  const connections = new Set<{ socket: WebSocket; alive: boolean; stream?: AgentStream }>();
+  // Each wake socket, with the stream it reads: an agent's, or the architect's; none for the PM's stream at /wake.
+  const connections = new Set<{ socket: WebSocket; alive: boolean; stream?: AgentStream | ReceiptStream }>();
   const streams = new Set<ServerResponse>();
   const maxStreamBytes = deps.maxStreamBytes ?? 4 * 1024 * 1024;
   const ws = new WebSocketServer({ noServer: true });
@@ -232,24 +233,32 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     if (url.pathname.startsWith("/wake/")) { agentUpgrade(req, socket, head, url); return; }
     if (url.pathname !== "/wake") { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
+    receiptUpgrade(req, socket, head, url, wake, undefined);
+  });
+  /**
+   * The PM's stream, `/wake`, and the architect's, `/wake/架构师` (docs/design.md, The wake streams): the client sends the number
+   * of the last event it has as `after` and gets what follows; the board keeps no delivery. `key` is what the sockets of the
+   * stream are filed under: none for the PM's, the stream itself for the architect's.
+   */
+  function receiptUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL, log: ReceiptStream, key: ReceiptStream | undefined) {
     // `after`: the number of the last event the client has. Without it the client takes events from now on.
     const param = url.searchParams.get("after");
-    if (param !== null && !/^\d{1,15}$/.test(param)) { socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
-    ws.handleUpgrade(req, socket, head, socket => {
-      const connection = { socket, alive: true };
+    if (param !== null && !/^\d{1,15}$/.test(param)) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    ws.handleUpgrade(req, raw, head, socket => {
+      const connection = { socket, alive: true, stream: key };
       socket.on("pong", () => { connection.alive = true; });
       socket.on("error", console.error);
       socket.on("close", () => connections.delete(connection));
       // Replay and subscription happen in one synchronous step, so no event falls between them or is sent twice.
-      socket.send(JSON.stringify({ event: "connected", latest: wake.latest() }));
+      socket.send(JSON.stringify({ event: "connected", latest: log.latest() }));
       if (param !== null) {
-        const { frames, gap } = wake.since(Number(param));
-        if (gap) socket.send(JSON.stringify({ event: "gap", oldest: wake.oldest(), latest: wake.latest() }));
+        const { frames, gap } = log.since(Number(param));
+        if (gap) socket.send(JSON.stringify({ event: "gap", oldest: log.oldest(), latest: log.latest() }));
         for (const frame of frames) socket.send(JSON.stringify(frame));
       }
       connections.add(connection);
     });
-  });
+  }
   /**
    * A deploy's result as pushes (docs/design.md, The wake streams): the commits it deployed name pull requests, each pull
    * request is delivered by an item, and the result goes to the session holding each such item. A deploy that did not happen and
@@ -277,8 +286,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
     try { name = decodeURIComponent(url.pathname.slice(6)).trim(); } catch { name = ""; }
-    // The PM's stream is /wake, which the PM's and the architect's session names answer for; a name with a slash, none, or a long one is not a session name.
-    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || answersPushes({ session: name }) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    // The architect's stream is not an agent's: it is read like the PM's, by the number of the last event the client has.
+    if (name === ARCHITECT_SESSION) { receiptUpgrade(req, raw, head, url, wake.architect, wake.architect); return; }
+    // The PM's stream is /wake, which the PM's session name answers for; a name with a slash, none, or a long one is not a session name.
+    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isPMSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
@@ -313,8 +324,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
   /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
   const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
-  /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined) or an agent's. */
-  function sendTo(stream: AgentStream | undefined, frame: object) {
+  /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined), the architect's or an agent's. */
+  function sendTo(stream: AgentStream | ReceiptStream | undefined, frame: object) {
     const data = JSON.stringify(frame);
     for (const connection of connections) {
       if (connection.stream !== stream) continue;
@@ -323,6 +334,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
   }
   const unsubscribe = wake.onPush(frame => sendTo(undefined, frame));
+  const unsubscribeArchitect = wake.architect.onPush(frame => sendTo(wake.architect, frame));
   const unsubscribeAgents = wake.onAgentPush((stream, frame) => sendTo(stream, frame));
   // The items flagged 无人推进 now; one that appears and was not in it pushes one "stalled" event. Seeded at start without
   // pushing, so a restart does not announce every standing stall. Other checks are format flags the writer sees; none is pushed.
@@ -405,20 +417,25 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
   }, 25_000);
   heartbeat.unref();
-  // The timed wake: once `timedWakeMs` has passed since the last one (kept across restarts), or since the start when there is none.
-  const timedMs = deps.timedWakeMs ?? 30 * 60_000, started = new Date(now()).toISOString();
-  let timing = false;
-  async function timed() {
-    const last = wake.lastTimed;
-    if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
-    timing = true;
+  // The timed wakes: the PM's once `timedWakeMs` has passed since its last one, the architect's once `architectTimedWakeMs` has
+  // (each kept across restarts), or since the start when there is none.
+  const timedMs = deps.timedWakeMs ?? 30 * 60_000, architectTimedMs = deps.architectTimedWakeMs ?? 60 * 60_000, started = new Date(now()).toISOString();
+  const timing = new Set<ReceiptStream>();
+  async function timedOn(log: ReceiptStream, every: number, push: (s: Snapshot, r: Rules, last: ReceiptStream["lastTimed"]) => Promise<void>) {
+    const last = log.lastTimed;
+    if (timing.has(log) || now() < Date.parse(last?.at ?? started) + every) return;
+    timing.add(log);
     try {
-      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => { const r = store.derived.rules(s, now()); return timedWake(store, s, r, last, started, deps.usage?.alert()); });
-      wake.push("timed", { ...fields });
-      wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
+      const s = store.snapshot();
+      await withBudget(new Budget("timed wake", limits), () => push(s, store.derived.rules(s, now()), last));
+      log.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
-    finally { timing = false; }
+    finally { timing.delete(log); }
   }
+  const timed = () => Promise.all([
+    timedOn(wake, timedMs, async (s, r, last) => { wake.push("timed", { ...await timedWake(store, s, r, last, started, deps.usage?.alert()) }); }),
+    timedOn(wake.architect, architectTimedMs, async (s, r, last) => { wake.push("timed-architect", { ...await architectTimedWake(store, s, r, last, started) }); }),
+  ]);
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
     scanChecks(true); wake.checkReceipts();
@@ -438,7 +455,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeArchitect(); unsubscribeAgents(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();

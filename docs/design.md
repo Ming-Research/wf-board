@@ -71,8 +71,9 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
    Codex session on the Mac connects to the same process. It keeps no session:
    each request stands alone (see *MCP without a session*).
 3. **The wake streams** (WebSocket): `/wake` pushes the PM's session what
-   needs it (owner notes, stalled work, a timed wake; the architect, which keeps every right the PM has, answers it too), and
-   `/wake/<session name>` pushes another agent what needs it (section 8).
+   needs it (stalled work, a timed wake; the architect, which keeps every right the PM has, answers it too),
+   `/wake/架构师` pushes the architect what takes reading an item's content to judge (the owner's notes,
+   its own hourly wake), and `/wake/<session name>` pushes another agent what needs it (section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -518,6 +519,7 @@ wf-board-data/
   messages/<day>.yaml     one file per UTC day: the messages agents sent each other that day (section 8, Messages)
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
+  state/wake-architect.jsonl  the architect's wake stream, in the same form (same)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
@@ -2421,7 +2423,10 @@ and draft text and shows the error; the committed snapshot stays authoritative.
 The board pushes on one stream per recipient. The PM's stream, at
 `/wake`, carries what the PM must handle, and any call from its session
 answers it (Receipts, below); the architect, which keeps every right the PM has,
-answers it as well when it works before the PM does. Every other agent the board
+answers it as well when it works before the PM does. The architect's stream, at
+`/wake/架构师`, carries what takes reading an item's content to judge (the owner's
+notes, and its own timed wake); it is read like the PM's, and only the architect's
+calls answer it (The architect's stream, below). Every other agent the board
 pushes to (a session holding an item, later a reviewer or the observer) has its
 own stream at `/wake/<session name>` (Agents' streams, below), with its own
 numbers and retention and a record of how far it was delivered. What an agent
@@ -2429,11 +2434,12 @@ does with a push, and how it listens, is in its rules and in
 `~/dev/wf/AGENTS.md`, section "Board".
 
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
-PM's stream; `{holder: <field>}`, the stream of the session holding
+PM's stream; `architect`, the architect's; `{holder: <field>}`, the stream of the session holding
 the item that field names, and the PM's when nobody holds it or the field is null (`only: true` on it: a push
 for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it); or
-`{session: <field>}`, the stream of the session that field names, the
-PM's when it names the PM or the architect. A session
+`{session: <field>}`, the stream of the session that field names: the PM's
+stream when it names the PM, the architect's when it names the architect (a holder that is the
+architect's session is routed the same way). A session
 *holds* an item while an engineer dispatch record on the item (section 5)
 names it as `agent` and has not ended; when several have not ended, the newest
 start wins, so a takeover holds the item from its start (`holderOf` in
@@ -2447,22 +2453,27 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Seventeen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
-and the engineer rules say. All go to the PM except `main-red`, `deployed`,
-`deployFailed`, `item-done` and `ask-alive`, which go to a holder, and `message`,
-which goes to its recipient:
+and the engineer rules say. All go to the PM except `note` and `timed-architect`,
+which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` and
+`ask-alive`, which go to a holder; and `message`, which goes to its recipient:
 
-- an owner note: a note becomes `sent`, on any project's item or card, so the
-  owner's comments on an engineer's item reach the PM too. A sent choice
+- an owner note, to the architect: a note becomes `sent`, on any project's item or
+  card, so the owner's comments on an engineer's item reach the architect too. Every kind
+  of note is one: a comment, an explain request, an approval, a choice on a card. A sent choice
   note also rules its open card in the same commit (see Decision cards), so the
-  PM does not rule it afterwards;
+  architect does not rule it afterwards. The PM gets none of them: most ask about an
+  item's content, which takes reading it to answer, and the PM does the process;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
 - the timed wake, every 30 minutes, with what changed since the last one and
   counts, never a standing list, and the keys of the reviews and finished items
   not yet taken up (Size, below);
+- the architect's timed wake (`timed-architect`), every 60 minutes, with what changed
+  since the last one and the number of items being worked on, so the architect looks over
+  what is in progress once an hour;
 - a review is needed (`review`): the item's review step, the plan step whose id is `review`,
   such as 「审查（3 级）」, became in progress, and no reviewer is on the item yet. The
   push carries the level the step's text names; the pull request and the range to
@@ -2517,7 +2528,9 @@ misses the others a deploy carried.
 The server answers 404 unless the path is `/wake`, 400 when `after` is not a
 whole number, and 403 unless the `Host` header is `127.0.0.1:<port>` or
 `localhost:<port>` and any `Origin` header equals `http://<host>`; a
-command-line client sends no `Origin`. A `session` parameter, which the earlier
+command-line client sends no `Origin`. The architect's stream is read the same
+way at `/wake/架构师` (the name percent-encoded), with the same `after` and the same answers
+and rules. A `session` parameter, which the earlier
 per-project filter took, is ignored.
 
 **Pushing from outside.** The deploy job runs in its own process, so it cannot
@@ -2541,9 +2554,10 @@ the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
+| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect, pm, review, finished, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `review` and `finished` are the item keys (at most 20, then `{more: n}`) of what the PM was told once and may not have taken up: items whose review step is in progress with no reviewer on them, and done items a session still holds. They are the reminder for a push lost or a PM that was away, since those two pushes are not repeated otherwise. `actions` is a sentence from the Actions usage watch when it needs handling (the billing cannot be read, or has a runner name the account does not know), else empty |
+| `{n, at, event:"timed-architect", since, changed, working}` | Every 60 minutes after the last one on the architect's stream (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, in the form of the `timed` frame's, except that an item only the architect's own session wrote is left out; the PM's writes are listed. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds, counted as in `timed`. Nothing else: the keys of the reviews and finished items, the counts of the Architect and PM projects and the usage sentence are the PM's |
 | `{n, at, event:"review", item, project, title, level}` | The item's review step (id `review`) became in progress and no reviewer has an open dispatch on the item. `level` is the review level the step's text names (`（N 级）`), null when it names none |
 | `{n, at, event:"finished", item, project, title, session}` | An item that a session holds became done. `session` is the session holding it, which the PM stops |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the PM's when nobody does (Deploys and the red main line) |
@@ -2557,22 +2571,23 @@ the forms the server sends:
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
-| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's or the architect's session |
+| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`: the PM's stream when `to` is the PM's session, the architect's when it is the architect's |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
 `connected` and `gap` carry no number and are not events. A frame on an
 agent's stream also carries `line`, the one line the agent is shown for it (Size,
-below); the architect's frames do not.
+below); the PM's and the architect's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
-continue across a restart. A client remembers the `n` of the last event it
+continue across a restart; the architect's stream the same, numbered on its own, in
+`state/wake-architect.jsonl`. A client remembers the `n` of the last event it
 handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
 event missed or sent twice between replay and live. A client drops an event
 numbered at or below the one it remembers (a repeat); a gap frame sets that number
-first, as above. Without `after` the client gets live events only. Every client connected to the PM's stream gets every event of it, and none of an agent's. The server pings every 25
+first, as above. Without `after` the client gets live events only. Every client connected to the PM's stream gets every event of it, and none of the architect's or an agent's; likewise for the architect's. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.
@@ -2586,12 +2601,34 @@ a call after handling a wake, which it does anyway by reading or writing the
 board. The timed wake comes every 30 minutes, so a PM that is running
 answers within the hour.
 
+**The architect's stream.** A call whose `session` is `架构师`, or that carries a
+credential of the architect's role, answers every event pushed to the architect's stream
+before the call arrived, on the same terms as the PM's receipts above (the call counts when its
+arguments pass the schema; a line is written to `state/wake-architect.jsonl` only when the
+call answers something new). The PM's calls and every other session's do not. The architect's
+call still answers the PM's stream as well: while no PM runs, the architect handles what is
+pushed to it. This is provisional: once a PM runs, only its calls should answer the PM's stream,
+or its silence is hidden from the owner by the architect's work; reopen then. The architect's
+timed wake is an hour, the limit of the alert below, so a running architect answers in time.
+Decision: a second stream of the PM's kind at `/wake/架构师`, because the architect's client
+already follows that protocol (it remembers the number of the last event it printed), the
+generic wait script refuses the names of the PM and the architect, and a call by the
+architect is already its receipt. Rejected: an agent's stream under its session name
+(delivery by acknowledgement, events carried in tool results), which would put the owner's
+notes into every tool result of the architect's session and give its calls a second meaning;
+one stream for both with the client filtering, because numbers and receipts belong to a
+stream and a PM's call would answer the architect's notes; pushing each note to both streams,
+because two receipts for one note leave it unclear who handled it; the PM forwarding the
+notes, because it would have to judge which are about content, and that judgment is the
+architect's.
+
 **Agents' streams.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
 Host and Origin rules are those of `/wake`. The server answers 400 for an empty
 name, one longer than 80 characters, one holding a slash or a control character,
-the name of the PM or the architect (their stream is `/wake`), a name that does not decode, and
-any query string. The board, not the client, keeps how far the stream was
+the name of the PM (its stream is `/wake`), a name that does not decode, and
+any query string; the architect's name is not an agent's but its own stream's
+(above). The board, not the client, keeps how far the stream was
 delivered, so the client sends no number: it gets `connected`, then `gap` when
 events never delivered were dropped by retention (it reads the board for what
 it missed), then every kept event not yet delivered, then live events of this
@@ -2694,8 +2731,8 @@ the number, the kind's label and what it is about (an item or pull request
 with its project, a title, counts instead of lists), at most 200 characters,
 cut with … past that; the tests measure it for every kind with the longest
 fields. A message's line cuts only what comes before its text (Messages,
-below). An event reaches an agent once (above). The PM's frames are printed whole by its
-script, so the PM's pushes carry no whole list that repeats from one to the next: the timed wake
+below). An event reaches an agent once (above). The PM's and the architect's frames are printed whole by their
+scripts, so the PM's pushes carry no whole list that repeats from one to the next: the timed wake
 once carried the lists of every open item of two projects each time, 74% of the characters pushed over a day
 (measured on 2026-10-16 and 17: 198,000 of 266,000), and now carries what changed, counts, and the keys of the two kinds of item not yet taken up (the reminder for a lost push).
 
@@ -2705,7 +2742,9 @@ naming that event. The PM has stopped: its session crashed, waits at a
 permission prompt, or no longer holds the Monitor that carries the stream.
 No more alerts follow until a receipt arrives and a later event goes unanswered
 for an hour. The receipts and the alert state are in the same file, so a restart
-neither repeats an alert nor forgets one.
+neither repeats an alert nor forgets one. The architect's stream does the same on its
+own, with 「架构师 1 小时没响应」 and its own file; each stream counts by itself, so the
+PM's call does not start the architect's count again (the architect's call answers both).
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
@@ -2724,7 +2763,7 @@ and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
 or card of its oldest unanswered event: the item of a `stalled`, `no-answer`, `review`
-or `finished` event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
+or `finished` event, or the item or card a `note` event is on; a `timed` or `timed-architect` event names neither, so its notice has no
 target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
@@ -2737,7 +2776,7 @@ with `--dangerously-load-development-channels`, which the desktop app's Code
 sessions cannot pass. The wake events are therefore defined independently of
 transport, so a thin stdio channel that relays `/wake` can replace the
 Monitor once channels allow it, without changing the server. Until then the
-PM runs a small client under Monitor, which lasts 30 minutes at most and
+PM and the architect each run a small client under Monitor, which lasts 30 minutes at most and
 is started again: the numbers and `after` carry it across the gap.
 
 ### Messages
@@ -2759,7 +2798,7 @@ board, where the owner and later readers find it.
   refused, never cut: a message is a doorbell, and the content belongs on the
   item. Every role may send (part `message.send`, section 9).
 - **Delivery.** The write pushes one `message` event to the recipient's
-  stream: the PM's for the PM or the architect, else the session's own. With no
+  stream: the PM's for the PM, the architect's for the architect, else the session's own. With no
   process connected it waits there, and reaches the session once, on its wait
   script's next connection or in the result of its next board call (The wake
   streams, above).

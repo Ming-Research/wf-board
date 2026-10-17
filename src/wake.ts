@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Liveness } from "./liveness.ts";
-import { answersPushes } from "./model.ts";
+import { ARCHITECT_SESSION, isArchitectSession, isPMSession } from "./model.ts";
 
-/** Where a kind of push goes: the PM's stream; the stream of the session holding the item that `holder` names (an item key
- * among the fields), and the PM's when no session holds it, or nobody's when the route is `only` for the holder; or the stream
- * of the session that `session` names (the PM's when that is the PM's session) (docs/design.md, The wake streams). */
-export type WakeRoute = "pm" | { holder: string; only?: true } | { session: string };
+/** Where a kind of push goes: the PM's stream; the architect's stream; the stream of the session holding the item that `holder`
+ * names (an item key among the fields), and the PM's when no session holds it, or nobody's when the route is `only` for the
+ * holder; or the stream of the session that `session` names (the PM's or the architect's when that is theirs) (docs/design.md,
+ * The wake streams). */
+export type WakeRoute = "pm" | "architect" | { holder: string; only?: true } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
  * besides n, at and event, `to` says whose stream it goes to, `external` lists the fields of the request by which another process may ask
@@ -16,9 +17,10 @@ export type WakeRoute = "pm" | { holder: string; only?: true } | { session: stri
  * session it goes to answers by calling the board, so a tool result does not carry it. push() refuses another kind or field
  * set, and the design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
 export const WAKE_KINDS = {
-  note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "pm" },
+  note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "architect" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
   timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "review", "finished", "actions"], to: "pm" },
+  "timed-architect": { label: "架构师定时唤醒", fields: ["since", "changed", "working"], to: "architect" },
   review: { label: "要审查", fields: ["item", "project", "title", "level"], to: "pm" },
   finished: { label: "条目做完", fields: ["item", "project", "title", "session"], to: "pm" },
   "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url", "item", "pr"], to: { holder: "item" } },
@@ -72,6 +74,7 @@ const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
   timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.review) ? `，${count(f.review)} 条审查行在进行中却没有审查会话` : ""}${count(f.finished) ? `，${count(f.finished)} 条做完的条目还有会话没收` : ""}${f.actions ? `，${str(f.actions)}` : ""}`,
+  "timed-architect": f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条`,
   review: f => `${it(f.item, f.project)} · ${f.level ? `${str(f.level)} 级` : "级别没写"} · ${str(f.title)}`,
   finished: f => `${it(f.item, f.project)} · 拿着它的会话 ${str(f.session)} · ${str(f.title)}`,
   "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败${f.item ? ` · 交付它的 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""}`,
@@ -298,9 +301,83 @@ export class AgentStream extends NumberedLog {
   }
 }
 
+export interface ReceiptOptions extends LogOptions {
+  /** Whose stream it is, as the no-receipt notice names it: the PM or the architect. */
+  who: string;
+  receiptLimitMs?: number;
+}
+
+/**
+ * A stream its reader answers by calling the board (docs/design.md, The wake streams, Receipts): the PM's and the architect's.
+ * A client connects with the number of the last event it has and is sent what follows; the board keeps no delivery. A call by
+ * the reader is a receipt for everything pushed before it; an event with no receipt after `receiptLimitMs` tells the owner once.
+ * The time of the last timed wake is kept beside the receipts, so the next one counts from there after a restart.
+ */
+export class ReceiptStream extends NumberedLog {
+  /** Whose stream: the name the no-receipt notice gives. */
+  readonly name: string;
+  readonly receiptLimitMs: number;
+  private receipted = 0;
+  private alerted = false;
+  private marked?: TimedMark;
+
+  constructor(options: ReceiptOptions) {
+    super(options, 1000, 2 * 1024 * 1024);
+    this.name = options.who;
+    this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
+    this.loadFile();
+  }
+
+  protected loadState(record: Record<string, unknown>): void {
+    if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
+    else if (record.alert === true) this.alerted = true;
+    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
+  }
+  protected stateLines(): unknown[] {
+    const lines: unknown[] = [];
+    if (this.receipted) lines.push({ ack: this.receipted });
+    if (this.alerted) lines.push({ alert: true });
+    if (this.marked) lines.push({ timed: this.marked });
+    return lines;
+  }
+
+  /** The number of the newest event answered, 0 before any. */
+  receiptedUpTo(): number { return this.receipted; }
+  get lastTimed(): TimedMark | undefined { return this.marked; }
+
+  /** Number, keep and send one event on this stream. The fields must be exactly those the kind lists. */
+  push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
+    checked(event, fields);
+    return this.add(event, fields);
+  }
+
+  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
+  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
+
+  /** A call from the reader: everything pushed here before it is answered. Writes only when that changes something. */
+  receipt(): void {
+    if (this.counter === this.receipted && !this.alerted) return;
+    this.receipted = this.counter; this.alerted = false;
+    this.append({ ack: this.receipted, at: this.iso() });
+  }
+
+  /** When the oldest event without a receipt is `receiptLimitMs` old, tell the owner once; a receipt starts the count again. */
+  alertIfSilent(tell: (title: string, message: string, target?: Told["target"]) => void): void {
+    if (this.alerted) return;
+    const oldest = this.frames.find(f => f.frame.n > this.receipted)?.frame;
+    if (!oldest || this.now() - Date.parse(oldest.at) < this.receiptLimitMs) return;
+    this.alerted = true;
+    this.append({ alert: true, at: this.iso() });
+    const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
+    tell(`${this.name} ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+  }
+}
+
 export interface WakeOptions extends LogOptions {
   /** Where the agents' streams are kept, one file each; without it they live in memory only. */
   dir?: string;
+  /** Where the architect's stream is kept; without it, in memory only. */
+  architectFile?: string;
   /** Where the marks of the liveness checks are kept (src/liveness.ts); without it they live in memory only. */
   livenessFile?: string;
   receiptLimitMs?: number;
@@ -326,18 +403,17 @@ function nameIn(file: string): string | undefined {
 export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * The board's pushes: the PM's numbered, kept stream with the receipts that answer it (this class), and one stream for each
- * other agent (AgentStream), with the routing between them. The owner's notifications go out from here too.
+ * The board's pushes: the PM's numbered, kept stream with the receipts that answer it (this class, a ReceiptStream), the
+ * architect's (`architect`, another ReceiptStream), and one stream for each other agent (AgentStream), with the routing between
+ * them. The owner's notifications go out from here too.
  */
-export class Wake extends NumberedLog {
-  readonly receiptLimitMs: number;
+export class Wake extends ReceiptStream {
   private readonly dir?: string;
+  /** The architect's stream: what the owner's notes and the architect's timed wake are pushed to, answered by the architect's calls. */
+  readonly architect: ReceiptStream;
   /** Whether the sessions holding items are still there: a call, or an alive frame from its wait script, is a sign (`liveness.see`), and the server's
    * minute timer runs `liveness.check`, which pushes the ask and the "no answer" through this object. */
   readonly liveness: Liveness;
-  private receipted = 0;
-  private alerted = false;
-  private marked?: TimedMark;
   private tellListeners = new Set<(told: Told) => void>();
   private agents = new Map<string, AgentStream>();
   private agentListeners = new Set<(stream: AgentStream, frame: WakeFrame) => void>();
@@ -345,11 +421,10 @@ export class Wake extends NumberedLog {
   private holder: (item: string) => string | undefined = () => undefined;
 
   constructor(options: WakeOptions = {}) {
-    super(options, 1000, 2 * 1024 * 1024);
+    super({ ...options, who: "PM" });
     this.dir = options.dir;
-    this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
+    this.architect = new ReceiptStream({ file: options.architectFile, now: this.now, retain: options.retain, retainBytes: options.retainBytes, receiptLimitMs: options.receiptLimitMs, who: ARCHITECT_SESSION });
     this.liveness = new Liveness({ wake: this, now: this.now, file: options.livenessFile });
-    this.loadFile();
     // The agents' streams are read at start, so what is undelivered reaches a tool result before any wait script connects.
     try {
       if (this.dir && existsSync(this.dir)) for (const file of readdirSync(this.dir)) {
@@ -360,23 +435,6 @@ export class Wake extends NumberedLog {
       }
     } catch (error) { console.error("agent wake logs unreadable", error); }
   }
-
-  protected loadState(record: Record<string, unknown>): void {
-    if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
-    else if (record.alert === true) this.alerted = true;
-    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
-  }
-  protected stateLines(): unknown[] {
-    const lines: unknown[] = [];
-    if (this.receipted) lines.push({ ack: this.receipted });
-    if (this.alerted) lines.push({ alert: true });
-    if (this.marked) lines.push({ timed: this.marked });
-    return lines;
-  }
-
-  /** The number of the newest event the PM has answered, 0 before any. */
-  receiptedUpTo(): number { return this.receipted; }
-  get lastTimed(): TimedMark | undefined { return this.marked; }
 
   /** How a holder-routed push finds its session: the session holding an item, or none. */
   routeBy(holder: (item: string) => string | undefined): void { this.holder = holder; }
@@ -402,16 +460,19 @@ export class Wake extends NumberedLog {
     return () => { this.agentListeners.delete(fn); };
   }
 
-  /** Number, keep and send one event to the stream its kind routes it to: the PM's; the stream of the session holding the
-   * item the route names (the PM's when nobody holds it); or the stream of the session the route names. The fields must be
+  /** Number, keep and send one event to the stream its kind routes it to: the PM's or the architect's; the stream of the session
+   * holding the item the route names (the PM's when nobody holds it); or the stream of the session the route names. A route
+   * that lands on the architect's session goes to the architect's stream, and on the PM's to the PM's. The fields must be
    * exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
+    if (to === "architect") return this.architect.push(event, fields);
     if (to !== "pm") {
       const named = "session" in to ? fields[to.session] : fields[to.holder];
       const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
-      if (name !== undefined && !answersPushes({ session: name })) return this.agent(name).push(event, fields);
+      if (isArchitectSession(name)) return this.architect.push(event, fields);
+      if (name !== undefined && !isPMSession(name)) return this.agent(name).push(event, fields);
       // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
       if ("only" in to && name === undefined) throw new Error(`Wake ${event} is for the session holding ${String(named)}, and nobody does`);
     }
@@ -462,25 +523,11 @@ export class Wake extends NumberedLog {
     }
   }
 
-  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
-  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
-
-  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed to the PM before it is answered. Writes only when that changes something. */
-  receipt(): void {
-    if (this.counter === this.receipted && !this.alerted) return;
-    this.receipted = this.counter; this.alerted = false;
-    this.append({ ack: this.receipted, at: this.iso() });
-  }
-
-  /** When the oldest event without a receipt is `receiptLimitMs` old, tell the owner once; a receipt starts the count again. */
+  /** Tell the owner once about each of the PM's and the architect's streams whose oldest event has had no receipt for `receiptLimitMs`. */
   checkReceipts(): void {
-    if (this.alerted) return;
-    const oldest = this.frames.find(f => f.frame.n > this.receipted)?.frame;
-    if (!oldest || this.now() - Date.parse(oldest.at) < this.receiptLimitMs) return;
-    this.alerted = true;
-    this.append({ alert: true, at: this.iso() });
-    const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`PM ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+    const tell = (title: string, message: string, target?: Told["target"]) => this.tell(title, message, target);
+    this.alertIfSilent(tell);
+    this.architect.alertIfSilent(tell);
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */

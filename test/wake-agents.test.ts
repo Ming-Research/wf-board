@@ -34,13 +34,15 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 test("every kind says where it goes, and a holder or session route names one of the kind's own fields", () => {
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) {
-    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true } | "pm" | undefined;
+    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true } | "pm" | "architect" | undefined;
     const field = typeof to === "object" && to !== null ? to.holder ?? to.session : undefined;
     const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only") : [];
-    assert.ok(to === "pm" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
+    assert.ok(to === "pm" || to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
-  for (const kind of ["review", "finished", "stalled", "no-answer", "note", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  for (const kind of ["review", "finished", "stalled", "no-answer", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  // What needs the content of an item read to judge goes to the architect: the owner's notes, and its own hourly wake.
+  for (const kind of ["note", "timed-architect"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
   assert.deepEqual(WAKE_KINDS.deployed.to, { holder: "item", only: true });
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
@@ -55,6 +57,7 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
   timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many, actions: L },
+  "timed-architect": { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999 },
   review: { item: L, project: L, title: L, level: 5 },
   finished: { item: L, project: L, title: L, session: L },
   "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },
@@ -118,14 +121,15 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.equal(again.latest(), 1, "the PM's numbers are its own");
 });
 
-test("a push routed to the session of the PM or of the architect goes to the PM's stream, and no stream is made under their names", async t => {
-  const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), dir, now: () => T0 });
+test("a push routed to the session of the PM goes to the PM's stream, and to the session of the architect to the architect's, and no agent stream is made under their names", async t => {
+  const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), architectFile: join(dir, "architect.jsonl"), dir, now: () => T0 });
   const held: Record<string, string> = { mine: PM_SESSION, theirs: ARCHITECT_SESSION };
   wake.routeBy(item => held[item]);
   const message = (to: string) => ({ message: "m", from: "eng", project: "Whitefoot", to, item: null, text: "看" });
-  wake.push("message", message(PM_SESSION)); wake.push("message", message(ARCHITECT_SESSION));
+  wake.push("message", message(PM_SESSION)); wake.push("message", message(` ${ARCHITECT_SESSION} `));
   wake.push("item-done", done("c1", "mine")); wake.push("item-done", done("c2", "theirs"));
-  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "message", "item-done", "item-done"]);
+  assert.deepEqual(wake.since(0).frames.map(f => [f.event, f.item ?? f.to]), [["message", PM_SESSION], ["item-done", "c1"]], "the PM's stream gets what is for the PM");
+  assert.deepEqual(wake.architect.since(0).frames.map(f => [f.event, f.item ?? f.to]), [["message", ` ${ARCHITECT_SESSION} `], ["item-done", "c2"]], "and the architect's what is for the architect, a padded name too");
   // A holder-routed kind with no item to name (the red main line no PR explains) is the PM's too.
   wake.push("main-red", { repo: "o/r", project: "p", branch: "main", commit: "c", failed: [], url: "u", item: null, pr: null });
   assert.equal(wake.since(0).frames.at(-1)!.event, "main-red");
@@ -227,18 +231,18 @@ test("an agent's socket gets what was not delivered, then its own live pushes on
   const back = await agentSocket(t, url, "eng");
   assert.deepEqual(back.frames, [{ event: "connected", latest: 1 }], "a delivered push is not replayed");
   const live = wake.agent("eng").push("item-done", done("c2", "p"));
-  wake.push("note", { note: "n1", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  wake.push("stalled", { item: "a", project: "Whitefoot", title: "中文检查", text: "无人推进" });
   for (const s of [pm, eng, other, back]) await s.sync();
   assert.deepEqual(eng.events().map(f => f.n), [1, 2]); assert.deepEqual(back.events(), [live]);
   assert.deepEqual(other.events(), [], "another agent's push does not reach this stream");
-  assert.deepEqual(pm.events().map(f => f.event), ["note"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
+  assert.deepEqual(pm.events().map(f => f.event), ["stalled"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
   eng.socket.send("not json"); eng.socket.send(JSON.stringify({ ack: "2" })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 1, "anything but a numeric ack is ignored");
   // Valid JSON that is not an object has no fields to read: it is ignored, and the stream still takes the next ack.
   for (const message of ["null", "[]", "1", '"ack"']) eng.socket.send(message);
   eng.socket.send(JSON.stringify({ ack: 2 })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 2, "a message that is not an object is ignored, and the next ack counts");
-  for (const path of ["/wake/", "/wake/" + encodeURIComponent(ARCHITECT_SESSION), "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
+  for (const path of ["/wake/", "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
 });
 
 test("another agent's tool call carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {

@@ -60,10 +60,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -75,9 +75,10 @@ export async function server(t: Parameters<typeof board>[0], extra: { now?: () =
   return { ...fixture, http, url, api, port: address.port };
 }
 
-/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. */
-export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number) {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake" + (after === undefined ? "" : "?after=" + after));
+/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. `path` is
+ * the stream's address: the PM's by default. */
+export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number, path = "/wake") {
+  const socket = new WebSocket(url.replace("http:", "ws:") + path + (after === undefined ? "" : "?after=" + after));
   t.after(() => socket.terminate());
   const frames: Array<Record<string, unknown>> = [];
   socket.on("message", data => frames.push(JSON.parse(data.toString())));
@@ -87,6 +88,9 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   await sync();
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
 }
+
+/** A client of the architect's wake stream, `/wake/架构师`, like wakeSocket. */
+export const architectSocket = (t: { after(fn: () => void): void }, url: string, after?: number) => wakeSocket(t, url, after, "/wake/" + encodeURIComponent("架构师"));
 
 /** A client of an agent's wake stream, `/wake/<name>`, like wakeSocket. */
 export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {

@@ -427,6 +427,9 @@ export const isPMSession = (session: string | undefined): boolean => session?.tr
 /** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of either's role. */
 export const answersPushes = (call: { role: string } | { session?: string }): boolean =>
   "role" in call ? call.role === PM_ROLE || call.role === ARCHITECT_ROLE : isPMSession(call.session) || isArchitectSession(call.session);
+/** Whether a call answers the architect's stream (docs/design.md, section 8): from the architect's session, or over a credential of its role. The PM's calls do not. */
+export const answersArchitect = (call: { role: string } | { session?: string }): boolean =>
+  "role" in call ? call.role === ARCHITECT_ROLE : isArchitectSession(call.session);
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 
