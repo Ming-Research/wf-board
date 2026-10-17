@@ -1,7 +1,7 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority } from "../src/rules.ts";
+import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { drawMermaid, watchMermaid } from "./mermaid.ts";
@@ -22,7 +22,6 @@ interface ViewState { meta: Board | null; items: ViewItem[]; decisions: ViewDeci
 interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kinds: string[]; sel: string; item: string | null; card?: string; notes?: string; at: number[] }
 
   const STATUS: Record<string,string> = { wip: "WIP", done: "DONE", idle: "IDLE", todo: "TODO", blocked: "BLOCK", paused: "◌ PAUSE", cancelled: "DROP", record: "记录" };
-  const PRIORITY_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const state: ViewState = { meta: null, items: [], decisions: [], notes: [] };
   let snapshot: Snapshot = { board: { title: "进度板", projects: [] }, items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {}, owner: {}, head: "" };
   // Keeps the parsed activity times across snapshots, so each new Rules object reads them without rescanning every log.
@@ -265,7 +264,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function statusOf(it: ViewItem) { return derived.statusOf(it.id); }
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
-  function priorityOf(it: ViewItem) { return derived.priorityOf(it.id); }
   function openWorkAncestors() {
     return dataCached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
   }
@@ -277,7 +275,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function shownForFresh(it: ViewItem) { return ended(it) && !openWorkAncestors().has(it.id) && freshPath().has(it.id); }
   function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id) || freshPath().has(it.id); }
-  function byPriority(a: ViewItem,b: ViewItem) { return derived.compareSiblings(a.id,b.id); }
   function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
@@ -1167,15 +1164,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     btn.hidden = !backStack.length;
   }
-  // One row per item in a dependency list: status, priority, where it lives (the project when it is
+  // One row per item in a dependency list: status, where it lives (the project when it is
   // another one), and its title; a click follows it.
   function depRow(d: ViewItem, from: ViewItem, extra?: string) {
-    const st = statusOf(d) ?? "record", pr = priorityOf(d);
+    const st = statusOf(d) ?? "record";
     // A dependency in another project names that project; within the project no label is needed.
     const where = groupOf(d) !== groupOf(from) ? groupOf(d) || "其他" : "";
     const b = el("button", "deprow" + (groupOf(d) !== groupOf(from) ? " cross" : ""),
       statusChip(d, st)
-      + '<span class="prio ' + (pr ? pr.toLowerCase() : "none") + '">' + (pr || "P?") + "</span>"
       + (where ? '<span class="where">' + inline(where) + "</span>" : "")
       + '<span class="t">' + inline(d.title) + "</span>" + (extra ? '<span class="where">' + extra + "</span>" : ""));
     b.type = "button";
@@ -1856,14 +1852,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     host.appendChild(panel);
   }
-  // The blocking waits (cards with blocks, and asks), most urgent first: priority P0 first, then the longest waiting.
+  // The blocking waits (cards with blocks, and asks), the longest waiting first.
   function waitPanel() {
     const rows = stops().filter(blockingStop).map(st => {
       const card = st.id.startsWith("q-") ? snapshot.decisions[st.id.slice(2)] : undefined, it = st.item ? snapshot.items[st.item] : undefined;
-      const rank = st.item ? PRIORITY_RANK[derived.priorityOf(st.item)] ?? 3 : 3;
       const since = card ? card.at ?? card.updated : it?.updated ?? "";
-      return { st, card, it, rank, since, text: card ? card.blocks || "" : it?.ask?.text || "", project: st.item ? groupOf(index().byId.get(st.item)!) : "", summary: card ? plain(firstLine(card.question)) : plain(it?.title) };
-    }).sort((a, b) => a.rank - b.rank || a.since.localeCompare(b.since) || a.st.id.localeCompare(b.st.id));
+      return { st, card, it, since, text: card ? card.blocks || "" : it?.ask?.text || "", project: st.item ? groupOf(index().byId.get(st.item)!) : "", summary: card ? plain(firstLine(card.question)) : plain(it?.title) };
+    }).sort((a, b) => a.since.localeCompare(b.since) || a.st.id.localeCompare(b.st.id));
     if (!rows.length) return null;
     const box = el("div", "waitpanel"); box.id = "wait-panel";
     rows.forEach(r => {
@@ -1907,12 +1902,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         else if (stored.state === "dropped") text += " · " + stored.reason;
         main.appendChild(el("span", "plan-text rich", linkTerms(blocks(text), terms)));
       } else if ("item" in stored) {
-        // An item row looks like the item's own head in the tree: the row glyph carries its status, then priority,
+        // An item row looks like the item's own head in the tree: the row glyph carries its status, then
         // title, ratio and tags on one line.
         const target = snapshot.items[stored.item];
-        const pr = target ? derived.priorityOf(stored.item) : undefined;
         row.classList.add("item-line", stored.own ? "own" : "shared");
-        main.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none"), pr || "P?"));
         const link = ref("item", stored.item, target?.title || stored.item); link.classList.add("item-title"); main.appendChild(link);
         if (stored.own && target) {
           const meta = el("span", "plan-meta"), childRatio = derived.planRatio(stored.item);
@@ -2081,20 +2074,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       }
     return null;
   }
-  // The baseline is a document; status and priority are derived. Restore that document and use the same current reference
+  // The baseline is a document; status is derived. Restore that document and use the same current reference
   // targets for comparison. The derivation walks the whole board, and the tree row and the detail both ask, so it is kept
   // for as long as the data and the baseline stay.
-  // A baseline that differs from the item in its text alone has the item's own status and priority (the rules say which fields
-  // they read: sameStatusAndPriority), so it needs no derivation.
+  // A baseline that differs from the item in its text alone has the item's own status (the rules say which fields
+  // they read: sameStatus), so it needs no derivation.
   function baselineDerived(it: ViewItem, before: Item) {
-    const id = it.id, kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined; priority: string } | undefined;
+    const id = it.id, kept = dataMemo["baseline:" + id] as { before: Item; status: string | undefined } | undefined;
     if (kept && kept.before === before) return kept;
-    let made: { before: Item; status: string | undefined; priority: string };
-    if (sameStatusAndPriority(before, it)) made = { before, status: statusOf(it), priority: priorityOf(it) };
+    let made: { before: Item; status: string | undefined };
+    if (sameStatus(before, it)) made = { before, status: statusOf(it) };
     else {
       countEvent("board:baseline");
       const r = rules({ ...snapshot, items: { ...snapshot.items, [id]: before } });
-      made = { before, status: r.statusOf(id), priority: r.priorityOf(id) };
+      made = { before, status: r.statusOf(id) };
     }
     return (dataMemo["baseline:" + id] = made);
   }
@@ -2125,8 +2118,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const beforeDerived = before ? baselineDerived(it, before) : undefined;
     const beforeStatus = beforeDerived?.status ?? (before ? "record" : undefined);
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
-    const pr = priorityOf(it);
-    head.appendChild(el("span", "prio " + (pr ? pr.toLowerCase() : "none") + (beforeDerived && beforeDerived.priority !== pr ? " chg-add" : ""), pr || "P?"));
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     if (it.plan.length) {
@@ -2254,7 +2245,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     return li;
   }
-  // A top-level item that an open item of another project depends on directly: its priority comes from those dependents.
+  // A top-level item that an open item of another project depends on directly: it is listed after the project's own.
   function neededElsewhere(t: ViewItem) { return waitedBy().get(t.id)!.some(w => !ended(w) && groupOf(w) !== groupOf(t)); }
   function projectGroups() {
     const groups: Array<{name:string;items:ViewItem[]}> = snapshot.board.projects.map(p => ({name:p.name,items:[]}));
@@ -2587,7 +2578,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
           }
         }
       }
-      // Keep the existing sibling subtrees while reflecting derived status/priority ordering.
+      // Keep the existing sibling subtrees while reflecting derived status ordering.
       const parents=new Set<HTMLElement>();
       for (const key of scope) if (key.startsWith("item:")) { const li=get("it-"+key.slice(5))?.parentElement; if (li?.parentElement) parents.add(li.parentElement); }
       for (const parent of parents) {

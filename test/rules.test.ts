@@ -14,7 +14,7 @@ const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [.
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}): Snapshot {
   return {
     board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), glossaries: {}, owner: {},
-    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", priority: "P2", ...(fields.record ? {} : { difficulty: 2 }), plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
+    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", ...(fields.record ? {} : { difficulty: 2 }), plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
   };
@@ -202,34 +202,30 @@ test("closed rows win over explicit pause and paused child rows wait for the own
 });
 
 test("a paused child conflicts with shared dependents but not its unpaused owner", () => {
-  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: {}, dependent: { priority: "P0", plan: workPlan([shared("child")]) } });
+  const s = snapshot({ parent: { plan: workPlan([own("child")]) }, child: {}, dependent: { plan: workPlan([shared("child")]) } });
   s.items.child!.paused = { reason: "Owner paused this part", at: T1 };
   const r = rules(s);
   assert.equal(r.statusOf("parent"), "blocked", "the owning row still waits for the owner's resumption");
   assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 dependent 在等它", target: { kind: "item", id: "dependent" } }], "the shared dependent retains its conflict even when the target is owned");
 });
 
-test("paused roots retain their priority and rootness but propagate none to owned or shared work", () => {
-  const s = snapshot({ root: { priority: "P2", plan: workPlan([own("child"), shared("foreign")]) }, child: { plan: workPlan([shared("further")]) }, foreign: { group: "Second" }, further: { group: "Second" } });
+test("a paused root stays a root and needs nothing; pausing it does not promote its targets", () => {
+  const s = snapshot({ root: { plan: workPlan([own("child"), shared("foreign")]) }, child: { plan: workPlan([shared("further")]) }, foreign: { group: "Second" }, further: { group: "Second" } });
   s.items.root!.paused = { reason: "Owner postponed release", at: T1 };
   const r = rules(s);
-  assert.equal(r.isRoot("root"), true); assert.equal(r.priorityOf("root"), "P2");
-  for (const id of ["child", "foreign", "further"]) {
-    assert.equal(r.isRoot(id), false, "pausing a dependent does not promote its targets to roots");
-    assert.equal(r.priorityOf(id), "", id);
-  }
+  assert.equal(r.isRoot("root"), true);
+  for (const id of ["child", "foreign", "further"]) assert.equal(r.isRoot(id), false, "pausing a dependent does not promote its targets to roots");
+  for (const id of ["root", "child", "foreign", "further"]) assert.equal(r.isNeeded(id), false, `${id}: only an unpaused root needs work`);
   delete s.items.root!.paused;
   const resumed = rules(s);
-  for (const id of ["root", "child", "foreign", "further"]) assert.equal(resumed.priorityOf(id), "P2", id);
+  for (const id of ["root", "child", "foreign", "further"]) assert.equal(resumed.isNeeded(id), true, id);
 });
 
-test("unpaused shared P0 dependents flag conflicts on paused targets and still give them priority", () => {
-  const s = snapshot({ paused: { group: "Second", plan: workPlan([shared("beyond")]) }, beyond: { group: "Second" }, urgent: { priority: "P0", plan: workPlan([shared("paused")]) }, other: { plan: workPlan([shared("paused")]) }, closed: { status: "cancelled", plan: workPlan([shared("paused")]) } });
+test("unpaused shared dependents flag conflicts on paused targets", () => {
+  const s = snapshot({ paused: { group: "Second", plan: workPlan([shared("beyond")]) }, beyond: { group: "Second" }, urgent: { plan: workPlan([shared("paused")]) }, other: { plan: workPlan([shared("paused")]) }, closed: { status: "cancelled", plan: workPlan([shared("paused")]) } });
   s.items.paused!.paused = { reason: "Stopped", at: T1 };
   s.items.other!.paused = { reason: "Also stopped", at: T1 };
   const r = rules(s);
-  assert.equal(r.priorityOf("paused"), "P0", "pause does not hide priority supplied by unpaused work");
-  assert.equal(r.priorityOf("beyond"), "", "the paused target cannot pass its incoming priority onward");
   assert.deepEqual(r.checks("paused").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 urgent 在等它", target: { kind: "item", id: "urgent" } }]);
   assert.equal(r.checks("urgent").some(check => check.label === "暂停冲突"), false, "the warning belongs to the paused target");
   s.items.urgent!.paused = { reason: "Owner also stopped waiter", at: T2 };
@@ -308,40 +304,32 @@ test("only-acceptance and placeholder checks inspect every acceptance scenario",
   assert.deepEqual(rules(s).planRatio("a"), { done: 3, total: 3 }, "dropped acceptance is excluded like a dropped step");
 });
 
-test("priority flows across owned and shared item rows, including across projects, but not card rows", () => {
-  const s = snapshot({ far: { group: "Second", priority: "P2" }, mid: { plan: workPlan([shared("far")]) }, root: { priority: "P1", plan: workPlan([own("mid")]) }, urgent: { priority: "P0", plan: workPlan([shared("far"), card("q")]) }, host: {} }, { q: { item: "urgent" } });
+test("an owned or shared item row, also across projects, makes its target a non-root; a card row does not", () => {
+  const s = snapshot({ far: { group: "Second" }, mid: { plan: workPlan([shared("far")]) }, root: { plan: workPlan([own("mid")]) }, urgent: { plan: workPlan([shared("far"), card("q")]) }, host: {} }, { q: { item: "urgent" } });
   const r = rules(s);
-  assert.equal(r.priorityOf("mid"), "P1"); assert.equal(r.priorityOf("far"), "P0"); assert.equal(r.priorityOf("host"), "P2");
   assert.equal(r.isRoot("mid"), false); assert.equal(r.isRoot("far"), false); assert.equal(r.isRoot("root"), true);
+  assert.equal(r.isRoot("urgent"), true); assert.equal(r.isRoot("host"), true);
 });
 
-test("record-owned work receives shared dependents priority, never the record or its stored priority", () => {
-  const s = snapshot({ queue: { record: true, priority: "P0", plan: [own("run"), own("closed")] }, run: { priority: "P1", plan: workPlan([shared("beyond")]) }, closed: { priority: "P1", plan: workPlan([], "done") }, beyond: { priority: undefined }, urgent: { priority: "P0", plan: workPlan([shared("run")]) } });
+test("record-owned work is backlog and no root while an open item waits on it, and closed work owned by a record is a root", () => {
+  const s = snapshot({ queue: { record: true, plan: [own("run"), own("closed")] }, run: { plan: workPlan([shared("beyond")]) }, closed: { plan: workPlan([], "done") }, beyond: {}, urgent: { plan: workPlan([shared("run")]) } });
   const r = rules(s);
-  assert.equal(r.isBacklog("run"), true); assert.equal(r.isRoot("run"), false); assert.equal(r.priorityOf("run"), "P0"); assert.equal(r.priorityOf("beyond"), "P0");
-  assert.ok(!texts(s, "run").includes("没有未完成的条目依赖它，却没写优先级"));
-  assert.equal(r.isBacklog("closed"), false); assert.equal(r.isRoot("closed"), true); assert.equal(r.priorityOf("closed"), "P1");
+  assert.equal(r.isBacklog("run"), true); assert.equal(r.isRoot("run"), false);
+  assert.equal(r.isBacklog("closed"), false); assert.equal(r.isRoot("closed"), true);
   s.items.urgent!.plan = workPlan([], "done");
   const noWaiter = rules(s);
-  assert.equal(noWaiter.priorityOf("run"), ""); assert.equal(noWaiter.priorityOf("beyond"), "");
   assert.equal(noWaiter.isRoot("run"), false);
   s.items.queue!.plan = [own("closed")]; s.items.urgent!.plan = workPlan([own("run")]);
-  const moved = rules(s); assert.equal(moved.isBacklog("run"), false); assert.equal(moved.priorityOf("run"), "P0"); assert.equal(moved.priorityOf("beyond"), "P0");
+  const moved = rules(s); assert.equal(moved.isBacklog("run"), false);
 });
 
-test("records and closed work pass no priority, but closed targets keep incoming priority", () => {
-  const s = snapshot({ root: { priority: "P0", plan: workPlan([own("record"), own("finished")]) }, record: { record: true, plan: [shared("far")] }, finished: { priority: "P2", plan: workPlan([shared("far")], "done") }, far: { plan: workPlan([], "done") } });
+test("cycles terminate and identify only their members", () => {
+  const s = snapshot({ a: { plan: workPlan([own("b")]) }, b: { plan: workPlan([own("a")]) }, self: { plan: workPlan([shared("self")]) }, missing: { plan: workPlan([shared("gone")]) } });
   const r = rules(s);
-  assert.equal(r.priorityOf("record"), "P0"); assert.equal(r.priorityOf("finished"), "P0"); assert.equal(r.priorityOf("far"), "P2");
-});
-
-test("cycles terminate, identify only members, and receive priority only from outside open work", () => {
-  const s = snapshot({ a: { priority: "P0", plan: workPlan([own("b")]) }, b: { priority: "P1", plan: workPlan([own("a")]) }, self: { plan: workPlan([shared("self")]) }, missing: { plan: workPlan([shared("gone")]) } });
-  const r = rules(s);
-  for (const id of ["a", "b", "self"]) { assert.equal(r.onCycle(id), true); assert.equal(r.priorityOf(id), ""); assert.equal(r.statusOf(id), "blocked"); }
+  for (const id of ["a", "b", "self"]) { assert.equal(r.onCycle(id), true); assert.equal(r.statusOf(id), "blocked"); }
   assert.deepEqual(r.ancestors("a"), ["b"]); assert.equal(r.onCycle("missing"), false);
-  s.items.waiter = Item.parse({ title: "Waiter", group: "Default", priority: "P1", plan: workPlan([shared("a")]), updated: T0, rev: 1 });
-  const reached = rules(s); assert.equal(reached.onCycle("waiter"), false); assert.equal(reached.priorityOf("a"), "P1"); assert.equal(reached.priorityOf("b"), "P1");
+  s.items.waiter = Item.parse({ title: "Waiter", group: "Default", plan: workPlan([shared("a")]), updated: T0, rev: 1 });
+  const reached = rules(s); assert.equal(reached.onCycle("waiter"), false);
 });
 
 test("cancelled items get no checks, including their cards; open items keep theirs", () => {
@@ -354,7 +342,7 @@ test("cancelled items get no checks, including their cards; open items keep thei
 });
 
 test("plan checks flag structural violations and conversion placeholders, without old manual-status checks", () => {
-  const s = snapshot({ p: { plan: workPlan([own("x")]) }, second: { group: "Second", plan: workPlan([own("x")]) }, x: {}, loose: { priority: undefined }, waiter: { plan: workPlan([shared("loose")]) }, missing: { plan: workPlan([shared("gone"), card("gone-card")]) }, provisional: { provisional: true, plan: workPlan([step()]) }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, oldParent: { status: "cancelled", plan: workPlan([own("open")]) }, open: {}, onlyAcceptance: { plan: workPlan() }, acceptedEarly: { plan: workPlan([step()], "done") }, unconfigured: { group: "Unknown" }, rootMissing: { priority: undefined } });
+  const s = snapshot({ p: { plan: workPlan([own("x")]) }, second: { group: "Second", plan: workPlan([own("x")]) }, x: {}, loose: {}, waiter: { plan: workPlan([shared("loose")]) }, missing: { plan: workPlan([shared("gone"), card("gone-card")]) }, provisional: { provisional: true, plan: workPlan([step()]) }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] }, oldParent: { status: "cancelled", plan: workPlan([own("open")]) }, open: {}, onlyAcceptance: { plan: workPlan() }, acceptedEarly: { plan: workPlan([step()], "done") }, unconfigured: { group: "Unknown" }, rootMissing: {} });
   assert.ok(texts(s, "x").includes("被多个条目拥有")); assert.ok(texts(s, "x").includes("跨项目拥有"));
   assert.ok(texts(s, "loose").includes("同项目有条目在等它，却没有条目拥有它"));
   assert.deepEqual(texts(s, "missing"), ["依赖的条目不存在：gone", "依赖的决策卡不存在：gone-card"]);
@@ -362,7 +350,6 @@ test("plan checks flag structural violations and conversion placeholders, withou
   assert.ok(texts(s, "placeholder").includes("验收步骤待补")); assert.ok(texts(s, "open").includes("拥有它的条目已关闭"));
   assert.ok(texts(s, "onlyAcceptance").includes("只差验收：其它行都已完成")); assert.ok(!texts(s, "acceptedEarly").includes("验收已标完成，但还有行没完成"));
   assert.deepEqual(texts(s, "unconfigured"), ["项目没有配置：Unknown"]);
-  assert.ok(texts(s, "rootMissing").includes("没有未完成的条目依赖它，却没写优先级"));
   const corrupt = structuredClone(s); corrupt.items.rootMissing!.plan = [];
   assert.ok(texts(corrupt, "rootMissing").includes("没有计划：至少要有一个验收步骤"));
   for (const check of rules(s).checks("missing")) assert.ok(!/可解除阻塞|卡住了，但|标为进行中|正文没写/.test(check.text));

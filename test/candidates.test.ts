@@ -26,11 +26,11 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "Architect" }, { name: "PM" }] } });
   const op = ops(store, NOW);
   let agents = 0;
-  /** A work item of Whitefoot, rated 2 unless told otherwise; a top item needs a priority, so it is a root. */
+  /** A work item of Whitefoot, rated 2 unless told otherwise; a top item nobody waits on is a root. */
   const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
   /** An item under `owner` that starts at once (the rows before it are not waited for). */
   const child = (key: string, owner: string, extra: Record<string, unknown> = {}) => item(key, { owner, after: [], ...extra });
-  const root = (key: string, priority: "P0" | "P1" | "P2", extra: Record<string, unknown> = {}) => item(key, { priority, ...extra });
+  const root = (key: string, extra: Record<string, unknown> = {}) => item(key, extra);
   /** An engineer dispatch on an item; a stale one is open but its session has long been silent. */
   const engineer = async (id: string, level: number, startedAt?: string) => {
     agents++;
@@ -44,18 +44,18 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
 }
 const ids = (rows: Array<Candidate | CandidateGroup>) => rows.map(x => "id" in x ? x.id : x.parent);
 
-test("candidates are listed by the open items waiting on them, then by item number; priority is not part of the order", async t => {
+test("candidates are listed by the open items waiting on them, then by item number, whatever root they hang under", async t => {
   const b = await empty(t);
-  // A P2 root and a P0 root: the order below ignores which one an item hangs under.
-  await b.root("low", "P2"); await b.child("z1", "low");
-  await b.root("high", "P0");
+  // Two roots: the order below ignores which one an item hangs under.
+  await b.root("low"); await b.child("z1", "low");
+  await b.root("high");
   // a4 is made after z1, so the item number and the key order disagree.
   await b.child("a4", "high"); await b.child("t2", "high"); await b.child("t3", "high");
   for (const [key, on] of [["d1", "t3"], ["d2", "t3"], ["d3", "t2"]] as const) await b.child(key, "high", { plan: [{ item: on, own: false }] });
   const s = b.snapshot(), r = rules(s);
   // Only the shared rows count: the owner holds an owned row for every item it owns, which tells the items apart by nothing.
   assert.deepEqual([r.openDependents("t3"), r.openDependents("t2"), r.openDependents("z1")], [2, 1, 0]);
-  assert.deepEqual(["a4", "z1", "t2", "t3"].sort(r.compareCandidates), ["t3", "t2", "z1", "a4"], "t3 (two waiters), t2 (one), then z1 before a4 by number, whatever the priority under it");
+  assert.deepEqual(["a4", "z1", "t2", "t3"].sort(r.compareCandidates), ["t3", "t2", "z1", "a4"], "t3 (two waiters), t2 (one), then z1 before a4 by number, whatever the root under it");
   assert.deepEqual(ids(b.pool("2+").listed), ["t3", "t2", "z1", "a4"], "listed in that order");
   assert.equal(b.pool("2+").more, 0);
   const row = b.pool("2+").listed[0] as Candidate;
@@ -65,12 +65,12 @@ test("candidates are listed by the open items waiting on them, then by item numb
 
 test("a paused waiter does not count, and candidates of every project are ordered together", async t => {
   const b = await empty(t);
-  await b.root("r", "P1"); await b.child("x1", "r"); await b.child("x2", "r");
+  await b.root("r"); await b.child("x1", "r"); await b.child("x2", "r");
   await b.child("w1", "r", { plan: [{ item: "x2", own: false }] });
   await b.child("w2", "r", { plan: [{ item: "x2", own: false }] });
   await b.op.setPause({ ...asArchitect, id: "w2", paused: true, reason: "先放一放" });
   // The Firn item is made last and has two waiters of its own project, so it comes before both Whitefoot items.
-  await b.root("fr", "P1", { group: "Firn" }); await b.child("f1", "fr", { group: "Firn" });
+  await b.root("fr", { group: "Firn" }); await b.child("f1", "fr", { group: "Firn" });
   for (const k of ["fd1", "fd2"]) await b.child(k, "fr", { group: "Firn", plan: [{ item: "f1", own: false }] });
   const s = b.snapshot(), r = rules(s);
   assert.deepEqual([r.openDependents("x2"), r.openDependents("f1")], [1, 2], "the paused waiter is not counted");
@@ -80,7 +80,7 @@ test("a paused waiter does not count, and candidates of every project are ordere
 
 test("more than three candidates under one parent are listed as the parent and a count; three are listed one by one", async t => {
   const b = await empty(t);
-  await b.root("r", "P0");
+  await b.root("r");
   await b.child("g", "r"); for (const k of ["g1", "g2", "g3", "g4"]) await b.child(k, "g");
   await b.child("h", "r"); for (const k of ["h1", "h2", "h3"]) await b.child(k, "h");
   assert.equal(GROUP_OVER, 3);
@@ -95,7 +95,7 @@ test("more than three candidates under one parent are listed as the parent and a
 
 test("candidates of different levels under one parent are grouped together, and the group counts them all", async t => {
   const b = await empty(t);
-  await b.root("r", "P0"); await b.child("m", "r");
+  await b.root("r"); await b.child("m", "r");
   for (const [k, level] of [["m1", 1], ["m2", 1], ["m3", 2], ["m4", 2]] as const) await b.child(k, "m", { difficulty: level });
   const group = (name: string) => b.pool(name).listed;
   assert.deepEqual(group("1").map(x => "parent" in x ? [x.parent, x.count] : x.id), [["m", 4]], "four under m in all: one row in the level 1 pool, with the count of all four");
@@ -108,7 +108,7 @@ test("candidates of different levels under one parent are grouped together, and 
 
 test("the pools take items by level and count the engineers that are working, not those that wait", async t => {
   const b = await empty(t);
-  await b.root("r", "P0");
+  await b.root("r");
   await b.child("low", "r", { difficulty: 1 }); await b.child("mid", "r", { difficulty: 3 }); await b.child("high", "r", { difficulty: 5 });
   assert.deepEqual(POOLS.map(p => p.pool), ["1", "2+"]);
   assert.deepEqual(ids(b.pool("1").listed), ["low"], "level 1 is the first pool");
@@ -144,7 +144,7 @@ test("the pools take items by level and count the engineers that are working, no
 
 test("a pool with more engineers working than any limit still lists its candidates, and the answer names no limit or free slot", async t => {
   const b = await empty(t);
-  await b.root("r", "P0");
+  await b.root("r");
   for (let k = 1; k <= 7; k++) { await b.child(`w${k}`, "r", { plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer(`w${k}`, 2); }
   await b.child("p", "r"); await b.child("q", "r");
   const two = b.pool("2+");
@@ -156,13 +156,13 @@ test("a pool with more engineers working than any limit still lists its candidat
 
 test("an item is a candidate only when a root needs it, it can start, it is rated, and nothing holds it", async t => {
   const b = await empty(t);
-  await b.root("r", "P1");
+  await b.root("r");
   await b.child("ok", "r");
   // Not rated.
   await b.child("unrated", "r", { difficulty: undefined });
   // Paused, and what hangs under a paused root.
   await b.child("paused", "r"); await b.op.setPause({ ...asArchitect, id: "paused", paused: true, reason: "先放一放" });
-  await b.root("rp", "P0"); await b.child("under-paused", "rp"); await b.op.setPause({ ...asArchitect, id: "rp", paused: true, reason: "先放一放" });
+  await b.root("rp"); await b.child("under-paused", "rp"); await b.op.setPause({ ...asArchitect, id: "rp", paused: true, reason: "先放一放" });
   // Someone is on it, or its step waits on another item.
   await b.child("busy", "r", { plan: [{ id: "go", text: "干活", state: "doing" }] });
   await b.child("blocked", "r", { plan: [{ item: "ok", own: false }] });
@@ -180,7 +180,7 @@ test("a backlog item (owned by a record) is not a candidate", async t => {
   const b = await empty(t);
   await b.op.createItem({ ...asArchitect, key: "rec", group: "Whitefoot", title: "待选", record: true } as Parameters<typeof b.op.createItem>[0]);
   await b.item("later", { owner: "rec" });
-  await b.root("r", "P1"); await b.child("ok", "r");
+  await b.root("r"); await b.child("ok", "r");
   const r = rules(b.snapshot());
   assert.equal(r.isBacklog("later"), true);
   assert.deepEqual(ids(b.pool("2+").listed), ["ok"]);
@@ -195,14 +195,14 @@ test("the review step is the plan step whose id is review", () => {
 
 test("brief.todo follows the same order", async t => {
   const b = await empty(t);
-  await b.root("r", "P0"); await b.child("x1", "r"); await b.child("x2", "r"); await b.child("w", "r", { plan: [{ item: "x2", own: false }] });
+  await b.root("r"); await b.child("x1", "r"); await b.child("x2", "r"); await b.child("w", "r", { plan: [{ item: "x2", own: false }] });
   const s = b.snapshot();
   assert.deepEqual(brief(s, rules(s), "Whitefoot").todo.map(x => x.id), ["x2", "x1"], "the item with a waiter first");
 });
 
 test("candidates answers a few lines, under= answers one parent's items, and an unknown parent is an error", async t => {
   const b = await empty(t);
-  await b.root("r", "P0"); await b.child("g", "r"); for (const k of ["g1", "g2", "g3", "g4"]) await b.child(k, "g");
+  await b.root("r"); await b.child("g", "r"); for (const k of ["g1", "g2", "g3", "g4"]) await b.child(k, "g");
   await b.child("solo", "r", { difficulty: 1 });
   const server = createMcpServer({ store: b.store, ops: b.op });
   const client = new Client({ name: "t", version: "1" }); const [c, sv] = InMemoryTransport.createLinkedPair();

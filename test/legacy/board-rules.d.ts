@@ -1,7 +1,9 @@
 import type { Decision, Item, Note } from "../../src/model.ts";
+import type { Priority } from "../../src/legacy-model.ts";
 
 export interface LegacyItem extends Partial<Omit<Item, "ask" | "deps">> {
   id: string;
+  priority?: Priority;
   agent?: string;
   area?: string;
   text?: string;
@@ -25,8 +27,8 @@ export interface LegacyState {
 }
 export interface LegacyRules {
   statusOf(it: LegacyItem): NonNullable<Item["status"]>;
-  priorityOf(it: LegacyItem): NonNullable<Item["priority"]> | "";
-  effPriorityOf(it: LegacyItem): NonNullable<Item["priority"]> | "";
+  priorityOf(it: LegacyItem): Priority | "";
+  effPriorityOf(it: LegacyItem): Priority | "";
   raisedBy(it: LegacyItem): LegacyItem | null;
   needsOwner(it: LegacyItem): boolean;
   onCycle(): Set<string>;

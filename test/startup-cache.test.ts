@@ -16,7 +16,7 @@ import { StartupCache } from "../src/startup-cache.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
-const item = (title = "An item") => ({ title, group: "P", head: "A head", plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], priority: "P1" as const, updated: at });
+const item = (title = "An item") => ({ title, group: "P", head: "A head", plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], updated: at });
 const owns = (id: string) => ({ id, item: id, own: true });
 const put = (id: string, doc: unknown, expectRev: number | null = null) => ({ kind: "item" as const, id, doc, expectRev });
 async function git(dir: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: dir })).stdout.trim(); }

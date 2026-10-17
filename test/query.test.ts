@@ -46,7 +46,6 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
   const s = store.snapshot(), r = rules(s), c = q.context(s, r, "a");
   assert.ok("plan" in c);
   assert.equal(c.item.title, "中文检查"); assert.equal(c.item.rev, 3);
-  assert.equal(c.item.priority, undefined); assert.equal(c.priority, "P1");
   assert.deepEqual(c.ancestors.map(it => it.id), ["area"]);
   assert.ok(c.plan[0]!.includes("child-low") && c.plan[0]!.includes("[own]"));
   assert.ok(c.plan[1]!.includes("child-high") && c.plan[1]!.includes("[own]"));
@@ -99,15 +98,14 @@ test("graph marks owned/shared edges, card states, cycles, blocked chains and de
 });
 
 
-test("overview/list/notes filter derived plan status, inherited priority, subtree and time", async t => {
+test("overview/list/notes filter derived plan status, subtree and time", async t => {
   const { store, op } = await board(t);
   await op.clearAsk({author,id:"a",log:"Handled"});
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
   assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, idle: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["b"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
-  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
-  assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
+  assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { needsOwner: true }).map(it => it.id), ["b"]);
   assert.ok(q.list(s, r, { hasChecks: true }).some(it => it.id === "other" && it.checks.some(c => c.text.startsWith("只差验收"))));
   assert.equal(q.list(s, r, { group: "Firn", limit: 1 })[0]!.id, "other");
@@ -270,7 +268,7 @@ test("context names the responsible project without agents", async t => {
 test("brief queues own work and frontier steps, folds resolved rows and projects count all open items", async t => {
   const {store,op} = await board(t);
   await op.clearAsk({author,id:"a",log:"Handled"});
-  await op.createItem({...asArchitect,key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",group:"Firn",priority:"P1"});
+  await op.createItem({...asArchitect,key:"outgoing",title:"Outgoing",head:"Detail",accept:"Outgoing accepted",group:"Firn"});
   await op.setPlan({author,id:"a",row:{item:"outgoing",own:false}});
   await op.setPlan({author,id:"a",row:{id:"doing",text:"Own current work",state:"doing",after:[]}});
   await op.setPlan({author,id:"area",row:{id:"own",text:"Parent current work",state:"doing",after:[]}});
@@ -341,7 +339,7 @@ test("project identity read shapes omit agents", async t => {
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ ...asArchitect, key: "record", group: author, title: "Queue", priority: "P1", record: true });
+  await op.createItem({ ...asArchitect, key: "record", group: author, title: "Queue", record: true });
   const s = structuredClone(store.snapshot()), now = Date.parse("2026-10-11T06:00:00Z");
   s.items.a!.plan.unshift({id:"doing",text:"Own work",state:"doing",since:at}); s.items.a!.ask = undefined; s.decisions = {}; s.notes = {};
   s.activity = { writes: Array.from({length: 7}, (_, i) => new Date(now - i * 30 * 60 * 1000).toISOString()), items: {} };
@@ -437,7 +435,7 @@ test("context and brief retain multiple acceptance rows before delivery with ord
 test("brief progress retains records and blocked work without repeating queues or adding closed/todo backlog", async t => {
   const {store,op}=await board(t);
   await op.createItem({...asArchitect,key:"record",title:"Reference",group:author,record:true});
-  await op.createItem({...asArchitect,key:"closed",title:"Closed",group:author,accept:"Closed accepted",priority:"P1"});
+  await op.createItem({...asArchitect,key:"closed",title:"Closed",group:author,accept:"Closed accepted"});
   await op.setPlan({author,id:"closed",row:{...acceptance("Closed accepted"),state:"done"}});
   const s=structuredClone(store.snapshot()); delete s.items.a!.ask;
   s.items.b!.plan=[{id:"other",item:"other",own:false,after:[]}, {id:"ruled",card:"ruled",after:[]}, {id:"choice",card:"choice",after:[]}, {...acceptance(),id:"accept"}];

@@ -19,7 +19,7 @@ type After = { after(fn: () => void | Promise<void>): void };
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec("git", args, { cwd })).stdout.trim();
 const at = "2026-10-16T01:02:03Z";
-const item = (n: number) => ({ title: `Item ${n}`, group: "Test", head: "h".repeat(200), plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], priority: "P1" as const, updated: at });
+const item = (n: number) => ({ title: `Item ${n}`, group: "Test", head: "h".repeat(200), plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], updated: at });
 let counter = 0;
 const write = (store: Store) => { const n = ++counter; return store.commit({ author: "push-test", message: `Write ${n}`, puts: [{ kind: "item", id: `i${n}`, doc: item(n), expectRev: null }] }); };
 /** `promise`, or a failure after `ms`: with the push in the write queue a write never ends, and the test must say so and not hang. */
@@ -177,7 +177,7 @@ test("a command given a signal that is already aborted is not started", async t 
 // The daemon itself, in a process of its own, with a push that waits on a connection that never answers.
 test("the daemon's writes go on while its push waits on a silent connection, and SIGTERM ends the push and the process within 2 seconds", async t => {
   const f = await fixture(t);
-  const seeded = { title: "条目", group: "Test", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: at };
+  const seeded = { title: "条目", group: "Test", difficulty: 2, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: at };
   await f.store.commit({ author: "Test", message: "Seed", puts: [{ kind: "item", id: "x", expectRev: null, doc: seeded }] });
   await f.ssh.set("stall", "receive-pack");
   const probe = createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");

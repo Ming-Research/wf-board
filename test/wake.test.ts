@@ -192,7 +192,7 @@ test("only the kinds in the table are pushed: not a blocking card, an ask or a f
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
-  await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
+  await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
   await star.sync();
   assert.deepEqual(star.events(), []);
 });
@@ -239,7 +239,7 @@ test("active time alone (one hour) pushes one stalled event on the timer, and a 
   let clock = start + HOUR - 1;
   const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
     const s = structuredClone(store.snapshot());
-    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", priority: "P1", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
+    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
     s.activity = { writes: Array.from({ length: 2 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
     store.snapshot = () => structuredClone(s);
   } });
@@ -277,7 +277,7 @@ test("the timed wake lists what changed since the last one without the architect
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
   // One item of the Architect project (the fixture board has it), one of the PM project with a step being worked on, and an item with a step being worked on.
   // Both are rated, so neither carries 缺难度 and the flags stay empty.
-  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  const doc = (title: string, group: string, plan: object[]) => ({ title, group, difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
     { kind: "item", id: "pmwork", expectRev: null, doc: doc("PM 的条目", "PM", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
@@ -339,7 +339,7 @@ test("the architect's timed wake comes every hour with the items changed since t
   let clock = T0;
   const wake = new Wake({ dir, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12 });
-  const doc = (title: string, group: string, plan: object[], extra: object = {}) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  const doc = (title: string, group: string, plan: object[], extra: object = {}) => ({ title, group, difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "doing", since: iso(T0) }]) },
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
@@ -391,7 +391,7 @@ test("the architect's timed wake comes every hour with the items changed since t
 test("the architect's timed wake lists at most 20 items and counts the rest, and leaves out an item only the architect wrote", async t => {
   const { store } = await board(t);
   const mark = { at: iso(T0), head: store.snapshot().head };
-  const doc = (title: string) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  const doc = (title: string) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   const put = (id: string) => ({ kind: "item" as const, id, expectRev: null, doc: doc(id) });
   await store.commit({ author, session: "工程师", message: "Seed", puts: Array.from({ length: 25 }, (_, i) => put(`bulk${i}`)) });
   await store.commit({ author, session: ARCHITECT_SESSION, message: "Mine", puts: [put("mine")] });
@@ -403,7 +403,9 @@ test("the architect's timed wake lists at most 20 items and counts the rest, and
 test("an hour with a push to the architect undelivered tells the owner once, a delivery starts the count again, the alert and the last timed wake survive a restart, and no other agent's stream is watched so", async t => {
   const dir = await scratch(t), told: Array<[string, string]> = [];
   let clock = T0;
-  const open = () => { const wake = new Wake({ dir, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
+  // Made before the first assertion on `told`: a closure made after `assert.deepEqual(told, ...)` sees `told` narrowed to that value's type.
+  const record = (notice: { title: string; message: string }) => { told.push([notice.title, notice.message]); };
+  const open = () => { const wake = new Wake({ dir, now: () => clock }); wake.onTell(record); return wake; };
   const a = open(), stream = a.agent(ARCHITECT_SESSION);
   a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
   stream.deliver(1);
@@ -427,8 +429,7 @@ test("an hour with a push to the architect undelivered tells the owner once, a d
   assert.match(told[1]![1], /最早没送到的是 #3：/);
   // Only the architect's stream is watched for it; a session holding an item is watched by the liveness check.
   const other = new Wake({ now: () => clock });
-  // `told` was narrowed to never[] by the deepEqual above, so the cast names its type again.
-  other.onTell(notice => { (told as Array<[string, string]>).push([notice.title, notice.message]); });
+  other.onTell(record);
   other.agent("eng").push("item-done", { item: "a", project: "Whitefoot", title: "t", parent: "p" });
   clock += 10 * HOUR; other.checkReceipts();
   assert.equal(told.length, 2);
