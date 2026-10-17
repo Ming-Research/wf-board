@@ -234,7 +234,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The browser tests count these (test/e2e/press-n.e2e.ts): a performance mark each time the page draws, builds the
   // board's rules again or counts the filters again. The mark is cleared at once, so a page left open for days piles up
   // nothing; an observer in the test has seen it.
-  function countEvent(name: string) { performance.mark(name); performance.clearMarks(name); }
+  function countEvent(name: string, detail?: string) { performance.mark(name, detail === undefined ? undefined : { detail }); performance.clearMarks(name); }
   // The data changed (a snapshot, a minute that moves the rules): the board's rules are built again, and both caches go.
   function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
   // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
@@ -546,6 +546,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     shownStop = st.key; shownAt = st.at; shownMark = 0;
     await navigate({id:st.doc.kind === "note" ? noteElementId(st.doc.id) : st.card ? "q-"+st.card : "it-"+st.doc.id,item:st.item,card:st.card,notes:st.notes,note:st.doc.kind === "note" ? st.doc.id : undefined,marks:st.doc.kind === "item" ? st.doc.id : undefined},() => shownStop === st.key && allFreshIndex().position.has(st.key));
   }
+  // The baselines a navigation is waiting for, and the draws their arrival asks for, held until the navigation has them all.
+  const awaitedDiffs = new Set<string>(), heldDraws = new Set<string>();
   interface NavigationTarget { id:string; item:string | null; card?:string; notes?:string; note?:string; selection?:string; marks?:string }
   // The new places inside a changed item, top to bottom: a changed status, title or body block, a new or changed step or target, an added
   // dependency or link. Its cards and comments are stops of their own. A new item has none: n lands on its start.
@@ -584,7 +586,10 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     let required=navigationBaselines(target);
     for (const key of required.keys()) if (retry.has(key)) failedDiffs.delete(key);
     for (;;) {
-      await Promise.all([...required.values()].map(({step,doc}) => loadDiff(step,doc)));
+      // The baselines are drawn together once they have all arrived, not one draw for each.
+      for (const key of required.keys()) awaitedDiffs.add(key);
+      try { await Promise.all([...required.values()].map(({step,doc}) => loadDiff(step,doc))); }
+      finally { for (const key of required.keys()) awaitedDiffs.delete(key); if (heldDraws.size) { scheduleRender(...heldDraws); heldDraws.clear(); } }
       if (!active()) return;
       await rendered();
       if (!active()) return;
@@ -2455,7 +2460,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     detailDirty=false;
   }
   function renderPage(scope:Set<string>) {
-    countEvent("board:render");
+    countEvent("board:render", [...scope].join(","));
     presentationScopes(scope);
     // Live updates rebuild the page; a text field being typed in keeps its focus and caret.
     const a = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
@@ -2745,7 +2750,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const request = (async () => {
       try {
         const diff = await api<{before: unknown; after: unknown; diff: string}>("/api/step?id=" + step.id + "&kind=" + doc.kind + "&doc=" + encodeURIComponent(doc.id));
-        diffs.set(key,diff); if (relevant()) scheduleRender(...scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target));
+        diffs.set(key,diff);
+        if (relevant()) { const scope=scopeForDoc(doc.kind,doc.id,snapshot.notes[doc.id]?.target); if (awaitedDiffs.has(key)) scope.forEach(k => heldDraws.add(k)); else scheduleRender(...scope); }
       } catch(e) {
         // A failed baseline cannot keep a render/navigation drain retrying forever. The next unread refresh or unread walk retries it.
         failedDiffs.add(key);

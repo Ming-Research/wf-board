@@ -28,19 +28,20 @@ const ms = (x: number) => x.toFixed(0);
 // rebuild would fall into whichever press it meets, so the test holds the page's minute tick still.
 const INIT = `(() => {
   const counts = { "board:render": 0, "board:rules": 0, "board:filter-counts": 0 };
-  const bump = entries => { for (const e of entries) if (e.name in counts) counts[e.name]++; };
+  let scopes = [];
+  const bump = entries => { for (const e of entries) if (e.name in counts) { counts[e.name]++; if (e.name === "board:render") scopes.push(e.detail); } };
   const observer = new PerformanceObserver(list => bump(list.getEntries()));
   observer.observe({ entryTypes: ["mark"] });
   // The marks counted since the last call; those the observer has not delivered yet are taken from its queue.
-  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts }; for (const k in counts) counts[k] = 0; return seen; };
+  window.__takeMarks = () => { bump(observer.takeRecords()); const seen = { ...counts, scopes }; for (const k in counts) counts[k] = 0; scopes = []; return seen; };
   const every = window.setInterval.bind(window);
   window.setInterval = (fn, delay, ...rest) => delay >= 30000 ? 0 : every(fn, delay, ...rest);
 })();`;
-interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number }
+interface Marks { "board:render": number; "board:rules": number; "board:filter-counts": number; scopes: string[] }
 const marks = (bp: BoardPage) => bp.page.evaluate(() => (window as unknown as { __takeMarks(): Marks }).__takeMarks());
 
 /** What one press cost: the main thread's busy time from the key until the page was quiet, and what the page marked meanwhile. */
-interface Landing { item: string; busy: number; draws: number; rules: number; filters: number }
+interface Landing { item: string; busy: number; draws: number; rules: number; filters: number; scopes: string[] }
 
 async function busyTime(cdp: CDPSession): Promise<number> {
   const { metrics } = await cdp.send("Performance.getMetrics");
@@ -66,7 +67,7 @@ async function landings(bp: BoardPage, cdp: CDPSession, wanted: number): Promise
     await bp.page.keyboard.press("n");
     await quiet(bp);
     const busy = await busyTime(cdp) - before, now = await bp.selected(), m = await marks(bp);
-    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"] });
+    if (now !== null && now !== was) out.push({ item: now, busy, draws: m["board:render"], rules: m["board:rules"], filters: m["board:filter-counts"], scopes: m.scopes });
   }
   return out;
 }
@@ -92,7 +93,7 @@ function startWriters(board: BoardServer, perSecond: number) {
 function checkCounts(label: string, list: Landing[]): string[] {
   const v: string[] = [];
   for (const l of list) {
-    if (l.draws < 1 || l.draws > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${l.draws} times, not once or twice`);
+    if (l.draws < 1 || l.draws > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${l.draws} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
     if (l.rules !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} built the board's rules ${l.rules} times, not 0`);
     if (l.filters !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} counted the filters ${l.filters} times, not 0`);
   }
@@ -143,8 +144,8 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     await bp.context.close();
     assert.equal(list.length, LANDINGS, "n reached " + LANDINGS + " other items");
     log(`press-n counts: draws per landing ${[...new Set(list.map(l => l.draws))].join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
-    assert.deepEqual(checkCounts("quiet", list), []);
-    assert.deepEqual(checkTime("quiet", list, log), []);
+    // Both layers are run before either is asserted, so a failure of one still shows the other's numbers.
+    assert.deepEqual([...checkCounts("quiet", list), ...checkTime("quiet", list, log)], []);
   });
 
   await t.test("the current page: the same time limit while sessions write", async () => {
@@ -198,11 +199,12 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const [landed] = await landings(bp, cdp, 1);
     const unreadBefore = await unreadNow();
     asked.length = 0;
+    const began = await busyTime(cdp);
     await bp.page.keyboard.press("m");
     await quiet(bp);
-    const unreadAfter = await unreadNow();
+    const busy = await busyTime(cdp) - began, unreadAfter = await unreadNow();
     await bp.context.close();
-    return { landed, asked, unreadBefore, unreadAfter };
+    return { landed, asked, busy, unreadBefore, unreadAfter };
   };
   const checkRead = (r: Awaited<ReturnType<typeof readOnce>>): string[] => {
     const v: string[] = [];
@@ -218,6 +220,7 @@ test("n on a board of the live board's weight: draws, rebuilds and time, and the
     const hits = checkRead(bad).filter(v => v.includes("fetched the whole board"));
     assert.ok(hits.length > 0, "the check reports a page that fetches the board (it reported: " + (checkRead(bad).join("\n") || "nothing") + ")");
     const good = await readOnce(board);
+    log(`press-n read: m kept the main thread busy ${ms(good.busy)} ms (${ms(bad.busy)} ms on the page that fetches the board); the page asked for ${good.asked.join(", ")}`);
     assert.deepEqual(checkRead(good), []);
   });
 });
