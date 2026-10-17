@@ -236,7 +236,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The data changed (a snapshot, a minute that moves the rules): the board's rules are built again, and both caches go.
   // PROBE (study n-writes-stable-study): the live change being applied, whose rules the next build may reuse.
   let reuseNext: { rules: Rules; changed: Array<{ kind: string; id: string }>; activity?: ActivityDelta } | undefined;
-  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot, previous = reuseNext; reuseNext = undefined; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s), ...(previous ? { previous } : {}) }); }
+  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot, previous = reuseNext; reuseNext = undefined; filterStale = "all"; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s), ...(previous ? { previous } : {}) }); }
   // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
   function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
@@ -398,20 +398,44 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // What each filter button of a project counts, every project's in one pass over the board: the counts depend on the data
   // alone, so they are kept until it changes and a draw only reads them.
+  // PROBE (study n-writes-stable-study): each item's part of the counts is kept, and a live change recounts only the items it can
+  // reach (affectedItems); anything else recounts all.
+  type FilterPart = { g: string; keys: string[]; tags: string[] };
+  let filterParts = new Map<string, FilterPart>(), filterTotals: Map<string, { filters: Map<string, number>; tags: Map<string, number> }> | null = null;
+  let filterStale: Set<string> | "all" = "all";
+  function filterPart(it: ViewItem): FilterPart {
+    const all = [...STATUS_FILTERS, ...DEP_FILTERS];
+    return { g: groupOf(it), keys: all.filter(([, , , test]) => test(it)).map(([key]) => key), tags: [...new Set(it.tags ?? [])] };
+  }
+  function addPart(part: FilterPart, sign: number) {
+    let counts = filterTotals!.get(part.g);
+    if (!counts) filterTotals!.set(part.g, counts = { filters: new Map(), tags: new Map() });
+    for (const key of part.keys) counts.filters.set(key, (counts.filters.get(key) ?? 0) + sign);
+    for (const tag of part.tags) counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + sign);
+  }
   function filterCounts() {
     return dataCached("filterCounts", () => {
-      countEvent("board:filter-counts");
-      const all = [...STATUS_FILTERS, ...DEP_FILTERS], byGroup = new Map<string, { filters: Map<string, number>; tags: Map<string, number> }>();
-      for (const it of state.items) {
-        const g = groupOf(it);
-        let counts = byGroup.get(g);
-        if (!counts) byGroup.set(g, counts = { filters: new Map(), tags: new Map() });
-        for (const [key, , , test] of all) if (test(it)) counts.filters.set(key, (counts.filters.get(key) ?? 0) + 1);
-        for (const tag of new Set(it.tags ?? [])) counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + 1);
+      if (filterStale === "all" || !filterTotals) {
+        countEvent("board:filter-counts");
+        filterTotals = new Map(); filterParts = new Map();
+        for (const it of state.items) { const part = filterPart(it); filterParts.set(it.id, part); addPart(part, 1); }
+      } else for (const id of filterStale) {
+        const was = filterParts.get(id), it = index().byId.get(id);
+        if (was) addPart(was, -1);
+        if (it) { const part = filterPart(it); filterParts.set(id, part); addPart(part, 1); } else filterParts.delete(id);
       }
-      return byGroup;
+      filterStale = new Set();
+      return filterTotals;
     });
   }
+  (window as unknown as { __checkFilterCounts(): number }).__checkFilterCounts = () => {
+    const got = filterCounts(), want = new Map<string, string>();
+    for (const it of state.items) { const part = filterPart(it); for (const k of part.keys) want.set(part.g + "|" + k, String(Number(want.get(part.g + "|" + k) ?? 0) + 1)); for (const k of part.tags) want.set(part.g + "#" + k, String(Number(want.get(part.g + "#" + k) ?? 0) + 1)); }
+    let bad = 0;
+    for (const [key, v] of want) { const [g, k] = key.includes("|") ? key.split("|") : key.split("#"); const n = key.includes("|") ? got.get(g!)?.filters.get(k!) : got.get(g!)?.tags.get(k!); if (String(n ?? 0) !== v) bad++; }
+    for (const [g, c] of got) { for (const [k, n] of c.filters) if (n && !want.has(g + "|" + k)) bad++; for (const [k, n] of c.tags) if (n && !want.has(g + "#" + k)) bad++; }
+    return bad;
+  };
   function filterCount(key: string, g: string) { return filterCounts().get(g)?.filters.get(key) ?? 0; }
   function tagCount(name: string, g: string) { return filterCounts().get(g)?.tags.get(name) ?? 0; }
   function passes(it: ViewItem) { return filtering(groupOf(it)) ? filterMatches().keep.has(it.id) : visible(it); }
@@ -2728,13 +2752,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
   /** `partial`: the caller names the items to sign again (presentationAffected) instead of all. */
+  const viewOf = new Map<string, [Item, ViewItem]>();
   function applySnapshot(s: Snapshot, partial = false) {
     if (!partial) rulePresentationDirty=true;
     snapshot = s;
     for (const id of sentNotes) if (s.notes[id]?.state !== "draft") sentNotes.delete(id);
     for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
     state.meta = s.board;
-    state.items = Object.entries(s.items).map(([id,it]) => ({...it,id}));
+    // PROBE: the page's copy of an item that did not change is kept.
+    state.items = Object.entries(s.items).map(([id,it]) => { const kept = viewOf.get(id); if (kept && kept[0] === it) return kept[1]; const view = {...it,id}; viewOf.set(id, [it, view]); return view; });
     state.decisions = Object.entries(s.decisions).map(([id,d]) => ({...d,id}));
     state.notes = Object.entries(s.notes).map(([id,n]) => ({...n,id}));
     invalidate();
@@ -3080,10 +3106,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         else if (base.head !== change.commit) resync=true;
       }
       if (!resync) reuseNext = { rules: baseRules, changed: change.changed, ...(change.activity ? { activity: change.activity } : {}) };
+      const staleBefore = filterStale;
       applySnapshot(snapshot,true);
       const seeds=changeSeeds(base,snapshot,baseRules,derived,change.changed,change.activity);
+      let reached: Set<string> | undefined;
+      if (seeds) reached = affectedItems(baseRules,derived,seeds);
       if (!seeds) rulePresentationDirty=true;
-      else if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of affectedItems(baseRules,derived,seeds)) presentationAffected.add(id); }
+      else if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of reached!) presentationAffected.add(id); }
+      if (reached && staleBefore !== "all") filterStale = new Set([...staleBefore, ...reached]);
       if (resync) void loadSnapshot(active,controller.signal).catch(() => { if (active()) serverDown(next); });
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.
