@@ -742,7 +742,7 @@ log:
   attribution; a later one replaces it; a restart derives it from the
   trailers in history. This is an observation of who wrote, never an
   assignment of work to a session: no document stores a session, and
-  `history` and `changes` show the message without the trailer.
+  `history` shows the message without the trailer, and `changes` names the session of each commit.
   The same walk keeps, per session name, the last two distinct items it wrote
   to, newest first (`activity.agents`, read by the agent list, section 7). A
   write names the items it touched (an item, its card or a note on either)
@@ -1577,7 +1577,7 @@ instructions within the limit and free of rule text.
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
-| `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
+| `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
@@ -1593,6 +1593,42 @@ instructions within the limit and free of rule text.
 and says to narrow `since` or the filters. In `changes` a deleted document is placed by
 the current board and by the documents deleted in the range; an item whose owner was
 deleted before the range is its own area.
+
+**The patrol read.** What a reader gets from `changes` stays in its context until it is
+compacted, so the default answer holds only what needs handling, and each thing appears
+once. A range is the commits after `since` (a time or a commit); `except` names sessions
+whose commits do not count.
+
+- *New flags.* A check flag is derived from the whole board and written by no commit, so
+  a flag is new when the head board carries it and the board when the range began did
+  not. That board is built from the head: each item, card and note the range wrote is put
+  back to its version before the range (the `changes` read already holds those), those the
+  range created are taken away, those it deleted are brought back, and the board settings
+  (projects, tag vocabulary) are put back when a range commit wrote them. Its rules are
+  worked out at the time the range began, so a flag that comes with time and no commit (a
+  step in progress that stands still) is new when it was not there at that time. Both
+  boards' checks are worked out in full: 75–84 ms on a synthetic board of 1,347 items,
+  637 cards and 670 notes, the old board and the difference included. A flag is the same
+  flag on both boards when its short label (else its text without the count of the
+  title-length flag) and the item or card it points at are equal. A new flag's row names
+  every session that wrote the item in the range, its cards and notes included, whether or
+  not `except` names it; with no writer the row says no session wrote it in the range (the
+  flag came from another item's change, or from time). Flags are never left out by
+  `except`: a flag its own writer caused, such as a pause others still wait on, is exactly
+  what a patrol must still see.
+- *New items.* Items whose first commit in the range is not an excluded session's, each
+  with its creator, its project and title, and its flags on the same row (so they are not
+  listed again as new flags).
+- *Notes and cards.* The notes and cards a non-excluded session created, a note that
+  gained a reply or changed state, a card whose status changed, each with the item it is
+  on, a short summary and the sessions that wrote it.
+- *The rest* only as counts by kind and by session; with `detail`, as the documents
+  grouped by area with their commits and each commit's session. Created items and the rows
+  above are not listed again.
+- *Size.* Each group lists at most `limit` rows (default 30) and counts the rest, so the
+  answer follows the rows to handle and not the documents changed.
+- The timed wake and this read share one function that tells who wrote to each item in a
+  list of commits.
 
 ### Changing things
 

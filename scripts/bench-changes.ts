@@ -13,6 +13,9 @@
 //
 // Checks (only for the tree being measured; a run against an older tree with --report-only prints and never fails):
 //   changes over the last 50 commits, any of the four branches: answers within 1 s, the heap grows by at most 100 MB
+//   the patrol read (changesReport, what `changes` answers by default) over the last 50 commits, the same limits; over about a
+//   day (2,400 commits) it is only reported. Each prints the characters its answer takes in the default form, with detail, and
+//   in the document listing it replaced (formatChanges, the cap of 40 documents lifted), so the size is on record
 //   every case: the heap stays at or below half of the budget's line (the margin that lets a normal query pass the budget)
 //   diff with a time: within 1 s
 //
@@ -116,8 +119,13 @@ async function writeRepository(dir: string): Promise<void> {
   for (const deletions of DELETIONS) execFileSync("git", ["worktree", "add", "-q", join(dir, "..", `tail-${deletions}`), `tail-${deletions}`], { cwd: dir });
 }
 
-interface Case { name: string; branch: string; run(ctx: Context): Promise<unknown> }
-interface Context { store: any; q: any; history: any; git(...a: string[]): string }
+interface Case { name: string; branch: string; run(ctx: Context): Promise<unknown>; /** The characters an answer takes, in the forms a reader can ask for. */ size?(ctx: Context, answer: any): Promise<Record<string, number>> }
+interface Context { store: any; q: any; history: any; mcp: any; git(...a: string[]): string }
+/** The patrol read of the range since `since`, and the sizes of its answers: default, with detail, and the old document listing. */
+const reportCase = (name: string, branch: string, since: (git: Context["git"]) => string): Case => ({ name, branch,
+  run: ({ store, q, git }) => q.changesReport(store, store.snapshot(), since(git), {}, { detail: true }),
+  size: async ({ store, q, mcp, git }, report) => ({ defaultChars: mcp.formatReport(report, {}).length, detailChars: mcp.formatReport(report, { detail: true, limit: 100000 }).length,
+    oldListingChars: mcp.formatChanges(await q.changes(store, store.snapshot(), since(git)), 100000).length }) });
 
 /** The cases: a name, the branch it runs on, and the request it makes. */
 const CASES: Case[] = [
@@ -127,6 +135,9 @@ const CASES: Case[] = [
   { name: "changes-2400", branch: "tail-0", run: ({ store, q, git }) => q.changes(store, store.snapshot(), git("rev-parse", `HEAD~2400`)) },
   // The same range as the last 50 commits, given as the time of the commit before them.
   { name: "changes-by-time", branch: "tail-10", run: ({ store, q, git }) => q.changes(store, store.snapshot(), git("log", "-1", "--format=%aI", `HEAD~${TAIL}`)) },
+  // The patrol read over the last 50 commits on each branch (0, 1, 5, 10 notes deleted among them), and over about a day.
+  ...DELETIONS.map(deletions => reportCase(`report-50-delete-${deletions}`, `tail-${deletions}`, git => git("rev-parse", `HEAD~${TAIL}`))),
+  reportCase("report-2400", "tail-0", git => git("rev-parse", "HEAD~2400")),
   // The page's unread list from a cursor 500 commits back, and from two days back (about 3,100 commits).
   { name: "unread-500", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~500"), {}, store.snapshot().head) },
   { name: "unread-3100", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~3100"), {}, store.snapshot().head) },
@@ -150,7 +161,7 @@ async function measure<T>(run: () => Promise<T>): Promise<{ ms: number; startMB:
 
 async function runCase(name: string, dir: string, src: string): Promise<Record<string, unknown>> {
   const load = (file: string) => import(pathToFileURL(join(src, file)).href);
-  const { Store } = await load("store.ts"), q = await load("query.ts"), history = await load("history.ts");
+  const { Store } = await load("store.ts"), q = await load("query.ts"), history = await load("history.ts"), mcp = await load("mcp.ts");
   // A tree from before the budgets has no budget module, and its requests run under none.
   const budgetModule = await load("budget.ts").catch(() => undefined);
   const opened = await measure(() => Store.open(dir));
@@ -158,13 +169,15 @@ async function runCase(name: string, dir: string, src: string): Promise<Record<s
   const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
   const found = CASES.find(c => c.name === name)!;
   const budget = budgetModule ? new budgetModule.Budget(name, budgetModule.REQUEST_LIMITS) : undefined;
-  const request = () => found.run({ store, q, history, git });
+  const ctx: Context = { store, q, history, mcp, git };
+  const request = () => found.run(ctx);
   const m = await measure(() => budget ? budgetModule.withBudget(budget, request) : request());
   const limit = v8.getHeapStatistics().heap_size_limit, line = limit * (budgetModule ? budgetModule.REQUEST_LIMITS.heapShare : 0.75);
   const documents = Array.isArray(m.value) && m.value.every((g: { documents?: unknown[] }) => Array.isArray(g.documents)) ? m.value.reduce((n: number, g: { documents: unknown[] }) => n + g.documents.length, 0) : Array.isArray(m.value) ? m.value.length : undefined;
   const usage = budget?.usage();
+  const sizes = found.size && m.value !== undefined ? await found.size(ctx, m.value) : undefined;
   return { case: name, branch: found.branch, openMs: opened.ms, openHeapMB: mb(heap()), ms: m.ms, growthMB: m.growthMB, peakUsedMB: m.peakUsedMB, lineMB: mb(line), peakOfLine: +(m.peakUsedMB * 1048576 / line).toFixed(3),
-    ...(usage ? { budgetReadMB: mb(usage.bytes), budgetAllowedMB: mb(usage.allowed), boards: usage.boards } : {}), ...(documents === undefined ? {} : { results: documents }), ...(m.error ? { error: m.error } : {}) };
+    ...(usage ? { budgetReadMB: mb(usage.bytes), budgetAllowedMB: mb(usage.allowed), boards: usage.boards } : {}), ...(documents === undefined ? {} : { results: documents }), ...(sizes ?? {}), ...(m.error ? { error: m.error } : {}) };
 }
 
 if (args.case) {
@@ -209,7 +222,7 @@ const problems: string[] = [];
 for (const r of results) {
   const name = String(r.case);
   if (r.failed || r.error) { problems.push(`${name}: ${r.failed ? `the process ended (exit ${r.exitCode}, signal ${r.signal})` : r.error}`); continue; }
-  if (name.startsWith("changes-50-delete-") && (Number(r.ms) > 1000 || Number(r.growthMB) > 100)) problems.push(`${name}: ${r.ms} ms and ${r.growthMB} MB of heap growth, over the 1000 ms and 100 MB it may take`);
+  if ((name.startsWith("changes-50-delete-") || name.startsWith("report-50-delete-")) && (Number(r.ms) > 1000 || Number(r.growthMB) > 100)) problems.push(`${name}: ${r.ms} ms and ${r.growthMB} MB of heap growth, over the 1000 ms and 100 MB it may take`);
   if (name === "diff-by-time" && Number(r.ms) > 1000) problems.push(`${name}: ${r.ms} ms, over the 1000 ms it may take`);
   if (Number(r.peakOfLine) > 0.5) problems.push(`${name}: the heap reached ${r.peakUsedMB} MB, ${(Number(r.peakOfLine) * 100).toFixed(0)}% of the ${r.lineMB} MB line a budget stops a request at; a normal query must stay at or below half of it`);
 }
