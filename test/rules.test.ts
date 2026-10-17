@@ -721,7 +721,7 @@ test("the next-task definition is written once: todo or part way, needed, rated,
   for (const [id, [status, canStart, startable]] of Object.entries(expected)) assert.deepEqual([r.statusOf(id), r.canStart(id), r.startable(id)], [status, canStart, startable], id);
 });
 
-test("workedOn and progress say who is on an item and how far it is, from rows and from live sessions", () => {
+test("workedOn and progress say who is on an item and what it waits on, from rows and from live sessions", () => {
   const now = Date.parse("2026-10-17T12:00:00Z"), ago = (hours: number) => new Date(now - hours * 3600_000).toISOString();
   const session = (agent: string, started: string) => ({ agentId: `id-${agent}`, agent, role: "工程师" as const, level: 2, model: "Sonnet", started });
   const s = snapshot({
@@ -735,15 +735,11 @@ test("workedOn and progress say who is on an item and how far it is, from rows a
   }, { q: { item: "stuck" } });
   const r = rules(s, now);
   assert.deepEqual([r.workedOn("idle"), r.workedOn("stuck"), r.workedOn("working"), r.workedOn("session")], [false, false, true, true]);
-  assert.deepEqual([r.sessionsOf("idle"), r.sessionsOf("session")], [[], ["eng"]], "a session past the window is not listed");
   assert.deepEqual(r.dispatchedItems("eng"), ["session"]);
-  assert.deepEqual(r.progress("idle"), { done: 1, total: 4, next: { id: "two", text: "two" }, waiting: [], ask: false, behind: false, doing: [], sessions: [] });
+  assert.deepEqual(r.progress("idle"), { waiting: [], ask: false, behind: false });
   assert.deepEqual(r.progress("stuck").waiting, [{ kind: "item", id: "dep" }, { kind: "card", id: "q" }], "both rows can go next and both wait");
-  assert.deepEqual(r.progress("working").doing, [{ id: "two", text: "two" }]);
-  assert.deepEqual([r.progress("session").sessions, r.progress("session").next], [["eng"], { id: "two", text: "two" }]);
   assert.deepEqual([r.progress("asking").ask, r.progress("idle").ask], [true, false]);
   assert.deepEqual([r.progress("kid").behind, r.progress("busy").behind, r.progress("idle").behind], [true, false, false], "an owned item whose row follows an open row of its owner is behind it");
-  assert.deepEqual(r.progress("parent").doing, [{ id: "busy", text: "busy" }], "an owned item in progress is the row in progress");
 });
 
 test("two plans whose owned items each wait on the other's earlier row derive without looping, and both stay blocked", () => {

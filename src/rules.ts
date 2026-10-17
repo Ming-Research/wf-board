@@ -284,8 +284,6 @@ export interface Rules {
   /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
    * wrote or was started within the agent list's window). Not inherited from the items it owns. */
   workedOn(id: string): boolean;
-  /** The sessions of the item's live dispatches, newest start first. */
-  sessionsOf(id: string): string[];
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
   /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
@@ -293,7 +291,7 @@ export interface Rules {
   canStart(id: string): boolean;
   /** `canStart` and rated 1–5: what the next-task list offers. */
   startable(id: string): boolean;
-  /** What the detail line under an item's title says: how far it is, what comes next, what it waits on, who is working on it. */
+  /** What the item waits on: the brief tells a sub-item that only waits for its turn from one blocked for its own reason. */
   progress(id: string): Progress;
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
@@ -354,22 +352,14 @@ export interface DerivedPlanRow {
   dropped: boolean;
   excluded: boolean;
 }
-/** How far an item is and what it waits on (docs/design.md, Status). */
+/** What an item waits on (docs/design.md, Status). */
 export interface Progress {
-  done: number;
-  total: number;
-  /** The first step ready to start, when the plan has one. */
-  next?: { id: string; text: string };
   /** The rows the frontier waits on: items and cards. */
   waiting: Array<{ kind: "item" | "card"; id: string }>;
   /** The item's own request to the owner is still unanswered. */
   ask: boolean;
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
-  /** The rows in progress, in plan order: steps in progress, and owned items that are themselves in progress. */
-  doing: Array<{ id: string; text: string }>;
-  /** The sessions of the live dispatches. */
-  sessions: string[];
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -906,15 +896,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function startable(id: string): boolean { return canStart(id) && item(id)?.difficulty !== undefined; }
   function progress(id: string): Progress {
-    const rows = planRows(id), ratio = planRatio(id), first = rows.find(entry => entry.ready && entry.state === "open");
-    const text = (entry: DerivedPlanRow): string => "text" in entry.row ? entry.row.text : "item" in entry.row ? item(entry.row.item)?.title ?? entry.row.item : entry.row.card;
     return {
-      done: ratio.done, total: ratio.total,
-      ...(first ? { next: { id: first.row.id, text: text(first) } } : {}),
-      waiting: rows.filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
+      waiting: planRows(id).filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
       ask: askPending(id), behind: !ownerRowReady(id),
-      doing: rows.filter(entry => entry.state === "progress").map(entry => ({ id: entry.row.id, text: text(entry) })),
-      sessions: liveSessions(id).slice(),
     };
   }
   function isLeaf(id: string): boolean { return !kids(id).some(k => item(k) && !item(k)!.record); }
@@ -1151,7 +1135,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, sessionsOf: id => liveSessions(id).slice(), dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
+    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
