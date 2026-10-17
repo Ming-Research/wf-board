@@ -413,6 +413,12 @@ export function isReviewStep(row: PlanRow): boolean { return "text" in row && ro
 /** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
  * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
 export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
+/** The text of the item's review step while it is in progress: the engineer's request for a review. Undefined when the item has no
+ * such step or it is not in progress. */
+export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
+  const step = item?.plan.find(isReviewStep);
+  return step && "text" in step && step.state === "doing" ? step.text : undefined;
+}
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).

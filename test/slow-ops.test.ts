@@ -190,7 +190,7 @@ test("a request's parameters are its query and the size of its body", () => {
 test("the slow-op frame is exactly op, ms, limitMs and params, and is not one another process may push", () => {
   const wake = new Wake({ now: () => T0 });
   assert.throws(() => wake.push("slow-op", { op: "x", ms: 1, limitMs: 1 }), /fields/);
-  assert.equal(Wake.isExternal("slow-op"), false);
+  assert.equal(Wake.externalFields("slow-op"), undefined);
 });
 
 // The page API and the tools time their operations at their one entry each.
