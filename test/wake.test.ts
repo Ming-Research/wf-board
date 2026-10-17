@@ -427,7 +427,7 @@ test("an hour with a push to the architect undelivered tells the owner once, a d
   clock += 1; b.checkReceipts();
   assert.equal(told.length, 2, "after a delivery the count started again, from the new push");
   assert.match(told[1]![1], /最早没送到的是 #3：/);
-  // Only the architect's stream is watched for it; a session holding an item is watched by the liveness check.
+  // Only the architect's stream is watched for it; a session holding an item is watched by the sessions watch.
   const other = new Wake({ now: () => clock });
   other.onTell(record);
   other.agent("eng").push("item-done", { item: "a", project: "Whitefoot", title: "t", parent: "p" });

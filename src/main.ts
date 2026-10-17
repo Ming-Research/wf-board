@@ -8,6 +8,8 @@ import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
+import { realClaude } from "./sessions.ts";
+import { SessionWatch } from "./session-watch.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghBilling } from "./billing.ts";
@@ -39,12 +41,16 @@ async function main() {
   // A message may go to the session of any long-lived credential (docs/design.md, Messages).
   const op = ops(store, undefined, { sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The pushes to the PM, and to each other agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
-  // The marks of the liveness checks are kept too, so a silence already told is not told again.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the PM, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
   // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the PM at its levels.
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
+  // The look at the sessions every 30 seconds (docs/design.md, Sessions watch): it wakes parked sessions that have pushes undelivered and tells
+  // the PM of stuck ones. It runs only when the service is told where `claude` is and which workspace it works for; without them, nothing is woken.
+  const claudeCommand = process.env.WF_BOARD_CLAUDE, workspace = process.env.WF_HOME;
+  if ((claudeCommand === undefined) !== (workspace === undefined)) console.warn("sessions watch is off: it needs both WF_BOARD_CLAUDE and WF_HOME");
+  const sessions = claudeCommand && workspace ? new SessionWatch({ store, wake, claude: realClaude({ command: claudeCommand, home: workspace }), file: await store.localFile("state/session-watch.json") }) : undefined;
   // Times every page request and tool call, and tells the PM of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
   const credentials = new Credentials(credentialFile);
@@ -63,7 +69,7 @@ async function main() {
   // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
   // what this run left.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop();
+    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop(); sessions?.stop();
     server.close(error => {
       void (async () => {
         if (error) throw error;
@@ -75,6 +81,7 @@ async function main() {
   server.on("error", error => { console.error(error); process.exitCode = 1; clearInterval(timer); });
   server.listen(port, "127.0.0.1", () => {
     console.info(`wf-board http://127.0.0.1:${port}`);
+    sessions?.start();
     firstPush = setTimeout(() => { void push().catch(console.error); }, firstPushMs);
     firstPush.unref();
   });

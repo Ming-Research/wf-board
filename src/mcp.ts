@@ -279,9 +279,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const notes = [...fixed.notes, ...(note ? [note] : [])];
         // The PM's or the architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? answersPushes({ role: credential.who.access.role }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
-        // Another agent's call (the architect's too) is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
+        // Another agent's call (the architect's too) carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
         const caller = credential?.ok ? (isPMCall({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !isPMCall({ session: args.session }) ? args.session.trim() : undefined;
-        if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
         const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (notes.length ? `\nnote: ${notes.join("; ")}` : "");
         const pushed = caller && wake ? wake.footer(caller) : "";

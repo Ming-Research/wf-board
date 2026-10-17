@@ -34,6 +34,12 @@ test("the installer writes the data directory into the service plist", async () 
 
     await install({ WF_BOARD_DATA: "rel/board" }, home);
     assert.ok((await readFile(plistPath, "utf8")).includes(dataLine(join(home, "rel/board"))));
+
+    // The sessions watch is switched on by the claude command and the workspace the plist carries.
+    await install({ WF_BOARD_CLAUDE: "/opt/bin/claude", WF_HOME: "/srv/wf" }, home);
+    const plist = await readFile(plistPath, "utf8");
+    assert.ok(plist.includes("<key>WF_BOARD_CLAUDE</key><string>/opt/bin/claude</string><key>WF_HOME</key><string>/srv/wf</string>"));
+    assert.ok(!plist.includes("{{"), "every placeholder is filled");
   } finally {
     await rm(home, { recursive: true, force: true });
   }

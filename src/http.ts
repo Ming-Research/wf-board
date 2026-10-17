@@ -275,8 +275,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   /**
    * An agent's stream, `/wake/<session name>` (docs/design.md, The wake streams): the board keeps how far it was delivered, so the
    * client sends no number. It gets `connected`, `gap` when undelivered events were dropped, every undelivered event, then live
-   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again. It also sends
-   * `{"alive": true}` while its session is running, which is a sign of life for the session (src/liveness.ts).
+   * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again.
    */
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
@@ -293,10 +292,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         try { parsed = JSON.parse(data.toString()); } catch { return; }
         // `null` is valid JSON and has no fields to read; like a number, a string or an array it is not a frame.
         if (typeof parsed !== "object" || parsed === null) return;
-        const message = parsed as { ack?: unknown; alive?: unknown };
+        const message = parsed as { ack?: unknown };
         if (typeof message.ack === "number") stream.deliver(message.ack);
-        // The wait script says its session is still there; the connection alone does not (docs/design.md, Liveness).
-        if (message.alive === true) wake.liveness.see(name);
       });
       // Replay and subscription happen in one synchronous step, so no event falls between them or is sent twice.
       socket.send(JSON.stringify({ event: "connected", latest: stream.latest() }));
@@ -448,8 +445,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     scanChecks(true); scanOffers(true); wake.checkReceipts();
     const s = store.snapshot(), r = store.derived.rules(s, now()), held = holders(s);
     wake.prune(name => held.has(name) || connected(name));
-    // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
-    wake.liveness.check(holders(s, item => r.statusOf(item) === "wip"), item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
     void timed();
   }, deps.checkIntervalMs ?? 60_000);
   checker.unref();

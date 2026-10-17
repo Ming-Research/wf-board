@@ -2564,12 +2564,12 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Nineteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `note` and `timed-architect`,
-which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` and
-`ask-alive`, which go to a holder; and `message`, which goes to its recipient:
+which go to the architect; `main-red`, `deployed`, `deployFailed` and
+`item-done`, which go to a holder; and `message`, which goes to its recipient:
 
 - an owner note, to the architect: a note becomes `sent`, on any project's item or
   card, so the owner's comments on an engineer's item reach the architect too. Every kind
@@ -2613,9 +2613,9 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` a
   board makes the pushes (Deploys and the red main line, below);
 - an item that became done (`item-done`), to the session holding each open item
   that waits on it; when nobody holds that item nothing is pushed;
-- a session holding an item that has given no sign of life for 30 minutes
-  (`ask-alive`), to that session; and one that has given none for 30 minutes
-  after being asked (`no-answer`), to the PM (Liveness, below);
+- a session that is stuck (`stuck`), to the PM: blocked, stopped with work left, the stuck link
+  of what another session waits on, pushes it does not read, or a wake that did not work
+  (Sessions watch, below);
 - a message one agent sent another (`message`; Messages, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
@@ -2700,8 +2700,7 @@ the forms the server sends:
 | `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the PM, naming the first |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
-| `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
-| `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
+| `{n, at, event:"stuck", session, item, project, title, why, text}` | A session is stuck (Sessions watch). `session` is its name and `item` the first item it holds or, for a reviewer, reviews; `why` is `blocked`, `stopped`, `chain`, `unread`, `missing`, `duplicate`, `copy` or `no-resume` (`STUCK_WHY` in `src/wake.ts` words each), and `text` says what holds, at most a few lines, with the session's own `needs` for `blocked`. One per `why` for as long as it holds; a blocked PM is told to the owner as a notice, not as this push |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
@@ -2744,8 +2743,7 @@ stream only. Once it has printed the events up to `n`, the client sends the
 text frame `{"ack": n}`; from then on they are delivered and never sent again,
 on any connection or in any tool result. An ack at or below the delivered
 number, above the newest, or not a whole number changes nothing. The frame
-`{"alive": true}` is a sign of life of the session (Liveness, below); any other
-message is ignored. A client killed between printing and acking gets those
+any other message is ignored (an older wait script still sends `{"alive": true}`, which means nothing now). A client killed between printing and acking gets those
 events once more: a repeat, never a loss. An agent's stream keeps its newest
 200 events, at most 256 KiB, with the delivered number and the session name, in
 `state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
@@ -2754,9 +2752,7 @@ past the 255 a file name may hold, and two names that differ only in case would
 share one file on a disk that ignores case. Numbers and delivery survive a
 restart. A stream with everything delivered, no push or delivery for seven
 days, whose session holds no item and has no socket on it, is dropped with its
-file; an `ask-alive` left undelivered counts as delivered here, since a call
-answers it and a session that died with one pending would otherwise leave its
-stream for good.
+file.
 
 Rejected, for agents: a per-event receipt the agent sends with a tool call after
 handling the event, resending every unanswered event on each connection
@@ -2765,72 +2761,94 @@ agent's context several times and each event would cost a call; the
 rule of the PM's stream that any call answers everything, because an engineer calls
 the board all the time while it works, and would answer events it never saw.
 
-**In a tool result.** A session that is working is not running its wait script,
-so the board gives it its undelivered events in the next tool result it gets:
+**In a tool result.** A session that is working is not waiting for a push, so the
+board gives it its undelivered events in the next tool result it gets:
 any tool, read or write, whose caller is a session other than the PM's, the architect's
 included (the credential's session when the connection has one, else the `session` the
 call names, trimmed). After the tool's own text and a blank line come the line
 `【看板推送】` and one line per event, oldest first, at most five; more are
 counted by kind in one more line and wait for the next call. The events shown
-are delivered. A kind the table marks `answeredByCall` (`ask-alive`) is not
-shown: the call that would carry it is its answer, so a line would only add to
-the agent's context. It counts as delivered, and a wait script prints it. Rejected: waiting for the wait script alone, which leaves an
-owner's change of direction unseen through hours of implementation; an inbox
+are delivered. A session that is parked is woken with its undelivered events in the prompt instead (Sessions watch, below). Rejected: waiting
+for a wake alone, which leaves an owner's change of direction unseen through hours of implementation; an inbox
 tool the agent must remember to call, which costs a call each time and is
 mostly empty.
 
-**Liveness.** The board asks whether a session holding an item in progress is
-still there (`src/liveness.ts`, from the server's minute timer). Only an item
-whose status is in progress counts: a session holding a paused, done, cancelled
-or blocked item is waiting or finished, not silent (a blocked item waits on a
-card or another item, and the PM looks for its session when that wait ends). The
-status is the board's derived one, so what counts as in progress follows it. A
-*sign of life* is a call to any tool as that session (the same name the tool
-result uses), or an `{"alive": true}` frame from its wait script on its stream.
-A connection is none, and neither is its end. A session that gives no sign for
-30 minutes is asked: an `ask-alive` goes into its stream, and any sign answers
-it. If it gives none for another 30 minutes, `no-answer` goes to the PM
-with the session, item, project and the time its silence began. A sign ends the
-silence; the next one starts over, so one silence is asked once and told once.
-If the PM does not answer `no-answer`, the no-receipt alert below tells
-the owner an hour later, with the item as its target. A session holding no item
-in progress (a reviewer, the observer, the holder of a paused item) is not
-watched, what the board knew of it is dropped, and its silence starts when it
-holds an item in progress.
+**Sessions watch.** A session that has ended its turn is out of reach of a push: nothing of its own is running to receive one, and
+which of them are stuck, and where, is nowhere on the board. So the board reads the sessions themselves (`src/session-watch.ts`; the
+`claude` commands are in `src/sessions.ts`). Every 30 seconds it reads `claude agents --json --all` (the documented scripting
+interface; 0.2 seconds a reading on 2026-10-17) and looks at each session it looks after: an engineer holding an open item that is not
+paused, a reviewer with an unfinished review record on such an item, and the PM; only rows of `kind` background, with a name no other
+row carries. The architect is an interactive session the owner started: the documentation says two processes cannot write one
+conversation and does not say that `--bg --resume` may take one over while its process lives, so the watch leaves it to its wait script
+under Monitor and to the one-hour notice below. The watch runs only when the service has `WF_BOARD_CLAUDE` (the `claude` command) and
+`WF_HOME` (the wf workspace, which a woken session gets as its own, as `pm/agent.mjs` does); `scripts/install-service.ts` writes both
+into the plist, and without them nothing is woken.
 
-The silences are kept in `state/liveness.json` beside the board (git excludes
-it), written at every round with the time of the round. A restart counts the
-time the board was stopped since its last round as no silence: it is added to the
-time every silence is counted from, so a session silent for 20 minutes before a
-restart is silent for 20 minutes after it. Restarts, which follow every merge,
-thus neither delay nor repeat a push, and a told silence stays told until a
-sign. Rejected: counting every silence from the restart, which lets restarts
-less than 30 minutes apart postpone the ask for good.
+A row gives the session's *phase*: *gone* (no process: stopped, retired after about an hour unattached, or crashed), *busy* (`status:
+busy`, which covers a turn running and a turn that ended while a background command still runs: the row cannot tell them apart), *idle*
+(`status: idle`), *blocked* (`status: waiting`, or idle with `state: blocked`: it asked something, or a permission was refused) and
+*unknown* (a status the code has no word for; left alone). `phaseOf` gives it, and the code's switch over the phases is exhaustive. A
+session counts as *parked* once it has looked gone or idle for `QUIET_MS` (20 seconds: one round has passed, so its row was read twice).
+What the watch does, each line one test in `test/session-watch.test.ts`:
 
-The connection of a wait script is no sign, because it outlives its session. On
-2026-10-17 a probe held a connection to a copy of the board from a background
-command of a session; `claude stop` ended the session at 17:51:40, the probe's
-shell was taken over by process 1, and the connection was still open in the copy's
-log at 17:53:11, 1.5 minutes after the stop (the session itself was never
-idle, since a command was running, so the reclaiming of an idle session was not
-observed). So the script sends the alive frame only while the session that
-started it is running, at least every 10 minutes (a silence is asked at 30), and
-ends when that session is gone; the board counts the frame and not the
-connection, so a script that outlives its session, or is an older one that sends
-none, makes the session look as silent as it is. Rejected: counting the
-connection, which the measurement refutes; counting calls only, which makes a
-session that waits on a script call the board by hand every 30 minutes or be
-reported; the script calling a tool as the session every 25 minutes, which hands
-the script the session's credential and costs a tool call for what one frame says.
+- **Pushes owed to a parked or blocked session**: it is woken. The row is read again, a process is stopped with `claude stop`, and `claude
+  --bg --resume <session id> -- <prompt>` continues it in its own directory with `WF_HOME` set (the sequence of `pm/agent.mjs resume`). The
+  prompt is the pushes as a tool result carries them (at most five lines, the rest counted), a sentence that the board's tools may not be
+  connected for a few seconds after a resume (seen by the engineer of the item that records it), and what to do. What claude started must be
+  the same session id: the pushes count as delivered (receipted, for the PM) only then. All the pushes owed go in one prompt. A busy
+  session is not touched; its pushes wait for its next tool result, and the PM is told when the oldest has waited 20 minutes. A row that
+  changed between the round's reading and the second reading before the stop is left to the next round.
+- **A copy**: `--resume` of a session still running starts a copy under another id. If it happens, the copy is stopped, the PM told
+  (`copy`), and the session is not woken again until it runs; the push stays owed.
+- **A wake that fails** is tried at every round, and at the third failure the PM is told (`no-resume`) and the next try waits ten minutes.
+- **Blocked** for two minutes: the PM is told (`blocked`) with what the session wrote it needs (best effort, from its job file; the
+  documentation calls the file unstable, and a missing one only loses the sentence). Not told when the engineer's items all rest on a
+  card or another item (that is the owner's, and the item's status says so), or for a reviewer while no review waits for it. A blocked PM
+  is told to the owner as a notice.
+- **Stopped with work left**: an engineer parked 5 minutes, nothing owed, an item in progress or ready to start and no wait recorded (a
+  step in progress with `waits`, the review or CI step in progress, or a done merge with the live check not done: the deploy's push
+  comes) is woken once with a prompt that says to go on, or to write what it waits on in the plan and not ask in the session. If it parks
+  again as long without the plan saying what it waits on, the PM is told (`stopped`).
+- **The stuck link**: a review in progress, the reviewer and the engineer both parked 15 minutes and nothing owed either: the PM is told
+  (`chain`) of the reviewer, the link that stops the line, not of the engineer that waits. A reviewer that is blocked or cannot be woken is
+  told by the lines above, as itself. A session with no listing at all for 5 minutes is told (`missing`); two rows of one name, `duplicate`,
+  and neither is touched. Waiting for CI is the CI watch's, for a 14900K run the PM's, for a card the owner's.
 
-The 30 and 30 minutes are a provisional choice. The architect then knows within
-an hour of a session's last sign. On 2026-10-16, over thirteen sessions at work, a session was
-more than 30 minutes past its last board write 0.2 % of the time (15 minutes:
-11 %); only writes were counted, and reads now count too. Rejected: 15 and 15
-minutes, which would call the architect to engineers at work; 60 and 30 minutes,
-which leaves a stopped session unknown for an hour and a half. Reopen if more
-than a tenth of the `no-answer` pushes of the first week come while the session
-was working.
+`stuck` is told once per `why` for as long as it holds. The watch keeps for each session, in `state/session-watch.json` beside the board
+(git excludes it), since when it has looked parked or blocked, what it told, and how often a wake failed, so a restart (every merge brings
+one) neither forgets how long a session has been parked nor tells again. A session no longer looked after is forgotten.
+
+This replaces the earlier check of signs of life: a call to a tool, or an alive frame of the wait script, kept a session "alive", and a
+session that gave none for 30 minutes was asked, and 30 minutes later the PM was told. It asked only the session, and not what it waited on;
+with no wait script an engineer waiting on a review calls the board for hours and would have been reported daily; and it took an hour to
+tell what the session's row says in a reading. The "no answer" of a session busy with no progress is left to the stall check (an open item
+without a change for an hour of active time, section 5) and to the PM's own timed wake.
+
+Decision: the board reads the sessions and wakes parked ones itself (A below), because the owner's rule is that the board, not the
+agent's care, gets a push to its recipient, and because the sequence is the one `pm/agent.mjs` already uses for the PM's resumes
+(read from its source; `claude stop` of the same ids is in `~/.claude/daemon.log`). Rejected, for waking:
+- a Stop hook in every session that blocks the stop while pushes are owed (B): the documentation gives it `session_id`, lets it `block`,
+  caps continuation at 8 and times a command hook out at 600 seconds, but it covers only the pushes that come between a session's last
+  tool call and the end of its turn, every launch path would need `--settings` and a running session has none, the documentation does not say that
+  a `--bg` session runs it, and a hook that fails or times out cannot hold a stop. The watch covers the same window within a minute. It can be
+  added later without changing the watch.
+- a Claude session as courier, using Claude Code's own SendMessage (C), which the documentation says starts a turn in an idle receiver, and
+  which another engineer's item records working four times in four tries: only a Claude session can call it, and a courier would be one
+  more session to feed and to wake.
+- the rule that every agent keeps a wait script running (D): three sessions on 2026-10-17 had none or had it refused, and the rule was the gap.
+- `claude --resume <id> "<prompt>"` in a pseudo-terminal, which the documentation says puts the prompt into a session that still
+  runs, with no stop and no reconnect gap: it needs a terminal, documents nothing about ending the attach, and was not tried. Reopen if the
+  reconnect gap or a stop of a session hurts in use.
+Not run, and checked in the live trial: the daemon calling `claude stop` and `--bg --resume` under launchd's environment (the reading
+was tried there and works); that a session continued this way keeps its id and starts no copy (the documentation does not say; the PM's
+script does the same and checks); what a stop does to a session someone has attached to.
+
+The timings are provisional. A reading on 2026-10-17 of the job timelines of 21 sessions: 884 gaps between two entries of a working
+session had median 0.33 minutes, 90th percentile 1.23 and 99th 17.9 (the longest, 298, is a session waiting on a command), and 33 gaps
+of a session not working, blocked or done, had medians 3.5 and 5.4 minutes. 20 seconds of quiet is a round's width; 2 minutes for a block
+is short against 3.5; 5 minutes for a stop is about the median of a session that is done; 20 minutes for an unread push is about the
+99th percentile of a working gap and above the usual command. Reopen when `stuck` pushes of `blocked` or `stopped` come while the
+session was only thinking, or when sessions that need a wake wait more than a round after their push.
 
 **Size.** Whatever the board pushes or returns stays in the receiving agent's
 context until it is compacted, so a push to an agent says what needs handling
@@ -2863,7 +2881,7 @@ for an hour, as for the PM: when the oldest push to the architect still undelive
 the board tells the owner once, 「架构师 1 小时没响应」, naming that push (the limit is the same option as for
 the PM). A delivery starts the count again, and the alert state is in the stream's file, so a
 restart neither repeats an alert nor forgets one. No other agent's stream is watched this way:
-a session holding an item is watched by the liveness check (below). The time of the architect's last
+a session holding an item is watched by the sessions watch (below). The time of the architect's last
 timed wake is kept in the same file. Decision: the architect uses the agents' stream, the owner's rule
 that any agent can be reached the same way, one protocol and one set of state for a recipient. Rejected: a second
 stream of the PM's kind for the architect (a number the client keeps, receipt by any call), which is
@@ -2888,7 +2906,7 @@ the deploy job's notice on the Mac (section 4, Deploying) is the only one that r
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
-or card of its oldest unanswered event: the item of a `stalled`, `no-answer`, `review`
+or card of its oldest unanswered event: the item of a `stalled`, `stuck`, `review`
 or `finished` event, or the item or card a `note` event is on; a `timed` or `timed-architect` event names neither, so its notice has no
 target.
 

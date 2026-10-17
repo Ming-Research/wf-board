@@ -43,7 +43,7 @@ test("every kind says where it goes, and a holder or session route names one of 
     assert.ok(to === "pm" || to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
-  for (const kind of ["dispatch", "review", "finished", "stalled", "no-answer", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  for (const kind of ["dispatch", "review", "finished", "stalled", "stuck", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
   // What needs the content of an item read to judge goes to the architect: the owner's notes, and its own hourly wake.
   for (const kind of ["note", "timed-architect"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
@@ -73,8 +73,7 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   deployed: { version: L, restarted: true, item: L, project: L, title: L, pr: 123456 },
   deployFailed: { version: L, running: L, reason: L, item: L, project: L, title: L, pr: 123456 },
   "item-done": { item: L, project: L, title: L, parent: L },
-  "ask-alive": { item: L, project: L, title: L, since: L },
-  "no-answer": { session: L, item: L, project: L, title: L, since: L },
+  stuck: { session: L, item: L, project: L, title: L, why: "no-resume", text: L },
   // A message's text is refused above MESSAGE_TEXT_LIMIT when it is sent, so its longest is that; the rest is any length.
   message: { message: L, from: L, project: L, to: L, item: L, text: "长".repeat(MESSAGE_TEXT_LIMIT) },
 };
@@ -109,8 +108,9 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   const wake = new Wake({ file, dir, now: () => T0 });
   const held: Record<string, string> = { p1: "工程师甲", p2: "eng-b" };
   wake.routeBy(item => held[item]);
-  const ask = (item: string) => ({ item, project: "Whitefoot", title: "t", since: "2026-10-17T00:00:00Z" });
-  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("ask-alive", ask("nobody"))];
+  // A red deploy names the item it concerns: with no session holding it, it is the PM's.
+  const failed = (item: string) => ({ version: "v", running: null, reason: "r", item, project: "Whitefoot", title: "t", pr: 1 });
+  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("deployFailed", failed("nobody"))];
   assert.deepEqual(pushed.map(f => f.n), [1, 1, 2, 1], "each stream numbers from 1");
   assert.deepEqual(wake.since(0).frames.map(f => f.item), ["nobody"], "only the unheld item's push is the PM's");
   assert.throws(() => wake.push("item-done", done("c5", "nobody")), /nobody does/, "a push for a holder alone is not made without one");
@@ -167,7 +167,7 @@ test("a tool result carries at most FOOTER_LINES pushes and counts the rest by k
   for (let i = 1; i <= FOOTER_LINES + 2; i++) stream.push("item-done", done("c" + i, "p"));
   const first = wake.footer("eng").split("\n");
   assert.equal(first.length, 1 + FOOTER_LINES + 1);
-  assert.equal(first.at(-1), "另有 2 条没送到（子条目做完 2）：再调一次看板，或挂等待脚本取");
+  assert.equal(first.at(-1), "另有 2 条没送到（子条目做完 2）：再调一次看板取");
   assert.equal(stream.deliveredUpTo(), FOOTER_LINES, "the counted ones are not delivered");
   assert.deepEqual(wake.footer("eng").split("\n").slice(1).map(l => l.split(" ")[0]), ["#6", "#7"]);
 });

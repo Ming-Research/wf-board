@@ -7,6 +7,9 @@
 // the same git as the shell rather than launchd's default /usr/bin/git, an Xcode shim that fails
 // while an Xcode license is unaccepted. WF_BOARD_DATA names the board's data directory (default:
 // wf-board-data beside the checkout); it is resolved to an absolute path and written into the plist.
+// The daemon's plist also carries WF_BOARD_CLAUDE (the `claude` command; default: the one this shell finds) and WF_HOME (the wf workspace;
+// default: the directory holding the checkout): the sessions watch (src/session-watch.ts) runs only when the service has both.
+import { spawnSync } from "node:child_process";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -20,7 +23,13 @@ if (job !== "daemon" && job !== "deploy") throw new Error(`Unknown job ${job}; g
 const name = job === "deploy" ? "wf-board-deploy" : "wf-board";
 const template = await readFile(join(repo, `ops/${name}.plist`), "utf8");
 const values = { NODE: process.env.WF_BOARD_NODE ?? process.execPath, REPO: repo, HOME: home, PATH: process.env.WF_BOARD_PATH ?? process.env.PATH ?? "/usr/bin:/bin", DATA: dataDir(repo) };
-const plist = template.replace(/{{(NODE|REPO|HOME|PATH|DATA)}}/g, (_, key: keyof typeof values) => escape(values[key]));
+// The two variables that switch the sessions watch on, as plist keys; none when this shell finds no `claude`, and the service then wakes nothing.
+function sessionsEnv(): string {
+  const claude = process.env.WF_BOARD_CLAUDE ?? spawnSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).stdout.trim();
+  if (!claude) { console.warn("no claude command found: the service will not wake sessions; set WF_BOARD_CLAUDE and install again"); return ""; }
+  return `<key>WF_BOARD_CLAUDE</key><string>${escape(claude)}</string><key>WF_HOME</key><string>${escape(process.env.WF_HOME ?? dirname(repo))}</string>`;
+}
+const plist = template.replace("{{SESSIONS}}", () => job === "daemon" ? sessionsEnv() : "").replace(/{{(NODE|REPO|HOME|PATH|DATA)}}/g, (_, key: keyof typeof values) => escape(values[key]));
 const target = join(home, `Library/LaunchAgents/org.ming-research.${name}.plist`);
 await mkdir(dirname(target), { recursive: true });
 await mkdir(join(home, "Library/Logs"), { recursive: true });
