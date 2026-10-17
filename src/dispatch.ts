@@ -128,8 +128,8 @@ export function finishLogLine(d: Dispatch, corrected: boolean): string {
   return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${f.result}，${countsText(d)}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
 }
 
-/** The dispatches on an item that have not ended, newest start first. The one reading of "who is on an item": holderOf reads
- * it for the pushes, and the status of an item reads it for whether someone works on it (docs/design.md, The wake streams). */
+/** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf
+ * reads for the pushes (docs/design.md, The wake streams). */
 export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
   return (s.items[item]?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -225,13 +226,18 @@ export class AgentStream extends NumberedLog {
     if (!this.touched) this.touched = this.now();
   }
 
+  /** The first line a new file gets: whose stream it is, since the file is named by a hash of the name. */
+  protected append(record: unknown): void {
+    if (this.file && !existsSync(this.file)) super.append({ name: this.name });
+    super.append(record);
+  }
   protected loadState(record: Record<string, unknown>): void {
     if (typeof record.delivered === "number") {
       this.delivered = Math.max(this.delivered, record.delivered);
       if (typeof record.at === "string") this.touched = Math.max(this.touched, Date.parse(record.at));
     }
   }
-  protected stateLines(): unknown[] { return this.delivered ? [{ delivered: this.delivered, at: new Date(this.touched).toISOString() }] : []; }
+  protected stateLines(): unknown[] { return [{ name: this.name }, ...(this.delivered ? [{ delivered: this.delivered, at: new Date(this.touched).toISOString() }] : [])]; }
 
   /** Number and keep a push to this agent. Its frame also carries `line`, the one line the agent is shown. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
@@ -267,6 +273,18 @@ export interface WakeOptions extends LogOptions {
   receiptLimitMs?: number;
 }
 
+/** The file of an agent's stream: a hash of the session name, so any name of up to 80 characters is a short file name and two
+ * names that differ only in case (the same file on a case-insensitive disk) are two files. The name is the file's first line. */
+export const agentFileName = (name: string): string => createHash("sha256").update(name).digest("hex").slice(0, 32) + ".jsonl";
+/** The session name an agent's stream file holds, or none. */
+function nameIn(file: string): string | undefined {
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try { const record = JSON.parse(line) as { name?: unknown }; if (typeof record.name === "string") return record.name; } catch { continue; }
+  }
+  return undefined;
+}
+
 /** A stream unused this long, with nothing undelivered and no item held, is dropped. */
 export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -295,9 +313,9 @@ export class Wake extends NumberedLog {
     try {
       if (this.dir && existsSync(this.dir)) for (const file of readdirSync(this.dir)) {
         if (!file.endsWith(".jsonl")) continue;
-        let name: string;
-        try { name = decodeURIComponent(file.slice(0, -6)); } catch { continue; }
-        this.agent(name);
+        const name = nameIn(join(this.dir, file));
+        if (name !== undefined && agentFileName(name) === file) this.agent(name);
+        else console.error(`agent wake log ${file} names no session it is the file of; left alone`);
       }
     } catch (error) { console.error("agent wake logs unreadable", error); }
   }
@@ -326,7 +344,7 @@ export class Wake extends NumberedLog {
   agent(name: string): AgentStream {
     let stream = this.agents.get(name);
     if (!stream) {
-      stream = new AgentStream(name, { file: this.dir ? join(this.dir, encodeURIComponent(name) + ".jsonl") : undefined, now: this.now });
+      stream = new AgentStream(name, { file: this.dir ? join(this.dir, agentFileName(name)) : undefined, now: this.now });
       const made = stream;
       stream.onPush(frame => { for (const listener of this.agentListeners) { try { listener(made, frame); } catch (error) { console.error(error); } } });
       this.agents.set(name, stream);
@@ -381,7 +399,8 @@ export class Wake extends NumberedLog {
     return lines.join("\n");
   }
 
-  /** Drop the streams nobody uses: everything delivered, unused for AGENT_STREAM_IDLE_MS, and not a session `keep` names (one holding an item). */
+  /** Drop the streams nobody uses: everything delivered, unused for AGENT_STREAM_IDLE_MS, and not a session `keep` names (one
+   * holding an item, or one whose wait script is connected). */
   prune(keep: (name: string) => boolean): void {
     for (const [name, stream] of this.agents) {
       if (keep(name) || stream.pending().frames.length || stream.idleFor() < AGENT_STREAM_IDLE_MS) continue;

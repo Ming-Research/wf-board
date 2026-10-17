@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, server, wakeSocket, asArchitect } from "./helpers.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, lineOf } from "../src/wake.ts";
+import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
 import { holderOf, openDispatches } from "../src/dispatch.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -81,7 +81,7 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.deepEqual(wake.since(0).frames.map(f => f.item), ["c4"], "only the unheld item's push is the PM's");
   assert.deepEqual(wake.agent("工程师甲").pending().frames.map(f => f.item), ["c1", "c3"]);
   assert.deepEqual(wake.agent("eng-b").pending().frames.map(f => f.item), ["c2"]);
-  assert.deepEqual((await readdir(dir)).sort(), ["eng-b.jsonl", "pm.jsonl", encodeURIComponent("工程师甲") + ".jsonl"].sort(), "one file per agent, named so any session name is a file name");
+  assert.deepEqual((await readdir(dir)).sort(), ["pm.jsonl", agentFileName("eng-b"), agentFileName("工程师甲")].sort(), "one file per agent, named by a hash of its name");
   const again = new Wake({ file, dir, now: () => T0 });
   assert.ok(again.hasAgent("工程师甲") && again.hasAgent("eng-b"), "a restart reads every agent's stream");
   assert.deepEqual(again.agent("工程师甲").pending().frames.map(f => f.n), [1, 2]);
@@ -138,7 +138,7 @@ test("a stream nobody uses goes after a week; one with undelivered pushes, a hol
   wake.agent("recent").push("item-done", done("c2", "p")); wake.agent("recent").deliver(2);
   wake.prune(name => name === "holder");
   assert.deepEqual(["gone", "undelivered", "holder", "recent"].filter(name => wake.hasAgent(name)), ["undelivered", "holder", "recent"]);
-  assert.deepEqual((await readdir(dir)).sort(), ["holder.jsonl", "recent.jsonl", "undelivered.jsonl"]);
+  assert.deepEqual((await readdir(dir)).sort(), ["holder", "recent", "undelivered"].map(agentFileName).sort());
 });
 
 test("the holder of an item is the agent of its newest engineer dispatch that has not ended", () => {
@@ -235,5 +235,35 @@ test("an item becoming done tells the session holding each open item that waits 
   await op.appendLog({ ...asArchitect, id: "a", text: "a later write to the done item" });
   await pm.sync();
   assert.equal(wake.agent("b-worker").latest(), 1, "a done item is announced once");
-  assert.deepEqual(pm.events().filter(f => f.event === "item-done"), [], "nobody holds area, so nothing goes to the PM for it");
+  assert.deepEqual(pm.events().filter(f => f.event === "item-done").map(f => [f.item, f.parent]), [["a", "area"]], "nobody holds area, so its push goes to the PM, once");
+});
+
+test("any session name up to 80 characters has a stream that survives a restart, and names differing only in case are two streams", async t => {
+  const dir = await scratch(t), longest = "长".repeat(80);
+  const wake = new Wake({ dir, now: () => T0 });
+  for (const name of [longest, "Eng", "eng"]) wake.agent(name).push("item-done", done(name.slice(0, 3), "p"));
+  wake.agent("Eng").deliver(1);
+  assert.equal((await readdir(dir)).length, 3, "three files, whatever the disk does with case");
+  const again = new Wake({ dir, now: () => T0 });
+  assert.deepEqual([longest, "Eng", "eng"].map(name => [again.hasAgent(name), again.agent(name).latest(), again.agent(name).deliveredUpTo()]), [[true, 1, 0], [true, 1, 1], [true, 1, 0]]);
+  assert.ok((await readdir(dir)).every(file => file.length < 64));
+});
+
+test("a stream whose wait script is connected is kept however long it goes unused, and its socket keeps getting its pushes", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let clock = T0;
+  const wake = new Wake({ now: () => clock });
+  const { url } = await server(t, { wake, now: () => clock, checkIntervalMs: 1000 });
+  const watcher = await agentSocket(t, url, "观察者");
+  wake.agent("观察者").push("item-done", done("c1", "p"));
+  watcher.socket.send(JSON.stringify({ ack: 1 })); await watcher.sync();
+  wake.agent("idle").push("item-done", done("c1", "p")); wake.agent("idle").deliver(1);
+  clock += AGENT_STREAM_IDLE_MS + 1;
+  t.mock.timers.tick(1000); await watcher.sync();
+  assert.equal(wake.hasAgent("idle"), false, "an unused stream with no socket goes");
+  assert.equal(wake.hasAgent("观察者"), true, "a stream with a socket on it stays");
+  const live = wake.agent("观察者").push("item-done", done("c2", "p"));
+  await watcher.sync();
+  assert.deepEqual(watcher.events().map(f => f.n), [1, 2]);
+  assert.deepEqual(watcher.events()[1], live);
 });

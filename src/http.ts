@@ -271,6 +271,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
   // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages are told if it did.
   const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void readPage(true); });
+  /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
+  const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
   /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined) or an agent's. */
   function sendTo(stream: AgentStream | undefined, frame: object) {
     const data = JSON.stringify(frame);
@@ -285,8 +287,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The items flagged 无人推进 now; one that appears and was not in it pushes one "stalled" event. Seeded at start without
   // pushing, so a restart does not announce every standing stall. Other checks are format flags the writer sees; none is pushed.
   let flagged = new Set<string>();
-  // The items done now; one that becomes done pushes "item-done" to the session holding each item waiting on it (an owner or a
-  // shared dependent). Seeded at start like `flagged`, so a restart announces nothing.
+  // The items done now; one that becomes done pushes "item-done" for each open item waiting on it (an owner or a shared
+  // dependent), to the session holding that item, else to the PM. Seeded at start like `flagged`, so a restart announces nothing.
   let finished = new Set<string>();
   // The snapshot the last scan read: a change is compared with it to find the items whose checks it can change.
   let scanned: Snapshot | undefined;
@@ -299,7 +301,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       if (Object.hasOwn(s.items, id) && r.statusOf(id) === "done") {
         done.add(id);
         if (announce && !finished.has(id)) for (const { id: parent } of r.dependents(id)) {
-          if (!r.isOpenWork(parent) || holderOf(s, parent) === undefined) continue;
+          if (!r.isOpenWork(parent)) continue;
           wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });
         }
       }
@@ -357,7 +359,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     finally { timing = false; }
   }
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
-  const checker = setInterval(() => { scanChecks(true); wake.checkReceipts(); const held = holders(store.snapshot()); wake.prune(name => held.has(name)); void timed(); }, deps.checkIntervalMs ?? 60_000);
+  const checker = setInterval(() => { scanChecks(true); wake.checkReceipts(); const held = holders(store.snapshot()); wake.prune(name => held.has(name) || connected(name)); void timed(); }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();

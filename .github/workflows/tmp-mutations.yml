@@ -1,0 +1,45 @@
+# Temporary (wake-routing review fixes): reverts each fix and requires the wake tests to fail. Removed before re-review ends.
+name: tmp-mutations
+on:
+  push:
+    branches: [wake-routing]
+jobs:
+  mutations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: each reverted fix makes the wake tests fail
+        shell: bash
+        run: |
+          set +e
+          mutate() { python3 - "$@" <<'PY'
+          import sys
+          path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+          text = open(path).read()
+          assert text.count(old) == 1, f"{path}: {old!r} found {text.count(old)} times"
+          open(path, "w").write(text.replace(old, new))
+          PY
+          }
+          failed=0
+          check() {
+            name="$1"; shift
+            git checkout -q -- src test
+            mutate "$@" || { echo "::error::$name: mutation did not apply"; failed=1; return; }
+            if timeout 120 node --test --test-timeout=30000 test/wake-agents.test.ts test/wake.test.ts > "/tmp/$name.log" 2>&1; then
+              echo "::error::$name: the tests still pass"; failed=1
+            else
+              echo "$name: caught"; grep -E "^✖|^ℹ (pass|fail)" "/tmp/$name.log" | head -6 || true
+            fi
+          }
+          check F1-unheld-parent-skipped src/http.ts 'if (!r.isOpenWork(parent)) continue;' 'if (!r.isOpenWork(parent) || holderOf(s, parent) === undefined) continue;'
+          check F3-name-as-file src/wake.ts 'join(this.dir, agentFileName(name))' 'join(this.dir, encodeURIComponent(name) + ".jsonl")'
+          check F4-connected-pruned src/http.ts 'wake.prune(name => held.has(name) || connected(name));' 'wake.prune(name => held.has(name));'
+          git checkout -q -- src test
+          exit $failed

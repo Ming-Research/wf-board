@@ -512,7 +512,7 @@ wf-board-data/
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the architect's wake stream: events, receipts and marks (not a board document; excluded from git)
-  state/wake/<name>.jsonl  one agent's wake stream: events and how far they were delivered (same)
+  state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
@@ -2154,7 +2154,7 @@ session's single write turns to the wrong session.
 
 **What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
-All go to the architect except `item-done`:
+All go to the architect except `item-done`, which goes to the holder:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too;
@@ -2219,7 +2219,7 @@ the forms the server sends:
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
-| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, and that a session holds; it goes to that session's stream, and a parent nobody holds gets none (the architect learns of finished items from its own work). `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the architect's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -2262,10 +2262,14 @@ on any connection or in any tool result. An ack at or below the delivered
 number, above the newest, or not a whole number changes nothing; any other
 message is ignored. A client killed between printing and acking gets those
 events once more: a repeat, never a loss. An agent's stream keeps its newest
-200 events, at most 256 KiB, in `state/wake/<name>.jsonl` with the name
-percent-encoded, with the delivered number, so numbers and delivery survive a
+200 events, at most 256 KiB, with the delivered number and the session name, in
+`state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
+SHA-256: a name of 80 Chinese characters would be 720 bytes percent-encoded,
+past the 255 a file name may hold, and two names that differ only in case would
+share one file on a disk that ignores case. Numbers and delivery survive a
 restart. A stream with everything delivered, no push or delivery for seven
-days, and whose session holds no item, is dropped with its file.
+days, whose session holds no item and has no socket on it, is dropped with its
+file.
 
 Rejected, for agents: a per-event receipt the agent sends with a tool call after
 handling the event, resending every unanswered event on each connection
