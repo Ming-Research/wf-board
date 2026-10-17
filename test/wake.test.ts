@@ -403,7 +403,7 @@ test("the architect's timed wake lists at most 20 items and counts the rest, and
 test("an hour with a push to the architect undelivered tells the owner once, a delivery starts the count again, the alert and the last timed wake survive a restart, and no other agent's stream is watched so", async t => {
   const dir = await scratch(t), told: Array<[string, string]> = [];
   let clock = T0;
-  // Pushing through a function made before the assertions below: they narrow `told` to the value they compare it with.
+  // Made before the first assertion on `told`: a closure made after `assert.deepEqual(told, ...)` sees `told` narrowed to that value's type.
   const record = (notice: { title: string; message: string }) => { told.push([notice.title, notice.message]); };
   const open = () => { const wake = new Wake({ dir, now: () => clock }); wake.onTell(record); return wake; };
   const a = open(), stream = a.agent(ARCHITECT_SESSION);
