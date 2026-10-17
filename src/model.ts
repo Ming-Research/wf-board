@@ -362,9 +362,9 @@ export const PARTS = [
   "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish",
 ] as const;
 export type Part = (typeof PARTS)[number];
-/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. */
-export type Scope = "board" | "subtree";
-/** What the observer lacks: the writes the board reserved for the architect when it got an identity (ops `onlyArchitect`), and starting a dispatch. The engineer has two of them, below its subtree (`item.create`, `item.difficulty`). */
+/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. `below`: the same without the items the credential names: the writer has been handed those and does not rewrite the hand-off. */
+export type Scope = "board" | "subtree" | "below";
+/** What the observer lacks: the writes the board reserved for the architect when it got an identity (ops `onlyArchitect`), and starting a dispatch. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
 const RESERVED: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.merge-row", "dispatch.start", "dispatch.finish"];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
@@ -373,7 +373,7 @@ export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>
   // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
   "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },
   // An engineer writes the progress of its own work, makes the sub-items of its tree and rates and tags them, and replies to the notes the PM forwards. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
-  "工程师": partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "item.create", "item.difficulty", "item.tags", "card.write", "note.reply", "term"]),
+  "工程师": { ...partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "item.create", "item.tags", "card.write", "note.reply", "term"]), "item.difficulty": "below" },
   "审查": partsAt("subtree", ["item.log"]),
 };
 /** What a credential grants the ops: the writer's role and project, and the items its subtree starts from. */

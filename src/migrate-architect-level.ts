@@ -3,7 +3,7 @@
 // such a file; Store.open(dir, { clearArchitectLevel: true }) clears them in one commit, and the command in
 // migrate-architect-level-cli.ts does that offline. Delete this file, the command, its test, the npm script, the start
 // option in store.ts and the design paragraph once it has run on the live board. What stays is store.ts's omission of the
-// level from old versions, and the skip of the migration's commit when activity is replayed.
+// level from old versions, and the rule that unread reads its clearing as bookkeeping (rules.ts).
 
 import type { Item } from "./model.ts";
 

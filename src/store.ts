@@ -54,7 +54,7 @@ const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
 /** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
 export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
-/** Start of the message of the one-time commit that cleared the retired level 「架构师做」 (the message goes on with the item count); activity skips it, as it skips numbering. */
+/** Start of the message of the one-time commit that cleared the retired level 「架构师做」; the message goes on with the item count. */
 const CLEAR_LEVEL_MESSAGE = "clear_architect_level";
 
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
@@ -554,7 +554,7 @@ export class Store {
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
     for (const commit of commits) {
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message.startsWith(`${CLEAR_LEVEL_MESSAGE} `)) continue;
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);

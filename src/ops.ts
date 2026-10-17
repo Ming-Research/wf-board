@@ -35,7 +35,7 @@ export interface Ops {
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  /** Only the architect sets a difficulty, on an item of any project; the change is logged with its reason. */
+  /** The architect sets a difficulty on an item of any project, an engineer's credential on the items of its subtree; the change is logged with its reason. */
   setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
   setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
@@ -294,8 +294,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   }
   /** After the write is made: when a part is limited to the credential's subtree, every document the write changes must be inside it. */
   function withinScope(s: Snapshot, a: Writer, parts: readonly Part[], work: Work): void {
-    if (!a.access || !parts.some(part => ACCESS[a.access!.role][part] === "subtree")) return;
-    const { role, project, roots } = a.access, inside = subtreeOf(s, roots);
+    if (!a.access || !parts.some(part => ACCESS[a.access!.role][part] === "subtree" || ACCESS[a.access!.role][part] === "below")) return;
+    const { role, project, roots } = a.access, inside = subtreeOf(s, roots), below = parts.filter(part => ACCESS[role][part] === "below");
     const outside = (id: string) => new OpError(`item ${id}: outside the subtree of ${roots.join(", ")}, the only items a ${role} credential writes for ${parts.join(", ")}`);
     if (work.board) throw new OpError(`board: a ${role} credential does not change projects or tags`);
     // An item this write creates is inside when an item of the subtree owns it: the credential writes it from then on.
@@ -306,6 +306,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     // The documents that already existed come first, so a new item put under an owner outside the subtree names that owner.
     for (const put of [...work.puts.filter(p => p.expectRev !== null), ...work.puts.filter(p => p.expectRev === null)]) {
       if (put.kind === "item" && !inside.has(put.id)) throw outside(put.id);
+      // The items the credential was started on are handed to it with their level; only the ones below them are rated by it.
+      else if (put.kind === "item" && below.length && roots.includes(put.id)) throw new OpError(`item ${put.id}: the root of this ${role} credential keeps the level it was handed; ${below.join(", ")} reaches only the items below it, and the ${ARCHITECT} changes the root's`);
       // A row that owns an item puts it under this one: the credential would then write it, so it may own only what it already writes.
       else if (put.kind === "item") { for (const row of (put.doc as Item).plan ?? []) if ("item" in row && row.own && !inside.has(row.item)) throw outside(row.item); }
       else if (put.kind === "decision" && !inside.has((put.doc as Decision).item)) throw outside((put.doc as Decision).item);
@@ -913,6 +915,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     replyNote: a => run(a, "note.reply", (s, at) => {
       const { note } = ownedNote(s, a.id, a);
       if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
+      // A reply is its author's: replacing it rewrites what another writer said to the owner.
+      if (note.reply !== undefined && note.repliedBy !== a.author) throw new OpError(`note ${a.id}: the reply was written by ${note.repliedBy ?? "an unknown author"}, and replace: true replaces only your own; leave it, or report to the ${ARCHITECT}`);
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
     }),
