@@ -16,4 +16,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node --test test/wake.test.ts test/wake-agents.test.ts test/deploy.test.ts test/budget.test.ts test/mcp.test.ts test/migrate-priority.test.ts test/rules-oracle.test.ts
+      - run: node --test test/wake.test.ts test/wake-agents.test.ts test/deploy.test.ts test/budget.test.ts test/mcp.test.ts test/migrate-priority.test.ts test/rules-oracle.test.ts test/stateless.test.ts test/shutdown.test.ts test/startup-cache.test.ts test/push.test.ts test/http.test.ts test/watch.test.ts

@@ -79,7 +79,7 @@ matches what the artifact board offered.
   `dispatch` push and the timed wake's reminder), made from `src/candidates.ts`.
 - `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
   for the deploy pushes and the red main line.
-- `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows).
+- `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows). It is in `docs/design.md`, section 8.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
