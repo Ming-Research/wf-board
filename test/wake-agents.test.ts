@@ -58,6 +58,8 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   deployed: { version: L, previous: L, changes: many, restarted: true },
   deployFailed: { version: null, running: null, reason: L },
   "item-done": { item: L, project: L, title: L, parent: L },
+  "ask-alive": { item: L, project: L, title: L, since: L },
+  "no-answer": { session: L, item: L, project: L, title: L, since: L },
   // A message's text is refused above MESSAGE_TEXT_LIMIT when it is sent, so its longest is that; the rest is any length.
   message: { message: L, from: L, project: L, to: L, item: L, text: "长".repeat(MESSAGE_TEXT_LIMIT) },
 };
@@ -218,6 +220,10 @@ test("an agent's socket gets what was not delivered, then its own live pushes on
   assert.deepEqual(pm.events().map(f => f.event), ["note"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
   eng.socket.send("not json"); eng.socket.send(JSON.stringify({ ack: "2" })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 1, "anything but a numeric ack is ignored");
+  // Valid JSON that is not an object has no fields to read: it is ignored, and the stream still takes the next ack.
+  for (const message of ["null", "[]", "1", '"ack"']) eng.socket.send(message);
+  eng.socket.send(JSON.stringify({ ack: 2 })); await eng.sync();
+  assert.equal(wake.agent("eng").deliveredUpTo(), 2, "a message that is not an object is ignored, and the next ack counts");
   for (const path of ["/wake/", "/wake/" + encodeURIComponent(ARCHITECT_SESSION), "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
 });
 

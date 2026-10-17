@@ -386,7 +386,10 @@ test("MCP set_pause is for the PM and the architect only, and paused status work
 
 test("MCP names the PM and Architect on the tools it reserves, lets them write another project's item, and refuses 总管 with the tool error", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
-  for (const name of ["create_item", "set_status", "set_difficulty", "set_difficulty_many", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${PROCESS_WRITERS}`, name);
+  for (const name of ["set_status", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${PROCESS_WRITERS}`, name);
+  // The engineer writes these two inside its own subtree (its credential), so they name the process writers as the ones who write anywhere.
+  for (const [name, verb] of [["create_item", "creates items in any project"], ["set_difficulty", "rates an item of any project"]]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`Author ${PROCESS_WRITERS} ${verb}`, name);
+  assert.match(tools.find(tool => tool.name === "set_difficulty_many")!.description!, /Written by the same writers as set_difficulty/);
   for (const name of ["set_tag", "rename_tag", "remove_tag", "journal_entry"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${ARCHITECT_WRITER}`, `${name}: still the architect's alone`);
   assert.match(tools.find(tool => tool.name === "update_item")!.description!, rx`Only author ${PROCESS_WRITERS} may change the title, and turn a cancelled item into a record`);
   assert.doesNotMatch(tools.map(tool => tool.description).join("\n"), /only author 总管|Only author 总管|Only 总管|总管 only|总管 may/, "no tool still names 总管 as the one who may");
