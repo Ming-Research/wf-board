@@ -908,8 +908,11 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
   const part = withStatus("wip"), idle = withStatus("idle"), todo = withStatus("todo");
   if (!part) v.push("progress-band: the board has no item in progress");
   if (!todo) v.push("progress-band: the board has no todo item");
-  // Statuses that must carry no band; a status the generated board lacks is not checked (the lack is not a failure).
-  const plain = ["todo", "done", "cancelled", "blocked", "paused"].map(withStatus).filter((id): id is string => !!id);
+  // Statuses that must carry no band. The generated board must have an item of each; cancelled is not among them, because
+  // the tree hides a cancelled item that has no open work under it (test/e2e/board-gen.ts), so no tree row can show it.
+  const plainStatuses = ["todo", "done", "blocked", "paused"];
+  for (const status of plainStatuses) if (!withStatus(status)) v.push(`progress-band: the board has no item with status ${status}`);
+  const plain = plainStatuses.map(withStatus).filter((id): id is string => !!id);
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     for (const id of [part, idle, ...plain]) {
@@ -944,6 +947,17 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
       const { image } = got.band, fromAt = image.indexOf(got.from), toAt = image.indexOf(got.to);
       if (!image.includes("linear-gradient") || fromAt < 0 || toAt <= fromAt) v.push(`progress-band (${scheme}): ${id}'s gradient does not run from ${got.from} to ${got.to}: ${image}`);
     }
+  }
+  // A selected row keeps its highlight: its band is drawn at 45 % opacity, and an unselected band at full opacity.
+  if (part) {
+    await bp.select(part);
+    const got = await page.evaluate((key: string) => {
+      const box = document.getElementById("it-" + key);
+      const band = box?.querySelector<HTMLElement>(":scope > .item-row.tree-row > .progress-band") ?? null;
+      return { selected: !!box?.classList.contains("selected"), opacity: band ? getComputedStyle(band).opacity : null };
+    }, part);
+    if (!got.selected) v.push(`progress-band: ${part} is not marked selected after it was selected`);
+    if (got.opacity !== "0.45") v.push(`progress-band: the selected row ${part} draws its band at opacity ${got.opacity}, not 0.45`);
   }
   await page.emulateMedia({ colorScheme: "light" });
   return v;

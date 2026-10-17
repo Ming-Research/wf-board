@@ -1,0 +1,91 @@
+# TEMPORARY: the mutation round for the progress band (item progress-background, R2). Remove before the PR is ready.
+name: mutation-tmp
+on:
+  push:
+    branches: [progress-background]
+  workflow_dispatch:
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: unit and web mutations
+        run: |
+          cat > "$RUNNER_TEMP/mutate.py" <<'PY'
+          import subprocess, sys
+          # Each mutation: a name, the file, the exact text to change, its replacement. Applied one at a time, then restored.
+          MUTATIONS = [
+            ("baseline", None, None, None),
+            ("U1 doing row weighs 1 not ½", "src/rules.ts", 'weight: state === "done" ? 1 : state === "doing" ? 0.5 : 0,', 'weight: state === "done" ? 1 : state === "doing" ? 1 : 0,'),
+            ("U2 sub-item in progress weighs 1 not ½", "src/rules.ts", 'status === "wip" || status === "idle" ? 0.5 : 0;', 'status === "wip" || status === "idle" ? 1 : 0;'),
+            ("U3 cancelled sub-item is counted, not left out", "src/rules.ts", 'const weight = status === "cancelled" ? null :', 'const weight = status === "cancelled" ? 1 :'),
+            ("U4 open card weighs 1 not 0", "src/rules.ts", 'weight: open ? 0 : 1 }', 'weight: 1 }'),
+            ("U5 progressShare keeps excluded rows", "src/rules.ts", 'planRows(id).filter(row => !row.excluded && row.weight !== null);', 'planRows(id).filter(row => row.weight !== null);'),
+            ("U6 band row keeps its count", "web/app.ts", 'if (it.plan.length && !(share > 0)) {', 'if (it.plan.length) {'),
+            ("U7 agent list draws a band", "web/app.ts", 'const share = !detail && !m && (st === "wip" || st === "idle")', 'const share = !detail && (st === "wip" || st === "idle")'),
+            ("U8 idle rows draw no band", "web/app.ts", 'const share = !detail && !m && (st === "wip" || st === "idle")', 'const share = !detail && !m && st === "wip"'),
+          ]
+          def run_tests():
+              r = subprocess.run(["node", "--test", "--test-reporter=spec", "test/rules.test.ts", "test/web.test.ts"], capture_output=True, text=True)
+              out = r.stdout + r.stderr
+              failing = [l.strip() for l in out.splitlines() if l.strip().startswith("✖")]
+              return r.returncode, failing
+          for name, path, old, new in MUTATIONS:
+              if path:
+                  s = open(path).read()
+                  if s.count(old) != 1:
+                      print(f"NOT APPLIED {name}: {s.count(old)} matches"); sys.exit(3)
+                  open(path, "w").write(s.replace(old, new))
+              code, failing = run_tests()
+              if path:
+                  subprocess.run(["git", "checkout", "--", path], check=True)
+              print(f"== {name}: exit {code}, {len(failing)} failing lines")
+              for l in failing[:12]:
+                  print("   ", l[:200])
+          PY
+          python3 "$RUNNER_TEMP/mutate.py"
+  browser:
+    strategy:
+      fail-fast: false
+      matrix:
+        mutation: [baseline, C1, C2, C3]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps --only-shell chromium
+      - name: apply the mutation
+        run: |
+          python3 - "${{ matrix.mutation }}" <<'PY'
+          import sys
+          which = sys.argv[1]
+          M = {
+            "C1": ("web/index.html", "width: calc(var(--p) * 100%);", "width: 100%;"),
+            "C2": ("web/index.html", "background-image: linear-gradient(to right, var(--prog-from), var(--prog-to));", "background-image: linear-gradient(to right, var(--prog-to), var(--prog-from));"),
+            "C3": ("web/index.html", "{ opacity: 0.45; }", "{ opacity: 1; }"),
+          }
+          if which in M:
+              path, old, new = M[which]
+              s = open(path).read()
+              assert s.count(old) == 1, (which, s.count(old))
+              open(path, "w").write(s.replace(old, new))
+          print("mutation:", which)
+          PY
+      - run: npm run build:web
+      - name: band family of the browser suite
+        run: |
+          set +e
+          node --test --test-reporter=spec --test-concurrency=2 test/e2e/page.e2e.ts > "$RUNNER_TEMP/e2e.log" 2>&1
+          code=$?
+          echo "== ${{ matrix.mutation }}: exit $code"
+          grep -E "progress bands" "$RUNNER_TEMP/e2e.log" | cut -c1-220
+          grep -E "progress-band" "$RUNNER_TEMP/e2e.log" | sed 's/^ *//' | cut -c1-220 | head -12
