@@ -201,20 +201,20 @@ test("the resource agent writes any log, and the head and plan of its own record
 test("a credential speaks for the PM by its role, whatever author and session it carries", async t => {
   const { op, store } = await board(t);
   const head = store.snapshot().head;
-  // Author Architect from the session PM is what the board takes for the PM when nothing else tells; a credential of another
+  // Author PM from the session PM is what the board takes for the PM when nothing else tells; a credential of another
   // role is not the PM's, so it has no right over another project's items (`a` belongs to Whitefoot).
-  const engineerAsPM = { ...asPM, access: { role: "工程师" as const, project: "Architect", roots: ["a"] } };
+  const engineerAsPM = { ...asPM, access: { role: "工程师" as const, project: "PM", roots: ["a"] } };
   await assert.rejects(op.appendLog({ ...engineerAsPM, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
   await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item\.create: a 工程师 credential may not write/.test(e.message));
   assert.equal(store.snapshot().head, head);
   // The PM's own credential does, with other names than the PM's.
-  await op.appendLog({ author: "Whitefoot", session: "other-name", access: { role: "PM" as const, project: "Architect", roots: [] }, id: "a", text: "from the PM" });
+  await op.appendLog({ author: "Whitefoot", session: "other-name", access: { role: "PM" as const, project: "PM", roots: [] }, id: "a", text: "from the PM" });
   assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "from the PM");
 });
 
 test("the PM's credential does what the process needs in any project, and not what only the architect does", async t => {
   const { op, store } = await board(t);
-  const who = { ...asPM, access: { role: "PM" as const, project: "Architect", roots: [] } };
+  const who = { ...asPM, access: { role: "PM" as const, project: "PM", roots: [] } };
   await op.createItem({ ...who, key: "made", title: "Made", priority: "P1", accept: "ok", group: "Whitefoot" });
   await op.setDifficulty({ ...who, id: "made", difficulty: 2, reason: "r" });
   await op.setPause({ ...who, id: "made", paused: true, reason: "later" });
@@ -223,7 +223,7 @@ test("the PM's credential does what the process needs in any project, and not wh
   await op.setStatus({ ...who, id: "made", status: "cancelled", log: "not needed" });
   await op.appendLog({ ...who, id: "other", text: "from the PM" });
   assert.equal(store.snapshot().items.made!.group, "Firn");
-  assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "Architect");
+  assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "PM");
   await assert.rejects(op.journalEntry({ ...who, text: "x" }), (e: unknown) => e instanceof OpError && /journal: a PM credential may not write/.test(e.message));
   await assert.rejects(op.setTag({ ...who, name: "标签", meaning: "m" }), (e: unknown) => e instanceof OpError && /tag-vocab: a PM credential may not write/.test(e.message));
   await assert.rejects(op.createProject({ ...who, name: "New" }), (e: unknown) => e instanceof OpError && /project\.create: a PM credential may not write/.test(e.message));
@@ -240,10 +240,10 @@ test("the architect's credential does what the architect does, in any project", 
 
 test("the texts that say who may do the process are built from one definition, and rx matches what it is given literally", () => {
   // The definition is pinned once, so that the expected texts built from it elsewhere cannot all agree on a typo.
-  assert.equal(PROCESS_WRITERS, "Architect with session PM or 架构师");
+  assert.equal(PROCESS_WRITERS, "PM with session PM or Architect with session 架构师");
   assert.equal(PROCESS_WRITERS_ZH, "PM 或架构师");
   assert.equal(ARCHITECT_WRITER, "Architect with session 架构师");
-  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session PM or 架构师 may create items"));
+  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only PM with session PM or Architect with session 架构师 may create items"));
   assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"), "the architect's session alone is another text");
   assert.ok(!rx`a${"."}b`.test("axb"), "an interpolated value matches literally");
 });

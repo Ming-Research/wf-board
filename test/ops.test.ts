@@ -7,7 +7,7 @@ import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
+import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
 import { board, at, later, author, architect, asArchitect, asPM, rx } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
@@ -263,26 +263,26 @@ test("Architect reorders and creates projects after an existing project in one c
   const initial = store.snapshot();
   let count = (await store.log()).length;
   await op.updateProject({ ...asArchitect, name: "Whitefoot", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "Whitefoot", "总管", "Architect"]);
+  assert.deepEqual(names(), ["Firn", "Whitefoot", "总管", "Architect", "PM"]);
   assert.deepEqual(store.snapshot().items, initial.items);
   assert.equal((await store.log()).length, ++count);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files, ["board.yaml"]);
   await op.updateProject({ ...asArchitect, name: "总管", repo: "Org/Coordinator", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "总管", "Whitefoot", "Architect"]);
+  assert.deepEqual(names(), ["Firn", "总管", "Whitefoot", "Architect", "PM"]);
   assert.equal(store.snapshot().board.projects[1]!.repo, "Org/Coordinator");
   assert.equal((await store.log()).length, ++count);
   await op.createProject({ ...asArchitect, name: "Inserted", repo: "Org/Inserted", after: "Firn" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect"]);
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "PM"]);
   assert.deepEqual(store.snapshot().board.projects[1], { name: "Inserted", repo: "Org/Inserted" });
   assert.equal((await store.log()).length, ++count);
   await op.createProject({ author: "Any caller", name: "Last" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "Last"]);
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "PM", "Last"]);
   assert.equal((await store.log()).length, ++count);
   await op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed" });
-  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "Last"]);
+  assert.deepEqual(names(), ["Firn", "Inserted", "总管", "Whitefoot", "Architect", "PM", "Last"]);
   assert.equal((await store.log()).length, ++count);
   await op.updateProject({ ...asArchitect, name: "Firn", after: "Last" });
-  assert.deepEqual(names(), ["Inserted", "总管", "Whitefoot", "Architect", "Last", "Firn"]);
+  assert.deepEqual(names(), ["Inserted", "总管", "Whitefoot", "Architect", "PM", "Last", "Firn"]);
   assert.equal((await store.log()).length, ++count);
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
@@ -960,7 +960,7 @@ test("only Architect from session PM or 架构师 creates items, cancels or reop
   const tag = { name: "新标签", meaning: "测试用" };
   const only = (what: string) => rx`^author: only ${what.startsWith("change the tag vocabulary") ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The item's own project, another project, and the Architect project with no session, another session or a near miss.
-  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }];
+  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }, { author: architect, session: "PM" }, { author: "PM" }, { author: "PM", session: "架构师" }, { author: "PM", session: "PMx" }, { author: "PM", session: "engineer" }];
   const cases: Array<[() => Promise<unknown>, RegExp]> = [];
   for (const who of writers) cases.push(
     [() => op.createItem({ ...who, key: "made", group: who.author, title: "Made", accept: "Pass", priority: "P1" }), only("create items")],
@@ -995,9 +995,9 @@ test("only Architect from session PM or 架构师 creates items, cancels or reop
   assert.equal(store.snapshot().items.a!.head, "改动一节由工程师写");
 });
 
-test("Architect from session PM does what the process needs in any project, and neither the tag vocabulary nor a project's repository", async t => {
+test("the PM (author PM, session PM) does what the process needs in any project, and neither the tag vocabulary nor a project's repository", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  const padded = { author: architect, session: "  PM  " };
+  const padded = { ...asPM, session: "  PM  " };
   await op.createItem({ ...asPM, key: "pm-made", group: author, title: "Made by the PM", accept: "Pass", priority: "P1" });
   await op.createItem({ ...padded, key: "pm-padded", group: "Firn", title: "Made under a padded name", accept: "Pass", priority: "P1" });
   assert.equal(store.snapshot().items["pm-made"]!.group, author, "the PM creates in another project's name");
@@ -1036,12 +1036,13 @@ test("Architect from another session writes only the Architect project's items, 
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass", priority: "P1" });
   const engineer = { author: architect, session: "engineer" };
   // An engineer working in the Architect project is an ordinary project author there.
+  // The same holds for the PM's project: author PM from another session is not the PM.
   await op.appendLog({ ...engineer, id: "own-item", text: "Engineer evidence" });
   await op.setPlan({ ...engineer, id: "own-item", row: { id: "work", text: "Implementation", state: "doing" } });
   assert.deepEqual(store.snapshot().items["own-item"]!.log.at(-1), { at: later, by: architect, text: "Engineer evidence" });
   const before = store.snapshot(), count = (await store.log()).length;
-  for (const who of [engineer, { author: architect }]) {
-    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it; Architect writes other projects' items only with session ${PROCESS_SESSIONS}`);
+  for (const who of [engineer, { author: architect }, { author: "PM", session: "engineer" }, { author: "PM" }]) {
+    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it; only ${PROCESS_WRITERS} write other projects' items`);
     await assert.rejects(op.writeCard({ ...who, key: "foreign-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.replyNote({ ...who, id: "note-1", reply: "Answer" }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.moveItem({ ...who, id: "a", owner: "other" }), /item a belongs to project Whitefoot/);

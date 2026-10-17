@@ -109,8 +109,8 @@ test("refusals name the fix and leave the board and the log untouched", async t 
     [() => op.moveItemProject({ ...asArchitect, id: "a", project: "Nowhere" }), /project Nowhere.*configured project/],
     [() => op.moveItemProject({ ...asArchitect, id: "a", project: "Whitefoot" }), /project: a is already in Whitefoot/],
     [() => op.moveItemProject({ ...asArchitect, id: "missing", project: "Firn" }), /id missing.*existing item/],
-    // Only the architect moves items between projects: the item's own project, another project, the Architect project without the session, and the retired 总管.
-    ...[{ author }, { author, session: "架构师" }, { author, session: "PM" }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }].map(who =>
+    // Only the PM and the architect move items between projects: the item's own project, another project, the Architect and PM projects without their sessions, and the retired 总管.
+    ...[{ author }, { author, session: "架构师" }, { author, session: "PM" }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }, { author: "Architect", session: "PM" }, { author: "PM" }, { author: "PM", session: "engineer" }].map(who =>
       [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), rx`^author: only ${PROCESS_WRITERS} may move an item to another project$`] as [() => Promise<unknown>, RegExp]),
     [() => op.moveItemProject({ author: "总管", id: "a", project: "Firn" }), /^author 总管: this identity is retired; write as Architect$/],
     // A tag of the moved part that the new project may not use.

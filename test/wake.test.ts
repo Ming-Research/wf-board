@@ -354,7 +354,7 @@ test("a call carrying the architect's or the PM's session, read or write, is the
   await client.callTool({ name: "projects", arguments: { session: "PM" } });
   assert.equal(wake.receiptedUpTo(), 5, "a read from the session PM answers");
   wake.push("note", noteFields("n6"));
-  await client.callTool({ name: "append_log", arguments: { author: "Architect", session: "PM", id: "a", text: "x" } });
+  await client.callTool({ name: "append_log", arguments: { author: "PM", session: "PM", id: "a", text: "x" } });
   assert.equal(wake.receiptedUpTo(), 6, "a write from the session PM answers too");
   wake.push("note", noteFields("n7"));
   await client.callTool({ name: "projects", arguments: { session: "  PM  " } });
@@ -363,7 +363,7 @@ test("a call carrying the architect's or the PM's session, read or write, is the
 
 test("a call over a connection with a PM or architect credential is the receipt, by role, whatever session the call names; another role's is not", async t => {
   const fixture = await board(t);
-  const who = (role: "PM" | "架构师" | "观察者" | "工程师", session: string) => ({ ok: true as const, who: { author: "Architect", session, access: { role, project: "Architect", roots: [] } } });
+  const who = (role: "PM" | "架构师" | "观察者" | "工程师", session: string) => ({ ok: true as const, who: { author: role === "PM" ? "PM" : "Architect", session, access: { role, project: role === "PM" ? "PM" : "Architect", roots: [] } } });
   const receiptOf = async (credential: ReturnType<typeof who>, session?: string) => {
     const wake = new Wake({ now: () => T0 });
     wake.push("note", noteFields("n1"));

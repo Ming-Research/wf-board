@@ -61,7 +61,8 @@ test("the file's entries are checked: a role of its own, the architect and the P
     ["the architect in another project", { ...ok, role: "架构师", session: "架构师", project: "Firn" }],
     ["the architect's session name for another role", { ...ok, session: "架构师" }],
     ["the architect's session name for the resource agent", { ...ok, role: "资源管理", session: "架构师" }],
-    ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "Architect" }],
+    ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "PM" }],
+    ["the PM in the architect's project", { ...ok, role: "PM", session: "PM", project: "Architect" }],
     ["the PM in another project", { ...ok, role: "PM", session: "PM", project: "Firn" }],
     ["the PM's session name for another role", { ...ok, session: "PM" }],
     ["the PM's session name for the architect", { ...ok, role: "架构师", session: "PM", project: "Architect" }],
@@ -71,8 +72,8 @@ test("the file's entries are checked: a role of its own, the architect and the P
   for (const [what, credential] of bad) assert.equal(CredentialsFile.safeParse({ credentials: [credential] }).success, false, what);
   assert.equal(CredentialsFile.safeParse({ credentials: [ok, ok] }).success, false, "the same session twice");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" })] }).success);
-  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "PM", session: "PM", project: "Architect" })] }).success, "the PM only as itself");
-  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "PM", session: "PM", project: "Architect" })] }).success, "the architect and the PM side by side");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "PM", session: "PM", project: "PM" })] }).success, "the PM only as itself");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "PM", session: "PM", project: "PM" })] }).success, "the architect and the PM side by side");
 });
 
 test("a credential is resolved to its writer; none without a header, a refusal for one that names nothing valid", async t => {
@@ -208,7 +209,7 @@ test("dispatch_start answers with the credential once, and a connection that car
 });
 
 test("a PM credential over HTTP creates an item and is refused the journal; the writes are recorded under the PM's session", async t => {
-  const { file } = await credentialsFile(t, [entry("pm-token", { session: "PM", role: "PM" })]);
+  const { file } = await credentialsFile(t, [entry("pm-token", { session: "PM", role: "PM", project: "PM" })]);
   const { url, store } = await server(t, { credentials: new Credentials(file) });
   const client = new Client({ name: "HTTP PM test", version: "1" });
   await client.connect(new StreamableHTTPClientTransport(new URL(url + "/mcp"), { requestInit: { headers: { Authorization: "Bearer pm-token" } } }));

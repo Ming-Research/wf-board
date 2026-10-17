@@ -42,13 +42,14 @@ test("a record cannot carry a difficulty, in the schema and by conversion to a r
   await refuses(op.setDifficulty({ ...asArchitect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
 });
 
-test("only Architect from the session PM or 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
+test("only the PM (author PM, session PM) or Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
   const refusal = rx`only ${PROCESS_WRITERS} may set an item's difficulty`;
-  // A project author, a project author borrowing the architect's session, the architect's project from another session or
-  // from none, and the retired coordinator are all refused.
-  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }]) {
+  // A project author, a project author borrowing the architect's or the PM's session, the architect's project from another
+  // session, from none or from the PM's, the PM's project without its session or with the architect's, and the retired
+  // coordinator are all refused.
+  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }, { author: architect, session: "PM" }, { author: "PM" }, { author: "PM", session: architectSession }]) {
     await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
     await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }

@@ -156,7 +156,7 @@ test("the PM, by its session or by a credential of its role, starts and ends dis
   await op.dispatchFinish({ ...finish, ...asPM, id: "other" });
   assert.equal(store.snapshot().items.other!.dispatches![0]!.finish!.result, "返工后通过");
   // Over a credential the role decides, whatever session the call carries.
-  const pm = { ...asPM, access: { role: "PM" as const, project: "Architect", roots: [] } };
+  const pm = { ...asPM, access: { role: "PM" as const, project: "PM", roots: [] } };
   await op.dispatchStart({ ...start, ...pm, id: "other", agentId: "agent-0002", agent: "other-worker" });
   await op.dispatchFinish({ ...finish, ...pm, id: "other", agentId: "agent-0002" });
   assert.equal(store.snapshot().items.other!.dispatches!.length, 2);

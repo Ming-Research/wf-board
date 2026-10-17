@@ -28,14 +28,15 @@ export const author = "Whitefoot";
 export const architect = "Architect";
 export const architectSession = "架构师";
 export const asArchitect = { author: architect, session: architectSession };
-/** The PM writes as author Architect (the project of agents_config, where it runs) from the session PM: it creates, cancels and retitles items, but writes no journal and changes no tag vocabulary. */
+/** The PM writes as author PM (a project of its own) from the session PM: it creates, cancels and retitles items, but writes no journal and changes no tag vocabulary. */
+export const pmAuthor = "PM";
 export const pmSession = "PM";
-export const asPM = { author: architect, session: pmSession };
+export const asPM = { author: pmAuthor, session: pmSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
+  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: pmAuthor }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
   const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };

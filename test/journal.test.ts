@@ -22,7 +22,7 @@ async function journalBoard(t: { after(fn: () => void | Promise<void>): void }, 
   const dir = await mkdtemp(join(tmpdir(), "wf-board-journal-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const tag = { name: "协作流程", meaning: "process", ...(options.tagProjects ? { projects: options.tagProjects } : {}) };
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: architect }, { name: "Whitefoot" }], tags: [tag] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: architect }, { name: "PM" }, { name: "Whitefoot" }], tags: [tag] } });
   const op = ops(store, now);
   if (options.notes !== false) await op.createItem({ author: architect, session: "架构师", key: "architect-notes", title: "架构师笔记", record: true, group: architect, tags: ["协作流程"] });
   return { store, op };
@@ -114,7 +114,7 @@ test("only the architect writes the journal; another project is refused with the
 test("the journal is the architect's: Architect without the session 架构师, the PM included, is refused, and nothing is written", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const before = store.snapshot();
-  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }]) {
+  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }, { author: "PM", session: "PM" }, { author: "PM", session: "架构师" }]) {
     await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
     assert.deepEqual(store.snapshot(), before);
   }

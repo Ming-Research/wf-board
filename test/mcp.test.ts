@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
-import { ARCHITECT_WRITER, PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
+import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
 import { board, author, architect, asArchitect, later, rx } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
@@ -31,10 +31,10 @@ test("project MCP after parameters reorder existing and newly created projects w
   }
   const moved = await client.callTool({ name: "update_project", arguments: { ...asArchitect, name: "Whitefoot", after: "Firn" } });
   assert.equal(moved.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管", "Architect"]);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "Whitefoot", "总管", "Architect", "PM"]);
   const created = await client.callTool({ name: "create_project", arguments: { ...asArchitect, name: "New", after: "Firn" } });
   assert.equal(created.isError, undefined);
-  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect"]);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Firn", "New", "Whitefoot", "总管", "Architect", "PM"]);
   const refused: Array<[string, Record<string, unknown>, RegExp]> = [
     ["update_project", { author: "Firn", name: "Firn", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     ["create_project", { author: "Firn", name: "Refused", after: "New" }, rx`after: only ${PROCESS_WRITERS} may reorder projects`],
@@ -395,7 +395,7 @@ test("MCP names the PM and Architect on the tools it reserves, lets them write a
   assert.deepEqual(store.snapshot().items.other!.log.at(-1), { at: later, by: architect, text: "Architect evidence" });
   const before = store.snapshot();
   const sessionless = await client.callTool({ name: "append_log", arguments: { author: architect, id: "other", text: "No session" } });
-  assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*Architect writes other projects' items only with session ${PROCESS_SESSIONS}`); assert.deepEqual(store.snapshot(), before);
+  assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*only ${PROCESS_WRITERS} write other projects' items`); assert.deepEqual(store.snapshot(), before);
   const retired = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
   assert.equal(retired.isError, true); assert.match(text(retired), /author 总管: this identity is retired; write as Architect/); assert.deepEqual(store.snapshot(), before);
 });
