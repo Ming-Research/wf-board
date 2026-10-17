@@ -292,6 +292,27 @@ test("completed acceptance before delivery does not complete the item or raise a
   assert.deepEqual(rules(s).planRatio("a"), { done: 3, total: 3 });
 });
 
+test("progressShare counts a done row whole, a row in progress half, and leaves dropped rows out", () => {
+  const s = snapshot({ a: {}, b: {} });
+  s.items.a!.plan = [step("one", "done"), step("two", "done"), accept("doing")];
+  assert.equal(rules(s).progressShare("a"), 5 / 6, "two done and one in progress: 2.5 of 3 rows");
+  s.items.a!.plan = [step("one", "done"), step("two", "dropped"), accept("todo")];
+  assert.equal(rules(s).progressShare("a"), 0.5, "a dropped row is not in the count");
+});
+
+test("progressShare counts a sub-item row by its status, shared or owned, and a card by its ruling", () => {
+  const s = snapshot({ a: {}, b: {} }, { q: {} });
+  s.items.b!.plan = [step("work", "doing"), accept()];
+  s.items.a!.plan = [shared("b"), accept()];
+  assert.equal(rules(s).progressShare("a"), 0.25, "a shared sub-item in progress counts half");
+  s.items.b!.plan = [step("work", "done"), accept("done")];
+  assert.equal(rules(s).progressShare("a"), 0.5, "a shared sub-item done counts whole");
+  s.items.a!.plan = [{ id: "q", card: "q", after: [] }, accept()];
+  assert.equal(rules(s).progressShare("a"), 0, "an open card counts nothing");
+  s.decisions.q!.status = "ruled";
+  assert.equal(rules(s).progressShare("a"), 0.5, "a ruled card counts whole");
+});
+
 test("only-acceptance and placeholder checks inspect every acceptance scenario", () => {
   const s = snapshot({ a: {} });
   s.items.a!.plan = [step("work", "done"), accept("done"), { ...accept(), id: "scenario", text: "（转换时没找到完成条件，待补）" }];
