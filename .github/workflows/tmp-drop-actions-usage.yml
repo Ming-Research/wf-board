@@ -1,0 +1,19 @@
+name: tmp-drop-actions-usage
+# Temporary quick check for the drop-actions-usage branch. Delete before the branch is ready.
+on:
+  push:
+    branches: [drop-actions-usage]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: node --test test/wake.test.ts test/wake-agents.test.ts test/deploy.test.ts test/budget.test.ts test/mcp.test.ts test/migrate-priority.test.ts test/rules-oracle.test.ts

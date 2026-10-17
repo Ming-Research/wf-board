@@ -26,8 +26,6 @@ export interface TimedFields {
   finished: Array<string | { more: number }>;
   /** The pools that have a free slot and candidates, as the PM was last told: a reminder when that push went unhandled. */
   dispatch: Offer[];
-  /** What the Actions usage watch says when it needs handling (the billing cannot be read, or has a sku the account does not know); empty otherwise (src/usage-watch.ts). */
-  actions: string;
 }
 
 function capped<T>(rows: T[]): Array<T | { more: number }> {
@@ -51,7 +49,7 @@ const workingOn = (r: Rules, open: string[]) => open.filter(id => r.projectOf(id
 /** What one timed wake carries: the items changed since the last one (not those only the PM or the architect itself wrote,
  * which it already knows) and how many items are being worked on and open in the Architect and PM projects. The lists of those
  * items are not repeated: `list` gives them when wanted. `since` is the last timed wake's mark; without one, the daemon's start. */
-export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, dispatch: Offer[] = [], actions = ""): Promise<TimedFields> {
+export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, dispatch: Offer[] = []): Promise<TimedFields> {
   const { from, changed } = await changedSince(store, s, r, since, started, session => answersPushes({ session }));
   const open = Object.keys(s.items).filter(id => r.isOpenWork(id));
   return {
@@ -63,7 +61,6 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
     review: capped(open.filter(id => reviewRequested(s.items[id]) !== undefined && !hasReviewer(s, id))),
     finished: capped(Object.keys(s.items).filter(id => r.statusOf(id) === "done" && holderOf(s, id) !== undefined)),
     dispatch,
-    actions,
   };
 }
 

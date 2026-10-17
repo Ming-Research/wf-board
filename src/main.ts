@@ -10,8 +10,6 @@ import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
-import { ghBilling } from "./billing.ts";
-import { UsageWatch } from "./usage-watch.ts";
 import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
 import { SlowOps } from "./slow-ops.ts";
@@ -43,12 +41,10 @@ async function main() {
   const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the PM, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
-  // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the PM at its levels.
-  const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
   // Times every page request and tool call, and tells the PM of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
   const credentials = new Credentials(credentialFile);
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
