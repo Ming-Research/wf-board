@@ -1943,7 +1943,13 @@ text and leaves out the click handlers that call functions of the page. A drawn
 diagram stands in for its code (the code stays in the page, hidden). It is drawn compact:
 the library runs with tighter gaps between nodes and between layers and less padding
 inside a node than its own, per diagram type (`COMPACT` in `web/mermaid.ts`), and the font
-size is left alone, so the same text takes less room and stays readable. Its width on the page
+size is left alone, so the same text takes less room and stays readable. The library's default
+layout (ELK, with its neo look) keeps fixed gaps and paddings and ignores those settings, so
+the page asks for the dagre layout and the classic look. The width of a diagram, not its area,
+sets how far fitting it to the text shrinks the font, so the settings are chosen for a narrow
+diagram (checked on a flow chart shaped like a role's: less area than the library's own layout,
+and a node font of at least 12 px on the screen at a window 1500 px wide). A label wraps at
+100 px: narrower, and a Chinese label breaks into lines of one or two characters. Its width on the page
 is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
 width of the drawing: a diagram is shrunk to the text and never enlarged by fitting, nothing is
 measured by script, and the page never scrolls sideways. The height follows the width; a tall

@@ -23,8 +23,9 @@ const COMPACT = {
   // the width), but under about 100 px a Chinese label breaks into lines of one or two characters.
   flowchart: { look: "classic", nodeSpacing: 14, rankSpacing: 24, padding: 6, diagramPadding: 4, wrappingWidth: 100, minNodeWidth: 56 },
   state: { nodeSpacing: 20, rankSpacing: 28 },
-  // A class diagram keeps the library's gap between layers: the edge between two classes holds its label and the multiplicities at its ends.
-  class: { nodeSpacing: 20 },
+  // The edge between two classes holds its label and the multiplicities at its ends, which run into each other when the edge is short
+  // (they do at the library's own gap of 50 px under dagre), so a class diagram gets more room between layers, not less.
+  class: { nodeSpacing: 20, rankSpacing: 80 },
   er: { nodeSpacing: 70, rankSpacing: 50, diagramPadding: 8 },
   // The boxes of the actors keep their width: a Chinese name does not wrap in them.
   sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, boxMargin: 6, messageMargin: 28 },
