@@ -507,6 +507,11 @@ async function replay(name: string): Promise<void> {
   const events = readFileSync(trace, "utf8").trimEnd().split("\n").map(l => JSON.parse(l) as { event: string; sid: string; time: string; argv?: string[] });
   const exitTime = (sid: string, from: string) => events.find(e => e.event === "exit" && e.sid === sid && e.time >= from)?.time ?? "￿";
   const procs = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack")).map(e => ({ from: e.time, to: exitTime(e.sid, e.time) }));
+  // Every maintenance process the trace saw: when it began (seconds from the first event), how long it lasted, and how many commits came before it.
+  const firstTime = events[0]!.time, secs = (a: string, b: string) => (Date.parse(a.replace(/\.(\d+)Z?$/, (_, d: string) => "." + d.slice(0, 3) + "Z")) - Date.parse(b.replace(/\.(\d+)Z?$/, (_, d: string) => "." + d.slice(0, 3) + "Z"))) / 1000;
+  const commitStarts = events.filter(e => e.event === "start" && e.argv?.includes("commit")).map(e => e.time);
+  const seen = events.filter(e => e.event === "start" && e.argv?.some(a => a === "maintenance" || a === "repack")).map(e => ({ argv: (e.argv ?? []).filter(a => !a.startsWith("-c")).slice(0, 5).join(" "), from: e.time, to: exitTime(e.sid, e.time) }));
+  note(`E4 ${def.name}: maintenance processes in the trace (start s / duration s / commits before): ${seen.filter(m => (m.argv.includes("repack") || m.argv.includes("maintenance")) && (m.to === "\uffff" || secs(m.to, m.from) >= 0.05)).map(m => `${f(secs(m.from, firstTime), 1)}/${m.to < "\uffff" ? f(secs(m.to, m.from), 2) : "?"}/${commitStarts.filter(c => c < m.from).length} [${m.argv.slice(-30)}]`).join("  ")}`);
   const adds = events.filter(e => e.event === "start" && e.argv?.includes("add")).map(e => e.time);
   const overlaps = adds.filter(a => procs.some(m => a >= m.from && a < m.to)).length;
   const after = counts(dir);
