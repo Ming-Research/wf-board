@@ -1,0 +1,6 @@
+Decision: The read of what changed lists by default only the flags that are new, the items that are new and the notes and cards that others wrote, each once and up to a limit, and gives the rest as counts, where a flag is new when the present board has it and the board as of the start of the range did not, that old board being rebuilt from the present one by putting back each document the range wrote, and flags are never left out because their own writer caused them, because a reader's answer stays in its context until it is compacted and a flag its own writer caused is exactly what a patrol must still see ([Finding things](../../docs/design.md#finding-things)), instead of listing every changed document in the range by default or excluding the caller's own flags; the activity used to judge an old board's flags is the present activity, which is accepted because the error only affects the check for a missing difficulty and a rebuild would scan the six hours before the range.
+
+Rejected:
+- Listing every changed document in the range by default: rejected because the answer would stay in the caller's context.
+- Leaving out the flags that the caller's own writes caused: rejected because such a flag is what a patrol must still see.
+- Scanning the six hours before the range to rebuild old session activity: rejected because this case does not justify its cost.

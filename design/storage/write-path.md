@@ -1,0 +1,4 @@
+Decision: The store publishes one frozen snapshot of the board and a write copies only the collections it changes, and what is derived from the board is advanced incrementally (activity times in an index that a write advances, one rules object per snapshot and minute for all readers, and only the items a write affects re-derived and repainted), because each write used to copy the whole board twice and derive it about eight times, which cost 0.28 to 0.4 seconds of daemon CPU a write on the live board, a quarter of it garbage collection ([Write cost](../../docs/design.md#4-architecture)), instead of a deep copy and a full derivation on every write.
+
+Rejected:
+- A deep copy of the whole board and a derivation from scratch on every write (the earlier design): rejected because of its measured CPU cost per write.

@@ -1,0 +1,14 @@
+Decision: The board's data is a git working tree of plain files beside the checkout, and each logical operation is one commit authored by the writing project (or by the owner) whose message summarizes the operation, because every change is then kept with who made it and when, and an agent can still read the files with ordinary tools while the daemon is down ([Storage](../docs/design.md#4-architecture)), instead of a database, which would hide the data from everyone but the daemon.
+
+Decision: Git's automatic maintenance runs in the foreground of the commit that triggers it, because no git process may then write the data repository outside the serialized writes, and a repack inside a commit took 345 to 793 milliseconds for 5,000 new loose objects on a hosted runner against a two-second write limit; the first repack of the live repository was not measured, so after deployment the architect checks the slowest write in the service log against three seconds, instead of detached background maintenance.
+
+Decision: Every document is a YAML file with prose in literal blocks (one file for each document, except that messages share one file for each UTC day and the tag vocabulary shares the board file with the project list), written only by the daemon through one serializer and checked against a schema on read and write, because a git diff then shows the changed lines of prose and plain tools show readable text while the structure stays exact ([Data format](../docs/design.md#5-data-format)), instead of JSON or Markdown with front matter.
+
+Decision: Each fact is stored once and places are derived: a card's place is its item field alone, an item's place is the one plan row that owns it, a note's title comes from its target, and an item's project is stored once and changes only together with everything the item owns, so that the stored field and the ownership chain always agree, because the copies of a relation stored on both sides went stale in the board's earlier form (27 cards missing from their item's list, 572 items holding both a parent and an area, 13 stale note titles), instead of storing a relation on both sides.
+
+Rejected:
+- A database: rejected because the data would be hidden from every tool but the daemon while it is down.
+- Detached background maintenance: rejected because a git process would then write the repository outside the write queue.
+- JSON files: rejected because a paragraph becomes one escaped line, so a one-word edit rewrites the whole line in a diff and plain tools show escaped text.
+- Markdown files with front matter: rejected because structure inside the body, such as a log entry's time and author, needs reserved heading lines, and every new field would stretch that encoding.
+- Storing a relation on both sides (item lists on cards, a parent beside an area, stored note titles): rejected because the copies went stale.

@@ -4,7 +4,7 @@ import type { Notify } from "./notify.ts";
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html, and the
  * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
-export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
+export const NO_RESTART = ["docs/", "design/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".gitmodules", "Makefile", ".github/"];
 
 /** A request for a push, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and the fields its `external` lists. `repo` is
  * the repository as `Owner/Name` (null when it cannot be told) and `changes` the main-line commits the deploy concerns, as

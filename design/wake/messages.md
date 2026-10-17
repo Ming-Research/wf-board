@@ -1,0 +1,10 @@
+Decision: Messages between agents are stored on the board, in the file of the UTC day, where each message is written once and never changed, under the sender's session and project, so that the recipient gets a message whether or not its process runs and the owner keeps the complete history, because one file a day keeps the number of files, and so the size of git's index, growing by one a day however many messages are sent, and with 50,000 messages on a board of the live size opening the board took 17 seconds instead of 5 and a write 155 milliseconds instead of 75 (three interleaved rounds on a hosted runner, a rough measure) ([Data format](../../docs/design.md#5-data-format), [Messages](../../docs/design.md#messages)), instead of messages only in the recipient's stream, in an item's log, or one file for each message.
+
+Decision: A message is one line of at most 150 characters, a longer one is refused and never cut, and the recipient must be the PM, the architect, a session with an open dispatch or the session of a long-lived credential, because a message is a doorbell and the content belongs on the item, and a mistyped recipient must fail at once, instead of a longer text that is cut when it is pushed.
+
+Rejected:
+- Keeping messages only in the recipient's stream, a local file outside git: rejected because it keeps only the newest few hundred and is lost with the machine, so the owner's history could not be complete.
+- Writing a message into an item's log: rejected because it has no place for a message about no item and gives the page no list by time.
+- One file for each message: rejected because with 50,000 messages opening the board took about three times as long and a write about twice as long (a rough measure).
+- Archiving old messages into monthly files: rejected because it keeps a second place to read messages from and a job that moves them.
+- A message of 500 characters that is cut when pushed: rejected because a cut text may lose the item to read, and the line limit would then not hold.

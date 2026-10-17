@@ -8,7 +8,8 @@ specific to wf-board.
 The board the owner and every agent session share, independent of any
 claude.ai account: the owner reads and answers on the page, agents find
 context and record progress through MCP tools built for collaboration. The
-design and its reasons are `docs/design.md`.
+design and its reasons are `docs/design.md`; the decisions it rests on, with
+what each beat, are the design tree in `design/` (section "Design tree").
 
 First priorities: nothing on the board is lost or silently changed; then
 agents get the context they need in few, compact calls; then the owner's page
@@ -107,6 +108,9 @@ matches what the artifact board offered.
   synthetic board of the live board's size with a long history); the same workflow
   runs it on this tree, where a failed check fails the run, and on the base commit,
   as a report only.
+- `design/`: the design tree, one Markdown file per node and the change log
+  `design/log.md`; `design/skill` is the Design-skill submodule that checks it.
+  `Makefile` holds the two targets that run the check. Section "Design tree".
 - `scripts/check-private-content.ts`, with its rules in
   `scripts/private-content-rules.ts`: the CI check that a push or a pull
   request adds nothing private to this public repository (design section
@@ -132,6 +136,30 @@ matches what the artifact board offered.
 - Every page fix gets a real-browser regression witness
   (`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
   reversed.
+- `make design-lint` checks the design tree's form and the checker's own tests;
+  the `design` workflow runs it on every push. `make design-ready` is the
+  readiness check, which the same workflow runs on a pull request that is ready
+  for review and on `main`. Both need the submodule
+  (`git submodule update --init design/skill`).
+
+## Design tree
+
+The shared rules' design-tree section applies; this is how it maps here.
+
+- The live trees are the root nodes `design/<name>.md` named in `DESIGN_TREES`
+  in the `Makefile`; a new root is added there. The change log is
+  `design/log.md`; the checker is the submodule `design/skill`, changed only in
+  Design-skill.
+- The research record is `docs/design.md`: the derivations, measurements and
+  data a node's reason cites, which a node links to the heading that holds them
+  (a bold lead-in such as "Storage" has no anchor, so the link goes to its
+  section). Tests slice `docs/design.md` by heading (`test/wake.test.ts`,
+  `test/web.test.ts`): renaming or moving a heading they name breaks them.
+  Deferred work is an item on the board, never a file here.
+- A node records only what is in force on `main`. A change to a decision changes
+  its node in the same pull request, with a new entry in `design/log.md`; a
+  decision that is removed has its node retired with a rejection reason.
+- The readiness check adds nothing to the shared rules'.
 
 ## Rules
 
