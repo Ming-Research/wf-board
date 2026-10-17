@@ -266,6 +266,9 @@ test("an engineer replies to the notes on its subtree and no others, and cannot 
   // note-1 is the owner's comment on item a.
   await assert.rejects(op.replyNote({ ...who(["b"]), id: "note-1", reply: "不是我的" }), outside("a", "b"));
   assert.equal(store.snapshot().notes["note-1"]!.reply, undefined);
+  // note-2 is on the card choice, which belongs to item b: a note on a card is in scope when the card's item is.
+  await assert.rejects(op.replyNote({ ...who(["a"]), id: "note-2", reply: "x", replace: true }), outside("b", "a"));
+  assert.equal(store.snapshot().notes["note-2"]!.reply, "中文回复");
   await op.replyNote({ ...who(["a"]), id: "note-1", reply: "改好了" });
   const note = store.snapshot().notes["note-1"]!;
   assert.deepEqual([note.state, note.reply, note.repliedBy], ["done", "改好了", "Whitefoot"]);
