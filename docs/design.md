@@ -926,7 +926,7 @@ log:
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `m` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
-  selected item's body and comments appear in the detail column, with a short blue line beside its headline.
+  selected item's body and comments appear in the detail column, with a short blue line beside its headline only when the title itself changed (a new item carries it too; a changed body does not).
   The 新 chip counts what is new inside. Added or changed plan rows and target rows, new notes
   and replies, and added link rows use the same blue bar. Plan rows
   and targets compare by stable id against the item before its first unread

@@ -1,0 +1,19 @@
+name: tmp-title-bar-only-title
+# Temporary quick check for the detail headline's blue line. Delete before the branch is ready for the full CI.
+on:
+  push:
+    branches: [title-bar-only-title]
+permissions:
+  contents: read
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: node --test test/web.test.ts

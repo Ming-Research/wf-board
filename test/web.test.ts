@@ -1016,6 +1016,17 @@ test("the blue line marks an item's own new content: new and changed items, not 
   assert.ok(!item(changed,"plain").className.split(" ").includes("fresh"),"an item with nothing new carries no bar");
 });
 
+test("the detail headline's blue line marks a changed title only, not a changed body", async () => {
+  const s = snapshot();
+  const body = await page(s, unread(), {...s.items.child!, head:"Before"}); await expand(body);
+  await selectWide(body,"child");
+  assert.ok(!detailItem(body,"child")!.className.split(" ").includes("fresh"),"a changed body draws no line beside the detail headline");
+  assert.ok(rowOf(body,"child").className.split(" ").includes("fresh"),"the tree row keeps the item's own line for a changed body");
+  const titled = await page(s, unread(), {...s.items.child!, title:"Earlier title"}); await expand(titled);
+  await selectWide(titled,"child");
+  assert.ok(detailItem(titled,"child")!.className.split(" ").includes("fresh"),"a changed title draws the line beside the detail headline");
+});
+
 test("new and changed cards carry the blue bar with their 新 chip; a changed card also keeps its inline marks", async () => {
   const s=snapshot(); s.decisions.q=card();
   const created=await page(s,unread("decision","q"),null); await expand(created);
