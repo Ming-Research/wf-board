@@ -2378,8 +2378,8 @@ less than 30 minutes apart postpone the ask for good.
 The connection of a wait script is no sign, because it outlives its session. On
 2026-10-17 a probe held a connection to a copy of the board from a background
 command of a session; `claude stop` ended the session at 17:51:40, the probe's
-shell was taken over by process 1, and the connection stayed open for as long as
-the copy's log was read, 2.5 minutes after the stop (the session itself was never
+shell was taken over by process 1, and the connection was still open in the copy's
+log at 17:53:11, 1.5 minutes after the stop (the session itself was never
 idle, since a command was running, so the reclaiming of an idle session was not
 observed). So the script sends the alive frame only while the session that
 started it is running, at least every 10 minutes (a silence is asked at 30), and
@@ -2392,8 +2392,7 @@ reported; the script calling a tool as the session every 25 minutes, which hands
 the script the session's credential and costs a tool call for what one frame says.
 
 The 30 and 30 minutes are a provisional choice. The architect then knows within
-an hour of a session's last sign, about when Claude Code stops an idle
-background session. On 2026-10-16, over thirteen sessions at work, a session was
+an hour of a session's last sign. On 2026-10-16, over thirteen sessions at work, a session was
 more than 30 minutes past its last board write 0.2 % of the time (15 minutes:
 11 %); only writes were counted, and reads now count too. Rejected: 15 and 15
 minutes, which would call the architect to engineers at work; 60 and 30 minutes,

@@ -249,8 +249,11 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
       socket.on("error", console.error);
       socket.on("close", () => connections.delete(connection));
       socket.on("message", data => {
-        let message: { ack?: unknown; alive?: unknown };
-        try { message = JSON.parse(data.toString()) as typeof message; } catch { return; }
+        let parsed: unknown;
+        try { parsed = JSON.parse(data.toString()); } catch { return; }
+        // `null` is valid JSON and has no fields to read; like a number, a string or an array it is not a frame.
+        if (typeof parsed !== "object" || parsed === null) return;
+        const message = parsed as { ack?: unknown; alive?: unknown };
         if (typeof message.ack === "number") stream.deliver(message.ack);
         // The wait script says its session is still there; the connection alone does not (docs/design.md, Liveness).
         if (message.alive === true) wake.liveness.see(name);

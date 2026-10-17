@@ -315,7 +315,7 @@ export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 export class Wake extends NumberedLog {
   readonly receiptLimitMs: number;
   private readonly dir?: string;
-  /** Whether the sessions holding items are still there: a call or a connection is a sign (`liveness.see`), and the server's
+  /** Whether the sessions holding items are still there: a call, or an alive frame from its wait script, is a sign (`liveness.see`), and the server's
    * minute timer runs `liveness.check`, which pushes the ask and the "no answer" through this object. */
   readonly liveness: Liveness;
   private receipted = 0;
