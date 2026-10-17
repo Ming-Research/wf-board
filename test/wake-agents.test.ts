@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, server, wakeSocket, asArchitect } from "./helpers.ts";
-import { ARCHITECT_SESSION, PM_SESSION } from "../src/model.ts";
+import { agentSocket, board, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { ARCHITECT_SESSION, MESSAGE_TEXT_LIMIT, PM_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
@@ -32,12 +32,14 @@ async function until(done: () => boolean, what: string): Promise<void> {
   assert.ok(done(), `timed out waiting for ${what}`);
 }
 
-test("every kind says where it goes, and a holder route names one of the kind's own fields", () => {
+test("every kind says where it goes, and a holder or session route names one of the kind's own fields", () => {
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) {
-    const to = (spec as { to?: unknown }).to;
-    assert.ok(to === "pm" || (typeof to === "object" && to !== null && (spec.fields as readonly string[]).includes((to as { holder: string }).holder)), `${kind} must name its recipient`);
+    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string } | "pm" | undefined;
+    const field = typeof to === "object" && to !== null ? to.holder ?? to.session : undefined;
+    assert.ok(to === "pm" || (field !== undefined && Object.keys(to!).length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent" });
+  assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
 });
 
 // Every field at a length no real push reaches: the line must stay within its limit whatever the fields hold.
@@ -56,6 +58,8 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   deployed: { version: L, previous: L, changes: many, restarted: true },
   deployFailed: { version: null, running: null, reason: L },
   "item-done": { item: L, project: L, title: L, parent: L },
+  // A message's text is refused above MESSAGE_TEXT_LIMIT when it is sent, so its longest is that; the rest is any length.
+  message: { message: L, from: L, project: L, to: L, item: L, text: "长".repeat(MESSAGE_TEXT_LIMIT) },
 };
 
 test("one line of any push holds at most LINE_LIMIT characters, starts with its number and label, and is what the frame carries", () => {
@@ -69,6 +73,18 @@ test("one line of any push holds at most LINE_LIMIT characters, starts with its 
   }
   // A short push is shown whole, so nothing is cut that fits.
   assert.equal(new AgentStream("eng").push("item-done", done("c1", "p1")).line, "#1 子条目做完 · it:c1（Whitefoot） · 子条目 · 等它的：it:p1");
+});
+
+test("a message's line keeps its whole text and cuts only what comes before it", () => {
+  const stream = new AgentStream("eng", { now: () => T0 });
+  const text = "读".repeat(MESSAGE_TEXT_LIMIT - 1) + "完";
+  const short = stream.push("message", { message: "m1", from: "架构师", project: "Architect", to: "eng", item: "a", text: "看 a 的日志" });
+  assert.equal(short.line, "#1 消息 · 架构师（Architect） · it:a：看 a 的日志");
+  assert.equal(stream.push("message", { message: "m2", from: "PM", project: "Architect", to: "eng", item: null, text: "好" }).line, "#2 消息 · PM（Architect）：好", "no item, no item part");
+  const long = String(stream.push("message", { message: "m3", from: "名".repeat(80), project: "Whitefoot", to: "eng", item: "k".repeat(200), text }).line);
+  assert.ok(long.endsWith("：" + text), "the text is whole, its last character included");
+  assert.equal(chars(long), LINE_LIMIT, "a prefix cut to its limit and the longest text fill the line exactly");
+  assert.ok(long.startsWith("#3 消息 · " + "名".repeat(10)) && long.includes("…："), "the sender is cut, marked with …");
 });
 
 test("each agent's stream numbers, keeps and replays on its own, a holder route reaches the holder's stream, and with no holder the PM's", async t => {
@@ -87,6 +103,17 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.deepEqual(again.agent("工程师甲").pending().frames.map(f => f.n), [1, 2]);
   assert.equal(again.agent("工程师甲").push("item-done", done("c5", "p1")).n, 3, "numbering goes on after a restart");
   assert.equal(again.latest(), 1, "the PM's numbers are its own");
+});
+
+test("a push routed to the session of the PM or of the architect goes to the PM's stream, and no stream is made under their names", async t => {
+  const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), dir, now: () => T0 });
+  const held: Record<string, string> = { mine: PM_SESSION, theirs: ARCHITECT_SESSION };
+  wake.routeBy(item => held[item]);
+  const message = (to: string) => ({ message: "m", from: "eng", project: "Whitefoot", to, item: null, text: "看" });
+  wake.push("message", message(PM_SESSION)); wake.push("message", message(ARCHITECT_SESSION));
+  wake.push("item-done", done("c1", "mine")); wake.push("item-done", done("c2", "theirs"));
+  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "message", "item-done", "item-done"]);
+  assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), false);
 });
 
 test("a delivered push is never given again: after an ack, across a restart, and once a tool result carried it", async t => {
@@ -128,6 +155,15 @@ test("an agent's stream keeps its newest events, and says when undelivered ones 
   assert.deepEqual(stream.pending(), { frames: [], gap: false });
 });
 
+test("a tool result says when undelivered pushes were dropped, naming the oldest the board still keeps", () => {
+  const wake = new Wake({ now: () => T0 }), stream = wake.agent("eng");
+  for (let i = 1; i <= 205; i++) stream.push("item-done", done("c" + i, "p"));
+  assert.equal(stream.oldest(), 6, "an agent's stream keeps its newest 200");
+  const lines = wake.footer("eng").split("\n");
+  assert.equal(lines[1], "有推送没送到就被丢了（看板只留 #6 及以后的）：去看板读最近的变化", "the same words the wait script prints");
+  assert.match(lines[2]!, /^#6 子条目做完 /);
+});
+
 test("a stream nobody uses goes after a week; one with undelivered pushes, a holder's or a recent one stays", async t => {
   const dir = await scratch(t);
   let clock = T0;
@@ -153,16 +189,6 @@ test("the holder of an item is the agent of its newest engineer dispatch that ha
 });
 
 /** A socket on an agent's stream, with what it received. */
-async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
-  t.after(() => socket.terminate());
-  const frames: Array<Record<string, unknown>> = [];
-  socket.on("message", data => frames.push(JSON.parse(data.toString())));
-  await once(socket, "open");
-  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
-  await sync();
-  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
-}
 async function refused(t: { after(fn: () => void): void }, url: string, path: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + path);
   socket.on("error", () => {}); t.after(() => socket.terminate());

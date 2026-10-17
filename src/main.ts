@@ -31,7 +31,10 @@ async function main() {
   // A read of history that runs under no budget fails (docs/design.md, section 4, Request budgets).
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup, requireBudget: true });
   lap("open store");
-  const op = ops(store);
+  // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
+  const credentialFile = new CredentialFile(defaultCredentialsPath());
+  // A message may go to the session of any long-lived credential (docs/design.md, Messages).
+  const op = ops(store, undefined, { sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The pushes to the PM, and to each other agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
   const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the PM, a merged PR marks its merge row done.
@@ -40,8 +43,7 @@ async function main() {
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
   // Times every page request and tool call, and tells the PM of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
-  // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
-  const credentials = new Credentials(new CredentialFile(defaultCredentialsPath()));
+  const credentials = new Credentials(credentialFile);
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));

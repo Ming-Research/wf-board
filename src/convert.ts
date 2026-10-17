@@ -328,7 +328,7 @@ export async function importExport(store: Store, exportJson: unknown, options: {
   // The changes since the read land one document per commit, oldest first, so the owner reads them as separate
   // steps in time order; a document the read state already matches makes no commit.
   const timeOf = (kind: DocKind, doc: { updated?: string; repliedAt?: string; sentAt?: string; at?: string } | undefined) => !doc ? "" : kind === "note" ? (doc as Note).repliedAt ?? (doc as Note).sentAt ?? (doc as Note).at : doc.updated ?? "";
-  const changes: Array<{ kind: Exclude<DocKind, "glossary">; id: string; at: string }> = [];
+  const changes: Array<{ kind: Exclude<DocKind, "glossary" | "message">; id: string; at: string }> = [];
   for (const [kind, collection] of [["item", "items"], ["decision", "decisions"], ["note", "notes"]] as const) {
     for (const id of new Set([...Object.keys(converted.asRead[collection]), ...Object.keys(converted.current[collection])]))
       changes.push({ kind, id, at: timeOf(kind, converted.current[collection][id] ?? converted.asRead[collection][id]) });

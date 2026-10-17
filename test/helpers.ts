@@ -88,6 +88,18 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
 }
 
+/** A client of an agent's wake stream, `/wake/<name>`, like wakeSocket. */
+export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
+  t.after(() => socket.terminate());
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on("message", data => frames.push(JSON.parse(data.toString())));
+  await once(socket, "open");
+  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
+  await sync();
+  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
+}
+
 /** A commit to write with `appendCommits`: `at` is seconds since the epoch, `files` maps a path to the document it holds from then on, or null for deleted. */
 export interface HistoryCommit { at: number; message: string; author?: string; session?: string; files: Record<string, unknown | null> }
 

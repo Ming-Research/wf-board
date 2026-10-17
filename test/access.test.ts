@@ -16,12 +16,14 @@ const ARCHITECT_ONLY: Part[] = ["project.create", "tag-vocab", "journal", "item.
 const RESERVED: Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 
 test("each role has the parts the design gives it", () => {
-  assert.deepEqual(grants("审查"), ["item.log:subtree"]);
-  assert.deepEqual(grants("工程师"), ["card.write:subtree", "item.create:subtree", "item.difficulty:below", "item.head:subtree", "item.links:subtree", "item.log:subtree", "item.plan:subtree", "item.tags:subtree", "item.targets:subtree", "note.reply:subtree", "term:subtree"]);
-  assert.deepEqual(grants("资源管理"), ["dispatch.finish:board", "item.head:subtree", "item.log:board", "item.plan:subtree"]);
-  assert.deepEqual(grants("架构师"), PARTS.filter(p => p !== "item.merge-row").map(p => `${p}:board`).sort());
-  assert.deepEqual(grants("PM"), PARTS.filter(p => !ARCHITECT_ONLY.includes(p)).map(p => `${p}:board`).sort(), "the PM has the process parts, not the journal, the tag vocabulary or a new project");
-  assert.deepEqual(grants("观察者"), PARTS.filter(p => !RESERVED.includes(p)).map(p => `${p}:board`).sort());
+  assert.deepEqual(grants("审查"), ["item.log:subtree", "message.send:own"]);
+  assert.deepEqual(grants("工程师"), ["card.write:subtree", "item.create:subtree", "item.difficulty:below", "item.head:subtree", "item.links:subtree", "item.log:subtree", "item.plan:subtree", "item.tags:subtree", "item.targets:subtree", "message.send:own", "note.reply:subtree", "term:subtree"]);
+  assert.deepEqual(grants("资源管理"), ["dispatch.finish:board", "item.head:subtree", "item.log:board", "item.plan:subtree", "message.send:own"]);
+  // Every role sends messages, and a message changes no item: its scope is the sender's own.
+  const items = (parts: readonly Part[]) => parts.filter(p => p !== "message.send").map(p => `${p}:board`);
+  assert.deepEqual(grants("架构师"), [...items(PARTS.filter(p => p !== "item.merge-row")), "message.send:own"].sort());
+  assert.deepEqual(grants("PM"), [...items(PARTS.filter(p => !ARCHITECT_ONLY.includes(p))), "message.send:own"].sort(), "the PM has the process parts, not the journal, the tag vocabulary or a new project");
+  assert.deepEqual(grants("观察者"), [...items(PARTS.filter(p => !RESERVED.includes(p))), "message.send:own"].sort());
   assert.deepEqual(ROLES.filter(writesAnyProject), ["架构师", "PM", "观察者", "资源管理"], "the engineer and the review write inside their own project only");
 });
 
@@ -82,6 +84,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   replyNote: [{ parts: ["note.reply"], args: { id: "note-1", reply: "r" } }],
   setTerm: [{ parts: ["term"], args: { term: "词", definition: "d" } }],
   deleteTerm: [{ parts: ["term"], args: { term: "词" } }],
+  sendMessage: [{ parts: ["message.send"], args: { to: "架构师", text: "t" } }],
 };
 
 test("every write the board has is asked about the table, for every role", async t => {
