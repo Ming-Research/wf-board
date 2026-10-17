@@ -58,7 +58,7 @@ test("the same card or item gets the same tag in every open page, so the browser
 });
 
 test("a notice with no card or item is tagged with its title", () => {
-  assert.equal(noticeTag({ title: "架构师一小时没响应", message: "x" }), "架构师一小时没响应");
+  assert.equal(noticeTag({ title: "PM 一小时没响应", message: "x" }), "PM 一小时没响应");
 });
 
 test("clicking a notice closes it, focuses the page and opens its card or item", () => {
@@ -68,7 +68,7 @@ test("clicking a notice closes it, focuses the page and opens its card or item",
   assert.equal(shown[0]!.closed, true);
   assert.equal(focused(), 1);
   assert.deepEqual(opened, [{ kind: "card", key: "choice" }]);
-  const item: OwnerNotice = { title: "架构师一小时没响应", message: "x", target: { kind: "item", key: "a" } };
+  const item: OwnerNotice = { title: "PM 一小时没响应", message: "x", target: { kind: "item", key: "a" } };
   showNotice(item, env);
   shown[1]!.instance.onclick!();
   assert.deepEqual(opened[1], { kind: "item", key: "a" });

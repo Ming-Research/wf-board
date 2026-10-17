@@ -418,7 +418,7 @@ export class Wake extends NumberedLog {
   /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
   markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
 
-  /** A call from the PM's session: everything pushed to the PM before it is answered. Writes only when that changes something. */
+  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed to the PM before it is answered. Writes only when that changes something. */
   receipt(): void {
     if (this.counter === this.receipted && !this.alerted) return;
     this.receipted = this.counter; this.alerted = false;
@@ -433,7 +433,7 @@ export class Wake extends NumberedLog {
     this.alerted = true;
     this.append({ alert: true, at: this.iso() });
     const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+    this.tell(`PM ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */

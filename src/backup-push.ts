@@ -1,12 +1,12 @@
 import type { Store } from "./store.ts";
 import type { Wake } from "./wake.ts";
 
-/** How long the remote copy may stay behind before the architect is told (docs/design.md, Storage). A push every 10 minutes
+/** How long the remote copy may stay behind before the PM is told (docs/design.md, Storage). A push every 10 minutes
  * is tried in that time, so this is a push that keeps failing or stalling, not one slow round. */
 export const BACKUP_LAG_MS = 60 * 60_000;
 
 /** The pushes of the board's data to its remote, and the watch on whether the remote copy keeps up. A round pushes when there are
- * commits the remote lacks, logs its duration, and tells the architect once when the copy has been behind for `lagMs`: a stuck
+ * commits the remote lacks, logs its duration, and tells the PM once when the copy has been behind for `lagMs`: a stuck
  * push no longer slows a write (src/store.ts, push), so a stuck backup is otherwise silent. */
 export class BackupPush {
   private readonly store: Pick<Store, "push" | "unpushed">;

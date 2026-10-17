@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_WRITER, PM_AUTHOR, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -24,7 +24,7 @@ export interface Ops {
   markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; access?: Access; text: string }): Promise<Result>;
-  /** Records a session the architect started on an item, and logs the start on the item. */
+  /** Records a session the PM (or the architect) started on an item, and logs the start on the item. */
   dispatchStart(a: { author: string; session?: string; access?: Access; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
   /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
@@ -35,7 +35,7 @@ export interface Ops {
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  /** Only the architect sets a difficulty, on an item of any project; the change is logged with its reason. */
+  /** Only the PM and the architect set a difficulty, on an item of any project; the change is logged with its reason. */
   setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
   setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
@@ -105,11 +105,15 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
   if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
-/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the architect (model `isArchitect`), and the `access` the connection's credential grants, when it has one (credentials.ts). */
+/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the PM or the architect (model `isPM`, `isArchitect`), and the `access` the connection's credential grants, when it has one (credentials.ts). */
 interface Writer { author: string; session?: string; access?: Access }
-/** What the board reserves for the architect: every other writer is refused, and `what` names the operation in the message. */
+/** What the board reserves for the architect alone: every other writer, the PM included, is refused, and `what` names the operation in the message. */
 function onlyArchitect(who: Writer, what: string): void {
-  if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may ${what}`);
+  if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT_WRITER} may ${what}`);
+}
+/** What the board reserves for the process, which the PM does and the architect may do too: every other writer is refused, and `what` names the operation in the message. */
+function onlyProcess(who: Writer, what: string): void {
+  if (!mayRunProcess(who)) throw new OpError(`author: only ${PROCESS_WRITERS} may ${what}`);
 }
 /** A difficulty as the log line writes it: the level, or 「架构师做」. */
 const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : difficulty === "architect" ? "架构师做" : String(difficulty);
@@ -204,10 +208,10 @@ function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
   if (!s.board.projects.some(p => p.name === author)) throw new OpError(`${prefix}author ${author}: choose a configured project (${s.board.projects.map(p => p.name).join(", ")}); call projects and use the project whose repo matches your repository`);
 }
 function requireOwnership(s: Snapshot, project: string, who: Writer, id: string): void {
-  const refusal = `item ${id} belongs to project ${project}; report what you need from it to the ${ARCHITECT}, who creates work another project needs in the project that delivers it`
-    + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${ARCHITECT_SESSION}` : "");
+  const refusal = `item ${id} belongs to project ${project}; report what you need from it to the PM, who creates work another project needs in the project that delivers it`
+    + (who.author === ARCHITECT || who.author === PM_AUTHOR ? `; only ${PROCESS_WRITERS} write other projects' items` : "");
   requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
-  if (who.author !== project && !isArchitect(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
+  if (who.author !== project && !mayRunProcess(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
 }
 /** The author's own glossary, the only one it may change; an empty one when it has none yet. */
 function ownGlossary(s: Snapshot, author: string): Glossary {
@@ -283,7 +287,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   function mayWrite(a: Writer, parts: readonly Part[]): void {
     if (!a.access) return;
     const refused = parts.filter(part => ACCESS[a.access!.role][part] === undefined);
-    if (refused.length) throw new OpError(`${refused.join(", ")}: a ${a.access.role} credential may not write ${refused.length === 1 ? "this part" : "these parts"}; report what you need to the ${ARCHITECT}, who writes it`);
+    if (refused.length) throw new OpError(`${refused.join(", ")}: a ${a.access.role} credential may not write ${refused.length === 1 ? "this part" : "these parts"}; report what you need to the PM, who writes it or passes it on`);
   }
   /** After the write is made: when a part is limited to the credential's subtree, every document the write changes must be inside it. */
   function withinScope(s: Snapshot, a: Writer, parts: readonly Part[], work: Work): void {
@@ -351,12 +355,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         // Pause permission covers open work resumed through any indirect effect,
         // including unwritten descendants. Closing work is allowed when its
         // explicit marker stays intact; reopening will restore that pause.
-        if (!isArchitect(a)) for (const id of checked) {
+        if (!mayRunProcess(a)) for (const id of checked) {
           const clearedMarker = s.items[id]?.paused && !next.items[id]?.paused;
           const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
           if (!clearedMarker && !resumedWork) continue;
           const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
-          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} with session ${ARCHITECT_SESSION} can resume it`);
+          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${PROCESS_WRITERS} can resume it`);
         }
         for (const id of written) {
           const old = s.items[id], current = next.items[id]!;
@@ -508,7 +512,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateProject: a => run(a, "project.update", s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
-      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
+      if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT_WRITER} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
       if (a.repo === undefined && a.mainline === undefined && a.after === undefined) throw new OpError("repo: provide repo, mainline or after");
       // `mainline: null` clears the branch, so the repository's default branch counts again.
       const { mainline: current, ...rest } = project, mainline = a.mainline === undefined ? current : a.mainline ?? undefined;
@@ -528,9 +532,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       ] };
     }),
     createItem: a => run(a, "item.create", (s, at) => {
-      onlyArchitect(a, "create items");
+      onlyProcess(a, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
-      // Only the architect creates items, so only the architect can rate the item as it is made, as in set_difficulty.
+      // Only the PM and the architect create items, so only they can rate the item as it is made, as in set_difficulty.
       let difficulty: Difficulty | undefined;
       if (a.difficulty !== undefined) {
         const given = Difficulty.safeParse(a.difficulty);
@@ -601,7 +605,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
-        if (isArchitectSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
+        if (isArchitectSession(a.agent) || isPMSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the PM's or the architect's session name; a dispatch's credential under it would be taken for theirs`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
           if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
@@ -687,12 +691,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
     setDifficulty: a => run(a, "item.difficulty", (s, at) => {
-      onlyArchitect(a, "set an item's difficulty");
+      onlyProcess(a, "set an item's difficulty");
       const it = requireItem(s, a.id);
       return { id: a.id, kind: "item", message: `set_difficulty ${a.id}`, puts: [itemPut(a.id, rated(it, at, a.author, a.difficulty, a.reason))] };
     }),
     setDifficultyMany: a => run(a, "item.difficulty", (s, at) => {
-      onlyArchitect(a, "set an item's difficulty");
+      onlyProcess(a, "set an item's difficulty");
       if (!Array.isArray(a.items) || !a.items.length) throw new OpError("items: give at least one {id, difficulty, reason}");
       const seen = new Set<string>(), puts: Put[] = [];
       for (const [i, given] of a.items.entries()) {
@@ -748,7 +752,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags: boardTags(s.board).filter(t => t.name !== a.name) }), puts, message: `remove_tag ${a.name}${a.replace === undefined ? "" : ` → ${a.replace}`}` };
     }, false, true),
     updateItem: a => run(a, updateParts(a), async (s, at) => {
-      if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyArchitect(a, "change an item's title");
+      if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
       const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
@@ -758,7 +762,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const key of ["title", "head", "links", "priority", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
         // Cancelled work turned into a record and back to work would be reopened without set_status.
-        if (it.status === "cancelled") onlyArchitect(a, "turn a cancelled item into a record");
+        if (it.status === "cancelled") onlyProcess(a, "turn a cancelled item into a record");
         delete doc.paused;
         if (a.accept !== undefined) throw new OpError("accept: refused for a record");
         const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
@@ -773,7 +777,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
     }, true),
     setStatus: a => run(a, "item.cancel", async (s, at) => {
-      onlyArchitect(a, "cancel or reopen an item");
+      onlyProcess(a, "cancel or reopen an item");
       const it = ownedItem(s, a.id, a), message = `set_status ${a.id} ${a.status}`;
       // A repeat finds the item already as the first write left it; after a reopen, a cancel is a decision of its own.
       const asked = a.status === "cancelled" ? it.status === "cancelled" : it.status !== "cancelled";
@@ -789,7 +793,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc)] };
     }),
     setPause: a => run(a, "item.pause", (s, at) => {
-      onlyArchitect(a, "pause or resume an item, at the owner's request");
+      onlyProcess(a, "pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
       const it = requireItem(s, a.id);
       if (it.record) throw new OpError("paused: a record cannot be paused or resumed");
@@ -818,7 +822,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
     }),
     moveItemProject: a => run(a, "item.move-project", (s, at) => {
-      onlyArchitect(a, "move an item to another project");
+      onlyProcess(a, "move an item to another project");
       const root = ownedItem(s, a.id, a), from = root.group;
       requireProject(s, a.project);
       if (a.project === from) throw new OpError(`project: ${a.id} is already in ${a.project}`);

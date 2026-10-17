@@ -272,8 +272,8 @@ test("an owner notice reaches each open page as an owner event, and a page that 
   const controller = new AbortController(); t.after(() => controller.abort());
   const response = await fetch(url + "/api/events", { signal: controller.signal });
   const reader = response.body!.getReader(); await reader.read();
-  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  wake.tell("PM 一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
   const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
   assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
-  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "PM 一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
 });

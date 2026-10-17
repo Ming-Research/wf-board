@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, Note } from "./model.ts";
-import { isArchitectSession } from "./model.ts";
+import { answersPushes } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
@@ -240,8 +240,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
     try { name = decodeURIComponent(url.pathname.slice(6)).trim(); } catch { name = ""; }
-    // The PM's stream is /wake; a name with a slash, none, or a long one is not a session name.
-    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isArchitectSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    // The PM's stream is /wake, which the PM's and the architect's session names answer for; a name with a slash, none, or a long one is not a session name.
+    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || answersPushes({ session: name }) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
@@ -317,7 +317,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const off = store.onChange(change => {
     const s = store.snapshot(), r = store.derived.rules(s, now());
     for (const doc of change.changed) {
-      // A card that stops work is for the owner, who is told in the open board pages; the architect finds it with its other work.
+      // A card that stops work is for the owner, who is told in the open board pages; the PM finds it with its other work.
       if (doc.kind === "decision") {
         const card = doc.after as Decision | null, was = doc.before as Decision | null;
         if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake.tell(`挡事的卡 · ${r.projectOf(card.item)}`, `${card.question}（挡住：${card.blocks}）`, { kind: "card", key: doc.id });

@@ -10,7 +10,7 @@ import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, server, wakeSocket, asArchitect } from "./helpers.ts";
-import { ARCHITECT_SESSION } from "../src/model.ts";
+import { ARCHITECT_SESSION, PM_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
@@ -166,9 +166,11 @@ async function agentSocket(t: { after(fn: () => void): void }, url: string, name
 async function refused(t: { after(fn: () => void): void }, url: string, path: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + path);
   socket.on("error", () => {}); t.after(() => socket.terminate());
-  const [, response] = await once(socket, "unexpected-response");
-  response.resume();
-  return response.statusCode as number;
+  // A refused upgrade answers with a status; one that is wrongly accepted opens the socket, and the test fails at once instead of waiting.
+  return await Promise.race([
+    once(socket, "unexpected-response").then(([, response]) => { response.resume(); return response.statusCode as number; }),
+    once(socket, "open").then(() => 101),
+  ]);
 }
 
 test("an agent's socket gets what was not delivered, then its own live pushes only; after its ack they are not sent again", async t => {
@@ -190,7 +192,7 @@ test("an agent's socket gets what was not delivered, then its own live pushes on
   assert.deepEqual(pm.events().map(f => f.event), ["note"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
   eng.socket.send("not json"); eng.socket.send(JSON.stringify({ ack: "2" })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 1, "anything but a numeric ack is ignored");
-  for (const path of ["/wake/", "/wake/" + encodeURIComponent(ARCHITECT_SESSION), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
+  for (const path of ["/wake/", "/wake/" + encodeURIComponent(ARCHITECT_SESSION), "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
 });
 
 test("another agent's tool call carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {
@@ -211,6 +213,9 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   // Nothing routes to a stream under the PM's name; one made by hand still never reaches the PM's calls.
   wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
   assert.equal(await call({ session: ARCHITECT_SESSION }), plain);
+  wake.agent(PM_SESSION).push("item-done", done("pm-2", "p"));
+  assert.equal(await call({ session: PM_SESSION }), plain, "the PM's session is the PM's too, whether or not a stream was made under its name");
+  assert.equal(await call({ session: ` ${PM_SESSION} ` }), plain);
   assert.equal(await call({ session: " eng " }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(wake.agent("eng").since(1).frames[0]!)}`, "spaces around the name are ignored");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
   const mine = wake.agent("cred-eng").push("item-done", done("c3", "p"));
@@ -220,6 +225,9 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
   assert.equal(await call({ session: "eng" }, architect), plain, "the PM's calls are receipts for its own stream and carry nothing");
   assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 0);
+  const pm: Resolved = { ok: true, who: { author: "PM", session: PM_SESSION, access: { role: "PM", project: "PM", roots: [] } } };
+  assert.equal(await call({ session: "eng" }, pm), plain, "a PM credential is the PM's, whatever session the call names");
+  assert.equal(wake.agent(PM_SESSION).deliveredUpTo(), 0);
 });
 
 test("an item becoming done tells the session holding each open item that waits on it, once, and nobody else", async t => {
