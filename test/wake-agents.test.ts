@@ -372,6 +372,16 @@ test("the offers count the candidates a group stands for and those past the rows
   assert.ok(gpool.listed.some(x => "parent" in x && x.count === 5), "the five parts are listed as one group");
   assert.deepEqual(offers(g, gr).find(o => o.pool === "2+"), { pool: "2+", free: 6, limit: 6, candidates: independent(g, gr) });
   assert.ok(independent(g, gr) >= 6, "the five parts and the fixture's own candidate");
+  // A parent whose parts are of two levels is one group in each pool, and each pool counts only its own parts.
+  const mixed = await board(t), levels = [2, 2, 2, 1, 1];
+  await mixed.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "mparent", expectRev: null, doc: doc("两个级别的部分", { priority: "P0", plan: [...levels.map((_, i) => ({ id: `m${i}`, item: `m${i}`, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...levels.map((difficulty, i) => ({ kind: "item" as const, id: `m${i}`, expectRev: null, doc: doc(`部分 m${i}`, { difficulty }) })),
+  ] });
+  const m = mixed.store.snapshot(), mr = mixed.store.derived.rules(m, T0);
+  const ofLevel = (level: (d: number) => boolean) => Object.keys(m.items).filter(id => mr.startable(id) && holderOf(m, id) === undefined && level(m.items[id]!.difficulty!)).length;
+  assert.deepEqual(offers(m, mr).map(o => [o.pool, o.candidates]), [["1", ofLevel(d => d === 1)], ["2+", ofLevel(d => d >= 2)]]);
+  assert.equal(ofLevel(d => d === 1), 2, "the two level 1 parts");
   // Twelve loose candidates are more than the rows listed for a pool: the rest are only counted.
   const crowded = await board(t), loose = Array.from({ length: 12 }, (_, i) => `loose${i}`);
   await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`, { priority: "P1" }) })) });

@@ -2547,7 +2547,7 @@ table and one row below.
 **Offers.** Every minute the board reads which pool of engineer slots has a free
 slot and how many candidates it has (`candidates`, `src/candidates.ts`; section 6, The
 candidates read) and keeps, for each pool, the free slots and candidates the PM was last told
-(`src/offers.ts`: a group of candidates under one parent counts as the items in it). When
+(`src/offers.ts`, from the `total` of each pool). When
 a pool has something to hand out, a free slot and a candidate, and more free slots or more
 candidates than it was last told, the board pushes `dispatch` with the pool, its free slots and
 limit, and the number of candidates, and that is what the PM is then told. When a look finds fewer, what it was told

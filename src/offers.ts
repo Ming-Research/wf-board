@@ -9,12 +9,9 @@ import type { Rules } from "./rules.ts";
 /** A pool, its free slots and its candidates. */
 export interface Offer { pool: string; free: number; limit: number; candidates: number }
 
-/** Every pool's free slots and candidates, whether or not there is something to hand out. A group of candidates under one parent
- * counts as the items in it. */
+/** Every pool's free slots and candidates, whether or not there is something to hand out. */
 export function poolCounts(s: Snapshot, r: Rules): Offer[] {
-  return candidates(s, r).pools.map(({ pool, free, limit, listed, more }) => ({
-    pool, free, limit, candidates: more + listed.reduce((n, x) => n + ("parent" in x ? x.count : 1), 0),
-  }));
+  return candidates(s, r).pools.map(({ pool, free, limit, total }) => ({ pool, free, limit, candidates: total }));
 }
 
 /** The pools with a free slot and at least one candidate: what the PM can hand out now. */
