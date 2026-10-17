@@ -53,26 +53,28 @@ test("candidates of every project are listed by priority, then by the open items
   // The waiters of y1 hang under the P1 root, so y1 stays P1: a waiter under r0 would make it P0.
   for (const [key, owner, on] of [["d1", "r0", "x2"], ["d2", "r0", "x2"], ["e1", "r1", "y1"], ["e2", "r1", "y1"]] as const) await b.child(key, owner, { plan: [{ item: on, own: false }] });
   const s = b.snapshot(), r = rules(s);
-  // The owner holds a row for each item it owns, and every row that points at an item counts.
-  assert.deepEqual([r.openDependents("x2"), r.openDependents("x1"), r.openDependents("y1")], [3, 1, 3]);
+  // Only the shared rows count: the owner holds an owned row for every item it owns, which tells the items apart by nothing.
+  assert.deepEqual([r.openDependents("x2"), r.openDependents("x1"), r.openDependents("y1")], [2, 0, 2]);
   assert.deepEqual(["y1", "x1", "x3", "x2"].sort(r.compareCandidates), ["x2", "x3", "x1", "y1"], "x2 (most waiters) first, then x3 before x1 by number, then the P1 item");
   assert.deepEqual(ids(b.pool("2+").listed), ["x2", "x3", "x1", "y1"], "listed in that order");
   assert.equal(b.pool("2+").more, 0);
   const row = b.pool("2+").listed[0] as Candidate;
-  assert.deepEqual({ project: row.project, priority: row.priority, difficulty: row.difficulty, waiters: row.waiters }, { project: "Whitefoot", priority: "P0", difficulty: 2, waiters: 3 });
+  assert.deepEqual({ project: row.project, priority: row.priority, difficulty: row.difficulty, waiters: row.waiters }, { project: "Whitefoot", priority: "P0", difficulty: 2, waiters: 2 });
 });
 
-test("a waiter that is paused or finished does not count, and an item in another project ranks with the rest", async t => {
+test("a paused waiter does not count, and candidates of every project are ordered together", async t => {
   const b = await empty(t);
   await b.root("r", "P1"); await b.child("x1", "r"); await b.child("x2", "r");
-  await b.item("f1", { group: "Firn", priority: "P1" });
   await b.child("w1", "r", { plan: [{ item: "x2", own: false }] });
   await b.child("w2", "r", { plan: [{ item: "x2", own: false }] });
   await b.op.setPause({ ...asArchitect, id: "w2", paused: true, reason: "先放一放" });
+  // The Firn item is made last and has two waiters of its own project, so it comes before both Whitefoot items.
+  await b.root("fr", "P1", { group: "Firn" }); await b.child("f1", "fr", { group: "Firn" });
+  for (const k of ["fd1", "fd2"]) await b.child(k, "fr", { group: "Firn", plan: [{ item: "f1", own: false }] });
   const s = b.snapshot(), r = rules(s);
-  assert.equal(r.openDependents("x2"), 2, "the owner and w1 count, the paused w2 does not");
-  assert.deepEqual(ids(b.pool("2+").listed), ["x2", "x1", "f1"], "x2 has the most waiters; f1 of Firn is newest");
-  assert.equal((b.pool("2+").listed[2] as Candidate).project, "Firn");
+  assert.deepEqual([r.openDependents("x2"), r.openDependents("f1")], [1, 2], "the paused waiter is not counted");
+  assert.deepEqual(ids(b.pool("2+").listed), ["f1", "x2", "x1"], "two waiters, one waiter, none");
+  assert.equal((b.pool("2+").listed[0] as Candidate).project, "Firn");
 });
 
 test("more than three candidates under one parent are listed as the parent and a count; three are listed one by one", async t => {
@@ -88,6 +90,18 @@ test("more than three candidates under one parent are listed as the parent and a
   const under = candidatesUnder(b.snapshot(), rules(b.snapshot()), "g");
   assert.deepEqual(under.rows.map(x => x.id), ["g1", "g2", "g3", "g4"], "under=g gives them one by one");
   assert.throws(() => candidatesUnder(b.snapshot(), rules(b.snapshot()), "nope"), /choose an existing item/);
+});
+
+test("candidates of different levels under one parent are grouped together, and the group counts them all", async t => {
+  const b = await empty(t);
+  await b.root("r", "P0"); await b.child("m", "r");
+  for (const [k, level] of [["m1", 1], ["m2", 1], ["m3", 2], ["m4", 2]] as const) await b.child(k, "m", { difficulty: level });
+  const group = (name: string) => b.pool(name).listed;
+  assert.deepEqual(group("1").map(x => "parent" in x ? [x.parent, x.count] : x.id), [["m", 4]], "four under m in all: one row in the level 1 pool, with the count of all four");
+  assert.deepEqual(group("2+").map(x => "parent" in x ? [x.parent, x.count] : x.id), [["m", 4]], "and the same row in the other pool");
+  assert.deepEqual([b.pool("1").more, b.pool("2+").more], [0, 0], "what a pool lists is counted, not read from the group");
+  const under = candidatesUnder(b.snapshot(), rules(b.snapshot()), "m");
+  assert.deepEqual(under.rows.map(x => [x.id, x.difficulty]), [["m1", 1], ["m2", 1], ["m3", 2], ["m4", 2]], "under=m lists all four, as many as the row says");
 });
 
 test("the pools take items by level and count the engineers that are working, not those that wait", async t => {
@@ -106,6 +120,10 @@ test("the pools take items by level and count the engineers that are working, no
   // blocked: its only open row is an item that is paused.
   await b.child("dep", "r"); await b.op.setPause({ ...asArchitect, id: "dep", paused: true, reason: "先放一放" });
   await b.child("w4", "r", { difficulty: 3, plan: [{ item: "dep", own: false }] }); await b.engineer("w4", 3);
+  // blocked on a card: its only open row is a decision the owner has not ruled.
+  await b.child("w7", "r", { difficulty: 3 });
+  await b.op.writeCard({ author: "Whitefoot", key: "w7-card", item: "w7", question: "选哪个？", confidence: { reason: "判断" }, options: [{ text: "甲", detail: "做甲" }, { text: "乙", detail: "做乙" }, { text: "丙", detail: "做丙" }], blocks: "停着" });
+  await b.op.setPlan({ author: "Whitefoot", id: "w7", row: { card: "w7-card", after: [] } }); await b.engineer("w7", 3);
   // waiting on a sub-item that another session works; that session is working.
   await b.child("w5", "r", { difficulty: 3 }); await b.child("c5", "w5", { difficulty: 3, plan: [{ id: "go", text: "干活", state: "doing" }] });
   await b.engineer("w5", 3); await b.engineer("c5", 3);
@@ -115,7 +133,7 @@ test("the pools take items by level and count the engineers that are working, no
   await b.child("l1", "r", { difficulty: 1, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("l1", 1);
   await b.child("l2", "r", { difficulty: 1, plan: [{ id: "ci", text: "等 CI", state: "doing", waits: "CI" }] }); await b.engineer("l2", 1);
   const two = b.pool("2+"), one = b.pool("1");
-  assert.deepEqual([two.limit, two.working, two.free], [6, 3, 3], "w1, c5 and w6 work; w2 w3 w4 w5 wait");
+  assert.deepEqual([two.limit, two.working, two.free], [6, 3, 3], "w1, c5 and w6 work; w2 w3 w4 w5 w7 wait");
   assert.deepEqual([one.limit, one.working, one.free], [10, 1, 9]);
   assert.deepEqual(ids(two.listed), ["mid", "high"], "a held item is not a candidate");
 });
@@ -150,6 +168,7 @@ test("an item is a candidate only when a root needs it, it can start, it is rate
   assert.equal(r.statusOf("stale"), "todo", "no live session, so the board shows it as todo");
   assert.equal(r.startable("stale"), true, "and startable by the rules of status alone");
   assert.deepEqual(ids(b.pool("2+").listed), ["ok"], "only ok");
+  assert.equal(b.pool("2+").working, 1, "the stopped session keeps its slot until the PM closes its dispatch");
   assert.equal(b.pool("2+").more, 0);
 });
 
@@ -186,8 +205,8 @@ test("candidates answers a few lines, under= answers one parent's items, and an 
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
   const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
-  assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+ · 等它 1\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
-  assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+ · 等它 1\n  g2 /);
+  assert.match(all, /^1 级：上限 10，在干活 0，空 10\n  solo · P0 · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
+  assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · P0 · g1 · 难度 2 · Whitefoot · #\d+\n  g2 /);
   const bad = await client.callTool({ name: "candidates", arguments: { under: "nope" } });
   assert.equal(bad.isError, true);
 });
