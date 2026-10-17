@@ -1,16 +1,52 @@
 name: ci
+# The full CI. A merge to the main line is checked once, by its push run. On a pull request branch it runs only when the
+# engineer starts it (`gh workflow run ci.yml --ref <branch>`), once the change is done and reviewed; while writing, a push
+# is checked by a temporary workflow tmp-*.yml that runs only what the change touches. docs/design.md, section 11, Fast
+# checks while writing. Its result is written to the head commit as the status `full-ci`, because a run started by hand
+# is not among the checks a pull request lists, and `gh pr checks`, the engineer's wait script and the board read that list.
 on:
-  # Each merge to the main line is checked once, by its push run.
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch:
 concurrency:
   # A main-line run has a group of its own (its commit), so none is replaced.
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  # A newer push to a pull request cancels the run still going.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  # A run started by hand for a branch replaces the one still going for that branch.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+permissions:
+  contents: read
 jobs:
+  # A run started by hand begins by marking its commit pending again, so the red of an earlier run of the same commit does
+  # not stand while this one runs and a waiting script does not take it for this run's result.
+  start:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context=full-ci \
+            -f description="full CI running" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  # A temporary workflow must not reach the main line. The last full CI before a merge fails while one is still in the
+  # branch, within seconds because the test jobs wait for this one; the main line's own run catches one that got in anyway.
+  no-tmp-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/workflows
+      - run: |
+          found=$(find .github/workflows -maxdepth 1 -name 'tmp-*' | sort)
+          if [ -n "$found" ]; then
+            echo "temporary workflow files are still in the repository, delete them:"
+            echo "$found"
+            exit 1
+          fi
   test:
+    needs: no-tmp-workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -26,6 +62,7 @@ jobs:
   # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
   # commits, so the checkout carries history; the browser is cached by Playwright version.
   e2e:
+    needs: no-tmp-workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -49,3 +86,22 @@ jobs:
         run: npx playwright install-deps chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run test:e2e
+  # Writes the result of a run started by hand to the commit it ran on. A cancelled run's result job writes nothing: the
+  # pending its start wrote stands until the next run of the commit. A push to the main line writes nothing; its checks
+  # are listed on the commit. `needs` lists every job whose result counts: a project adds each of its test jobs here.
+  result:
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+    needs: [start, no-tmp-workflow, test, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          state=success
+          for r in $RESULTS; do [ "$r" = success ] || state=failure; done
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$state" -f context=full-ci \
+            -f description="full CI $state ($RESULTS)" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
