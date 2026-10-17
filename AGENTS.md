@@ -64,6 +64,10 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
+- `src/head-sections.ts`: an item head split into its sections (`context`'s
+  default answer and `section`); `src/tool-errors.ts`: the parameter table and
+  example a refused call is answered with, and the wrong names the tools read as
+  the right ones. Both are in `docs/design.md`, section 6, Lean replies.
 - `src/wake.ts`: the PM's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
   `src/liveness.ts`: whether the sessions holding items are still there (the
@@ -112,11 +116,14 @@ matches what the artifact board offered.
 ## Checks
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
-  the sources directly), `npm run build:web`, `npm test`. CI runs all three on
-  every pull request push and on every main-line merge.
+  the sources directly), `npm run build:web`, `npm test`. The full CI runs all
+  three on every main-line merge, and on a pull request when the engineer
+  starts it (`gh workflow run ci.yml --ref <branch>`); pushes in between are
+  checked by a temporary `tmp-*.yml` workflow that runs what the change
+  touches (design section 11, Fast checks while writing).
 - `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it on every pull request push and main-line merge. It
-  needs a Playwright browser and is never run on the owner's Mac.
+  CI's `e2e` job runs it with the full CI. It needs a Playwright browser and
+  is never run on the owner's Mac.
 - Three test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
   (`test/web.test.ts`), fast but without CSS or layout; the page in a real

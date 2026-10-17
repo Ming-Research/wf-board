@@ -9,9 +9,15 @@ import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
+import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 
 export class OpError extends Error {}
+/** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
+function refuseSummary(head: string | undefined): void {
+  const mark = head === undefined ? undefined : summaryMark(head);
+  if (mark) throw new OpError(`head: it holds the line "${mark}", which context writes where it cut a section short, so it is a summary and not the head. Read the whole head with context section: "all", change that, and write it back`);
+}
 /** `credential`: the token a new dispatch writes with, shown once (only the hash is kept). `repeated`: the write was already made a moment ago, by the same session with the same text; nothing was written again. */
 export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true }
 export interface Ops {
@@ -567,6 +573,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const group = a.group ?? owner?.group;
       if (!group) throw new OpError("group: a new top item requires its project");
       requireProject(s, group);
+      refuseSummary(a.head);
       if (a.record ? a.accept !== undefined : !a.accept) throw new OpError("accept: required for work, refused for records");
       if (!a.owner && a.after !== undefined) throw new OpError("after: requires owner");
       const inputs = [...a.plan ?? []];
@@ -775,6 +782,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
       const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
+      if (changedHead) refuseSummary(a.head);
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
       if (a.order !== undefined && rulesOf(s).parentOf(a.id)) throw new OpError("order: only top items carry order; order owned items in the plan");
       const doc = { ...it, updated: at, log: [...it.log] };
