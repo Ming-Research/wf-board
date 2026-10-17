@@ -43,9 +43,9 @@ export interface AgentRow {
   waits?: string;
   /** Waiting for longer than AGENT_WAIT_LONG_MS. */
   amber: boolean;
-  /** Running now, which is what the page unfolds: a session with a dispatch record under its name that either has an
-   * unfinished dispatch and is alive (`liveDispatches`, either role) or has a step in progress on an item it touched
-   * (whatever the state word says). A session with no dispatch record is never running. The rest are folded into one line. */
+  /** Running now, which is what the page unfolds: the session has an unfinished dispatch and is alive (`liveDispatches`,
+   * either role), whatever the state word says. The steps on the items it touched do not decide: they may be another
+   * session's. A session with no dispatch record, or whose dispatch has ended, is not running. The rest are folded into one line. */
   running: boolean;
   /** At most AGENT_TOUCHES items, newest first. */
   touched: AgentTouch[];
@@ -110,7 +110,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
     const row: AgentRow = { name, lastAt: new Date(last).toISOString(), lastKind: lastStart > lastWrite ? "started" : "wrote", state: "none", amber: false, running: false, touched };
     if (waiting) { row.state = "waiting"; row.waits = waiting.step.waits!; row.amber = now - last > AGENT_WAIT_LONG_MS; }
     else if (steps.length) row.state = now - last > AGENT_STALE_MS ? "maybe-stopped" : "working";
-    row.running = dispatches.length > 0 && (alive.has(name) || row.state !== "none");
+    row.running = alive.has(name);
     if (newest) { row.level = newest.dispatch.level; row.role = newest.dispatch.role; }
     else {
       const rated = steps.map(x => s.items[x.item]?.difficulty).find((d): d is number => typeof d === "number");

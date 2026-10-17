@@ -1727,7 +1727,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function agentOthers(rows: AgentRow[]) {
     const box = el("li", "agent-others"), toggle = el("button", "agents-others-toggle", (othersOpen ? "▾ " : "▸ ") + "其他 " + rows.length + " 个");
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(othersOpen));
-    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的会话（碰过的条目上有进行中的行也算），和派活已收尾或超过 6 小时没动静、碰过的条目上又没有进行中的行的会话";
+    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的，和派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
     toggle.addEventListener("click", () => { othersOpen = !othersOpen; try { localStorage.setItem("board-agents-others", othersOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     box.appendChild(toggle);
     if (othersOpen) { const list = el("ul", "agent-list"); rows.forEach(r => list.appendChild(agentRow(r))); box.appendChild(list); }
@@ -1757,7 +1757,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
     if (!agentsOpen) return;
-    host.appendChild(el("p", "agents-note", "正在跑的会话：有派活记录，且派活没收尾、会话还活着，或碰过的条目上有进行中的行的（审查看派活有没有收尾），各带它最近碰过的 2 个条目。没有派活记录的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。没有派活记录的、派活已收尾的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
     running.forEach(r => list.appendChild(agentRow(r)));
     if (others.length) list.appendChild(agentOthers(others));

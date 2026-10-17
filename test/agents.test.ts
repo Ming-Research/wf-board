@@ -170,18 +170,19 @@ test("a dispatch is live while its session started or wrote within the window, a
 const endedAfter = (startedAgo: number) => ({ finish: { ended: minutesAgo(startedAgo - 10), result: "一次通过" } }) as unknown as Partial<Dispatch>;
 const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }]);
 
-test("a session with a dispatch record is running when it has a step in progress on an item it touched", () => {
-  // Each name has a dispatch record that ended long ago and wrote after: listed, holding nothing alive, so the step decides.
-  const old = item([], { dispatches: ["working", "stopped", "waiting", "longWait", "nothing"].map(name => dispatch(name, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
-  const s = snap({ old, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, {
-    working: wrote(["run", 5]), stopped: wrote(["run", 31]), waiting: wrote(["wait", 5]), longWait: wrote(["wait", 61]), nothing: wrote(["idle", 3]),
-  });
-  const running = (name: string) => row(s, name)!.running;
-  assert.equal(running("working"), true, "a step in progress, written 5 minutes ago");
-  assert.equal(running("stopped"), true, "maybe stopped is the anomaly the owner most needs to see: it stays unfolded");
-  assert.equal(running("waiting"), true);
-  assert.equal(running("longWait"), true, "a wait over an hour (amber) is still running");
-  assert.equal(running("nothing"), false, "no step in progress and no live dispatch: nothing it does is on the board");
+test("a step in progress on an item a session touched does not make it running; an unfinished live dispatch does, whatever the state word", () => {
+  const names = ["working", "stopped", "waiting", "longWait", "nothing"];
+  // Finished records: each name wrote later on an item, but holds nothing alive. Open records: the same names, alive.
+  const finished = item([], { dispatches: names.map(name => dispatch(`done-${name}`, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
+  const open = item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
+  const writes = (prefix: string) => Object.fromEntries([["working", ["run", 5]], ["stopped", ["run", 31]], ["waiting", ["wait", 5]], ["longWait", ["wait", 61]], ["nothing", ["idle", 3]]]
+    .map(([name, [item, minutes]]) => [prefix + name, wrote([item as string, minutes as number])]));
+  const s = snap({ finished, open, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, { ...writes("done-"), ...writes("") });
+  const state = (name: string) => [row(s, name)!.state, row(s, name)!.running];
+  assert.deepEqual(names.map(name => state(`done-${name}`)), [["working", false], ["maybe-stopped", false], ["waiting", false], ["waiting", false], ["none", false]],
+    "its dispatch ended: the steps on the items it wrote to are other sessions', so it is folded although the state word is read from them");
+  assert.deepEqual(names.map(name => state(name)), [["working", true], ["maybe-stopped", true], ["waiting", true], ["waiting", true], ["none", true]],
+    "alive: running with every state word, 「可能停了」 and a wait over an hour (amber) included, and with none");
 });
 
 test("a session with no dispatch record is never running, whatever stands on the items it touched", () => {
