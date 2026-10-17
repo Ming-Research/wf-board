@@ -2351,8 +2351,11 @@ still there (`src/liveness.ts`, from the server's minute timer). Only an item
 whose status is in progress counts: a session holding a paused, done, cancelled
 or blocked item is waiting or finished, not silent (a blocked item waits on a
 card or another item, and the PM looks for its session when that wait ends). An
-item whose pull request is ready and waits for the merge is still in progress,
-since the rules want its session alive until the merge. A *sign of life* is a
+item whose pull request is ready and waits for the merge is watched only while
+its status says in progress: derived from the plan rows alone it is todo while
+only the merge row is left, so its session is not watched then. The item
+`status-shows-progress` changes the derivation so that a live session counts as
+progress, and from then on it is. A *sign of life* is a
 call to any tool as that session (the same name the tool result uses), its wait
 script being connected at a round of the timer, and the end of that connection.
 A session that gives no sign for 30 minutes is asked: an `ask-alive` goes into
