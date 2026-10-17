@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Liveness } from "./liveness.ts";
+import { isArchitectSession } from "./model.ts";
 
-/** Where a kind of push goes: the PM's stream, or the stream of the session holding the item that `holder` names (an item key
- * among the fields), and the PM's when no session holds it (docs/design.md, The wake streams). */
-export type WakeRoute = "pm" | { holder: string };
+/** Where a kind of push goes: the PM's stream; the stream of the session holding the item that `holder` names (an item key
+ * among the fields), and the PM's when no session holds it; or the stream of the session that `session` names (the PM's when
+ * that is the PM's session) (docs/design.md, The wake streams). */
+export type WakeRoute = "pm" | { holder: string } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
  * besides n, at and event, `to` says whose stream it goes to, `external` marks a kind another process may ask for through
@@ -28,6 +30,7 @@ export const WAKE_KINDS = {
   "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent" } },
   "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
   "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
+  message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: true; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
@@ -39,6 +42,9 @@ const mustBeGiven = (frame: WakeFrame): boolean => !("answeredByCall" in WAKE_KI
 
 /** The most characters one line of a push holds (docs/design.md, The wake streams, Size): what an agent's context takes per push. */
 export const LINE_LIMIT = 200;
+/** The most characters of a message's line before its text: number, label, sender and item. With the text (model
+ * MESSAGE_TEXT_LIMIT, 150) and the colon between them the line stays within LINE_LIMIT; the text is never cut. */
+export const MESSAGE_PREFIX_LIMIT = 49;
 /** The most lines a tool result carries pushes in; the rest are counted by kind and wait for the next call. */
 export const FOOTER_LINES = 5;
 /** The first line of the pushes a tool result carries, so they are not read as part of the tool's own answer. */
@@ -76,11 +82,15 @@ const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   "item-done": f => `${it(f.item, f.project)} · ${str(f.title)} · 等它的：it:${str(f.parent)}`,
   "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
   "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
+  message: f => `${str(f.from)}（${str(f.project)}）${f.item ? ` · it:${str(f.item)}` : ""}`,
 };
 
 /** The one line an agent is given for a push: its number, label and what it is about, at most LINE_LIMIT characters. */
 export function lineOf(frame: WakeFrame): string {
-  return cut(`#${frame.n} ${WAKE_KINDS[frame.event].label} · ${SAYS[frame.event](frame)}`, LINE_LIMIT);
+  const head = `#${frame.n} ${WAKE_KINDS[frame.event].label} · ${SAYS[frame.event](frame)}`;
+  // A message's text is what it says: only what comes before it may be cut.
+  if (frame.event === "message") return `${cut(head, MESSAGE_PREFIX_LIMIT)}：${str(frame.text)}`;
+  return cut(head, LINE_LIMIT);
 }
 
 /** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
@@ -383,14 +393,16 @@ export class Wake extends NumberedLog {
     return () => { this.agentListeners.delete(fn); };
   }
 
-  /** Number, keep and send one event to the stream its kind routes it to: the PM's, or the stream of the session holding the
-   * item the route names (the PM's when nobody holds it). The fields must be exactly those the kind lists. */
+  /** Number, keep and send one event to the stream its kind routes it to: the PM's; the stream of the session holding the
+   * item the route names (the PM's when nobody holds it); or the stream of the session the route names. The fields must be
+   * exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
     if (to !== "pm") {
-      const item = fields[to.holder], name = typeof item === "string" ? this.holder(item) : undefined;
-      if (name !== undefined) return this.agent(name).push(event, fields);
+      const named = "session" in to ? fields[to.session] : fields[to.holder];
+      const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
+      if (name !== undefined && !isArchitectSession(name)) return this.agent(name).push(event, fields);
     }
     return this.add(event, fields);
   }
@@ -415,7 +427,7 @@ export class Wake extends NumberedLog {
     if (!carried.length && !gap) { stream.deliver(frames.at(-1)!.n); return ""; }
     const shown = carried.slice(0, FOOTER_LINES), rest = carried.slice(FOOTER_LINES);
     const lines = [FOOTER_HEAD];
-    if (gap) lines.push(`有推送没送到就被丢了（看板只留到 #${stream.oldest()}）：去看板读最近的变化`);
+    if (gap) lines.push(`有推送没送到就被丢了（看板只留 #${stream.oldest()} 及以后的）：去看板读最近的变化`);
     lines.push(...shown.map(lineOf));
     if (rest.length) {
       const kinds = new Map<string, number>();

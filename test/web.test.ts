@@ -102,7 +102,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
   };
   const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
   const roots = new Map<string, Element>();
-  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "update-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
+  for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "messages", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "update-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
   // The page's own version, which the server fills into the page's text; a page opened without one does not know it.
   if (options.version !== undefined) { const meta = new Element("meta"); meta.id = "page-version"; meta.attributes.content = options.version; roots.set("page-version", meta); }
   const session = options.session ?? new Map<string,string>();
@@ -3839,10 +3839,10 @@ test("the detail shows the difficulty first on the line under the title, before 
   assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
   assert.ok(!line.children[1]!.classList.contains("diffchip"));
   assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
-  // The architect's own item has the label, and its line exists without any tag.
-  const own = taggedSnapshot(); own.items.area!.difficulty = "architect";
+  // An item with a difficulty and no tag has the line too.
+  const own = taggedSnapshot(); own.items.area!.difficulty = 5;
   const q = await page(own, []); await selectWide(q, "area");
-  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["架构师做"]);
+  assert.deepEqual(detailItem(q, "area")!.querySelector(".item-tags")!.children.map(c => c.innerHTML), ["难度 5"]);
   // An item without a difficulty and tags has no line.
   const bare = await page(taggedSnapshot(), []); await selectWide(bare, "area");
   assert.equal(detailItem(bare, "area")!.querySelector(".item-tags"), null);
@@ -3860,8 +3860,8 @@ test("a live change of the difficulty repaints the chip, also when it first appe
   const { difficulty: _gone, ...unrated } = s.items.child!;
   await p.change("d".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, rev: 3 } as Item }]); await p.flush();
   assert.deepEqual(chips(), ["健全性", "报错信息"], "an item that loses its difficulty keeps its tags");
-  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: "architect", rev: 4 } as Item }]); await p.flush();
-  assert.deepEqual(chips(), ["架构师做", "健全性", "报错信息"]);
+  await p.change("e".repeat(40), [{ kind: "item", id: "child", after: { ...unrated, difficulty: 5, rev: 4 } as Item }]); await p.flush();
+  assert.deepEqual(chips(), ["难度 5", "健全性", "报错信息"]);
 });
 
 test("writing a note on an unfolded inline card keeps it unfolded through save and send", async () => {
@@ -4049,6 +4049,43 @@ function agentSnapshot(agents: NonNullable<Snapshot["activity"]>["agents"], step
 }
 const agentRowsOf = (p: Awaited<ReturnType<typeof page>>) => p.roots.get("agents")!.querySelectorAll(".agent");
 const agentText = (e: Element) => descendants(e).map(x => x.textContent || x.innerHTML.replace(/<[^>]*>/g, "")).join(" ");
+
+test("messages: the top-right button counts new messages, opens a list newest first, and a sent message joins it live", async () => {
+  const s = snapshot(), storage = new Map<string, string>();
+  // The day's messages are one document (model MessageDay); a change event carries the day's whole document.
+  const a = { id: "20261016T115000Z-aaaa", from: "eng", project: "Project", to: "架构师", text: "看 **child** 的日志", item: "child", at: minutesAgo(10) };
+  const b = { id: "20261016T120000Z-bbbb", from: "架构师", project: "Architect", to: "eng", text: "好", at: minutesAgo(0) };
+  const c = { id: "20261016T120000Z-cccc", from: "eng", project: "Project", to: "架构师", text: "再看", at: minutesAgo(0) };
+  s.messages = { "2026-10-16": { messages: [a], rev: 1 } };
+  const p = await page(s, [], null, undefined, { now: () => NOW, storage });
+  const host = p.roots.get("messages")!, toggle = () => host.querySelector(".messages-toggle")!;
+  assert.equal(toggle().innerHTML, '消息 <span class="messages-new">新 1</span>', "one message not seen yet");
+  assert.equal(host.querySelector(".messages-panel"), null, "the list starts closed");
+  await toggle().click(); await p.flush();
+  const [row] = host.querySelectorAll(".message");
+  assert.equal(row!.querySelector(".message-who")!.innerHTML, "eng（Project）→ 架构师");
+  assert.match(row!.querySelector(".message-item")!.innerHTML, /data-ref="it:child">Child</, "the item, as a link that selects it");
+  assert.equal(row!.querySelector(".message-text")!.innerHTML, "看 <strong>child</strong> 的日志");
+  assert.equal(row!.querySelector(".message-ago")!.innerHTML, "10 分钟前");
+  assert.equal(toggle().innerHTML, "消息", "an open list leaves nothing new");
+  assert.equal(storage.get("board-messages-seen"), "20261016T115000Z-aaaa");
+  // A message sent now joins the open list at the top.
+  p.emit("b".repeat(40), [{ kind: "message", id: "2026-10-16", after: { messages: [a, b], rev: 2 } }]);
+  await p.flush();
+  assert.deepEqual(host.querySelectorAll(".message").map(m => m.dataset.message), ["20261016T120000Z-bbbb", "20261016T115000Z-aaaa"]);
+  assert.equal(host.querySelectorAll(".message")[0]!.querySelector(".message-item"), null, "a message about no item has no item link");
+  // Closed, a newer one is counted on the button; the page keeps what was seen across a reload.
+  await toggle().click(); await p.flush();
+  const painted = p.renders.length;
+  p.emit("c".repeat(40), [{ kind: "message", id: "2026-10-16", after: { messages: [a, b, c], rev: 3 } }]);
+  await p.flush();
+  assert.equal(toggle().innerHTML, '消息 <span class="messages-new">新 1</span>');
+  const scopes = p.renders.slice(painted).map(scope => [...scope as Set<string>]);
+  assert.ok(scopes.some(scope => scope.includes("messages")) && !scopes.some(scope => scope.includes("all")), `a message repaints the list of messages, not the page: ${JSON.stringify(scopes)}`);
+  s.messages = { "2026-10-16": { messages: [a, b, c], rev: 3 } };
+  const again = await page(s, [], null, undefined, { now: () => NOW, storage });
+  assert.equal(again.roots.get("messages")!.querySelector(".messages-toggle")!.innerHTML, '消息 <span class="messages-new">新 1</span>');
+});
 
 test("agent list: a row per session with its level, state word, how long ago it wrote and its two items", async () => {
   const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }, { item: "area", at: minutesAgo(70) }] });

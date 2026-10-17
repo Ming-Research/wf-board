@@ -75,7 +75,7 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
 }
 
-/** A socket on an agent's stream, `/wake/<name>`, with what it received. */
+/** A client of an agent's wake stream, `/wake/<name>`, like wakeSocket. */
 export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
   t.after(() => socket.terminate());

@@ -138,6 +138,12 @@ export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispat
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
+/** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
+export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
+  const out = new Set<string>();
+  for (const item of Object.values(s.items)) for (const d of item.dispatches ?? []) if (!d.finish) out.add(d.agent);
+  return out;
+}
 /** Every session holding an item, with the items it holds in the board's item order; `only` narrows it to the items it accepts. */
 export function holders(s: Pick<Snapshot, "items">, only: (item: string) => boolean = () => true): Map<string, string[]> {
   const out = new Map<string, string[]>();

@@ -215,7 +215,7 @@ test("a stream left with only an ask nobody read is dropped when it goes unused,
 test("a gap is still told when only asks are pending", () => {
   const wake = new Wake({ now: () => T0 }), stream = wake.agent("eng");
   for (let i = 0; i < 201; i++) stream.push("ask-alive", { item: "it1", project: "Whitefoot", title: "t", since: iso(T0) });
-  assert.equal(wake.footer("eng"), `${FOOTER_HEAD}\n有推送没送到就被丢了（看板只留到 #2）：去看板读最近的变化`);
+  assert.equal(wake.footer("eng"), `${FOOTER_HEAD}\n有推送没送到就被丢了（看板只留 #2 及以后的）：去看板读最近的变化`);
   assert.equal(stream.deliveredUpTo(), 201);
   assert.equal(wake.footer("eng"), "");
 });
