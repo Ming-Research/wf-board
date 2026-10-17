@@ -1,0 +1,10 @@
+name: tmp-live-check
+# Temporary, for a live check of the board's look at the checks (ci-done-push). Never merged.
+on:
+  push:
+    branches: [ci-done-push-live]
+jobs:
+  wait:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20
