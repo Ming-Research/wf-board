@@ -122,7 +122,7 @@ export const tagsRequired = (tags: readonly Tag[] | undefined, project: string):
 
 /**
  * An item's difficulty, which decides the agent that does it: 1–5, or "architect" for an item the architect does itself
- * (a discussion, a walkthrough, a design), which is rated but never dispatched. Only the architect sets it.
+ * (a discussion, a walkthrough, a design), which is rated but never dispatched. Only the PM and the architect set it.
  */
 export const Difficulty = z.union([z.number().int().min(1).max(5), z.literal("architect")]);
 export type Difficulty = z.infer<typeof Difficulty>;
@@ -132,8 +132,8 @@ export const difficultyText = (difficulty: Difficulty): string => difficulty ===
 export const dispatchable = (difficulty: Difficulty | undefined): boolean => typeof difficulty === "number";
 
 /**
- * One dispatch: an agent session the architect started on an item, recorded in the columns of the dispatch format the
- * architect keeps (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
+ * One dispatch: an agent session the PM (or the architect) started on an item, recorded in the columns of the dispatch format
+ * (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
  * accepted for them.
  */
 export const DISPATCH_ROLES = ["工程师", "审查"] as const;
@@ -221,14 +221,14 @@ export const Item = z.object({
   group: z.string().min(1),
   order: z.number().optional(),
   status: z.literal("cancelled").optional(),
-  /** Explicit owner/architect pause; descendants inherit it through ownership. */
+  /** Explicit owner, PM or architect pause; descendants inherit it through ownership. */
   paused: z.object({ reason: StepText, at: Time }).strict().optional(),
   /**
    * Vocabulary tags (Board.tags) applicable to the item's project, unique. Every item needs at least one; optional on
    * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
    */
   tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
-  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
+  /** Set only by the PM or the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
@@ -331,6 +331,15 @@ export const ARCHITECT = "Architect";
 export const ARCHITECT_SESSION = "架构师";
 /** The session name the PM writes from, as author `Architect` too: the PM runs in the agents_config repository. */
 export const PM_SESSION = "PM";
+/** The role names of the architect and the PM, as a credential and the access table name them. */
+export const ARCHITECT_ROLE = "架构师";
+export const PM_ROLE = "PM";
+/** The sessions that do the process, as an error text or a tool description names them: the one definition every such text is built from. */
+export const PROCESS_SESSIONS = `${PM_SESSION} or ${ARCHITECT_SESSION}`;
+/** The writers that do the process, in English (ops `onlyProcess`, the tool descriptions, the errors that say who may). */
+export const PROCESS_WRITERS = `${ARCHITECT} with session ${PROCESS_SESSIONS}`;
+/** The same for the owner reading the page. */
+export const PROCESS_WRITERS_ZH = `${PM_ROLE} 或${ARCHITECT_ROLE}`;
 type Writer = { author: string; session?: string; access?: { role: string } };
 /**
  * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may do what the board
@@ -340,10 +349,10 @@ type Writer = { author: string; session?: string; access?: { role: string } };
  * are not authenticated: that stops misuse, not impersonation.
  */
 export const isArchitect = (who: Writer): boolean =>
-  who.access ? who.access.role === "架构师" : who.author === ARCHITECT && isArchitectSession(who.session);
+  who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectSession(who.session);
 /** Whether a write speaks for the PM: author `Architect` from the session 「PM」, or a credential of role `PM`, by the same rule. */
 export const isPM = (who: Writer): boolean =>
-  who.access ? who.access.role === "PM" : who.author === ARCHITECT && isPMSession(who.session);
+  who.access ? who.access.role === PM_ROLE : who.author === ARCHITECT && isPMSession(who.session);
 /**
  * Whether a write may do the process: change any project's items, cards and note replies, create and cancel items, set their
  * difficulty, pause, move and retitle them, place projects in the page order (ops `onlyProcess`). The PM does it, and the
@@ -356,7 +365,7 @@ export const isArchitectSession = (session: string | undefined): boolean => sess
 export const isPMSession = (session: string | undefined): boolean => session?.trim() === PM_SESSION;
 /** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of either's role. */
 export const answersPushes = (call: { role: string } | { session?: string }): boolean =>
-  "role" in call ? call.role === "PM" || call.role === "架构师" : isPMSession(call.session) || isArchitectSession(call.session);
+  "role" in call ? call.role === PM_ROLE || call.role === ARCHITECT_ROLE : isPMSession(call.session) || isArchitectSession(call.session);
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 
@@ -366,10 +375,10 @@ export const RETIRED_COORDINATOR = "总管";
  * The roles of the long-lived credentials are the architect, the PM, the observer and the resource agent; the roles of a dispatch
  * credential are the dispatch's own (an engineer or a review).
  */
-export const ROLES = ["架构师", "PM", "观察者", "资源管理", ...DISPATCH_ROLES] as const;
+export const ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源管理", ...DISPATCH_ROLES] as const;
 export type Role = (typeof ROLES)[number];
 /** The roles a long-lived credential (kept in a file outside the data directory) can name. */
-export const LONG_LIVED_ROLES = ["架构师", "PM", "观察者", "资源管理"] as const;
+export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源管理"] as const;
 /** One part for each kind of write; a write names the parts it changes. */
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
@@ -387,8 +396,8 @@ const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal
 const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
-  "架构师": partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
-  "PM": partsAt("board", PARTS.filter(p => !ARCHITECT_ONLY.includes(p))),
+  [ARCHITECT_ROLE]: partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
+  [PM_ROLE]: partsAt("board", PARTS.filter(p => !ARCHITECT_ONLY.includes(p))),
   "观察者": partsAt("board", PARTS.filter(p => !RESERVED.includes(p))),
   // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
   "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },

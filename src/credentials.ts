@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ARCHITECT, ARCHITECT_SESSION, Key, LONG_LIVED_ROLES, PM_SESSION } from "./model.ts";
+import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, Key, LONG_LIVED_ROLES, PM_ROLE, PM_SESSION } from "./model.ts";
 import type { Access, Item, Snapshot } from "./model.ts";
 
 /**
@@ -38,12 +38,12 @@ export const LongLived = z.object({
   roots: z.array(Key).default([]),
   hash: Hash,
 }).strict()
-  .refine(c => c.role !== "架构师" || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`)
+  .refine(c => c.role !== ARCHITECT_ROLE || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`)
   // Author Architect from this session is what the board takes for the architect (model isArchitect); no other role writes under it.
-  .refine(c => c.role === "架构师" || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`)
+  .refine(c => c.role === ARCHITECT_ROLE || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`)
   // The PM writes as author Architect from the session PM (model isPM), on the same terms.
-  .refine(c => c.role !== "PM" || (c.project === ARCHITECT && c.session === PM_SESSION), `the PM's credential is project ${ARCHITECT}, session ${PM_SESSION}`)
-  .refine(c => c.role === "PM" || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`);
+  .refine(c => c.role !== PM_ROLE || (c.project === ARCHITECT && c.session === PM_SESSION), `the PM's credential is project ${ARCHITECT}, session ${PM_SESSION}`)
+  .refine(c => c.role === PM_ROLE || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`);
 export type LongLived = z.infer<typeof LongLived>;
 export const CredentialsFile = z.object({ credentials: z.array(LongLived) }).strict().superRefine((file, ctx) => {
   for (const key of ["session", "hash"] as const) if (new Set(file.credentials.map(c => c[key])).size !== file.credentials.length) ctx.addIssue(`two credentials have the same ${key}`);

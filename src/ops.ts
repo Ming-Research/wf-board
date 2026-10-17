@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, PM_SESSION, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, PROCESS_SESSIONS, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -113,7 +113,7 @@ function onlyArchitect(who: Writer, what: string): void {
 }
 /** What the board reserves for the process, which the PM does and the architect may do too: every other writer is refused, and `what` names the operation in the message. */
 function onlyProcess(who: Writer, what: string): void {
-  if (!mayRunProcess(who)) throw new OpError(`author: only ${ARCHITECT} with session ${PM_SESSION} or ${ARCHITECT_SESSION} may ${what}`);
+  if (!mayRunProcess(who)) throw new OpError(`author: only ${PROCESS_WRITERS} may ${what}`);
 }
 /** A difficulty as the log line writes it: the level, or 「架构师做」. */
 const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : difficulty === "architect" ? "架构师做" : String(difficulty);
@@ -209,7 +209,7 @@ function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
 }
 function requireOwnership(s: Snapshot, project: string, who: Writer, id: string): void {
   const refusal = `item ${id} belongs to project ${project}; report what you need from it to the PM, who creates work another project needs in the project that delivers it`
-    + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${PM_SESSION} or ${ARCHITECT_SESSION}` : "");
+    + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${PROCESS_SESSIONS}` : "");
   requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
   if (who.author !== project && !mayRunProcess(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
 }
@@ -360,7 +360,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           const resumedWork = beforeRules.isPaused(id) && afterRules.isOpenWork(id) && !afterRules.isPaused(id);
           if (!clearedMarker && !resumedWork) continue;
           const source = clearedMarker ? id : beforeRules.pausedBy(id)!;
-          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${ARCHITECT} with session ${PM_SESSION} or ${ARCHITECT_SESSION} can resume it`);
+          throw new OpError(`paused: 「${s.items[id]!.title}」 (${id}) is paused by 「${s.items[source]!.title}」 (${source}); only the owner or ${PROCESS_WRITERS} can resume it`);
         }
         for (const id of written) {
           const old = s.items[id], current = next.items[id]!;

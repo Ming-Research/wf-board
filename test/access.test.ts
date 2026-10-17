@@ -1,11 +1,11 @@
 // The permission table (model ACCESS) and its enforcement in ops.run: what each role may write, and where.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ACCESS, PARTS, ROLES, writesAnyProject } from "../src/model.ts";
+import { ACCESS, PARTS, PROCESS_WRITERS, PROCESS_WRITERS_ZH, ROLES, writesAnyProject } from "../src/model.ts";
 import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
-import { board, asArchitect, asPM } from "./helpers.ts";
+import { board, asArchitect, asPM, rx } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
 // What the design (docs/design.md, section 9) reserves for the PM and the architect, written out here and not read from the table.
@@ -28,14 +28,14 @@ test("the writes the code reserves are the parts the table withholds from the ob
   const { op } = await board(t);
   const legacy = { author: "Whitefoot", session: "someone" };
   const reserved: Array<[Part, RegExp, () => Promise<unknown>]> = [
-    ["item.create", /only Architect with session PM or 架构师/, () => op.createItem({ ...legacy, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" })],
+    ["item.create", rx`only ${PROCESS_WRITERS}`, () => op.createItem({ ...legacy, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" })],
     ["journal", /only Architect with session 架构师 may write the journal/, () => op.journalEntry({ ...legacy, text: "x" })],
-    ["item.difficulty", /only Architect with session PM or 架构师/, () => op.setDifficulty({ ...legacy, id: "a", difficulty: 2, reason: "r" })],
+    ["item.difficulty", rx`only ${PROCESS_WRITERS}`, () => op.setDifficulty({ ...legacy, id: "a", difficulty: 2, reason: "r" })],
     ["tag-vocab", /only Architect with session 架构师 may change the tag vocabulary/, () => op.setTag({ ...legacy, name: "标签", meaning: "m" })],
-    ["item.pause", /only Architect with session PM or 架构师/, () => op.setPause({ ...legacy, id: "a", paused: true, reason: "r" })],
-    ["item.move-project", /only Architect with session PM or 架构师/, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
-    ["item.cancel", /only Architect with session PM or 架构师/, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
-    ["item.title", /only Architect with session PM or 架构师/, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
+    ["item.pause", rx`only ${PROCESS_WRITERS}`, () => op.setPause({ ...legacy, id: "a", paused: true, reason: "r" })],
+    ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
+    ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
+    ["item.title", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
   ];
   for (const [part, message, call] of reserved) {
     await assert.rejects(call, (error: unknown) => error instanceof OpError && message.test(error.message), `${part}: the code refuses an author that is neither the PM nor the architect`);
@@ -236,4 +236,13 @@ test("the architect's credential does what the architect does, in any project", 
   await op.appendLog({ ...who, id: "other", text: "from the architect" });
   assert.ok(store.snapshot().items.made);
   assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "Architect");
+});
+
+test("the texts that say who may do the process are built from one definition, and rx matches what it is given literally", () => {
+  // The definition is pinned once, so that the expected texts built from it elsewhere cannot all agree on a typo.
+  assert.equal(PROCESS_WRITERS, "Architect with session PM or 架构师");
+  assert.equal(PROCESS_WRITERS_ZH, "PM 或架构师");
+  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session PM or 架构师 may create items"));
+  assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"), "the architect's session alone is another text");
+  assert.ok(!rx`a${"."}b`.test("axb"), "an interpolated value matches literally");
 });

@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { rules } from "../src/rules.ts";
+import { PROCESS_WRITERS_ZH } from "../src/model.ts";
 import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Status, Project } from "../src/model.ts";
 import { RECHECK_MS, STUCK, WAITING } from "../web/update.ts";
 
@@ -3837,7 +3838,7 @@ test("the detail shows the difficulty first on the line under the title, before 
   assert.ok(line.classList.contains("item-tags"), "the difficulty shares the line directly under the title");
   assert.deepEqual(line.children.map(c => c.innerHTML), ["难度 3", "健全性", "报错信息"], "the difficulty comes first, then the tags");
   assert.ok(line.children[0]!.classList.contains("diffchip") && line.children[0]!.classList.contains("tagchip"));
-  assert.equal(line.children[0]!.title, "难度等级，只有 PM 或架构师能改", "the tooltip says who may change it");
+  assert.equal(line.children[0]!.title, `难度等级，只有 ${PROCESS_WRITERS_ZH}能改`, "the tooltip says who may change it");
   assert.ok(!line.children[1]!.classList.contains("diffchip"));
   assert.equal(rowOf(p, "child").querySelector(".diffchip"), null, "the tree row does not show it");
   // The architect's own item has the label, and its line exists without any tag.

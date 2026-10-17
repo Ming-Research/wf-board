@@ -17,6 +17,10 @@ import type { GithubWatch } from "../src/watch.ts";
 import type { UsageWatch } from "../src/usage-watch.ts";
 import type { Credentials } from "../src/credentials.ts";
 
+/** A RegExp from a template whose interpolated values match literally: an expected error text built from the same definition the code builds it from. */
+export const rx = (strings: TemplateStringsArray, ...values: string[]): RegExp =>
+  new RegExp(strings.raw.map((part, i) => part + (i < values.length ? values[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "")).join(""));
+
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";

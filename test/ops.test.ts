@@ -7,7 +7,8 @@ import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { board, at, later, author, architect, asArchitect, asPM } from "./helpers.ts";
+import { PROCESS_SESSIONS, PROCESS_WRITERS } from "../src/model.ts";
+import { board, at, later, author, architect, asArchitect, asPM, rx } from "./helpers.ts";
 
 const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 
@@ -289,11 +290,11 @@ test("Architect reorders and creates projects after an existing project in one c
 test("project after rejects every author but Architect, unknown projects and self placement atomically", async t => {
   const { store, op, dir } = await board(t), before = store.snapshot(), count = (await store.log()).length;
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
-    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), /after: only Architect with session PM or 架构师 may reorder projects/],
-    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /after: only Architect with session PM or 架构师 may reorder projects/],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
+    [() => op.updateProject({ author: "Whitefoot", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.updateProject({ author: "Firn", name: "Whitefoot", repo: "Org/Changed", after: "Firn" }), /only that project or Architect with session 架构师 may update its repo/],
-    [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), /after: only Architect with session PM or 架构师 may reorder projects/],
-    [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), /after: only Architect with session PM or 架构师 may reorder projects/],
+    [() => op.createProject({ author: "Whitefoot", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
+    [() => op.createProject({ author: "Any caller", name: "New", after: "Firn" }), rx`after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.updateProject({ author: "总管", name: "Whitefoot", after: "Firn" }), /author 总管: this identity is retired; write as Architect/],
     [() => op.updateProject({ author: "总管", name: "Whitefoot", repo: "Org/Changed" }), /author 总管: this identity is retired; write as Architect/],
     [() => op.createProject({ author: "总管", name: "New" }), /author 总管: this identity is retired; write as Architect/],
@@ -836,8 +837,8 @@ test("pause refusals preserve memory, disk and commits for authors, missing reas
   await op.createItem({ ...asArchitect, group: author, key: "cancel-pause", title: "Cancelled", priority: "P1", accept: "Cancelled accepted" });
   await op.setStatus({ ...asArchitect, id: "cancel-pause", status: "cancelled", log: "No longer needed" });
   const cases: Array<[Parameters<Ops["setPause"]>[0], RegExp]> = [
-    [{ author, id: "a", paused: true, reason: "No permission" }, /author: only Architect with session PM or 架构师 may pause or resume/],
-    [{ author, id: "a", paused: false }, /author: only Architect with session PM or 架构师 may pause or resume/],
+    [{ author, id: "a", paused: true, reason: "No permission" }, rx`author: only ${PROCESS_WRITERS} may pause or resume`],
+    [{ author, id: "a", paused: false }, rx`author: only ${PROCESS_WRITERS} may pause or resume`],
     [{ ...asArchitect, id: "a", paused: true }, /reason.*required/],
     [{ ...asArchitect, id: "a", paused: true, reason: "   " }, /reason.*(nonempty|required)/],
     [{ ...asArchitect, id: "record-pause", paused: true, reason: "Record" }, /record cannot be paused/],
@@ -872,7 +873,7 @@ test("cancelling work and converting it to a record cannot clear an owner pause"
   assert.deepEqual(store.snapshot().items["pause-cancel"]!.plan, plan);
   await op.setPause({ ...asArchitect, id: "a", paused: true, reason: "Parked" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), /paused.*中文检查.*only the owner or Architect with session PM or 架构师 can resume/);
+  await assert.rejects(op.updateItem({ author, id: "a", rev: before.items.a!.rev, record: true }), rx`paused.*中文检查.*only the owner or ${PROCESS_WRITERS} can resume`);
   assert.deepEqual(store.snapshot(), before);
   assert.equal((await store.log()).length, count);
   await op.setPause({ ...asArchitect, id: "a", paused: false });
@@ -892,7 +893,7 @@ test("only Architect can clear a retained pause after work completes or is cance
     const before = store.snapshot(), plan = before.items[id]!.plan;
     assert.equal(rules(before).statusOf(id), state);
     assert.ok(before.items[id]!.paused, "ordinary closure retains the owner's marker");
-    await assert.rejects(op.setPause({ author, id, paused: false }), /only Architect with session PM or 架构师 may pause or resume an item/);
+    await assert.rejects(op.setPause({ author, id, paused: false }), rx`only ${PROCESS_WRITERS} may pause or resume an item`);
     assert.deepEqual(store.snapshot(), before);
     await op.setPause({ ...asArchitect, id, paused: false });
     assert.equal(store.snapshot().items[id]!.paused, undefined);
@@ -971,7 +972,7 @@ test("only Architect from session PM or 架构师 creates items, cancels or reop
     [() => op.renameTag({ ...who, name: tag.name, to: "改名" }), only("change the tag vocabulary")],
     [() => op.removeTag({ ...who, name: tag.name }), only("change the tag vocabulary")],
     [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), only("move an item to another project")],
-    [() => op.createProject({ ...who, name: "New", after: "Firn" }), /^after: only Architect with session PM or 架构师 may reorder projects/],
+    [() => op.createProject({ ...who, name: "New", after: "Firn" }), rx`^after: only ${PROCESS_WRITERS} may reorder projects`],
     [() => op.updateProject({ ...who, name: "总管", repo: "Org/Changed" }), /^project 总管: only that project or Architect with session 架构师 may update its repo$/],
   );
   // Even the Architect project's own item is out of reach of these operations without the session.
@@ -1040,7 +1041,7 @@ test("Architect from another session writes only the Architect project's items, 
   assert.deepEqual(store.snapshot().items["own-item"]!.log.at(-1), { at: later, by: architect, text: "Engineer evidence" });
   const before = store.snapshot(), count = (await store.log()).length;
   for (const who of [engineer, { author: architect }]) {
-    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), /item a belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it; Architect writes other projects' items only with session PM or 架构师/);
+    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it; Architect writes other projects' items only with session ${PROCESS_SESSIONS}`);
     await assert.rejects(op.writeCard({ ...who, key: "foreign-card", item: "a", question: "Q?", background: "B", options: [{ key: "A", text: "A" }] }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.replyNote({ ...who, id: "note-1", reply: "Answer" }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.moveItem({ ...who, id: "a", owner: "other" }), /item a belongs to project Whitefoot/);
@@ -1063,7 +1064,7 @@ test("a cancelled item turns into a record only by Architect, so a project canno
   // The item's own project, with or without the session name, never gets past the gate.
   const attempts: Array<[string, { author: string; session?: string }]> = [["dropped", { author }], ["dropped", { author, session: "架构师" }], ["dropped-own", { author: architect }], ["dropped-own", { author: architect, session: "engineer" }]];
   for (const [id, who] of attempts) {
-    await assert.rejects(op.updateItem({ ...who, id, rev: before.items[id]!.rev, record: true }), /author: only Architect with session PM or 架构师 may turn a cancelled item into a record/);
+    await assert.rejects(op.updateItem({ ...who, id, rev: before.items[id]!.rev, record: true }), rx`author: only ${PROCESS_WRITERS} may turn a cancelled item into a record`);
     assert.deepEqual(store.snapshot(), before);
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
     assert.equal((await store.log()).length, count);
@@ -1105,7 +1106,7 @@ test("Architect without the session cannot resume paused work in its own project
   await op.setPause({ ...asArchitect, id: "arch-parent", paused: true, reason: "Owner chose to wait" });
   await op.setPause({ ...asArchitect, id: "arch-marked", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  const resume = /only the owner or Architect with session PM or 架构师 can resume/;
+  const resume = rx`only the owner or ${PROCESS_WRITERS} can resume`;
   for (const who of [{ author: architect }, { author: architect, session: "engineer" }]) {
     // Moving open work out of a paused chain, and converting a paused item to a record (which clears its marker).
     await assert.rejects(op.moveItem({ ...who, id: "arch-child", owner: "arch-other" }), resume);
@@ -1168,7 +1169,7 @@ test("moving inherited paused work out requires an authorized resume first", asy
   await op.createItem({ ...asArchitect, key: "resume-owner", group: author, title: "Active release", priority: "P2", accept: "Active release passes" });
   await op.setPause({ ...asArchitect, id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.moveItem({ author, id: "pause-child", owner: "resume-owner" }), /paused.*Paused implementation.*pause-child.*Paused release.*pause-parent.*only the owner or Architect with session PM or 架构师 can resume/);
+  await assert.rejects(op.moveItem({ author, id: "pause-child", owner: "resume-owner" }), rx`paused.*Paused implementation.*pause-child.*Paused release.*pause-parent.*only the owner or ${PROCESS_WRITERS} can resume`);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
@@ -1187,7 +1188,7 @@ test("removing a paused parent's owning row cannot resume open child work", asyn
   await op.createItem({ ...asArchitect, key: "pause-child", owner: "pause-parent", title: "Paused implementation", accept: "Implementation passes" });
   await op.setPause({ ...asArchitect, id: "pause-parent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.setPlan({ author, id: "pause-parent", remove: "pause-child" }), /paused.*Paused implementation.*Paused release.*pause-parent.*only the owner or Architect with session PM or 架构师 can resume/);
+  await assert.rejects(op.setPlan({ author, id: "pause-parent", remove: "pause-child" }), rx`paused.*Paused implementation.*Paused release.*pause-parent.*only the owner or ${PROCESS_WRITERS} can resume`);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
@@ -1231,7 +1232,7 @@ test("pause permission follows unwritten descendants when their record owner mov
   await op.createItem({ ...asArchitect, key: "pause-descendant", owner: "pause-record", title: "Queued work", accept: "Queue result passes" });
   await op.setPause({ ...asArchitect, id: "area", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
-  await assert.rejects(op.moveItem({ author, id: "pause-record", owner: "other" }), /paused.*Queued work.*解释器工作.*area.*only the owner or Architect with session PM or 架构师 can resume/);
+  await assert.rejects(op.moveItem({ author, id: "pause-record", owner: "other" }), rx`paused.*Queued work.*解释器工作.*area.*only the owner or ${PROCESS_WRITERS} can resume`);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);
@@ -1268,7 +1269,7 @@ test("converting closed work to a record requires clearing its retained owner pa
   await op.setPlan({ author, id: "pause-closed-record", rows: [{ id: "accept", accept: true, text: "Result passes", state: "done" }] });
   const before = store.snapshot(), count = (await store.log()).length, item = before.items["pause-closed-record"]!;
   assert.equal(rules(before).isPaused("pause-closed-record"), false);
-  await assert.rejects(op.updateItem({ author, id: "pause-closed-record", rev: item.rev, record: true }), /paused.*Closed paused work.*pause-closed-record.*only the owner or Architect with session PM or 架构师 can resume/);
+  await assert.rejects(op.updateItem({ author, id: "pause-closed-record", rev: item.rev, record: true }), rx`paused.*Closed paused work.*pause-closed-record.*only the owner or ${PROCESS_WRITERS} can resume`);
   assert.deepEqual(store.snapshot(), before);
   assert.deepEqual((await Store.open(dir)).snapshot(), before);
   assert.equal((await store.log()).length, count);

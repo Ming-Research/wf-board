@@ -1,4 +1,4 @@
-import { tagApplies, difficultyText } from "../src/model.ts";
+import { tagApplies, difficultyText, PROCESS_WRITERS_ZH } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
@@ -2096,7 +2096,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
     if (detail && (it.tags?.length || it.difficulty !== undefined)) {
       const chips = el("div", "tagchips item-tags");
-      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有 PM 或架构师能改";
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = `难度等级，只有 ${PROCESS_WRITERS_ZH}能改`;
       for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
       box.appendChild(chips);
     }
