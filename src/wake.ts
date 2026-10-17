@@ -19,9 +19,8 @@ export type WakeRoute = "pm" | "architect" | { holder: string; only?: true } | {
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "architect" },
   stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "review", "finished", "dispatch"], to: "pm" },
+  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "review", "finished"], to: "pm" },
   "timed-architect": { label: "架构师定时唤醒", fields: ["since", "changed", "working"], to: "architect" },
-  dispatch: { label: "可以派活", fields: ["pool", "free", "limit", "candidates"], to: "pm" },
   review: { label: "要审查", fields: ["item", "project", "title", "level"], to: "pm" },
   finished: { label: "条目做完", fields: ["item", "project", "title", "session"], to: "pm" },
   "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url", "item", "pr"], to: { holder: "item" } },
@@ -73,9 +72,8 @@ const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
   stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.review) ? `，${count(f.review)} 条审查行在进行中却没有审查会话` : ""}${count(f.finished) ? `，${count(f.finished)} 条做完的条目还有会话没收` : ""}${count(f.dispatch) ? `，${count(f.dispatch)} 个池有空位和候选` : ""}`,
+  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.review) ? `，${count(f.review)} 条审查行在进行中却没有审查会话` : ""}${count(f.finished) ? `，${count(f.finished)} 条做完的条目还有会话没收` : ""}`,
   "timed-architect": f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条`,
-  dispatch: f => `${str(f.pool)} 级池空 ${str(f.free)}/${str(f.limit)} · ${str(f.candidates)} 个候选可以派`,
   review: f => `${it(f.item, f.project)} · ${f.level ? `${str(f.level)} 级` : "级别没写"} · ${str(f.title)}`,
   finished: f => `${it(f.item, f.project)} · 拿着它的会话 ${str(f.session)} · ${str(f.title)}`,
   "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败${f.item ? ` · 交付它的 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""}`,

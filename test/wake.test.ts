@@ -141,7 +141,7 @@ test("the limit can be set shorter, and the alert names it in minutes", () => {
   let clock = T0;
   const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
   wake.onTell(notice => told.push(notice.title));
-  wake.push("timed", { since: iso(T0), changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], dispatch: [] });
+  wake.push("timed", { since: iso(T0), changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [] });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["PM 10 分钟没响应"]);
 });
@@ -309,7 +309,7 @@ test("the timed wake lists what changed since the last one without the architect
   assert.equal(frame.working, 2, "the items someone holds, outside the Architect and PM projects: a step being done, or a live session; not a parent in progress only through its part");
   assert.equal(frame.pm, 1, "the PM project's open items, and not among the working ones though a step is being done");
   assert.ok(Number.isInteger(frame.architect) && (frame.architect as number) >= 1, "the Architect project's open items, counted");
-  assert.deepEqual(frame.dispatch, [{ pool: "2+", free: 5, limit: 6, candidates: 2 }], "the offers now: the 2+ pool has 6 slots, the engineer holding `held` takes one, and the rated, unstarted items `arch` and `other` are its candidates");
+  assert.equal("dispatch" in frame, false, "the timed wake carries no offers: the PM compares the candidates with its own limits");
   for (const column of ["working", "architect", "pm"]) assert.equal(typeof frame[column], "number", `${column} is a count, not the list that repeats from one wake to the next`);
   assert.deepEqual(wake.lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(file)).filter(l => l.timed).at(-1), { timed: wake.lastTimed });
@@ -636,9 +636,8 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   // The board's own kinds, with exactly their own fields: the daemon is their only source.
   await refused("note", { event: "note", ...noteFields("n1") });
   await refused("stalled", { event: "stalled", item: "a", project: "Whitefoot", title: "t", text: "x" });
-  await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [], dispatch: [] });
+  await refused("timed", { event: "timed", since: "s", changed: [], working: 0, architect: 0, pm: 0, review: [], finished: [] });
   await refused("timed-architect", { event: "timed-architect", since: "s", changed: [], working: 0 });
-  await refused("dispatch", { event: "dispatch", pool: "1", free: 1, limit: 10, candidates: 1 });
   for (const other of ["bogus", "toString", "__proto__", "constructor", "", 5, null, ["deployed"]]) await refused(`event ${JSON.stringify(other)}`, { event: other, ...fields });
   await refused("no event", fields);
   await refused("a missing field", { event, version: fields.version, previous: fields.previous, changes: fields.changes, restarted: fields.restarted });
@@ -725,14 +724,9 @@ test("a no-receipt notice opens the item or card its oldest unanswered event is 
   const third = new Wake({ now: () => clock, receiptLimitMs: 60_000 });
   const none: unknown[] = [];
   third.onTell(notice => none.push(notice.target));
-  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: 0, architect: 1, pm: 0, review: [], finished: [], dispatch: [] });
+  third.push("timed", { since: "2026-10-16T09:00:00Z", changed: [], working: 0, architect: 1, pm: 0, review: [], finished: [] });
   clock += 60_000; third.checkReceipts();
   assert.deepEqual(none, [undefined], "a timed event names no item or card, so the click opens the home view");
-  const offer = new Wake({ now: () => clock, receiptLimitMs: 60_000 }), offered: unknown[] = [];
-  offer.onTell(notice => offered.push(notice.target));
-  offer.push("dispatch", { pool: "1", free: 2, limit: 10, candidates: 4 });
-  clock += 60_000; offer.checkReceipts();
-  assert.deepEqual(offered, [undefined], "a dispatch event names no item: the board does not choose which one");
   // What the PM is to act on for an item opens that item.
   const pushes: Array<[Parameters<Wake["push"]>[0], Record<string, unknown>]> = [
     ["review", { item: "a", project: "Whitefoot", title: "中文检查", level: 3 }],
