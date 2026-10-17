@@ -102,8 +102,18 @@ const later = (a: CheckRun, b: CheckRun) => {
  * check is no failure and no pass (a gate that was skipped ran nothing), so a commit with only those, like one with no check at
  * all, is `none`, which is not green.
  */
-export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
-  if (!rollup) return { state: "none", failed: [] };
+export function summarize(rollup: ChecksRollup | undefined): Checks {
+  const { state, failed } = readChecks(rollup);
+  return { state, failed };
+}
+
+/** The checks of a commit as `summarize` reads them, and whether anything on it is still unfinished, which `failure` does not
+ * say: a red check makes the commit `failure` while others still run. Also unfinished: more checks than one answer holds, and a
+ * check that only has cancelled runs. */
+export interface CheckReading extends Checks { unfinished: boolean }
+export type ChecksRollup = z.infer<typeof Rollup>;
+export function readChecks(rollup: ChecksRollup | undefined): CheckReading {
+  if (!rollup) return { state: "none", failed: [], unfinished: false };
   const failed = new Set<string>(), latest = new Map<string, CheckRun>(), cancelled = new Set<string>();
   let passed = 0, pending = rollup.contexts.pageInfo.hasNextPage;
   for (const node of rollup.contexts.nodes) {
@@ -122,7 +132,7 @@ export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
     else if (badness(run) === 1) pending = true;
     else if (run.conclusion === "SUCCESS") passed++;
   }
-  return { state: failed.size ? "failure" : pending ? "pending" : passed ? "success" : "none", failed: [...failed] };
+  return { state: failed.size ? "failure" : pending ? "pending" : passed ? "success" : "none", failed: [...failed], unfinished: pending };
 }
 
 /** Reads the answer of `queryText`. `repo` is only copied into the result. */
