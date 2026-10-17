@@ -54,7 +54,7 @@ matches what the artifact board offered.
 - `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
   time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
   entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
-- `src/page-version.ts`: the version of the page the daemon serves (a hash of `web/index.html` and `web/dist/app.js`) and
+- `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
@@ -73,7 +73,10 @@ matches what the artifact board offered.
   structure to provisional plans, with an independent preservation check.
 - `web/`: the owner's page (`index.html`, `app.ts`, `fresh.ts`, the index `n`
   walks, and `find.ts`, title search and reference tokens, as plain functions
-  tests call directly), bundled by esbuild.
+  tests call directly), bundled by esbuild. `mermaid.ts` draws the ```mermaid
+  blocks of board text as diagrams; the library itself is `mermaid-entry.ts`
+  bundled as a file of its own, `dist/mermaid.js`, which the page loads only
+  when it shows a block (design section 7, Diagrams).
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded

@@ -258,6 +258,12 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 /* The gutter is generated content: not selectable and never copied, so copying a block gives its source text. */
 .rich pre.code .l { counter-increment: ln; }
 .rich pre.code .l::before { content: counter(ln); display: inline-block; min-width: 2.5ch; margin-right: 1.2ch; text-align: right; color: var(--gutter); user-select: none; -webkit-user-select: none; }
+/* A mermaid block: the diagram stands in for its code once drawn; the code shows while the diagram is not drawn and when drawing fails, with the error under it. */
+.mermaid-block[data-state="done"] > pre.code { display: none; }
+.mermaid-fig { overflow-x: auto; padding: 6px 0; }
+/* The diagram keeps its own size (its width is set from its view box in web/mermaid.ts); a narrow one is centered, a wide one starts at the left edge and scrolls. */
+.mermaid-fig svg { display: block; margin-inline: auto; max-width: none !important; height: auto; background: transparent !important; }
+.mermaid-err { margin: 4px 0 0; padding: 6px 10px; border-radius: 6px; background: var(--ask-soft); color: var(--ask); font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; }
 .tk-c { color: var(--tk-comment); font-style: italic; }
 .tk-k { color: var(--tk-keyword); font-weight: 600; }
 .tk-s { color: var(--tk-string); }

@@ -25,7 +25,7 @@ export interface PageRoute { method: string; path: string; cls: OperationClass |
 /** The one list of the routes the board serves, which the router in src/http.ts consults before it serves anything: a request
  * that matches no row is refused with 404, so a route cannot be served without a class. */
 export const PAGE_ROUTES: readonly PageRoute[] = [
-  { method: "GET", path: "/", cls: "read" }, { method: "GET", path: "/app.js", cls: "read" }, { method: "GET", path: "/health", cls: "read" }, { method: "GET", path: "/api/snapshot", cls: "read" },
+  { method: "GET", path: "/", cls: "read" }, { method: "GET", path: "/app.js", cls: "read" }, { method: "GET", path: "/mermaid.js", cls: "read" }, { method: "GET", path: "/health", cls: "read" }, { method: "GET", path: "/api/snapshot", cls: "read" },
   { method: "GET", path: "/api/unread", cls: "history" }, { method: "GET", path: "/api/step", cls: "history" },
   { method: "POST", path: "/api/notes", cls: "write" }, { method: "POST", path: "/api/draft", cls: "write" }, { method: "POST", path: "/api/send", cls: "write" },
   { method: "POST", path: "/api/read", cls: "write" }, { method: "POST", path: "/api/wake", cls: "write" },

@@ -57,3 +57,14 @@ test("fenceLang reads the first word of the info string", () => {
   assert.equal(fenceLang("WF title"), "wf");
   assert.equal(fenceLang(""), "");
 });
+
+test("a mermaid block is wrapped for the page to draw, with its source kept as the code; other blocks are not wrapped", () => {
+  const src = ["flowchart LR", "  A[需求] --> B[<b>x</b> & y]", "  B --> C"];
+  const html = codeBlock(src, "mermaid");
+  assert.ok(html.startsWith('<div class="mermaid-block"><pre class="code numbered">') && html.endsWith("</pre></div>"));
+  assert.equal(text(html), src.join("\n"), "the code inside is the source, escaped");
+  assert.ok(!html.includes("<b>"), "source markup stays text");
+  // The language is the first word of the info string, in any case, as for every other language.
+  assert.ok(codeBlock(["graph TD"], "Mermaid title").startsWith('<div class="mermaid-block">'));
+  for (const info of ["", "wf", "mermaids", "sequence"]) assert.ok(!codeBlock(["a"], info).includes("mermaid-block"), info);
+});

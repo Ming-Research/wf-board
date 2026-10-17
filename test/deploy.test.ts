@@ -615,12 +615,13 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
   // restart: NO_RESTART (src/deploy.ts) must change first.
   assert.deepEqual(readers, ["credentials.ts", "http.ts", "store.ts", "usage-watch.ts", "wake.ts", "watch.ts"]);
   const http = await readFile(join(src, "http.ts"), "utf8");
-  // The one read of a file in http.ts is pageFile, and it is asked for the two page files only: the page and its bundle.
+  // The one read of a file in http.ts is pageFile, and it is asked for the page files only: the page, its bundle and the diagram library.
   assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, name)"]);
-  const asked = [...http.matchAll(/pageFile\("([^"]*)"\)/g)].map(m => m[1]);
-  assert.deepEqual([...new Set(asked)].sort(), ["dist/app.js", "index.html"]);
-  // Every other mention of pageFile is its definition: a call with a name that is not a literal, or pageFile passed on, would read a file this test cannot see.
-  assert.equal([...http.matchAll(/\bpageFile\b/g)].length, asked.length + 1);
+  const asked = [...http.matchAll(/\b(?:optionalPageFile|pageFile)\("([^"]*)"\)/g)].map(m => m[1]);
+  assert.deepEqual([...new Set(asked)].sort(), ["dist/app.js", "dist/mermaid.js", "index.html"]);
+  // Every other mention is a definition: pageFile's own, optionalPageFile's, and the pageFile call inside optionalPageFile. A call with a name
+  // that is not a literal, or either passed on, would read a file this test cannot see.
+  assert.equal([...http.matchAll(/\b(?:optionalPageFile|pageFile)\b/g)].length, asked.length + 3);
   assert.ok(NO_RESTART.includes("web/"));
 });
 
@@ -634,7 +635,7 @@ test("the page files are read from disk on each request, so a rebuilt page needs
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const url = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
-  for (const [route, file] of [["/", "index.html"], ["/app.js", "dist/app.js"]] as const) {
+  for (const [route, file] of [["/", "index.html"], ["/app.js", "dist/app.js"], ["/mermaid.js", "dist/mermaid.js"]] as const) {
     for (const version of ["one", "two"]) {
       writeFileSync(join(dir, file), version);
       assert.equal(await (await fetch(url + route)).text(), version, `${route} after ${file} became ${version}`);

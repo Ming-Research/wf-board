@@ -3,13 +3,17 @@ import { createHash } from "node:crypto";
 /** The text in web/index.html that `GET /` replaces with the page's version, so a page knows which version it was served as. */
 export const VERSION_MARK = "__PAGE_VERSION__";
 
-/** The version of the page the daemon serves: a hash of its two files, web/index.html and the bundle web/dist/app.js. It changes
- * exactly when a page loaded now would differ from one loaded before, whatever else a deploy changed (docs/design.md, section 4,
- * Deploying). The files go in whole and as served, before the mark is replaced, so every reader of them gets the same version. */
-export function pageVersion(html: Uint8Array, bundle: Uint8Array): string {
+/** The version of the page the daemon serves: a hash of its files, web/index.html, the bundle web/dist/app.js and, once built, the
+ * diagram library web/dist/mermaid.js. It changes exactly when a page loaded now would differ from one loaded before, whatever else a
+ * deploy changed (docs/design.md, section 4, Deploying). The files go in whole and as served, before the mark is replaced, so every
+ * reader of them gets the same version. */
+export function pageVersion(html: Uint8Array, bundle: Uint8Array, library?: Uint8Array): string {
   const hash = createHash("sha256");
   // The length of the first file keeps a byte moved from one file to the other from making the same hash.
   hash.update(String(html.length)).update("\n").update(html).update(bundle);
+  // A page served without the library (not built yet) has the version it had before the library existed; the bundle's length keeps a
+  // byte moved between the bundle and the library from making the same hash.
+  if (library) hash.update(`\n${bundle.length}\n${library.length}\n`).update(library);
   return hash.digest("hex").slice(0, 16);
 }
 

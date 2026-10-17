@@ -140,7 +140,7 @@ test("start times from the call to the end, in real time", async t => {
 
 test("pages are classed by route: reads, history, writes; the streams and the MCP transport have no limit; other paths share one name but keep their path in the log", () => {
   const cls = (method: string, path: string) => pageOperation(method, path);
-  for (const path of ["/", "/app.js", "/health", "/api/snapshot"]) assert.deepEqual(cls("GET", path), { name: `GET ${path}`, cls: "read" }, path);
+  for (const path of ["/", "/app.js", "/mermaid.js", "/health", "/api/snapshot"]) assert.deepEqual(cls("GET", path), { name: `GET ${path}`, cls: "read" }, path);
   for (const path of ["/api/unread", "/api/step"]) assert.deepEqual(cls("GET", path), { name: `GET ${path}`, cls: "history" }, path);
   for (const path of ["/api/notes", "/api/draft", "/api/send", "/api/read", "/api/wake"]) assert.deepEqual(cls("POST", path), { name: `POST ${path}`, cls: "write" }, path);
   assert.deepEqual(cls("DELETE", "/api/notes/qfs61so04uwd3lw1491o"), { name: "DELETE /api/notes/:id", label: "DELETE /api/notes/qfs61so04uwd3lw1491o", cls: "write" });

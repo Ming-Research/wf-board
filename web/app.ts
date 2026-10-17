@@ -4,6 +4,7 @@ import type { AgentRow } from "../src/agents.ts";
 import { rules, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature } from "../src/rules.ts";
 import type { ActivityDelta, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
+import { watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
@@ -2976,5 +2977,6 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // Active time and doing-step day counts can advance without another board write.
   setInterval(() => { rulePresentationDirty = true; scheduleRender("header"); }, 60_000);
   void connect();
+  watchMermaid();
 
 function get<T extends HTMLElement = HTMLElement>(id: string): T { return document.getElementById(id) as T; }

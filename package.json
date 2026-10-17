@@ -13,7 +13,7 @@
     "check": "tsc -p tsconfig.json",
     "test": "node --test 'test/**/*.test.ts'",
     "test:e2e": "npm run build:web && node --test --test-concurrency=2 'test/e2e/*.e2e.ts'",
-    "build:web": "esbuild web/app.ts --bundle --format=esm --target=es2022 --outfile=web/dist/app.js"
+    "build:web": "esbuild web/app.ts --bundle --format=esm --target=es2022 --outfile=web/dist/app.js && esbuild web/mermaid-entry.ts --bundle --format=esm --target=es2022 --minify --outfile=web/dist/mermaid.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -25,6 +25,7 @@
     "@types/node": "26.6.5",
     "@types/ws": "8.18.2",
     "esbuild": "0.28.2",
+    "mermaid": "12.2.0",
     "playwright": "1.63.0",
     "typescript": "7.0.2"
   }
