@@ -265,13 +265,15 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
  * times the zoom (--zoom). So it is never enlarged by fitting, a zoomed one is wider than the box and the box scrolls sideways, and the
  * page never does. Its height follows its width, and the page scrolls for a tall one. */
 .mermaid-fig svg { display: block; margin-inline: auto; width: calc(min(var(--natural), 100%) * var(--zoom, 1)); max-width: none !important; height: auto; background: transparent !important; }
-/* The tool strip is a row of its own above the diagram, at the right, so it never covers the diagram. */
-.mermaid-tools { display: flex; align-items: center; gap: 2px; width: fit-content; margin: 0 0 2px auto; padding: 2px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; }
+/* A drawn diagram sits in a frame; the toolbar is its top row, above the diagram, so it never covers the diagram. From the left: smaller,
+ * the size as a percentage, larger, fit to the width of the box; the hint at the right. */
+.mermaid-block[data-state="done"] { border: 1px solid var(--rule); border-radius: 6px; }
+.mermaid-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 2px 4px; border-bottom: 1px solid var(--rule); border-radius: 5px 5px 0 0; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; }
 .mermaid-tools button { font: inherit; min-width: 24px; height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .mermaid-tools button:hover { background: var(--accent-soft); }
-.mermaid-hint { display: none; padding: 0 6px; color: var(--muted); }
-/* A box with more to show sideways says so: a scroll bar that stays (the system's own hides itself when idle), a grabbing hand, and the word in the bar. */
-.mermaid-block[data-pan="yes"] .mermaid-hint { display: inline; }
+.mermaid-percent { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
+.mermaid-hint { margin-left: auto; padding: 0 6px; color: var(--muted); }
+/* A box with more to show sideways says so: a scroll bar that stays (the system's own hides itself when idle) and a grabbing hand, besides the hint in the toolbar. */
 .mermaid-block[data-pan="yes"] .mermaid-fig { cursor: grab; user-select: none; -webkit-user-select: none; }
 .mermaid-fig.grabbing { cursor: grabbing; }
 /* A shade along the side of the view that has more to show, at the height of the whole diagram, so a tall diagram whose scroll bar is far below still says so. */

@@ -3,8 +3,8 @@
 // never runs; a page with no diagram never fetches the library; a diagram survives the repaint a live update makes; the same diagram
 // drawn twice has no id twice; both color schemes read, and the owner's data-theme attribute wins over the system's. A diagram wider
 // than its box is shrunk to it, never enlarged, at two window widths; the settings a diagram brings in its own frontmatter win over
-// the page's; it zooms with buttons and with Ctrl and the wheel, the plain wheel scrolls the page, a zoomed one is dragged and says so,
-// and a live update that leaves its source alone leaves its view alone too. Each check also runs on a page with one part taken out (an
+// the page's; it has a toolbar in its frame (smaller, the size in percent, larger, fit to width, the hint at the right); it zooms with the
+// buttons and with Ctrl and the wheel, the plain wheel scrolls the page, a zoomed one is dragged, and a live update that leaves its source alone leaves its view alone too. Each check also runs on a page with one part taken out (an
 // edit applied while the page is bundled), where it must report the part's absence for the reason the check protects. A diagram that
 // never appears can only be observed by waiting, so the wait is short (GIVE_UP) and the reported line must say what was waited for and
 // what the page held; a bare timeout, or a page that did not start, is not a catch.
@@ -22,6 +22,7 @@ import { startBoard, launch, BoardPage, ROOT } from "./harness.ts";
 import type { BoardServer } from "./harness.ts";
 import { PIPELINE } from "./mermaid-charts.ts";
 import { fence, setHead, settled, round, figures, checkFit, FIT_HEAD } from "./mermaid-checks.ts";
+import type { Figure } from "./mermaid-checks.ts";
 
 type Hooks = Parameters<typeof startBoard>[0];
 
@@ -265,24 +266,34 @@ async function checkOwn(bp: BoardPage, wait: number): Promise<string[]> {
   return (m[0]! + m[1]! + m[2]!) / 3 < 140 ? [] : [`mermaid-own: the diagram asks for the dark theme in its frontmatter and the page does not use it: its boxes are filled ${fill} on a light page`];
 }
 
-/** The tool strip: the buttons zoom by a step, Ctrl and the wheel zoom about the cursor, the plain wheel scrolls the page and neither zooms nor
- * scrolls the diagram, a zoomed diagram can be scrolled to both its ends and dragged, and Reset gives the default size back. */
+/** What the toolbar says about the size of the first diagram, against how large the diagram is drawn as a share of its own width; null when they agree. */
+async function percentIssue(bp: BoardPage, f: Figure): Promise<string | null> {
+  const text = await bp.page.locator("#item-detail .mermaid-percent").first().textContent(), want = f.drawn / f.natural * 100;
+  return text !== null && /^\d+%$/.test(text) && Math.abs(parseInt(text) - want) <= 1 ? null : `mermaid-zoom: the toolbar says ${JSON.stringify(text)} for a diagram drawn at ${want.toFixed(1)}% of its own width`;
+}
+
+/** The toolbar buttons zoom by a step and show the size in percent, Ctrl and the wheel zoom about the cursor, the plain wheel scrolls the page
+ * and neither zooms nor scrolls the diagram, a zoomed diagram can be scrolled to both its ends and dragged, and fit to width gives the default size back. */
 async function checkZoom(bp: BoardPage, wait: number): Promise<string[]> {
   const waited = await settled(bp, 1, wait);
   if (waited) return [`mermaid-zoom: ${waited}`];
   const have = await buttons(bp), v: string[] = [];
-  for (const need of ["缩小", "放大", "还原"]) if (!have.includes(need)) v.push(`mermaid-zoom: the diagram has no ${need} button; its buttons are ${have.join(", ") || "none"}`);
+  for (const need of ["缩小", "放大", "适应宽度"]) if (!have.includes(need)) v.push(`mermaid-zoom: the diagram has no ${need} button; its buttons are ${have.join(", ") || "none"}`);
   if (v.length) return v;
   await scrollProbe(bp);
   const start = await firstFigure(bp);
+  const shown = async (f: Figure) => { const issue = await percentIssue(bp, f); if (issue) v.push(issue); };
+  await shown(start);
   await press(bp, "放大");
   const once = await firstFigure(bp);
+  await shown(once);
   if (Math.abs(once.drawn - start.drawn * STEP) > 2) v.push(`mermaid-zoom: the enlarge button took the diagram from ${round(start.drawn)} to ${round(once.drawn)} px wide, not by ${STEP}`);
   await press(bp, "缩小");
   const back = await firstFigure(bp);
   if (Math.abs(back.drawn - start.drawn) > 2) v.push(`mermaid-zoom: enlarging and then shrinking left the diagram ${round(back.drawn)} px wide, from ${round(start.drawn)} px`);
   for (let i = 0; i < 4; i++) await press(bp, "放大");
   const big = await firstFigure(bp);
+  await shown(big);
   if (Math.abs(big.drawn - start.drawn * STEP ** 4) > start.drawn * 0.02) v.push(`mermaid-zoom: four steps up took the diagram from ${round(start.drawn)} to ${round(big.drawn)} px wide, expected ${round(start.drawn * STEP ** 4)}`);
   if (big.scroll <= big.box + 1) v.push(`witness setup: the enlarged diagram is ${round(big.drawn)} px wide and still fits its box of ${big.box} px`);
   else {
@@ -338,9 +349,10 @@ async function checkZoom(bp: BoardPage, wait: number): Promise<string[]> {
   if (Math.abs(d1.scrollLeft - d0.scrollLeft - 120) > 3) v.push(`mermaid-zoom: dragging the enlarged diagram 120 px to the left moved its box ${round(d1.scrollLeft - d0.scrollLeft)} px`);
   if (Math.abs(q1 - q0 - 80) > 3) v.push(`mermaid-zoom: dragging the enlarged diagram 80 px up moved the page ${round(q1 - q0)} px`);
 
-  await press(bp, "还原");
+  await press(bp, "适应宽度");
   const end = await firstFigure(bp);
-  if (Math.abs(end.drawn - start.drawn) > 2 || end.scrollLeft !== 0 || end.pan !== "no") v.push(`mermaid-zoom: after Reset the diagram is ${round(end.drawn)} px wide, scrolled ${round(end.scrollLeft)} px, dragging ${end.pan === "yes" ? "on" : "off"}; it was ${round(start.drawn)} px, 0 and off at the start`);
+  await shown(end);
+  if (Math.abs(end.drawn - start.drawn) > 2 || end.scrollLeft !== 0 || end.pan !== "no") v.push(`mermaid-zoom: after 适应宽度 the diagram is ${round(end.drawn)} px wide, scrolled ${round(end.scrollLeft)} px, dragging ${end.pan === "yes" ? "on" : "off"}; it was ${round(start.drawn)} px, 0 and off at the start`);
   const page = (await figures(bp)).page;
   if (page[0] > page[1] + 1) v.push(`mermaid-zoom: the page scrolls sideways: it is ${page[0]} px wide in a window of ${page[1]} px`);
   return v;
@@ -361,7 +373,7 @@ async function checkPan(bp: BoardPage, wait: number): Promise<string[]> {
   if (got.pan !== "yes") return [`witness setup: the enlarged diagram does not say it can be dragged (${got.pan})`];
   if (got.cursor !== "grab") v.push(`mermaid-pan: a diagram that can be dragged shows the cursor ${got.cursor}, not grab`);
   if (!(got.bar >= 8)) v.push(`mermaid-pan: the box of a diagram that can be dragged has no scroll bar of its own, and the system's hides itself when idle (the bar is ${got.bar} px high)`);
-  if (got.hint === "none" || !got.hintText) v.push("mermaid-pan: the tool strip of a diagram that can be dragged does not say so");
+  if (got.hint === "none" || !got.hintText) v.push("mermaid-pan: the toolbar of a diagram that can be dragged does not say so");
   // A shade at the edge that has more: along the whole diagram, so it shows however far down the scroll bar is.
   const shades = () => bp.page.evaluate(() => {
     const block = document.querySelector<HTMLElement>("#item-detail .mermaid-block")!, view = block.querySelector(".mermaid-view")!;
@@ -387,17 +399,51 @@ async function checkPan(bp: BoardPage, wait: number): Promise<string[]> {
       const lum = (c: { r: number; g: number; b: number }) => { const f = (x: number) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
       const ratio = (a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x! + 0.05) / (y! + 0.05); };
       const f = document.querySelector<HTMLElement>("#item-detail .mermaid-fig")!, bar = document.querySelector<HTMLElement>("#item-detail .mermaid-tools")!;
-      const ground = rgb(getComputedStyle(bar).backgroundColor), word = bar.querySelector("button")!, hint = bar.querySelector(".mermaid-hint")!;
+      const ground = rgb(getComputedStyle(bar).backgroundColor), word = bar.querySelector("button")!, hint = bar.querySelector(".mermaid-hint")!, size = bar.querySelector(".mermaid-percent")!;
       return {
-        button: ratio(rgb(getComputedStyle(word).color), ground), hint: ratio(rgb(getComputedStyle(hint).color), ground),
+        button: ratio(rgb(getComputedStyle(word).color), ground), percent: ratio(rgb(getComputedStyle(size).color), ground), hint: ratio(rgb(getComputedStyle(hint).color), ground),
         thumb: ratio(rgb(getComputedStyle(f, "::-webkit-scrollbar-thumb").backgroundColor), rgb(getComputedStyle(f, "::-webkit-scrollbar-track").backgroundColor)),
       };
     });
-    if (read.button < 4.5) v.push(`${what}: the words on the buttons read ${read.button.toFixed(2)}:1 on the tool strip`);
-    if (read.hint < 4.5) v.push(`${what}: the hint reads ${read.hint.toFixed(2)}:1 on the tool strip`);
+    if (read.button < 4.5) v.push(`${what}: the words on the buttons read ${read.button.toFixed(2)}:1 on the toolbar`);
+    if (read.percent < 4.5) v.push(`${what}: the size reads ${read.percent.toFixed(2)}:1 on the toolbar`);
+    if (read.hint < 4.5) v.push(`${what}: the hint reads ${read.hint.toFixed(2)}:1 on the toolbar`);
     if (read.thumb < 3) v.push(`${what}: the scroll bar reads ${read.thumb.toFixed(2)}:1 against its track`);
   }
   await bp.page.emulateMedia({ colorScheme: "light" });
+  return v;
+}
+
+const HINT = "双指缩放，拖动或滚动查看";
+/** The toolbar is the top row of the diagram's frame, above the diagram: from the left smaller, the size in percent, larger, fit to width, and the
+ * hint at the right, there from the start whatever the size. */
+async function checkBar(bp: BoardPage, wait: number): Promise<string[]> {
+  const waited = await settled(bp, 1, wait);
+  if (waited) return [`mermaid-bar: ${waited}`];
+  const got = await bp.page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>("#item-detail .mermaid-block")!, bar = block.querySelector<HTMLElement>(".mermaid-tools");
+    if (!bar) return null;
+    const box = (e: Element) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
+    const name = (e: Element) => e.getAttribute("aria-label") ?? (e.classList.contains("mermaid-percent") ? "size" : e.classList.contains("mermaid-hint") ? "hint" : "?");
+    return {
+      block: box(block), bar: box(bar), fig: box(block.querySelector(".mermaid-fig")!), border: parseFloat(getComputedStyle(block).borderTopWidth),
+      items: [...bar.children].map(e => ({ name: name(e), text: e.textContent ?? "", shown: getComputedStyle(e).display !== "none", ...box(e) })),
+    };
+  });
+  if (!got) return ["mermaid-bar: the diagram has no toolbar"];
+  const v: string[] = [], names = got.items.map(i => i.name);
+  if (names.join() !== "缩小,size,放大,适应宽度,hint") v.push(`mermaid-bar: the toolbar reads, left to right, ${names.join(", ")}; expected 缩小, size, 放大, 适应宽度, hint`);
+  else {
+    if (got.items.some((item, i) => i > 0 && item.left < got.items[i - 1]!.right - 1)) v.push("mermaid-bar: the items of the toolbar overlap or run right to left");
+    const size = got.items[1]!, hint = got.items[4]!;
+    if (!/^\d+%$/.test(size.text)) v.push(`mermaid-bar: the size reads ${JSON.stringify(size.text)}, not a percentage`);
+    if (hint.text !== HINT) v.push(`mermaid-bar: the hint reads ${JSON.stringify(hint.text)}, expected ${JSON.stringify(HINT)}`);
+    if (!hint.shown) v.push("mermaid-bar: the hint is not shown");
+    if (got.bar.right - hint.right > 16) v.push(`mermaid-bar: the hint is not at the right: it ends ${round(got.bar.right - hint.right)} px from the right of the toolbar`);
+  }
+  if (!(got.border >= 1)) v.push(`mermaid-bar: the block has no frame (border ${got.border} px)`);
+  else if (got.bar.left < got.block.left + got.border - 0.5 || got.bar.right > got.block.right - got.border + 0.5 || got.bar.top < got.block.top + got.border - 0.5) v.push("mermaid-bar: the toolbar is not inside the frame of the block");
+  if (got.bar.bottom > got.fig.top + 1) v.push(`mermaid-bar: the toolbar is not above the diagram: it ends at ${round(got.bar.bottom)} px, the diagram starts at ${round(got.fig.top)} px`);
   return v;
 }
 
@@ -555,7 +601,13 @@ const NO_TOOLS: Edit = { file: "mermaid.ts", find: "block.prepend(viewer(block, 
 const WHEEL_ZOOMS_ALL: Edit = { file: "mermaid.ts", find: "if (!event.ctrlKey) return;", replace: "" };
 const NO_DRAG: Edit = { file: "mermaid.ts", find: 'if (down.button !== 0 || down.pointerType !== "mouse" || block.dataset.pan !== "yes") return;', replace: "return;" };
 const NO_SCROLLBAR: Edit = { file: "index.html", find: ".mermaid-fig::-webkit-scrollbar { height: 10px; }", replace: "" };
-const NO_HINT: Edit = { file: "index.html", find: '.mermaid-block[data-pan="yes"] .mermaid-hint { display: inline; }', replace: "" };
+const NO_HINT: Edit = { file: "index.html", find: ".mermaid-hint { margin-left: auto;", replace: ".mermaid-hint { display: none; margin-left: auto;" };
+const HINT_LEFT: Edit = { file: "index.html", find: ".mermaid-hint { margin-left: auto;", replace: ".mermaid-hint {" };
+const WRONG_HINT: Edit = { file: "mermaid.ts", find: 'hint.textContent = "双指缩放，拖动或滚动查看";', replace: 'hint.textContent = "可拖动";' };
+const NO_FRAME: Edit = { file: "index.html", find: '.mermaid-block[data-state="done"] { border: 1px solid var(--rule); border-radius: 6px; }', replace: "" };
+const BAR_BELOW: Edit = { file: "mermaid.ts", find: "block.prepend(viewer(block, fig, source));", replace: "block.append(viewer(block, fig, source));" };
+const SIZE_SWAPPED: Edit = { file: "mermaid.ts", find: '    percent,\n    button("+", "放大", () => set(zoom * STEP, middle())),', replace: '    button("+", "放大", () => set(zoom * STEP, middle())),\n    percent,' };
+const STALE_PERCENT: Edit = { file: "mermaid.ts", find: 'percent.textContent = Math.round(drawn / own * 100) + "%";', replace: 'percent.textContent ||= Math.round(drawn / own * 100) + "%";' };
 const NO_SHADE: Edit = { file: "index.html", find: 'content: ""; position: absolute; top: 0; bottom: 0; width: 18px; pointer-events: none;', replace: "" };
 const NO_GRAB: Edit = { file: "index.html", find: "cursor: grab; ", replace: "" };
 // Colors that do not follow the page's color scheme.
@@ -682,13 +734,13 @@ test("the same check on a page that takes the frontmatter off before drawing rep
   caught(await checkOwn(bp, GIVE_UP), /^mermaid-own: the diagram asks for the dark theme in its frontmatter and the page does not use it/);
 });
 
-test("the buttons and Ctrl with the wheel zoom, the plain wheel scrolls the page, an enlarged diagram can be dragged, and Reset restores the default size", LONG, async t => {
+test("the buttons and Ctrl with the wheel zoom, the toolbar shows the size, the plain wheel scrolls the page, an enlarged diagram can be dragged, and fit to width restores the default size", LONG, async t => {
   const { bp } = await open(t, seedPipeline);
   none(await checkZoom(bp, WAIT));
 });
-test("the same check on a page without the tool strip reports the missing buttons", LONG, async t => {
+test("the same check on a page without the toolbar reports the missing buttons", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [NO_TOOLS]);
-  caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the diagram has no (缩小|放大|还原) button/);
+  caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the diagram has no (缩小|放大|适应宽度) button/);
 });
 test("the same check on a page where the plain wheel zooms reports the page not scrolled", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [WHEEL_ZOOMS_ALL]);
@@ -722,13 +774,47 @@ test("the same check on a page whose zoom keeps the page scroll reports the poin
   const { bp } = await open(t, seedPipeline, [NO_ANCHOR_Y]);
   caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: Ctrl and the wheel moved the point under the cursor from/);
 });
-test("the same check on a page whose Reset does nothing reports the size it was left at", LONG, async t => {
+test("the same check on a page whose fit to width does nothing reports the size it was left at", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [RESET_NOTHING]);
-  caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: after Reset the diagram is \d+ px wide, scrolled \d+ px/);
+  caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: after 适应宽度 the diagram is \d+ px wide, scrolled \d+ px/);
 });
 test("the same check on a page whose diagram box does not scroll reports the box", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [NO_SCROLL]);
   caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the enlarged diagram's box does not scroll sideways/);
+});
+
+test("the same check on a page whose toolbar shows a stale size reports the percentage", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [STALE_PERCENT]);
+  caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the toolbar says "\d+%" for a diagram drawn at/);
+});
+
+test("the toolbar is the top row of the diagram's frame: smaller, size, larger, fit to width, and the hint at the right", LONG, async t => {
+  const { bp } = await open(t, seedPipeline);
+  none(await checkBar(bp, WAIT));
+});
+test("the same check on a page with no frame around the diagram reports the frame", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [NO_FRAME]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the block has no frame/);
+});
+test("the same check on a page whose toolbar is below the diagram reports where it is", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [BAR_BELOW]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the toolbar is not above the diagram/);
+});
+test("the same check on a page whose size comes after larger reports the order", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [SIZE_SWAPPED]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the toolbar reads, left to right/);
+});
+test("the same check on a page whose hint sits at the left of its row reports the hint", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [HINT_LEFT]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the hint is not at the right/);
+});
+test("the same check on a page with another hint text reports the text", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [WRONG_HINT]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the hint reads/);
+});
+test("the same check on a page that hides the hint reports it", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [NO_HINT]);
+  caught(await checkBar(bp, GIVE_UP), /^mermaid-bar: the hint is not shown/);
 });
 
 test("an enlarged diagram says it can be moved, in both color schemes", LONG, async t => {
@@ -741,7 +827,7 @@ test("the same check on a page without its own scroll bar reports the bar", LONG
 });
 test("the same check on a page without the hint reports the hint", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [NO_HINT]);
-  caught(await checkPan(bp, GIVE_UP), /^mermaid-pan: the tool strip of a diagram that can be dragged does not say so/);
+  caught(await checkPan(bp, GIVE_UP), /^mermaid-pan: the toolbar of a diagram that can be dragged does not say so/);
 });
 test("the same check on a page without the grabbing hand reports the cursor", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [NO_GRAB]);
