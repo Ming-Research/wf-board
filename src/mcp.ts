@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Key, Time, Status, Priority, Link, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, answersPushes, answersArchitect, ARCHITECT_WRITER, PROCESS_WRITERS, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
+import { Key, Time, Status, Priority, Link, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, answersPushes, isPMCall, ARCHITECT_WRITER, PROCESS_WRITERS, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
@@ -188,12 +188,10 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const parsed = schema.parse(a);
         // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
-        // The PM's or the architect's call is a receipt for the PM's stream, and the architect's also for its own: by its credential's role when it has one, else by the session name it gives.
-        const speaks = credential?.ok ? { role: credential.who.access.role } : typeof args.session === "string" ? { session: args.session } : undefined;
-        if (speaks && answersPushes(speaks)) wake?.receipt();
-        if (speaks && answersArchitect(speaks)) wake?.architect.receipt();
-        // Another agent's call is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
-        const caller = credential?.ok ? (answersPushes({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !answersPushes({ session: args.session }) ? args.session.trim() : undefined;
+        // The PM's or the architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
+        if (credential?.ok ? answersPushes({ role: credential.who.access.role }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
+        // Another agent's call (the architect's too) is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
+        const caller = credential?.ok ? (isPMCall({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !isPMCall({ session: args.session }) ? args.session.trim() : undefined;
         if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
         const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");

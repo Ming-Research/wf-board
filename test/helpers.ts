@@ -75,10 +75,9 @@ export async function server(t: Parameters<typeof board>[0], extra: { now?: () =
   return { ...fixture, http, url, api, port: address.port };
 }
 
-/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. `path` is
- * the stream's address: the PM's by default. */
-export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number, path = "/wake") {
-  const socket = new WebSocket(url.replace("http:", "ws:") + path + (after === undefined ? "" : "?after=" + after));
+/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. */
+export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number) {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake" + (after === undefined ? "" : "?after=" + after));
   t.after(() => socket.terminate());
   const frames: Array<Record<string, unknown>> = [];
   socket.on("message", data => frames.push(JSON.parse(data.toString())));
@@ -88,9 +87,6 @@ export async function wakeSocket(t: { after(fn: () => void): void }, url: string
   await sync();
   return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
 }
-
-/** A client of the architect's wake stream, `/wake/架构师`, like wakeSocket. */
-export const architectSocket = (t: { after(fn: () => void): void }, url: string, after?: number) => wakeSocket(t, url, after, "/wake/" + encodeURIComponent("架构师"));
 
 /** A client of an agent's wake stream, `/wake/<name>`, like wakeSocket. */
 export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {

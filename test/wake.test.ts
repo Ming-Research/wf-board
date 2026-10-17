@@ -9,9 +9,9 @@ import { request } from "node:http";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, author, later, server, wakeSocket, architectSocket, asArchitect } from "./helpers.ts";
+import { agentSocket, board, author, later, server, wakeSocket, asArchitect } from "./helpers.ts";
 import { Item } from "../src/model.ts";
-import { Wake, WAKE_KINDS, CONTROL_FRAMES } from "../src/wake.ts";
+import { Wake, WAKE_KINDS, CONTROL_FRAMES, agentFileName } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -161,7 +161,7 @@ test("a log file that cannot be written costs the numbers' continuity, never the
 
 test("a sent note is pushed to the architect's stream with a number whatever project its item is in, a draft is not, a second send pushes nothing, and the PM's stream gets none of it", async t => {
   const { url, api, store } = await server(t);
-  const star = await architectSocket(t, url), pm = await wakeSocket(t, url);
+  const star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
   assert.deepEqual(star.frames, [{ event: "connected", latest: 0 }]);
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "q:choice", kind: "explain", text: "two" });
@@ -169,7 +169,7 @@ test("a sent note is pushed to the architect's stream with a number whatever pro
   await star.sync();
   assert.deepEqual(star.events(), [], "drafts are not pushed");
   await api("/api/send", {}); await star.sync();
-  const seen = star.events().map(({ at, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), frame));
+  const seen = star.events().map(({ at, line, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), assert.match(String(line), /^#\d 主人的留言 · /), frame));
   assert.deepEqual(seen, [
     { n: 1, event: "note", ...noteFields(one.data.id) },
     { n: 2, event: "note", note: two.data.id, target: "q:choice", kind: "explain", title: "中文方案？", project: "Whitefoot" },
@@ -197,13 +197,12 @@ test("only the kinds in the table are pushed: not a blocking card, an ask or a f
   assert.deepEqual(star.events(), []);
 });
 
-test("a client of the architect's stream that comes back with its last number gets what followed, a gap frame when the log no longer holds it, and a bad number is refused", async t => {
+test("a client of the PM's stream that comes back with its last number gets what followed, a gap frame when the log no longer holds it, and a bad number is refused", async t => {
   const wake = new Wake({ retain: 2 });
-  const { url, api } = await server(t, { wake });
-  for (const text of ["one", "two", "three"]) await api("/api/notes", { target: "it:a", kind: "comment", text });
-  await api("/api/send", {});
-  assert.equal(wake.architect.latest(), 3);
-  const live = await architectSocket(t, url), resumed = await architectSocket(t, url, 2), behind = await architectSocket(t, url, 0), ahead = await architectSocket(t, url, 99), current = await architectSocket(t, url, 3);
+  const { url } = await server(t, { wake });
+  for (const text of ["one", "two", "three"]) wake.push("stalled", stallFields(text));
+  assert.equal(wake.latest(), 3);
+  const live = await wakeSocket(t, url), resumed = await wakeSocket(t, url, 2), behind = await wakeSocket(t, url, 0), ahead = await wakeSocket(t, url, 99), current = await wakeSocket(t, url, 3);
   assert.deepEqual(live.frames, [{ event: "connected", latest: 3 }], "without a number the client takes events from now on");
   assert.deepEqual(resumed.frames.map(f => f.n ?? f.event), ["connected", 3]);
   assert.deepEqual(behind.frames.map(f => f.n ?? f.event), ["connected", "gap", 2, 3], "the gap frame comes before the events that are left");
@@ -211,7 +210,7 @@ test("a client of the architect's stream that comes back with its last number ge
   assert.deepEqual(ahead.frames, [{ event: "connected", latest: 3 }, { event: "gap", oldest: 2, latest: 3 }]);
   assert.deepEqual(current.frames, [{ event: "connected", latest: 3 }]);
   // A live event reaches every connected client, once, after the replay.
-  await api("/api/notes", { target: "it:a", kind: "comment", text: "four" }); await api("/api/send", {});
+  wake.push("stalled", stallFields("four"));
   for (const client of [live, resumed, behind, ahead, current]) await client.sync();
   assert.deepEqual([live, resumed, behind, ahead, current].map(c => c.events().map(f => f.n)), [[4], [3, 4], [2, 3, 4], [4], [4]]);
   // The client rule the doc gives: drop an event numbered at or below the one remembered; a gap frame sets it to oldest − 1.
@@ -224,12 +223,10 @@ test("a client of the architect's stream that comes back with its last number ge
     return taken;
   };
   assert.deepEqual([handled(resumed.frames, 2), handled(behind.frames, 0), handled(ahead.frames, 99), handled(current.frames, 3)], [[3, 4], [2, 3, 4], [4], [4]], "no event lost to a repeat check, whichever way the number was wrong");
-  for (const path of ["/wake?after=x", "/wake/" + encodeURIComponent(ARCHITECT_SESSION) + "?after=x"]) {
-    const bad = new WebSocket(url.replace("http:", "ws:") + path);
-    bad.on("error", () => {}); t.after(() => bad.terminate());
-    const [, response] = await once(bad, "unexpected-response");
-    assert.equal(response.statusCode, 400, path); response.resume();
-  }
+  const bad = new WebSocket(url.replace("http:", "ws:") + "/wake?after=x");
+  bad.on("error", () => {}); t.after(() => bad.terminate());
+  const [, response] = await once(bad, "unexpected-response");
+  assert.equal(response.statusCode, 400); response.resume();
   const other = new WebSocket(url.replace("http:", "ws:") + "/other");
   other.on("error", () => {}); t.after(() => other.terminate());
   const [, notFound] = await once(other, "unexpected-response");
@@ -336,9 +333,9 @@ test("the timed wake lists what changed since the last one without the architect
 
 test("the architect's timed wake comes every hour with the items changed since the last one, without the architect's own writes but with the PM's, and a count of the items being worked on; the PM's stream gets none of it, and the mark survives a restart", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
-  const dir = await scratch(t), architectFile = join(dir, "architect.jsonl");
+  const dir = await scratch(t), architectFile = join(dir, agentFileName(ARCHITECT_SESSION));
   let clock = T0;
-  const wake = new Wake({ architectFile, now: () => clock });
+  const wake = new Wake({ dir, now: () => clock });
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12 });
   const doc = (title: string, group: string, plan: object[], extra: object = {}) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
   await store.commit({ author, message: "Seed", puts: [
@@ -346,7 +343,7 @@ test("the architect's timed wake comes every hour with the items changed since t
     { kind: "item", id: "work", expectRev: null, doc: doc("在做的条目", "Whitefoot", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },
     { kind: "item", id: "held", expectRev: null, doc: doc("会话拿着的条目", "Whitefoot", [{ id: "step", text: "还没标", state: "todo" }], { dispatches: [{ agentId: "h1", agent: "held-eng", role: "工程师", level: 2, model: "Sonnet", started: iso(T0) }] }) },
   ] });
-  wake.architect.markTimed({ at: iso(T0), head: store.snapshot().head });
+  wake.agent(ARCHITECT_SESSION).markTimed({ at: iso(T0), head: store.snapshot().head });
   // After the mark: an engineer writes b and other; the architect writes a and b; the PM writes area; the owner comments on a card.
   await op.appendLog({ author, session: "工程师", id: "b", text: "progress" });
   await op.appendLog({ author: "Firn", session: "工程师", id: "other", text: "progress" });
@@ -354,31 +351,32 @@ test("the architect's timed wake comes every hour with the items changed since t
   await op.appendLog({ author, session: ARCHITECT_SESSION, id: "b", text: "reviewed" });
   await op.appendLog({ author, session: "PM", id: "area", text: "patrolled" });
   await api("/api/notes", { target: "q:choice", kind: "comment", text: "owner says" });
-  const star = await architectSocket(t, url), pm = await wakeSocket(t, url);
+  const star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
   clock = T0 + HOUR - 1; t.mock.timers.tick(1000); await star.sync(); await setImmediate();
   assert.deepEqual(star.events(), [], "not due yet: the architect's wake is an hour by default, not the PM's half hour");
   clock = T0 + HOUR; t.mock.timers.tick(1000);
   await until(() => star.events().length, n => n === 1, "the architect's timed wake");
   const frame = star.events()[0]!;
   assert.deepEqual({ n: frame.n, at: frame.at, event: frame.event, since: frame.since }, { n: 1, at: iso(clock), event: "timed-architect", since: iso(T0) });
-  assert.deepEqual(Object.keys(frame).sort(), ["at", "changed", "event", "n", "since", "working"], "changes and a count, none of the PM's lists or counts");
+  assert.deepEqual(Object.keys(frame).sort(), ["at", "changed", "event", "line", "n", "since", "working"], "changes and a count, none of the PM's lists or counts");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
   assert.deepEqual(by, { area: ["PM"], b: ["owner", "工程师"], other: ["工程师"] }, "the PM's write is listed; the architect's own writes are not why a or b is, and a is left out");
   assert.equal(frame.working, 2, "the items someone holds outside the Architect and PM projects: a step being done, or a live session");
-  assert.deepEqual(wake.architect.lastTimed, { at: iso(clock), head: store.snapshot().head });
-  assert.deepEqual((await lines(architectFile)).filter(l => l.timed).at(-1), { timed: wake.architect.lastTimed });
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: store.snapshot().head });
+  assert.deepEqual((await lines(architectFile)).filter(l => l.timed).at(-1), { timed: wake.agent(ARCHITECT_SESSION).lastTimed });
   t.mock.timers.tick(5000); await setImmediate();
   assert.equal(star.events().length, 1, "the next one is an hour after this one");
   await pm.sync();
   assert.deepEqual(pm.events(), [], "the PM's stream carries none of it, and its own timed wake (set far off here) is not the architect's");
   // A restart keeps the mark: the next wake counts from it, not from the restart.
+  star.socket.send(JSON.stringify({ ack: 1 })); await star.sync();
   await op.appendLog({ author, session: "工程师", id: "b", text: "after the wake" });
-  const mark = wake.architect.lastTimed!;
+  const mark = wake.agent(ARCHITECT_SESSION).lastTimed!;
   clock += 10 * 60_000;
-  const reopened = new Wake({ architectFile, now: () => clock });
-  assert.deepEqual(reopened.architect.lastTimed, mark); assert.equal(reopened.architect.latest(), 1);
+  const reopened = new Wake({ dir, now: () => clock });
+  assert.deepEqual(reopened.agent(ARCHITECT_SESSION).lastTimed, mark); assert.equal(reopened.agent(ARCHITECT_SESSION).latest(), 1);
   const again = await restart(t, store, op, { now: () => clock, checkIntervalMs: 1000, wake: reopened, timedWakeMs: 1e12 });
-  const resumed = await architectSocket(t, again.url, 1);
+  const resumed = await agentSocket(t, again.url, ARCHITECT_SESSION);
   t.mock.timers.tick(1000); await setImmediate(); await resumed.sync();
   assert.deepEqual(resumed.events(), [], "ten minutes after the last wake, restart or not, nothing is due");
   clock = Date.parse(mark.at) + HOUR; t.mock.timers.tick(1000);
@@ -400,60 +398,37 @@ test("the architect's timed wake lists at most 20 items and counts the rest, and
   assert.deepEqual(fields.changed.at(-1), { more: 5 }, "25 items were written by the engineer, 20 are listed, the rest are counted; the architect's own is not among them");
 });
 
-test("the architect's stream keeps its events, receipts and alert in a file of its own, numbered on its own, and a restart keeps all of it", async t => {
-  const dir = await scratch(t), file = join(dir, "pm.jsonl"), architectFile = join(dir, "architect.jsonl"), told: Array<[string, string]> = [];
+test("an hour with a push to the architect undelivered tells the owner once, a delivery starts the count again, the alert and the last timed wake survive a restart, and no other agent's stream is watched so", async t => {
+  const dir = await scratch(t), told: Array<[string, string]> = [];
   let clock = T0;
-  const open = () => { const wake = new Wake({ file, architectFile, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
-  const a = open();
-  a.push("stalled", stallFields("pm")); a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
-  assert.deepEqual([a.latest(), a.architect.latest()], [1, 2], "each stream numbers from 1");
-  assert.deepEqual((await lines(file)).filter(l => l.event).map(l => [l.n, l.event]), [[1, "stalled"]]);
-  assert.deepEqual((await lines(architectFile)).filter(l => l.event).map(l => [l.n, l.event]), [[1, "note"], [2, "note"]]);
-  a.architect.receipt();
-  a.push("note", noteFields("n3"));
+  const open = () => { const wake = new Wake({ dir, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
+  const a = open(), stream = a.agent(ARCHITECT_SESSION);
+  a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
+  stream.deliver(1);
+  clock = T0 + HOUR - 1; a.checkReceipts();
+  assert.deepEqual(told, [], "the oldest push not delivered, #2, is not yet an hour old");
   clock = T0 + HOUR; a.checkReceipts();
-  assert.deepEqual(told, [["PM 1 小时没响应", "最早没回执的是 #1：无人推进：中文检查"], ["架构师 1 小时没响应", "最早没回执的是 #3：主人的留言：中文检查"]], "each stream names itself and its own oldest event without a receipt");
-  clock += HOUR; a.checkReceipts();
-  assert.equal(told.length, 2, "one alert per silence, not one per tick");
+  assert.deepEqual(told, [["架构师 1 小时没响应", "最早没送到的是 #2：主人的留言：中文检查"]], "a delivered push is not the oldest");
+  clock += HOUR; a.checkReceipts(); a.checkReceipts();
+  assert.equal(told.length, 1, "one alert per silence, not one per tick");
+  stream.markTimed({ at: iso(clock), head: "abc" });
   const b = open();
   b.checkReceipts();
-  assert.equal(told.length, 2, "the restart remembers it already told the owner of both");
-  assert.equal(b.architect.receiptedUpTo(), 2, "and the receipt");
-  b.architect.receipt();
-  assert.equal(open().architect.receiptedUpTo(), 3);
-  const c = open();
-  assert.deepEqual([c.latest(), c.architect.latest(), c.receiptedUpTo()], [1, 3, 0], "the PM's receipts are its own");
-  assert.deepEqual(c.architect.since(0).frames.map(f => f.n), [1, 2, 3]);
-  c.push("note", noteFields("n4"));
-  clock += HOUR - 1; c.checkReceipts();
+  assert.equal(told.length, 1, "the restart remembers it already told the owner");
+  assert.deepEqual(b.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: "abc" }, "and the time of the last timed wake");
+  b.agent(ARCHITECT_SESSION).deliver(2);
+  b.push("note", noteFields("n3"));
+  clock += HOUR - 1; b.checkReceipts();
+  assert.equal(told.length, 1);
+  clock += 1; b.checkReceipts();
+  assert.equal(told.length, 2, "after a delivery the count started again, from the new push");
+  assert.match(told[1]![1], /最早没送到的是 #3：/);
+  // Only the architect's stream is watched for it; a session holding an item is watched by the liveness check.
+  const other = new Wake({ now: () => clock });
+  other.onTell(notice => told.push([notice.title, notice.message]));
+  other.agent("eng").push("item-done", { item: "a", project: "Whitefoot", title: "t", parent: "p" });
+  clock += 10 * HOUR; other.checkReceipts();
   assert.equal(told.length, 2);
-  clock += 1; c.checkReceipts();
-  assert.equal(told.length, 3, "after a receipt the count started again, from the new event"); assert.match(told[2]![1], /#4：/);
-});
-
-test("the timed wake lists the keys of the reviews and the finished items not yet taken up, and stops a list at 20 with the rest counted", async t => {
-  const { store } = await board(t);
-  const before = store.snapshot().head, mark = { at: iso(T0), head: before };
-  const doc = (title: string, plan: object[], extra: object = {}) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
-  const dispatch = (role: string, agent: string) => [{ agentId: agent, agent, role, level: 2, model: "Sonnet", started: iso(T0) }];
-  const review = { id: "review", text: "审查（3 级）", state: "doing", since: iso(T0) };
-  const doneAccept = { id: "accept", text: "某项检查通过", state: "done", accept: true, doneAt: iso(T0), since: iso(T0) };
-  const items: Array<[string, object]> = [
-    // A review wanted and nobody on it; the same with a reviewer, which the engineer resumes itself; a step of another name.
-    ["wants", doc("等审查", [review])],
-    ["reviewed", doc("有人在审", [review], { dispatches: dispatch("审查", "rev-1") })],
-    ["other-step", doc("别的步骤", [{ ...review, id: "other-step" }])],
-    // Done with a session still holding it; done with none.
-    ["held-done", { ...doc("做完了会话还在", []), plan: [doneAccept], dispatches: dispatch("工程师", "eng-1") }],
-    ["free-done", { ...doc("做完了没人拿着", []), plan: [doneAccept] }],
-    ...Array.from({ length: 25 }, (_, i): [string, object] => [`bulk${i}`, doc(`批量${i}`, [])]),
-  ];
-  await store.commit({ author, session: "工程师", message: "Seed", puts: items.map(([id, doc]) => ({ kind: "item" as const, id, expectRev: null, doc })) });
-  const s = store.snapshot(), fields = await timedWake(store, s, store.derived.rules(s, T0), mark, iso(T0));
-  assert.deepEqual(fields.review, ["wants"], "only the item whose review step is in progress and has no reviewer");
-  assert.deepEqual(fields.finished, ["held-done"], "only the done item a session still holds");
-  assert.equal(fields.changed.length, 21, "the list stops at 20 entries and a count");
-  assert.deepEqual(fields.changed.at(-1), { more: 10 }, "30 items were written, 20 are listed, the rest are counted");
 });
 
 async function mcpClient(t: Parameters<typeof board>[0], wake: Wake) {
@@ -496,48 +471,24 @@ test("a call carrying the architect's or the PM's session, read or write, is the
   assert.equal(wake.receiptedUpTo(), 7, "a padded PM session counts");
 });
 
-test("only a call carrying the architect's session is the receipt for the architect's stream: not the PM's, another session's or a near miss", async t => {
-  const wake = new Wake({ now: () => T0 });
-  const { client } = await mcpClient(t, wake);
-  wake.push("note", noteFields("n1")); wake.push("note", noteFields("n2"));
-  for (const arguments_ of [{ session: "PM" }, { session: "  PM  " }, { session: "别的会话" }, { session: "架构师x" }, { session: "Architect" }, {}]) await client.callTool({ name: "projects", arguments: arguments_ });
-  assert.equal(wake.architect.receiptedUpTo(), 0, "neither the PM's call nor any other answers the architect's stream");
-  await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
-  assert.equal(wake.architect.receiptedUpTo(), 2, "a read from the architect answers");
-  wake.push("note", noteFields("n3"));
-  await client.callTool({ name: "append_log", arguments: { author: "Architect", session: ARCHITECT_SESSION, id: "a", text: "x" } });
-  assert.equal(wake.architect.receiptedUpTo(), 3, "a write answers too, even when the board refuses it");
-  wake.push("note", noteFields("n4"));
-  const refused = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION, unknown: 1 } });
-  assert.equal(refused.isError, true);
-  assert.equal(wake.architect.receiptedUpTo(), 3, "a call the schema refuses is not a receipt");
-  await client.callTool({ name: "projects", arguments: { session: `  ${ARCHITECT_SESSION}  ` } });
-  assert.equal(wake.architect.receiptedUpTo(), 4, "a padded session name counts");
-  assert.equal(wake.receiptedUpTo(), 0, "nothing was pushed to the PM's stream, so its receipts did not move for the notes");
-});
-
 test("a call over a connection with a PM or architect credential is the receipt, by role, whatever session the call names; another role's is not", async t => {
   const fixture = await board(t);
   const who = (role: "PM" | "架构师" | "观察者" | "工程师", session: string) => ({ ok: true as const, who: { author: role === "PM" ? "PM" : "Architect", session, access: { role, project: role === "PM" ? "PM" : "Architect", roots: [] } } });
-  // What the call answered: the PM's stream, then the architect's.
   const receiptOf = async (credential: ReturnType<typeof who>, session?: string) => {
     const wake = new Wake({ now: () => T0 });
-    wake.push("stalled", stallFields("n1")); wake.push("note", noteFields("n1"));
+    wake.push("stalled", stallFields("n1"));
     const mcp = createMcpServer({ store: fixture.store, ops: fixture.op, wake, credential });
     const client = new Client({ name: "Credential receipt", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
     await mcp.connect(st); await client.connect(ct);
     await client.callTool({ name: "projects", arguments: session === undefined ? {} : { session } });
     await client.close(); await mcp.close();
-    return [wake.receiptedUpTo(), wake.architect.receiptedUpTo()];
+    return wake.receiptedUpTo();
   };
-  assert.deepEqual(await receiptOf(who("PM", "PM")), [1, 0], "the PM's credential answers the PM's stream only");
-  assert.deepEqual(await receiptOf(who("PM", "pm-2"), "别的名字"), [1, 0], "by its role, not by the name the call gives");
-  assert.deepEqual(await receiptOf(who("PM", "PM"), "架构师"), [1, 0], "nor does the session the call names make it the architect");
-  assert.deepEqual(await receiptOf(who("架构师", "架构师")), [1, 1], "the architect's credential answers its own stream and the PM's");
-  assert.deepEqual(await receiptOf(who("架构师", "a-2"), "PM"), [1, 1], "by its role, whatever session it names");
-  assert.deepEqual(await receiptOf(who("观察者", "观察者")), [0, 0], "the observer's does not");
-  assert.deepEqual(await receiptOf(who("工程师", "PM")), [0, 0], "a credential of another role does not, even under the session name PM");
-  assert.deepEqual(await receiptOf(who("工程师", "架构师")), [0, 0], "nor under the session name 架构师");
+  assert.equal(await receiptOf(who("PM", "PM")), 1, "the PM's credential answers");
+  assert.equal(await receiptOf(who("PM", "pm-2"), "别的名字"), 1, "by its role, not by the name the call gives");
+  assert.equal(await receiptOf(who("架构师", "架构师")), 1, "the architect's credential still answers");
+  assert.equal(await receiptOf(who("观察者", "观察者")), 0, "the observer's does not");
+  assert.equal(await receiptOf(who("工程师", "PM")), 0, "a credential of another role does not, even under the session name PM");
 });
 
 test("every tool takes an optional session, and post_notice is gone", async t => {
@@ -551,7 +502,7 @@ test("every tool takes an optional session, and post_notice is gone", async t =>
   assert.ok(!tools.some(tool => tool.name === "post_notice"));
 });
 
-test("with no receipt for the limit the server's timer tells the owner once for each stream, the PM's call starts only the PM's count again, and the architect's both", async t => {
+test("with no receipt for the limit the server's timer tells the owner once for the PM's stream, and with no delivery for the architect's; a call from the architect starts both counts again", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let clock = T0;
   const told: Array<[string, string]> = [];
@@ -560,25 +511,27 @@ test("with no receipt for the limit the server's timer tells the owner once for 
   const { url, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12, architectTimedWakeMs: 1e12 });
   await api("/api/notes", { target: "it:a", kind: "comment", text: "one" }); await api("/api/send", {});
   wake.push("stalled", stallFields("one"));
-  assert.deepEqual([wake.architect.latest(), wake.latest()], [1, 1], "the note is the architect's, the stalled item the PM's");
+  assert.deepEqual([wake.agent(ARCHITECT_SESSION).latest(), wake.latest()], [1, 1], "the note is the architect's, the stalled item the PM's");
   clock = T0 + 10 * 60_000 - 1; t.mock.timers.tick(1000);
   assert.deepEqual(told, []);
   clock++; t.mock.timers.tick(1000);
-  assert.deepEqual(told, [["PM 10 分钟没响应", "最早没回执的是 #1：无人推进：中文检查"], ["架构师 10 分钟没响应", "最早没回执的是 #1：主人的留言：中文检查"]]);
+  assert.deepEqual(told, [["PM 10 分钟没响应", "最早没回执的是 #1：无人推进：中文检查"], ["架构师 10 分钟没响应", "最早没送到的是 #1：主人的留言：中文检查"]]);
   t.mock.timers.tick(5000);
   assert.equal(told.length, 2, "not repeated while the silence lasts");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const client = new Client({ name: "Receipts", version: "1" }), transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
   await client.connect(transport); t.after(() => client.close());
-  // The PM's call through the real MCP route answers its own stream and not the architect's.
+  // The PM's call through the real MCP route answers its own stream and delivers nothing to the architect.
   await client.callTool({ name: "projects", arguments: { session: "PM" } });
-  assert.deepEqual([wake.receiptedUpTo(), wake.architect.receiptedUpTo()], [1, 0]);
+  assert.deepEqual([wake.receiptedUpTo(), wake.agent(ARCHITECT_SESSION).deliveredUpTo()], [1, 0]);
   await api("/api/notes", { target: "it:a", kind: "comment", text: "two" }); await api("/api/send", {});
   clock += 10 * 60_000; t.mock.timers.tick(1000);
   assert.equal(told.length, 2, "the PM's call did not start the architect's count again: its silence is already told");
-  // The architect's call answers both.
-  await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
-  assert.deepEqual([wake.receiptedUpTo(), wake.architect.receiptedUpTo()], [1, 2]);
+  // The architect's call answers the PM's stream and is given its own pushes, which delivers them.
+  wake.push("stalled", stallFields("two"));
+  const result = await client.callTool({ name: "projects", arguments: { session: ARCHITECT_SESSION } });
+  assert.match((result.content as Array<{ text: string }>).map(c => c.text).join("\n"), /【看板推送】\n#1 主人的留言 .*\n#2 主人的留言 /);
+  assert.deepEqual([wake.receiptedUpTo(), wake.agent(ARCHITECT_SESSION).deliveredUpTo()], [2, 2]);
   await api("/api/notes", { target: "it:a", kind: "comment", text: "three" }); await api("/api/send", {});
   clock += 10 * 60_000; t.mock.timers.tick(1000);
   assert.equal(told.length, 3); assert.equal(told[2]![0], "架构师 10 分钟没响应"); assert.match(told[2]![1], /#3：/);

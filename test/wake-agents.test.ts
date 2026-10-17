@@ -121,19 +121,24 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.equal(again.latest(), 1, "the PM's numbers are its own");
 });
 
-test("a push routed to the session of the PM goes to the PM's stream, and to the session of the architect to the architect's, and no agent stream is made under their names", async t => {
-  const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), architectFile: join(dir, "architect.jsonl"), dir, now: () => T0 });
+test("a push routed to the session of the PM goes to the PM's stream, to the session of the architect to its own agent stream, and no stream is made under the PM's name", async t => {
+  const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), dir, now: () => T0 });
   const held: Record<string, string> = { mine: PM_SESSION, theirs: ARCHITECT_SESSION };
   wake.routeBy(item => held[item]);
   const message = (to: string) => ({ message: "m", from: "eng", project: "Whitefoot", to, item: null, text: "看" });
-  wake.push("message", message(PM_SESSION)); wake.push("message", message(` ${ARCHITECT_SESSION} `));
+  wake.push("message", message(PM_SESSION)); wake.push("message", message(ARCHITECT_SESSION));
   wake.push("item-done", done("c1", "mine")); wake.push("item-done", done("c2", "theirs"));
   assert.deepEqual(wake.since(0).frames.map(f => [f.event, f.item ?? f.to]), [["message", PM_SESSION], ["item-done", "c1"]], "the PM's stream gets what is for the PM");
-  assert.deepEqual(wake.architect.since(0).frames.map(f => [f.event, f.item ?? f.to]), [["message", ` ${ARCHITECT_SESSION} `], ["item-done", "c2"]], "and the architect's what is for the architect, a padded name too");
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).pending().frames.map(f => [f.event, f.item ?? f.to]), [["message", ARCHITECT_SESSION], ["item-done", "c2"]], "and the architect's agent stream what is for the architect");
   // A holder-routed kind with no item to name (the red main line no PR explains) is the PM's too.
   wake.push("main-red", { repo: "o/r", project: "p", branch: "main", commit: "c", failed: [], url: "u", item: null, pr: null });
   assert.equal(wake.since(0).frames.at(-1)!.event, "main-red");
-  assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), false);
+  assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), true);
+  // The owner's notes and the architect's own wake are the architect's by their kind.
+  wake.push("note", { note: "n1", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  wake.push("timed-architect", { since: "2026-10-17T00:00:00Z", changed: [], working: 0 });
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).pending().frames.slice(2).map(f => f.event), ["note", "timed-architect"]);
+  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "item-done", "main-red"], "and none of them is the PM's");
 });
 
 test("a delivered push is never given again: after an ack, across a restart, and once a tool result carried it", async t => {
@@ -245,7 +250,7 @@ test("an agent's socket gets what was not delivered, then its own live pushes on
   for (const path of ["/wake/", "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
 });
 
-test("another agent's tool call carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {
+test("an agent's tool call (the architect's too) carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {
   const wake = new Wake({ now: () => T0 }), { store, op } = await board(t);
   const call = async (args: Record<string, unknown>, credential?: Resolved) => {
     const mcp = createMcpServer({ store, ops: op, wake, credential }), client = new Client({ name: "Footer", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
@@ -260,11 +265,12 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(await call({ session: "eng" }), plain, "carried once");
   wake.agent("eng").push("item-done", done("c2", "p"));
   assert.equal(await call({}), plain, "a call naming no session carries nothing");
-  // Nothing routes to a stream under the PM's name; one made by hand still never reaches the PM's calls.
-  wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
-  assert.equal(await call({ session: ARCHITECT_SESSION }), plain);
+  // The architect's calls carry what was pushed to its stream like any agent's; the PM's never do, whether or not a stream was made under its name.
+  const owed = wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
+  assert.equal(await call({ session: ARCHITECT_SESSION }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(owed)}`);
+  assert.equal(await call({ session: ARCHITECT_SESSION }), plain, "carried once");
   wake.agent(PM_SESSION).push("item-done", done("pm-2", "p"));
-  assert.equal(await call({ session: PM_SESSION }), plain, "the PM's session is the PM's too, whether or not a stream was made under its name");
+  assert.equal(await call({ session: PM_SESSION }), plain, "the PM's session is the PM's, whether or not a stream was made under its name");
   assert.equal(await call({ session: ` ${PM_SESSION} ` }), plain);
   assert.equal(await call({ session: " eng " }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(wake.agent("eng").since(1).frames[0]!)}`, "spaces around the name are ignored");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
@@ -273,8 +279,9 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(await call({ session: "eng" }, credential), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(mine)}`, "the credential's session, not the one the call names");
   assert.equal(wake.agent("eng").deliveredUpTo(), 2);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
-  assert.equal(await call({ session: "eng" }, architect), plain, "the PM's calls are receipts for its own stream and carry nothing");
-  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 0);
+  const second = wake.agent(ARCHITECT_SESSION).push("item-done", done("c5", "p"));
+  assert.equal(await call({ session: "eng" }, architect), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(second)}`, "the architect's credential: its own stream, whatever session the call names");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 2);
   const pm: Resolved = { ok: true, who: { author: "PM", session: PM_SESSION, access: { role: "PM", project: "PM", roots: [] } } };
   assert.equal(await call({ session: "eng" }, pm), plain, "a PM credential is the PM's, whatever session the call names");
   assert.equal(wake.agent(PM_SESSION).deliveredUpTo(), 0);

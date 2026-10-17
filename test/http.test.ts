@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { board, author, later, server, wakeSocket, architectSocket } from "./helpers.ts";
+import { agentSocket, board, author, later, server, wakeSocket } from "./helpers.ts";
 import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -79,7 +79,7 @@ test("exact Host and same-Origin enforced for writes and WebSocket upgrades", as
 
 test("POST /api/send with ids wakes only for those notes and refuses a non-draft id with 400", async t => {
   const { url, api } = await server(t);
-  const { events, sync } = await architectSocket(t, url);
+  const { events, sync } = await agentSocket(t, url, "架构师");
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "it:other", kind: "comment", text: "two" });
   const sent = await api("/api/send", { ids: [two.data.id] });

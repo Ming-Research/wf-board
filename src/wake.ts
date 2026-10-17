@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Liveness } from "./liveness.ts";
-import { ARCHITECT_SESSION, isArchitectSession, isPMSession } from "./model.ts";
+import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
 
-/** Where a kind of push goes: the PM's stream; the architect's stream; the stream of the session holding the item that `holder`
- * names (an item key among the fields), and the PM's when no session holds it, or nobody's when the route is `only` for the
- * holder; or the stream of the session that `session` names (the PM's or the architect's when that is theirs) (docs/design.md,
- * The wake streams). */
+/** Where a kind of push goes: the PM's stream; the architect's, an agent's stream under its session name; the stream of the
+ * session holding the item that `holder` names (an item key among the fields), and the PM's when no session holds it, or
+ * nobody's when the route is `only` for the holder; or the stream of the session that `session` names (the PM's when that is
+ * the PM's session) (docs/design.md, The wake streams). */
 export type WakeRoute = "pm" | "architect" | { holder: string; only?: true } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
@@ -115,6 +115,11 @@ function targetOf(frame: WakeFrame): Told["target"] {
   return undefined;
 }
 export interface TimedMark { at: string; head: string }
+/** A limit as the owner's notice says it: whole hours when it is, else minutes. */
+function spanOf(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  return minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
+}
 
 interface LogOptions {
   /** Where events and their state are kept so numbers continue across a restart; without it they live in memory only. */
@@ -248,6 +253,10 @@ export class AgentStream extends NumberedLog {
   private delivered = 0;
   /** When the stream last had a push or a delivery, for dropping a stream nobody uses. */
   private touched = 0;
+  /** Whether the owner was told that the oldest undelivered push has waited too long (`overdue`); a delivery starts the count again. */
+  private alerted = false;
+  /** When the last timed wake on this stream was made, and at which commit: only the architect's stream has timed wakes. */
+  private marked?: TimedMark;
 
   constructor(name: string, options: LogOptions = {}) {
     super(options, 200, 256 * 1024);
@@ -266,12 +275,19 @@ export class AgentStream extends NumberedLog {
   }
   protected loadState(record: Record<string, unknown>): void {
     if (typeof record.delivered === "number") {
-      this.delivered = Math.max(this.delivered, record.delivered);
+      this.delivered = Math.max(this.delivered, record.delivered); this.alerted = false;
       if (typeof record.at === "string") this.touched = Math.max(this.touched, Date.parse(record.at));
-    }
+    } else if (record.alert === true) this.alerted = true;
+    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
   }
   protected headLines(): unknown[] { return [{ name: this.name }]; }
-  protected stateLines(): unknown[] { return this.delivered ? [{ delivered: this.delivered, at: new Date(this.touched).toISOString() }] : []; }
+  protected stateLines(): unknown[] {
+    const lines: unknown[] = [];
+    if (this.delivered) lines.push({ delivered: this.delivered, at: new Date(this.touched).toISOString() });
+    if (this.alerted) lines.push({ alert: true });
+    if (this.marked) lines.push({ timed: this.marked });
+    return lines;
+  }
 
   /** Number and keep a push to this agent. Its frame also carries `line`, the one line the agent is shown. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
@@ -289,8 +305,21 @@ export class AgentStream extends NumberedLog {
   /** The events up to `n` have reached the agent. A number at or below what is delivered, or above the newest, changes nothing. */
   deliver(n: number): void {
     if (!Number.isSafeInteger(n) || n <= this.delivered || n > this.counter) return;
-    this.delivered = n; this.touched = this.now();
+    this.delivered = n; this.touched = this.now(); this.alerted = false;
     this.append({ delivered: n, at: this.iso() });
+  }
+  get lastTimed(): TimedMark | undefined { return this.marked; }
+  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
+  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
+  /** The oldest undelivered push that must be given, once it has waited `limitMs` and the owner was not told for it yet; the
+   * owner counts as told from here. A delivery starts the count again. */
+  overdue(limitMs: number): WakeFrame | undefined {
+    if (this.alerted) return undefined;
+    const oldest = this.pending().frames.find(mustBeGiven);
+    if (!oldest || this.now() - Date.parse(oldest.at) < limitMs) return undefined;
+    this.alerted = true;
+    this.append({ alert: true, at: this.iso() });
+    return oldest;
   }
   /** Milliseconds since the stream last had a push or a delivery. */
   idleFor(): number { return this.now() - this.touched; }
@@ -301,83 +330,9 @@ export class AgentStream extends NumberedLog {
   }
 }
 
-export interface ReceiptOptions extends LogOptions {
-  /** Whose stream it is, as the no-receipt notice names it: the PM or the architect. */
-  who: string;
-  receiptLimitMs?: number;
-}
-
-/**
- * A stream its reader answers by calling the board (docs/design.md, The wake streams, Receipts): the PM's and the architect's.
- * A client connects with the number of the last event it has and is sent what follows; the board keeps no delivery. A call by
- * the reader is a receipt for everything pushed before it; an event with no receipt after `receiptLimitMs` tells the owner once.
- * The time of the last timed wake is kept beside the receipts, so the next one counts from there after a restart.
- */
-export class ReceiptStream extends NumberedLog {
-  /** Whose stream: the name the no-receipt notice gives. */
-  readonly name: string;
-  readonly receiptLimitMs: number;
-  private receipted = 0;
-  private alerted = false;
-  private marked?: TimedMark;
-
-  constructor(options: ReceiptOptions) {
-    super(options, 1000, 2 * 1024 * 1024);
-    this.name = options.who;
-    this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
-    this.loadFile();
-  }
-
-  protected loadState(record: Record<string, unknown>): void {
-    if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
-    else if (record.alert === true) this.alerted = true;
-    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
-  }
-  protected stateLines(): unknown[] {
-    const lines: unknown[] = [];
-    if (this.receipted) lines.push({ ack: this.receipted });
-    if (this.alerted) lines.push({ alert: true });
-    if (this.marked) lines.push({ timed: this.marked });
-    return lines;
-  }
-
-  /** The number of the newest event answered, 0 before any. */
-  receiptedUpTo(): number { return this.receipted; }
-  get lastTimed(): TimedMark | undefined { return this.marked; }
-
-  /** Number, keep and send one event on this stream. The fields must be exactly those the kind lists. */
-  push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
-    checked(event, fields);
-    return this.add(event, fields);
-  }
-
-  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
-  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
-
-  /** A call from the reader: everything pushed here before it is answered. Writes only when that changes something. */
-  receipt(): void {
-    if (this.counter === this.receipted && !this.alerted) return;
-    this.receipted = this.counter; this.alerted = false;
-    this.append({ ack: this.receipted, at: this.iso() });
-  }
-
-  /** When the oldest event without a receipt is `receiptLimitMs` old, tell the owner once; a receipt starts the count again. */
-  alertIfSilent(tell: (title: string, message: string, target?: Told["target"]) => void): void {
-    if (this.alerted) return;
-    const oldest = this.frames.find(f => f.frame.n > this.receipted)?.frame;
-    if (!oldest || this.now() - Date.parse(oldest.at) < this.receiptLimitMs) return;
-    this.alerted = true;
-    this.append({ alert: true, at: this.iso() });
-    const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    tell(`${this.name} ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
-  }
-}
-
 export interface WakeOptions extends LogOptions {
   /** Where the agents' streams are kept, one file each; without it they live in memory only. */
   dir?: string;
-  /** Where the architect's stream is kept; without it, in memory only. */
-  architectFile?: string;
   /** Where the marks of the liveness checks are kept (src/liveness.ts); without it they live in memory only. */
   livenessFile?: string;
   receiptLimitMs?: number;
@@ -403,17 +358,18 @@ function nameIn(file: string): string | undefined {
 export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * The board's pushes: the PM's numbered, kept stream with the receipts that answer it (this class, a ReceiptStream), the
- * architect's (`architect`, another ReceiptStream), and one stream for each other agent (AgentStream), with the routing between
- * them. The owner's notifications go out from here too.
+ * The board's pushes: the PM's numbered, kept stream with the receipts that answer it (this class), and one stream for each
+ * other agent (AgentStream), with the routing between them. The owner's notifications go out from here too.
  */
-export class Wake extends ReceiptStream {
+export class Wake extends NumberedLog {
+  readonly receiptLimitMs: number;
   private readonly dir?: string;
-  /** The architect's stream: what the owner's notes and the architect's timed wake are pushed to, answered by the architect's calls. */
-  readonly architect: ReceiptStream;
   /** Whether the sessions holding items are still there: a call, or an alive frame from its wait script, is a sign (`liveness.see`), and the server's
    * minute timer runs `liveness.check`, which pushes the ask and the "no answer" through this object. */
   readonly liveness: Liveness;
+  private receipted = 0;
+  private alerted = false;
+  private marked?: TimedMark;
   private tellListeners = new Set<(told: Told) => void>();
   private agents = new Map<string, AgentStream>();
   private agentListeners = new Set<(stream: AgentStream, frame: WakeFrame) => void>();
@@ -421,10 +377,11 @@ export class Wake extends ReceiptStream {
   private holder: (item: string) => string | undefined = () => undefined;
 
   constructor(options: WakeOptions = {}) {
-    super({ ...options, who: "PM" });
+    super(options, 1000, 2 * 1024 * 1024);
     this.dir = options.dir;
-    this.architect = new ReceiptStream({ file: options.architectFile, now: this.now, retain: options.retain, retainBytes: options.retainBytes, receiptLimitMs: options.receiptLimitMs, who: ARCHITECT_SESSION });
+    this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
     this.liveness = new Liveness({ wake: this, now: this.now, file: options.livenessFile });
+    this.loadFile();
     // The agents' streams are read at start, so what is undelivered reaches a tool result before any wait script connects.
     try {
       if (this.dir && existsSync(this.dir)) for (const file of readdirSync(this.dir)) {
@@ -435,6 +392,23 @@ export class Wake extends ReceiptStream {
       }
     } catch (error) { console.error("agent wake logs unreadable", error); }
   }
+
+  protected loadState(record: Record<string, unknown>): void {
+    if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
+    else if (record.alert === true) this.alerted = true;
+    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
+  }
+  protected stateLines(): unknown[] {
+    const lines: unknown[] = [];
+    if (this.receipted) lines.push({ ack: this.receipted });
+    if (this.alerted) lines.push({ alert: true });
+    if (this.marked) lines.push({ timed: this.marked });
+    return lines;
+  }
+
+  /** The number of the newest event the PM has answered, 0 before any. */
+  receiptedUpTo(): number { return this.receipted; }
+  get lastTimed(): TimedMark | undefined { return this.marked; }
 
   /** How a holder-routed push finds its session: the session holding an item, or none. */
   routeBy(holder: (item: string) => string | undefined): void { this.holder = holder; }
@@ -460,18 +434,16 @@ export class Wake extends ReceiptStream {
     return () => { this.agentListeners.delete(fn); };
   }
 
-  /** Number, keep and send one event to the stream its kind routes it to: the PM's or the architect's; the stream of the session
-   * holding the item the route names (the PM's when nobody holds it); or the stream of the session the route names. A route
-   * that lands on the architect's session goes to the architect's stream, and on the PM's to the PM's. The fields must be
-   * exactly those the kind lists. */
+  /** Number, keep and send one event to the stream its kind routes it to: the PM's; the architect's; the stream of the session
+   * holding the item the route names (the PM's when nobody holds it); or the stream of the session the route names. The fields
+   * must be exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
-    if (to === "architect") return this.architect.push(event, fields);
+    if (to === "architect") return this.agent(ARCHITECT_SESSION).push(event, fields);
     if (to !== "pm") {
       const named = "session" in to ? fields[to.session] : fields[to.holder];
       const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
-      if (isArchitectSession(name)) return this.architect.push(event, fields);
       if (name !== undefined && !isPMSession(name)) return this.agent(name).push(event, fields);
       // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
       if ("only" in to && name === undefined) throw new Error(`Wake ${event} is for the session holding ${String(named)}, and nobody does`);
@@ -523,11 +495,29 @@ export class Wake extends ReceiptStream {
     }
   }
 
-  /** Tell the owner once about each of the PM's and the architect's streams whose oldest event has had no receipt for `receiptLimitMs`. */
+  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
+  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
+
+  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed to the PM before it is answered. Writes only when that changes something. */
+  receipt(): void {
+    if (this.counter === this.receipted && !this.alerted) return;
+    this.receipted = this.counter; this.alerted = false;
+    this.append({ ack: this.receipted, at: this.iso() });
+  }
+
+  /** When the oldest event without a receipt is `receiptLimitMs` old, tell the owner once; a receipt starts the count again. The
+   * same for the architect's stream, where the answer is a delivery: its oldest push not delivered in that time. */
   checkReceipts(): void {
-    const tell = (title: string, message: string, target?: Told["target"]) => this.tell(title, message, target);
-    this.alertIfSilent(tell);
-    this.architect.alertIfSilent(tell);
+    if (!this.alerted) {
+      const oldest = this.frames.find(f => f.frame.n > this.receipted)?.frame;
+      if (oldest && this.now() - Date.parse(oldest.at) >= this.receiptLimitMs) {
+        this.alerted = true;
+        this.append({ alert: true, at: this.iso() });
+        this.tell(`PM ${spanOf(this.receiptLimitMs)}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+      }
+    }
+    const late = this.agents.get(ARCHITECT_SESSION)?.overdue(this.receiptLimitMs);
+    if (late) this.tell(`${ARCHITECT_SESSION} ${spanOf(this.receiptLimitMs)}没响应`, `最早没送到的是 #${late.n}：${WAKE_KINDS[late.event].label}${typeof late.title === "string" ? "：" + late.title : ""}`, targetOf(late));
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */
