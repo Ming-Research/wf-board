@@ -752,3 +752,33 @@ test("legacy record-to-work history stays raw, while omitted-plan native records
     assert.equal(conversions, 0);
   });
 });
+
+test("historical comparison omits the retired level 「架构师做」 from an old version; raw history keeps it and writes stay strict", async t => {
+  const { dir } = await board(t);
+  const git = promisify(execFile);
+  const run = async (...args: string[]) => (await git("git", args, { cwd: dir })).stdout.trim();
+  const commit = async (message: string) => {
+    await run("add", ".");
+    await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  const work = { title: "Work", group: "Firn", priority: "P1", plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
+  // The level the board once had, as an old version holds it; then the version after the migration that cleared it.
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, difficulty: "architect" }));
+  const held = await commit("Rate the item 架构师做");
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, rev: 2 }));
+  const cleared = await commit("Clear the retired level");
+  const store = await Store.open(dir);
+  const past = await store.comparisonSnapshot(held);
+  assert.equal(past.items.work!.title, "Work");
+  assert.ok(!Object.hasOwn(past.items.work!, "difficulty"), "the retired level is left out of the normalized version");
+  // Only that value is omitted: a level that never existed is unknown content and is refused.
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, difficulty: "wizard", rev: 3 }));
+  const unknown = await commit("Rate the item with a level that never existed");
+  await assert.rejects(store.comparisonSnapshot(unknown), /items\/work\.yaml: difficulty: Invalid input/);
+  // Raw history keeps what was written.
+  assert.match(await store.diff("item", "work", held, cleared), /^-difficulty: architect$/m);
+  // And the current schema refuses it.
+  const current = store.snapshot().items.work!;
+  await assert.rejects(store.commit({ author: "Whitefoot", message: "Write the retired level", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, difficulty: "architect" as never } }] }), /difficulty/);
+});

@@ -2,7 +2,7 @@
 // The plan is the single source for ownership, status, priority and progress.
 import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, dispatchable, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, RETIRED_LEVEL, isArchitect, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
@@ -182,12 +182,20 @@ export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): Us
 /** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
 export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
- * items would show each of them new for one added label. Changing a level that exists is news. Returns the pair with a
- * first rating left out of `after`; any other pair comes back as it is. */
-export function withoutFirstRating<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
-  if (!before || !after || before.difficulty !== undefined || after.difficulty === undefined) return [before, after];
-  const { difficulty: _rated, ...rest } = after;
-  return [before, rest as T];
+ * items would show each of them new for one added label. So is the migration that cleared the retired level 「架构师做」
+ * (from that level to none), which touched a dozen items for one removed label. Changing a level that exists is news.
+ * Returns the pair with the rating left out of the side that has it; any other pair comes back as it is. */
+export function withoutRatingBookkeeping<T extends { difficulty?: unknown }>(before: T | null, after: T | null): [T | null, T | null] {
+  if (!before || !after) return [before, after];
+  if (before.difficulty === undefined && after.difficulty !== undefined) {
+    const { difficulty: _rated, ...rest } = after;
+    return [before, rest as T];
+  }
+  if (before.difficulty === RETIRED_LEVEL && after.difficulty === undefined) {
+    const { difficulty: _cleared, ...rest } = before;
+    return [rest as T, after];
+  }
+  return [before, after];
 }
 /** A change summary naming only the log (as describeChanges words it) is never unread content. */
 export const isLogChange = (change: string): boolean => /^(\+\d+ log|log changed)$/.test(change);
@@ -911,7 +919,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const st = statusOf(id);
     return (st === "todo" || st === "idle") && neededSet().has(id) && nextStep(id) !== undefined;
   }
-  function startable(id: string): boolean { return canStart(id) && dispatchable(item(id)?.difficulty); }
+  function startable(id: string): boolean { return canStart(id) && item(id)?.difficulty !== undefined; }
   function progress(id: string): Progress {
     const rows = planRows(id), ratio = planRatio(id), first = rows.find(entry => entry.ready && entry.state === "open");
     const text = (entry: DerivedPlanRow): string => "text" in entry.row ? entry.row.text : "item" in entry.row ? item(entry.row.item)?.title ?? entry.row.item : entry.row.card;
@@ -1147,7 +1155,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
         // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
         // it, paused work) is not asked for.
-        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });
