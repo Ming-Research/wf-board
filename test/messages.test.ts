@@ -67,7 +67,7 @@ test("a message goes to the architect, to a session with an open dispatch of any
   await op.dispatchStart({ ...asArchitect, id: "b", role: "审查", level: 2, model: "Sonnet", agent: "b-review", agentId: "agent-r" });
   for (const to of ["架构师", "观察者", "资源管理", "b-review"]) await op.sendMessage({ ...eng, to, text: "看 b" });
   assert.deepEqual(Object.values(store.snapshot().messages!).map(m => m.to).sort(), ["b-review", "架构师", "观察者", "资源管理"].sort());
-  await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1 });
+  await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1, rounds: 1 });
   await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
 });
 
