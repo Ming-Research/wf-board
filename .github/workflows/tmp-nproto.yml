@@ -1,0 +1,36 @@
+name: tmp-nproto
+# Temporary measurement for item ci-under-1min-study. Never merged: the branch is deleted when the study ends.
+on:
+  push:
+    branches: [ci-under-1min-study]
+    paths: [scripts/tmp-n-proto.ts, .github/workflows/tmp-nproto.yml]
+permissions:
+  contents: read
+jobs:
+  nproto:
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [a, b, c, d, e]
+    name: nproto-${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TMPDIR: /dev/shm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm i --no-save jsdom@30.1.3
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: n-press time layer in Node
+        run: node --max-old-space-size=8192 scripts/tmp-n-proto.ts 2>&1 | tee nproto.out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nproto-${{ matrix.rep }}
+          path: nproto.out
