@@ -9,7 +9,9 @@ import { ops } from "../../src/ops.ts";
 import { rules, placedCards } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll, variantWeb } from "./harness.ts";
 import type { BoardServer, Revert } from "./harness.ts";
-import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold } from "./invariants.ts";
+import { checkReload, checkWriting, checkLoop } from "./update.ts";
+import { setHead, checkFit, FIT_HEAD } from "./mermaid-checks.ts";
+import { oracle, burst, checkBadges, checkComments, checkCodeFont, checkEmptyRows, checkPlanRows, checkCardBox, checkFresh, checkWrap, checkRefFold, checkSharedSection, checkChangedBlocks, checkFullWidth, measureBlocks } from "./invariants.ts";
 
 const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop with no item sits in the card list and always counts.
     const all = stops().filter(st => !st.item || treeShown(st.item));
@@ -38,8 +40,64 @@ const ARROW_OLD = `    const all = stops();
     if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
     else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
 `;
-interface Witness { bug: string; reverts: Revert[]; family: string; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
+// `copy`: the check rebuilds the page it is served (test/e2e/update.ts), so the current page is served from a copy of the page directory.
+interface Witness { bug: string; reverts: Revert[]; family: string; copy?: true; storage?: (b: BoardServer) => Record<string, unknown>; run: (bp: BoardPage, b: BoardServer) => Promise<string[]> }
+// The maximum widths the right column's blocks once had (the owner asked for none on 2026-10-17): each is the rule's opening, which the
+// page now holds without the cap, and the cap in characters. A witness puts one cap back.
+const CAPS = [
+  { sel: ".note", find: ".note { font-size: 14px; border-radius: 6px; padding: 6px 10px; background: var(--note-bg); display: flex; flex-direction: column; gap: 2px;", ch: 78 },
+  { sel: ".log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", ch: 78 },
+  { sel: ".rich", find: ".rich { display: flex; flex-direction: column; gap: 6px;", ch: 78 },
+  { sel: ".editor", find: ".editor { display: flex; flex-direction: column; gap: 6px;", ch: 78 },
+  { sel: ".body p", find: ".body p { margin: 0;", ch: 78 },
+  { sel: ".ask", find: ".ask { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 14.5px; font-weight: 500;", ch: 78 },
+  { sel: ".checks", find: ".checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px;", ch: 78 },
+  { sel: ".deplists", find: ".deplists { display: flex; flex-direction: column; gap: 1px;", ch: 78 },
+  { sel: ".card p", find: ".card p { margin: 0;", ch: 76 },
+  { sel: ".refpop", find: ".refpop { display: flex; flex-direction: column;", ch: 78 },
+];
+// Ways other than a maximum width to keep the column's content from filling the window, one for each other thing the check measures.
+const NARROWINGS: Array<{ bug: string; edit: string; find: string; replace: string; family: string }> = [
+  { bug: "a block of the right column was set to a width of its own, narrower than its box", edit: "a width of 78ch on the log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", replace: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; width: 78ch;", family: "full-width-fill .log:" },
+  { bug: "an item's box in the right column was capped, narrower than the column", edit: "a maximum width on the item's box", find: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }", replace: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }\nbody.wide #item-detail > .item { max-width: 600px; }", family: "full-width-box:" },
+  { bug: "an item's body in the right column was capped, narrower than its box", edit: "a maximum width on the item's body", find: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }", replace: "body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }\nbody.wide #item-detail .item > .body { max-width: 600px; }", family: "full-width-body:" },
+  { bug: "a block of the right column was wider than the column, so the column scrolled sideways", edit: "a minimum width on the log", find: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px;", replace: ".log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; min-width: 3000px;", family: "full-width-scroll:" },
+  { bug: "the page was wider than the window, so the page scrolled sideways", edit: "a minimum width on the two columns", find: "body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 688px;", replace: "body.wide .wrap { flex: 1; min-height: 0; max-width: none; min-width: 3000px;", family: "full-width-page:" },
+];
+const capBack = (c: typeof CAPS[number]): Revert => ({ file: "web/index.html", edit: `the maximum width of ${c.sel}`, find: c.find, replace: `${c.find} max-width: ${c.ch}ch;` });
 const WITNESSES: Witness[] = [
+  {
+    bug: "changed body blocks lost their mark once the green background was removed (fixed in head-change-bar)",
+    // The blue bar rule that marks a changed body block and a changed card question; removing it leaves both with no mark.
+    reverts: [{ file: "web/index.html", edit: "the blue bar of changed blocks", find: "\n.rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }", replace: "" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed card questions lost their mark while changed body blocks kept theirs (fixed in head-change-bar)",
+    // The bar rule without its card selector: the body block keeps its line, the card question loses it.
+    reverts: [{ file: "web/index.html", edit: "the card question's blue bar", find: ", .card h3 > .chg-add::before {", replace: " {" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks' blue bar lost its place beside the block (fixed in head-change-bar)",
+    // Without absolute placement the bar falls into the block's flow, where it has no height and no place at the left.
+    reverts: [{ file: "web/index.html", edit: "the placement of the blue bar of changed blocks", find: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; position: absolute; ", replace: ".rich > .chg-add::before, .card h3 > .chg-add::before { content: \"\"; " }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
+  {
+    bug: "changed body blocks took a background colour (fixed in head-change-bar)",
+    // A background on the changed block itself is the green mark the owner removed.
+    reverts: [{ file: "web/index.html", edit: "a background on changed blocks", find: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }", replace: ".rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; background: #e3f2e6; }" }],
+    family: "changed-block",
+    storage: b => openAll(b),
+    run: async bp => checkChangedBlocks(bp),
+  },
   {
     bug: "saving a comment on a card folded its comment list and hid the 发送 button (fixed in 1ecc074)",
     // The fix's two lines, removed where they stand now: opening a comment and saving one unfold the list.
@@ -233,11 +291,71 @@ const WITNESSES: Witness[] = [
       return sel && s.items[sel] ? [] : [`agents-key: c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`];
     },
   },
+  {
+    bug: "a root another project began to depend on stayed among its project's own roots until the page was reloaded (owner, 2026-10-15)",
+    // Without the comparison, a change between the project's own roots and the roots other projects depend on repaints no group.
+    reverts: [{ file: "web/app.ts", edit: "an item changing section repaints its group", find: '    if (previous.shared !== current.shared) scope.add("group:"+current.group);\n', replace: "" }], family: "shared-section-above",
+    run: async (bp, b) => checkSharedSection(bp, b),
+  },
+  {
+    bug: "a root stayed under the line for the roots other projects depend on after the shared row to it was removed (review of wf-board#44)",
+    // Only a root that becomes depended on repaints its group; one that stops being depended on does not.
+    reverts: [{ file: "web/app.ts", edit: "only an item moving under the line repaints its group", find: 'if (previous.shared !== current.shared) scope.add("group:"+current.group);', replace: 'if (!previous.shared && current.shared) scope.add("group:"+current.group);' }], family: "shared-section-under",
+    run: async (bp, b) => checkSharedSection(bp, b),
+  },
+  {
+    bug: "a page that stayed open through a deploy kept running the old page: the owner saw no new feature until a manual reload (owner, 2026-10-16)",
+    // The page no longer acts on the version the stream announces.
+    reverts: [{ file: "web/app.ts", edit: "the page acts on the announced version", find: "      pageUpdates.announce((JSON.parse((event as MessageEvent).data) as { version: string }).version);\n", replace: "" }], family: "update-reload", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
+    bug: "a page that reloaded for a deploy came back scrolled to the top (owner, 2026-10-16)",
+    // The new page does not scroll the two panes back.
+    reverts: [{ file: "web/app.ts", edit: "the new page scrolls back to where the old one was", find: "listScroller().to(saved.list); detailScroller().to(saved.detail);", replace: "" }], family: "update-scroll", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
+    bug: "a page that reloaded for a deploy came back with no item selected (owner, 2026-10-16)",
+    // The page no longer keeps the selected item, so the page that follows a reload has none.
+    reverts: [{ file: "web/app.ts", edit: "the selected item is kept across a reload", find: '    try { localStorage.setItem("board-selected", id || ""); } catch {}\n', replace: "" }], family: "update-state", copy: true,
+    run: async (bp, b) => checkReload(bp, b),
+  },
+  {
+    bug: "a deploy reloaded the page under a comment box the owner was typing in (owner, 2026-10-16)",
+    // The page never counts itself as busy.
+    reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 || Object.values(drafts).some(text => text.trim() !== \"\") || sending || writesInFlight > 0,", replace: "busy: () => false," }], family: "update-writing", copy: true,
+    run: async (bp, b) => checkWriting(bp, b),
+  },
+  {
+    bug: "a page whose version never matched the announced one reloaded without end (design: a reload toward the same version within a minute is not repeated)",
+    // The page forgets its last reload, so nothing stops a second one.
+    reverts: [{ file: "web/app.ts", edit: "the page remembers the reload it began", find: "lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),", replace: "lastReload: () => undefined," }], family: "update-loop", copy: true,
+    run: async (bp, b) => checkLoop(bp, b),
+  },
+  ...CAPS.map((c): Witness => ({
+    bug: `blocks of the right column stayed at ${c.ch} characters in a wide window (${c.sel}; owner, 2026-10-17)`,
+    // The cap on this one block; the other blocks keep filling the column.
+    reverts: [capBack(c)], family: `full-width-cap ${c.sel}:`,
+    run: async bp => checkFullWidth(bp),
+  })),
+  ...NARROWINGS.map((n): Witness => ({
+    bug: `${n.bug} (owner, 2026-10-17)`,
+    reverts: [{ file: "web/index.html", edit: n.edit, find: n.find, replace: n.replace }], family: n.family,
+    run: async bp => checkFullWidth(bp),
+  })),
+  {
+    bug: "a diagram wider than the text was drawn at its own width, so its right part was cut off by a box that scrolled sideways without showing it could (owner, 2026-10-17)",
+    // Every diagram at its own width again, whatever its box.
+    reverts: [{ file: "web/index.html", edit: "a diagram is fitted to its box", find: "width: calc(min(var(--natural), 100%) * var(--zoom, 1));", replace: "width: var(--natural);" }], family: "mermaid-fit",
+    // A small diagram, a wide one and a tall one in one head, as the page's own mermaid checks draw them.
+    run: async (bp, b) => { await setHead(b, b.gen.witness.code, FIT_HEAD); await bp.select(b.gen.witness.code); return checkFit(bp, 60_000); },
+  },
 ];
 
 for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout: 10 * 60_000 }, async t => {
   const browser = await launch(t);
-  for (const [page, webDir] of [["current page", undefined], ["page with the fix reversed", await variantWeb(t, w.reverts)]] as const) {
+  for (const [page, webDir] of [["current page", w.copy ? await variantWeb(t, []) : undefined], ["page with the fix reversed", await variantWeb(t, w.reverts)]] as const) {
     const board = await startBoard(t, { webDir });
     const bp = await BoardPage.open(browser, board, w.storage?.(board) ?? openAll(board));
     const all = await w.run(bp, board), hits = all.filter(v => v.startsWith(w.family));
@@ -245,4 +363,19 @@ for (const w of WITNESSES) test(`the browser checks catch: ${w.bug}`, { timeout:
     if (page === "current page") assert.deepEqual(all, [], "the current page passes this check");
     else assert.ok(hits.length > 0, `the check misses the bug on the ${page}; it reported: ${all.join("\n") || "nothing"}`);
   }
+});
+
+test("at a window 700px wide the blocks of the right column sit where they did with the maximum widths", { timeout: 10 * 60_000 }, async t => {
+  const browser = await launch(t), laid: string[][] = [];
+  for (const webDir of [undefined, await variantWeb(t, CAPS.map(capBack))]) {
+    const board = await startBoard(t, { webDir });
+    const bp = await BoardPage.open(browser, board, openAll(board));
+    await bp.page.setViewportSize({ width: 700, height: 1000 });
+    await bp.settle();
+    const { blocks } = await measureBlocks(bp, await oracle(board.store));
+    await bp.context.close();
+    laid.push(blocks.map(b => `${b.item} ${b.sel} #${b.at}: x ${Math.round(b.x)}, ${Math.round(b.w)}px wide`));
+  }
+  assert.ok(laid[0]!.length > 0, "the page shows blocks to compare");
+  assert.deepEqual(laid[0], laid[1]);
 });

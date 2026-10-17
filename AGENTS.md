@@ -19,7 +19,17 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git.
+  runs git against them; its push runs beside the write queue, not in it.
+- `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
+  git against a remote: its own process group, a time cap, killed with its ssh
+  (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
+  remote, their log lines, ending the push on shutdown, and the push to the
+  architect when the remote copy stays behind for an hour.
+- `src/budget.ts`: the budget of one request's reads of the board's history (bytes
+  read, whole old boards rebuilt, the process heap), held in the request's async
+  context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
+  old board, bounded by the heap they are estimated to hold. Design section 4,
+  Request budgets.
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line and the start-up step timings.
@@ -29,6 +39,11 @@ matches what the artifact board offered.
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the
   page API alike.
+- `src/credentials.ts`: who is writing, told by the request's bearer credential
+  (dispatch credentials kept as hashes on the dispatch record, long-lived ones in
+  a file outside the data directory); `scripts/credential.ts` issues, lists and
+  revokes the long-lived ones. What each role may write is the table `ACCESS` in
+  `src/model.ts`; design section 9.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
   index of the last two items written is advanced, and the rows (who is listed,
   the state word, the level) derived from it, the steps in progress and the
@@ -36,13 +51,20 @@ matches what the artifact board offered.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
+- `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
+  time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
+  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
+- `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
+  the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
+  tests call directly (design section 4, Deploying; section 7, Updating the page).
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/wake.ts`: the architect's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
-  `src/timed-wake.ts`: what the half-hourly wake carries; `src/notify.ts`: the
-  owner's notifications on the Mac. The protocol is `docs/design.md`, section 8.
+  `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
+  `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
+  deploy job shows the owner when the board does not answer.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
   `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
   the included minutes, the usage line of the timed wake, the usage pushes). Both are in `docs/design.md`, section 8.
@@ -51,9 +73,13 @@ matches what the artifact board offered.
   structure to provisional plans, with an independent preservation check.
 - `web/`: the owner's page (`index.html`, `app.ts`, `fresh.ts`, the index `n`
   walks, and `find.ts`, title search and reference tokens, as plain functions
-  tests call directly), bundled by esbuild.
+  tests call directly), bundled by esbuild. `mermaid.ts` draws the ```mermaid
+  blocks of board text as diagrams; the library itself is `mermaid-entry.ts`
+  bundled as a file of its own, `dist/mermaid.js`, which the page loads only
+  when it shows a block (design section 7, Diagrams).
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
-  never enters this repository. `test/e2e/` holds the browser layer: a seeded
+  never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
+  that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
   headless Chromium) and the click invariants.
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
@@ -61,6 +87,11 @@ matches what the artifact board offered.
   of the live board's size; the `bench` workflow runs it by hand
   (`workflow_dispatch`) on this tree and on a base commit, as a step that
   never fails the run.
+- `scripts/bench-changes.ts`: the history-query benchmark (time, heap growth and heap
+  peak against the budget's line, for `changes`, the unread list and `diff`, on a
+  synthetic board of the live board's size with a long history); the same workflow
+  runs it on this tree, where a failed check fails the run, and on the base commit,
+  as a report only.
 - `scripts/check-private-content.ts`, with its rules in
   `scripts/private-content-rules.ts`: the CI check that a push or a pull
   request adds nothing private to this public repository (design section
@@ -134,4 +165,6 @@ changed, restart the daemon
 `~/Library/Logs/wf-board.log`) and wait until
 `curl -s http://127.0.0.1:7417/health` answers, which can take more than ten
 seconds. The wake stream and MCP sessions drop during the restart and
-reconnect. Then check the change on the live page.
+reconnect. Restart the daemon also when only `web/` changed and the pages open
+in the browser should replace themselves: without a restart they are told only
+by the deploy job's push. Then check the change on the live page.

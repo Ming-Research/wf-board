@@ -81,7 +81,7 @@ test("MCP onboarding and write schemas use project identities", async t => {
   const instructions = client.getInstructions()!, tools = (await client.listTools()).tools;
   await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.doesNotMatch(instructions, /总管|claim_project|session-list/); });
   for (const tool of tools.filter(tool => tool.inputSchema.properties?.author)) {
-    await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`)"));
+    await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`); leave it out when this connection carries a credential, which names it"));
   }
   await t.test("list agent filter removed", () => {
     const filters = tools.find(tool => tool.name === "list")!.inputSchema.properties!.filters as {properties:Record<string,unknown>};
@@ -290,7 +290,7 @@ test("MCP moves an item and what it owns to another project, and only Architect 
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
-  assert.deepEqual([...tool.inputSchema.required!].sort(), ["author", "id", "project"]);
+  assert.deepEqual([...tool.inputSchema.required!].sort(), ["id", "project"], "author is left out when the connection has a credential, so no tool requires it");
   assert.match(tool.description!, /^Only author Architect with session 架构师 may use it\./);
   const before = store.snapshot();
   // The item's own project, another project, Architect without the session and Architect from another session all get the same refusal.

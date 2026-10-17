@@ -1,10 +1,10 @@
 import type { Notify } from "./notify.ts";
 
 /** The paths whose change needs no restart, the one place this is defined. The daemon loads src/ and the packages at its start and
- * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html and
- * web/dist/app.js, the bundle the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
- * or not, restarts the daemon. */
-export const NO_RESTART = ["docs/", "test/", "web/"];
+ * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html, and the
+ * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
+ * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
+export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
 
 /** A push to the architect, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and its fields. */
 export interface Push { event: "deployed" | "deployFailed"; [field: string]: unknown }
@@ -46,6 +46,9 @@ export interface DeployDeps {
   remote: string;
   /** git in the checkout; rejects with the exit status as `code` when git fails. */
   git(args: string[]): Promise<string>;
+  /** git against the remote (`fetch`): the same as `git`, and bounded in time, so a remote that never answers fails the fetch
+   * instead of holding the job, which launchd never overlaps (src/net-git.ts). */
+  network(args: string[]): Promise<string>;
   /** A command of the deploy (npm) in the checkout; rejects when it fails. */
   run(command: string, args: string[]): Promise<void>;
   /** The pid launchd reports for the daemon, or undefined while it is not running. */
@@ -66,6 +69,8 @@ export interface DeployDeps {
   /** How long a restarted daemon has to answer, and how long it must keep answering from the same process. */
   waitMs: number;
   stableMs: number;
+  /** How far apart the tries of a fetch are. */
+  fetchRetryMs: number;
 }
 
 /** `stuck`: going back did not finish but the daemon answers; `down`: it does not answer either; `error`: the job itself failed. */
@@ -76,7 +81,7 @@ const MAX_CHANGES = 20;
 /** How long a probe of /health keeps trying before it says the daemon does not answer: one probe can miss a daemon that is busy or just starting. */
 const SETTLE_MS = 15_000;
 /** A fetch is tried this often, this far apart, before the remote counts as unreachable: a network that has just come back needs a moment. */
-const FETCH_TRIES = 3, FETCH_RETRY_MS = 10_000;
+const FETCH_TRIES = 3;
 
 const line = (text: string) => text.trim();
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().split("\n").slice(0, 3).join(" ").slice(0, 300);
@@ -208,9 +213,9 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
 
     const ref = `${d.remote}/${d.branch}`;
     for (let attempt = 1; ; attempt++) {
-      try { await d.git(["fetch", d.remote, `+refs/heads/${d.branch}:refs/remotes/${ref}`]); break; }
+      try { await d.network(["fetch", d.remote, `+refs/heads/${d.branch}:refs/remotes/${ref}`]); break; }
       catch (error) {
-        if (attempt < FETCH_TRIES) { await d.sleep(FETCH_RETRY_MS); continue; }
+        if (attempt < FETCH_TRIES) { await d.sleep(d.fetchRetryMs); continue; }
         d.log(`fetch failed: ${reasonOf(error)}`);
         await tellOnce("fetch", "fetch", { event: "deployFailed", version: null, running, reason: `could not fetch ${ref}: ${reasonOf(error)}` });
         return "unreachable";
@@ -234,7 +239,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     if (!behind) return refuse("ahead", `the checkout's ${head} is not an ancestor of ${target}: it has commits the main line lacks`);
 
     const changed = (await d.git(["diff", "--no-renames", "--name-only", head, target])).split("\n").filter(Boolean);
-    const restart = !up || changed.some(path => !NO_RESTART.some(prefix => path.startsWith(prefix)));
+    const restart = !up || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
     const commits = (await d.git(["log", "--first-parent", "--format=%h %s", `${head}..${target}`])).split("\n").filter(Boolean);
     const changes = commits.length > MAX_CHANGES ? [...commits.slice(0, MAX_CHANGES), { more: commits.length - MAX_CHANGES }] : commits;
 

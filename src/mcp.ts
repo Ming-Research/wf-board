@@ -9,6 +9,11 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
+import type { Resolved } from "./credentials.ts";
+import { summarize, toolClass } from "./slow-ops.ts";
+import type { SlowOps } from "./slow-ops.ts";
+import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
+import type { BudgetLimits } from "./budget.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -95,6 +100,8 @@ function formatGraph(graph: ReturnType<typeof q.graph>): string {
 }
 
 const author = z.string().describe("the name of the project you work for (from `projects`)");
+/** What a write tool advertises: with a credential on the connection the author is the credential's and is left out (docs/design.md, section 9). */
+const optionalAuthor = z.string().optional().describe("the name of the project you work for (from `projects`); leave it out when this connection carries a credential, which names it");
 const session = z.string().trim().min(1).max(80).describe("Your own session's name as the app's session list shows it. Pass it on every call. A write records it, so the board can say who last wrote to an item; it assigns nothing.").optional();
 const id = Key.describe("Exact item id or card key found with search or list.");
 /** Lookups also take a short number, "#812" or "812"; an exact key wins over a number. */
@@ -113,7 +120,13 @@ const count = (description: string) => z.number().int().nonnegative().describe(d
 const tagList = z.array(TagName).describe("Tags from the vocabulary (call tags) that apply to the item's project; at least one once the vocabulary has a tag for that project.");
 const links = z.array(Link).describe("Relevant links as {label, url}; use qualified PR labels such as Whitefoot#341.");
 
-export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: Ops; now?: () => string; wake?: Wake }): McpServer {
+/**
+ * The tools of one request (the endpoint keeps no session, so a server object serves one request). `credential` is what the
+ * request's credential said about the writer (src/credentials.ts): none when it carried none, which leaves reads and the old
+ * self-reported writes; a refusal when it carried one that is not valid, which refuses every call.
+ * `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one.
+ */
+export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
@@ -121,18 +134,42 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     // One shared Rules object per snapshot and minute (store.derived), not one per read.
     return { snapshot, rules: store.derived.rules(snapshot, now ? Date.parse(now()) : Date.now()) };
   }
+  /** The arguments of a write with the writer filled in from the credential; without one, the call must name its author (the old way, until the old tools are removed). */
+  function identified(args: Record<string, unknown>): { args: Record<string, unknown>; note?: string } {
+    if (credential?.ok) {
+      const { author, session, access } = credential.who;
+      const differs = (["author", "session"] as const).filter(key => args[key] !== undefined && args[key] !== (key === "author" ? author : session));
+      return { args: { ...args, author, session, access }, ...(differs.length ? { note: `${differs.join(" and ")} ignored: this connection's credential writes as author ${author}, session ${session}` } : {}) };
+    }
+    if (typeof args.author !== "string" || !args.author.trim()) throw new Error("author: this connection has no credential, so it can only read the board; a write names its author (your project) and session until the old tools are removed. Ask the architect for a credential for your session");
+    return { args };
+  }
   function register<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.output<z.ZodObject<S>>) => string | Promise<string>, write = false) {
     // Every tool takes the session, reads too: a call from the architect's session is the receipt for what the board pushed it
-    // (docs/design.md, The wake stream), counted from the calls it makes anyway.
-    const full = "session" in shape ? shape : { ...shape, session };
+    // (docs/design.md, The wake streams), counted from the calls it makes anyway. A write tool's author may be left out when the connection has a credential.
+    const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
+    const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
+      // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
+      const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
+      let outcome = "ok";
       try {
-        const args = schema.parse(a);
-        if (typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
-        return { content: [{ type: "text" as const, text: await fn(args as z.output<z.ZodObject<S>>) }] };
+        if (credential && !credential.ok) throw new Error(credential.problem);
+        const parsed = schema.parse(a);
+        // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
+        const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
+        // The architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
+        if (credential?.ok ? credential.who.access.role === "架构师" : typeof args.session === "string" && isArchitectSession(args.session)) wake?.receipt();
+        // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
+        // Another agent's call carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams, In a tool result).
+        const caller = credential?.ok ? (credential.who.access.role === "架构师" ? undefined : credential.who.session) : typeof args.session === "string" && !isArchitectSession(args.session) ? args.session.trim() : undefined;
+        const pushed = caller && wake ? wake.footer(caller) : "";
+        return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
-      catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+      finally { timed?.(outcome, () => summarize(a)); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));
@@ -193,6 +230,8 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     const res = await operation;
     const after = read(), lines = [`${res.summary}${res.rev === undefined ? "" : ` · rev ${res.rev}`} · commit ${res.commit}`];
     if (res.dropped?.length) lines.push(`dropped stored priority, no longer a root: ${res.dropped.map(d => `${d.id} ${d.priority}`).join(", ")}`);
+    if (res.repeated) lines.push("repeated: the same session wrote this same text a moment ago, so nothing was written again; this is the first write's commit");
+    if (res.credential) lines.push(`credential: ${res.credential}`, "shown once, and only its hash is kept: put it in the session's MCP configuration as the Authorization header (Bearer <credential>); it stops working when the dispatch ends");
     if (res.rev === undefined) return lines.join("\n");
     const kind = Object.hasOwn(after.snapshot.items, res.id) ? "item" : Object.hasOwn(after.snapshot.decisions, res.id) ? "card" : "note";
     if (kind !== "note") lines.push(formatRow(q.row(after.snapshot, after.rules, kind, res.id)));
@@ -232,7 +271,7 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
   register("set_tags_many", "Set the whole tag lists of many of your items in one commit, for backfilling the 缺标签 check: each entry is checked as set_tags checks it, and one refused entry refuses the whole write. Entries whose list is unchanged write nothing; when none changes, no commit is made.", {
     author, session, items: z.array(z.object({ id, tags: tagList }).strict()).min(1).describe("Each item once, with its whole tag list."),
   }, a => result(ops.setTagsMany(a)), true);
-  register("set_difficulty", "Only author Architect with session 架构师, for an item of any project: set the item's difficulty, 1–5, which decides the agent that does it, or \"architect\" (shown as 「架构师做」) for an item the architect does itself, such as a discussion, a walkthrough or a design. Work items only; a record has none. reason is required, also for the first rating, and is logged with the change as 「难度：2 → 3，理由：…」 (the first rating from 未评). An unchanged value is a no-op. No revision is required. Open work without a difficulty shows the 缺难度 check and is not startable; 「架构师做」 is rated, so it shows no check, and it is not listed as startable either.", { author, session, id, difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself."), reason: text("Why the difficulty is this; logged with the change.") }, a => result(ops.setDifficulty(a)), true);
+  register("set_difficulty", "Only author Architect with session 架构师, for an item of any project: set the item's difficulty, 1–5, which decides the agent that does it, or \"architect\" (shown as 「架构师做」) for an item the architect does itself, such as a discussion, a walkthrough or a design. Work items only; a record has none. reason is required, also for the first rating, and is logged with the change as 「难度：2 → 3，理由：…」 (the first rating from 未评). An unchanged value is a no-op. No revision is required. Open work without a difficulty shows the 缺难度 check when only its rating is missing, and is not startable; 「架构师做」 is rated, so it shows no check, and it is not listed as startable either.", { author, session, id, difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself."), reason: text("Why the difficulty is this; logged with the change.") }, a => result(ops.setDifficulty(a)), true);
   register("set_difficulty_many", "Set the difficulty of many items in one commit, for rating a backlog of items without one: each entry is checked and logged as set_difficulty checks and logs it, and one refused entry refuses the whole write. Only author Architect with session 架构师. reason is the default for entries that give none; an entry with neither is refused. Entries whose difficulty is unchanged write nothing; when none changes, no commit is made.", {
     author, session, reason: text("Default reason for entries without their own.").optional(),
     items: z.array(z.object({ id, difficulty: Difficulty.describe("1–5, or \"architect\" for an item the architect does itself."), reason: text("This item's reason; overrides the default.").optional() }).strict()).min(1).describe("Each item once, with its difficulty."),
@@ -249,7 +288,7 @@ export function createMcpServer({ store, ops, now, wake }: { store: Store; ops: 
     author, session, key: Key.describe("Unused new decision key, or an existing open card key with rev."), rev: z.number().int().positive().describe("Required to revise an open card; omit only for creation.").optional(), item: Key.describe("Existing item this decision belongs to."), question: text("The choice the owner needs to settle, one line."),
     options: z.array(z.object({ text: text("The option's name, a short phrase of at most 20 characters (spaces not counted) on one line."), detail: text("What the option does, its cost and risks, and why it is or is not recommended. No length limit."), recommended: z.boolean().describe("Mark at most one option.").optional() }).strict()).min(1).max(26).describe("The options in order; the board keys them A, B, C…"),
     confidence: z.object({ score: z.number().int().min(1).max(5).describe("Confidence from 1 (judgment) to 5 (settled by evidence).").optional(), reason: text("Evidence for the confidence and what could overturn it.") }).strict().describe("Confidence in the recommended option; required when creating.").optional(),
-    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card (something hard to undo or that the owner must do); leave it out when sessions proceed on the recommendation. A card with blocks is blocking: it is a row of the item's plan, the page shows it purple and the owner is told on the Mac. When revising, text sets it, null clears it, omitted keeps it."),
+    blocks: clearableText("One sentence naming the work that cannot proceed until the owner rules. Set it only when named work is stopped by this card (something hard to undo or that the owner must do); leave it out when sessions proceed on the recommendation. A card with blocks is blocking: it is a row of the item's plan, the page shows it purple and the owner is told in the open board pages. When revising, text sets it, null clears it, omitted keeps it."),
     before: Key.describe("Only for a card with blocks, when its row is created: the plan row that also waits for this card; the card's row goes just before it. Default: the first acceptance step.").optional(), after: z.array(Key).describe("Only for a card with blocks, when its row is created: earlier plan row ids this card waits for; [] starts at once, omitted follows the preceding row.").optional(),
   }, a => result(ops.writeCard(a)), true);
   register("rule_card", "Record the owner's ruling on an open decision card made outside the page, for example in chat: the option they chose, and their own words in ruling (the design tree's approval line quotes them). A pick the owner sends on the page is recorded by the board itself when it is sent, so do not call this for it. A choice must be one of the card's option keys; a ruling in words may omit choice. Rulings may complete paused work; the retained pause marker stays unchanged, and author ownership checks apply.", { author, session, key: Key.describe("Existing open decision card key."), choice: text("The chosen option's key, A, B, C…; omit when the owner chose none and answered in words.").optional(), ruling: text("The owner's words and reasons, quoted.").optional() }, a => result(ops.ruleCard(a)), true);

@@ -20,7 +20,11 @@ import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
+import { netGit, netGitReason } from "./net-git.ts";
+import type { NetGitResult } from "./net-git.ts";
 import type { StartupStep } from "./log.ts";
+import { Budget, BudgetError, STARTUP_LIMITS, REQUEST_LIMITS, allowRange, currentBudget, withBudget } from "./budget.ts";
+import { ReadCache } from "./read-cache.ts";
 
 export type DocKind = "item" | "decision" | "note" | "glossary";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
@@ -41,6 +45,9 @@ const collections = { item: "items", decision: "decisions", note: "notes", gloss
 /** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
 const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId };
 const run = promisify(execFile);
+/** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
+ * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
+const FOREGROUND_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
@@ -49,12 +56,18 @@ export const CARD_MIGRATION_MESSAGE = "Migrate decision cards into item plans";
 /** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
 export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list was removed, and the notices are in git history";
 
-// History grows for the lifetime of the daemon. Retain recent parsed documents,
-// but fewer much larger whole boards; normalization is needed at format
-// boundaries, not for every old commit.
-const historicalDocumentLimit = 4096;
-const comparedSnapshotLimit = 4;
-const historicalDiffLimit = 2048;
+// History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
+// holds and not by how many entries there are: a parsed document takes about 16 times the bytes of its file (a board of
+// 32.7 MB of files is 510 MB of heap once parsed, measured in CI). The count bounds are for reads still pending, whose
+// size is not known yet. Normalization is needed at format boundaries, not for every old commit, so one whole old board
+// is kept.
+const MB = 1024 * 1024;
+const HEAP_PER_FILE_BYTE = 16;
+const historicalDocumentBytes = 64 * MB;
+const historicalDocumentEntries = 4096;
+const historicalDiffBytes = 16 * MB;
+const historicalDiffEntries = 2048;
+const comparedSnapshotLimit = 1;
 /** The startup cache is written at most this often, by the first commit after a write (a start that scanned writes it at once). */
 const CACHE_WRITE_DELAY_MS = 2 * 60_000;
 const CACHE_FILE = "wf-board-startup-cache.json";
@@ -84,17 +97,8 @@ function pauseProjection(raw: unknown, id: string, fallbackAt: string): Item | n
   return it;
 }
 
-function cachedPromise<T>(cache: Map<string, Promise<T>>, key: string, limit: number, load: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key);
-  if (hit) return hit;
-  const pending = load();
-  cache.set(key, pending);
-  // FIFO includes pending reads, so concurrent history requests cannot bypass
-  // the bound. An evicted read may finish, but cannot remove a newer retry.
-  while (cache.size > limit) cache.delete(cache.keys().next().value!);
-  void pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });
-  return pending;
-}
+/** A historical document as read: parsed, with the size of its file for the cache to weigh. */
+interface ReadDocument { doc: unknown | null; size: number }
 
 export class ConflictError extends Error {
   readonly kind: DocKind;
@@ -137,6 +141,25 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
   }
   omitUndefined(result.data);
   return result.data;
+}
+
+/** Fields that past versions hold and the current schema does not accept, by where they sat. Whole-board historical comparison
+ * omits exactly these before parsing, in every shape, so an old version holding them still normalizes: show() and diff()
+ * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
+ * strict. Data-repository migration commits removed item `short` ("Drop area short names at the owner's request"), item
+ * `agent` ("Drop item agents: responsibility moves to each project's configuration") and project `agents` ("Projects
+ * are identified by themselves: drop session names (agents)"); the removed inbox left the item `request` marker. */
+const retiredFields = { item: ["short", "agent", "request"], project: ["agents"] } as const;
+function without(value: unknown, keys: readonly string[]): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+function withoutRetiredFields(path: string, doc: unknown): unknown {
+  if (path.startsWith("items/")) return without(doc, retiredFields.item);
+  if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
+  const { projects } = doc as { projects?: unknown };
+  if (!Array.isArray(projects) || !projects.some(project => without(project, retiredFields.project) !== project)) return doc;
+  return { ...doc, projects: projects.map(project => without(project, retiredFields.project)) };
 }
 
 /** Old records can also carry retired fields; record alone does not identify a format. */
@@ -294,6 +317,8 @@ export class Store {
   private cacheTimer?: NodeJS.Timeout;
   private cacheWrite: Promise<void> = Promise.resolve();
   private cacheDelayMs = CACHE_WRITE_DELAY_MS;
+  /** Whether a read of history outside any budget fails (`open`'s `requireBudget`). */
+  private requireBudget = false;
   /** Reports the time of each startup step; a no-op after `open` unless the caller gave `startup`. */
   private lap: (step: string, detail?: string) => void = () => {};
   /** Rules shared by every reader of a snapshot, and the activity index kept across writes. */
@@ -308,7 +333,7 @@ export class Store {
 
   private async git(args: string[], author?: string): Promise<string> {
     const slug = author?.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-    const result = await run("git", args, {
+    const result = await run("git", [...FOREGROUND_MAINTENANCE, ...args], {
       cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
         ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
@@ -316,8 +341,30 @@ export class Store {
     return result.stdout;
   }
 
-  /** `startup` is told how long each step of the start took (docs/design.md, Running). */
-  static async open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number } = {}): Promise<Store> {
+  /** The budget of the request this read of history serves. With `requireBudget`, a read that runs under none fails here. */
+  private budget(): Budget | undefined {
+    const budget = currentBudget();
+    if (!budget && this.requireBudget) throw new BudgetError("none", "A read of the board's history ran under no budget; open one with withBudget (src/budget.ts)");
+    return budget;
+  }
+
+  /** A git command that reads history (log, diff, ls-tree): its output is charged to the request's budget. The commands a
+   * write runs (add, commit, rev-parse, status) go through `git` and are not. */
+  private async gitRead(args: string[]): Promise<string> {
+    const budget = this.budget();
+    const output = await this.git(args);
+    budget?.readBytes(output.length);
+    return output;
+  }
+
+  /** `startup` is told how long each step of the start took (docs/design.md, Running). The start reads history under a
+   * budget of its own (`STARTUP_LIMITS`). `requireBudget`: from then on a read of history that runs under no budget fails
+   * (docs/design.md, section 4, Request budgets); the daemon sets it, and tests leave it off unless they test the budget. */
+  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
+    return withBudget(new Budget("start", STARTUP_LIMITS), () => Store.start(dir, opts));
+  }
+
+  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
     dir = resolve(dir);
     const lap = stopwatch(opts.startup);
     let entries: string[];
@@ -390,7 +437,7 @@ export class Store {
       const raw = await readPlanData(dir).finally(() => lap("read documents again", retired ? "a document has a retired format's shape" : "a document did not load"));
       if (raw.legacy || raw.hasArchives) {
         await Store.convertRetired(dir, raw, opts.planConversionHead);
-        return Store.open(dir, { startup: opts.startup, cacheDelayMs: opts.cacheDelayMs });
+        return Store.start(dir, { startup: opts.startup, cacheDelayMs: opts.cacheDelayMs, requireBudget: opts.requireBudget });
       }
     }
     if (invalid.length || !board) throw new ValidationError(invalid);
@@ -398,6 +445,7 @@ export class Store {
     for (const collection of Object.values(docs)) for (const doc of Object.values(collection)) frozen(doc);
     const store = new Store(dir, { board, ...docs, owner, head: "" });
     store.lap = lap;
+    store.requireBudget = opts.requireBudget ?? false;
     if (opts.cacheDelayMs !== undefined) store.cacheDelayMs = opts.cacheDelayMs;
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
@@ -483,6 +531,7 @@ export class Store {
     const cache = await this.readStartupCache();
     if (cache) this.lap("read startup cache", `of ${cache.head.slice(0, 12)}`);
     const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
+    allowRange(commits.length);
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
       ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}) }
@@ -623,7 +672,7 @@ export class Store {
       this.pauseStarted = true;
       const initial = commits[first]!;
       items = {};
-      const paths = (await this.git(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
+      const paths = (await this.gitRead(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
       for (const path of paths) {
         const match = /^items\/(.+)\.yaml$/.exec(path);
         if (match) {
@@ -661,7 +710,7 @@ export class Store {
 
   /** The first of `commits` (oldest first, all within `range`) that sets a pause, found by a pickaxe over the range. */
   private async firstPauseCommit(commits: CommitInfo[], range: string): Promise<string | null> {
-    const matches = new Set((await this.git(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
+    const matches = new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
     return commits.find(commit => matches.has(commit.commit))?.commit ?? null;
   }
 
@@ -775,8 +824,9 @@ export class Store {
     return this.state;
   }
 
+  /** A write under the budget of the request that made it; a write made by a timer or at shutdown has none, so it gets its own. */
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const task = this.queue.then(fn);
+    const task = this.queue.then(() => currentBudget() ? fn() : withBudget(new Budget("write", REQUEST_LIMITS), fn));
     this.queue = task.catch(() => {});
     return task;
   }
@@ -922,7 +972,8 @@ export class Store {
       await this.git(["reset", "-q", "HEAD", "--", ...paths]);
       for (let i = 0; i < changed.length; i++) {
         const change = changed[i]!;
-        if (change.before === null || (change.kind === "owner" && await this.readAt(paths[i]!, this.state.head) === null)) rmSync(join(this.dir, paths[i]!), { force: true });
+        // Whether the file is in the head is all that is asked: a rollback reads no history for a request, so no budget is charged.
+        if (change.before === null || (change.kind === "owner" && await this.blobs.read(`${this.state.head}:${paths[i]!}`) === null)) rmSync(join(this.dir, paths[i]!), { force: true });
         else await this.git(["restore", "--source=HEAD", "--worktree", "--", paths[i]!]);
       }
       if (txn.planConversionReport) {
@@ -1034,7 +1085,7 @@ export class Store {
     } else args.push(at);
     args.push("--");
     if (opts.kind && opts.id) args.push(docPath(opts.kind, opts.id));
-    const output = await this.git(args);
+    const output = await this.gitRead(args);
     const fields = output.split("\0");
     const infos: CommitInfo[] = [];
     let index = 0;
@@ -1061,6 +1112,23 @@ export class Store {
     return infos;
   }
 
+  /** The newest commit made at or before `at` (milliseconds), by git's own walk from the head: it goes back over the commits
+   * newer than `at` and no further, so what it costs follows the time asked for, not the length of the history. Commits are
+   * dated by their commit time, which the daemon sets equal to the author time. */
+  async commitAt(at: number): Promise<string | undefined> {
+    // Git reads "@seconds" as a timestamp only from 1973 on, and a date far in the future not at all (Linux git refuses 2999). No
+    // commit of this board is older than 1973 or newer than 2100, so an `at` outside those years is decided without git.
+    const seconds = Math.floor(at / 1000);
+    if (seconds < 100_000_000) return undefined;
+    const output = (await this.gitRead(["log", "--max-count=1", "--format=%H", `--until=@${Math.min(seconds, 4_102_444_800)}`, "HEAD", "--"])).trim();
+    return output || undefined;
+  }
+
+  /** The item a card was last placed on, also after the card was deleted (kept from the replay of the history and each write). */
+  cardItem(card: string): string | undefined {
+    return this.cardItems.get(card);
+  }
+
   private readonly resolved = new Map<string, string>();
   /** Full commit id of a ref. A full id, or one followed by ^, always names the same commit, so its answer is cached. */
   private async resolveCommit(ref: string): Promise<string> {
@@ -1071,25 +1139,33 @@ export class Store {
     return hash;
   }
 
-  private readonly diffs = new Map<string, Promise<string>>();
+  /** A string is two bytes a character in the heap. */
+  private readonly diffs = new ReadCache<string>(historicalDiffBytes, historicalDiffEntries, text => text.length * 2);
   /** Two commits and a path always name the same text, so a diff is kept by those keys: the page asks for every unread
    * step's documents on each load, and git spawns once per new pair rather than once per request. */
   async diff(kind: DocKind, id: string, from: string, to = "HEAD"): Promise<string> {
     const path = docPath(kind, id);
     const a = await this.resolveCommit(from);
     const b = await this.resolveCommit(to);
-    return cachedPromise(this.diffs, `${a}..${b}:${path}`, historicalDiffLimit, () => this.git(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", path]));
+    // Also an answer from the cache needs a budget to be asked under, so a read without one fails the first time it runs.
+    this.budget();
+    return this.diffs.get(`${a}..${b}:${path}`, () => this.gitRead(["diff", "--no-ext-diff", "--no-textconv", a, b, "--", path]));
   }
 
-  private readonly historicalDocuments = new Map<string, Promise<unknown | null>>();
+  private readonly historicalDocuments = new ReadCache<ReadDocument>(historicalDocumentBytes, historicalDocumentEntries, read => read.size * HEAP_PER_FILE_BYTE);
+  /** A document as an earlier commit had it, parsed and frozen; null when it had none. A read of git is charged to the
+   * request's budget, a read answered from the cache is not. */
   private async readAt(path: string, commit: string): Promise<unknown | null> {
+    const budget = this.budget();
     const key = `${commit}:${path}`;
-    return cachedPromise(this.historicalDocuments, key, historicalDocumentLimit, async () => {
+    const { doc } = await this.historicalDocuments.get(key, async () => {
       const blob = await this.blobs.read(key);
-      if (blob === null) return null;
-      try { return frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })); }
+      if (blob === null) return { doc: null, size: 0 };
+      budget?.readBytes(blob.length);
+      try { return { doc: frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })), size: blob.length }; }
       catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
     });
+    return doc;
   }
 
   async show(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
@@ -1108,16 +1184,20 @@ export class Store {
     return { before: legacy(before) ? await this.showCompared(kind, id, from!) : before, after: legacy(after) ? await this.showCompared(kind, id, to) : after };
   }
 
-  private readonly compared = new Map<string, Promise<Snapshot>>();
+  private readonly compared = new ReadCache<Snapshot>(Infinity, comparedSnapshotLimit, () => 0);
   private readonly comparisonAt = new Date().toISOString();
-  /** Normalized comparison only; show() and diff() retain raw historical evidence. */
+  /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board costs 2.7 to 3.1
+   * seconds and about 510 MB of heap (measured in CI on a board of the live one's size), so a request may do it once
+   * (`REQUEST_LIMITS.boards`) and one board is kept. */
   async comparisonSnapshot(commit: string): Promise<Snapshot> {
+    const budget = this.budget();
     const hash = await this.resolveCommit(commit);
-    return cachedPromise(this.compared, hash, comparedSnapshotLimit, async () => {
-      const paths = (await this.git(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
+    return this.compared.get(hash, async () => {
+      budget?.board();
+      const paths = (await this.gitRead(["ls-tree", "-r", "--name-only", hash])).trim().split("\n");
       const raw: Record<string, unknown> = {};
-      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = await this.readAt(path, hash);
-      const loaded = parsePlanData(raw, hash, true);
+      for (const path of paths) if (path === "board.yaml" || path === "state/owner.yaml" || /^(items|decisions|notes|notices|glossaries)\/.+\.yaml$/.test(path)) raw[path] = withoutRetiredFields(path, await this.readAt(path, hash));
+      const loaded = parsePlanData(raw, hash);
       if (!loaded.legacy) {
         const source = loaded.snapshot as Snapshot;
         const {archived:_archived,...owner} = source.owner as OwnerState & {archived?:unknown};
@@ -1153,21 +1233,37 @@ export class Store {
     return Number((await this.git(["rev-list", "--count", ...range])).trim());
   }
 
-  push(): Promise<boolean> {
-    return this.enqueue(async () => {
-      if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return false;
-      const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-      const remote = (await this.git(["ls-remote", "--heads", "origin", `refs/heads/${branch}`])).trim().split(/\s+/)[0];
-      if (remote) {
-        // ls-remote may name an object this clone has never fetched.
-        await this.git(["fetch", "--no-tags", "origin", `refs/heads/${branch}`]);
-        const remoteHead = await this.resolveCommit("FETCH_HEAD");
-        const ahead = Number((await this.git(["rev-list", "--count", `${remoteHead}..HEAD`])).trim());
-        if (ahead === 0) return false;
-      }
-      await this.git(["push", "origin", `HEAD:refs/heads/${branch}`]);
-      return true;
-    });
+  private pushing?: Promise<boolean>;
+
+  /** Sends the commits the remote lacks, outside the write queue: a write waits for no network (docs/design.md, Storage). Only one
+   * push runs at a time; a call made while one runs gets that push's result. Resolves true when commits were sent and false when
+   * there is no remote, the remote already has them, or it is ahead of this clone; rejects when the remote has commits this
+   * clone lacks, or the push failed or was killed (the cap, or `signal`). The commits written after the push began go in the next. */
+  push(signal?: AbortSignal): Promise<boolean> {
+    return this.pushing ??= this.pushOnce(signal).finally(() => { this.pushing = undefined; });
+  }
+
+  private async pushOnce(signal?: AbortSignal): Promise<boolean> {
+    if (!(await this.git(["remote"])).split(/\s+/).includes("origin")) return false;
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+    // The head as of now: a commit made while git is sending, or one a failed write took back, is not in this push.
+    const head = this.state.head;
+    // One connection: git itself says whether it sent commits, found the remote current, or was refused.
+    const pushed = await this.network(["push", "--porcelain", "origin", `${head}:refs/heads/${branch}`], signal);
+    if (pushed.code === 0) return !/^=\t/m.test(pushed.stdout);
+    // A refusal for a remote that has moved on. Anything else (no connection, killed, a hook's refusal) is an error.
+    if (!/^!\t[^\t]*\t\[rejected\]/m.test(pushed.stdout)) throw new Error(`git push ${netGitReason(pushed)}`);
+    // Only now a second connection: a remote that is ahead of this clone is no error, one that has diverged is.
+    const fetched = await this.network(["fetch", "--no-tags", "origin", `refs/heads/${branch}`], signal);
+    if (fetched.code !== 0) throw new Error(`git fetch ${netGitReason(fetched)}`);
+    const remoteHead = await this.resolveCommit("FETCH_HEAD");
+    if (Number((await this.git(["rev-list", "--count", `${remoteHead}..${head}`])).trim()) === 0) return false;
+    throw new Error(`The remote has commits this clone lacks: ${pushed.stdout.trim()}`);
+  }
+
+  /** The only way this store runs git against a remote (src/net-git.ts): bounded in time, killed with its ssh, no maintenance. */
+  private network(args: string[], signal?: AbortSignal): Promise<NetGitResult> {
+    return netGit(args, { cwd: this.dir, signal });
   }
 }
 
@@ -1233,15 +1329,7 @@ export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasA
   loaded.snapshot.head=(await run("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim();
   return loaded;
 }
-/** Items of older commits can carry the `request` marker of the removed inbox; the schema no longer has the field. */
-function withoutRequestMarker(doc: unknown): unknown {
-  if (!doc || typeof doc !== "object" || Array.isArray(doc) || !Object.hasOwn(doc, "request")) return doc;
-  const { request: _request, ...rest } = doc as Record<string, unknown>;
-  return rest;
-}
-/** `historical`: the data is a past commit's, whose items may hold fields the schema has since dropped; only
- * comparisonSnapshot reads data this way, and the live data stays strictly validated. */
-function parsePlanData(raw: Record<string, unknown>, head: string, historical = false): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
+function parsePlanData(raw: Record<string, unknown>, head: string): { legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot } {
   const items=Object.entries(raw).filter(([path])=>path.startsWith("items/"));
 
   const legacy=retiredBoardShape(raw["board.yaml"]) || items.some(([,doc])=>retiredItemShape(doc));
@@ -1266,7 +1354,7 @@ function parsePlanData(raw: Record<string, unknown>, head: string, historical = 
     const collection=match[1] as "items"|"decisions"|"notes"|"notices"|"glossaries",id=match[2]!;
     const key=load(collection==="glossaries"?GlossaryId:Key,id,path);
     const kind=({items:"Item",decisions:"Decision",notes:"Note",notices:"Notice",glossaries:"Glossary"}as const)[collection];
-    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,historical&&!legacy&&collection==="items"?withoutRequestMarker(doc):doc,path);
+    const parsed=load((schema as unknown as Record<string,z.ZodType<unknown>>)[kind]!,doc,path);
     if(key!==undefined&&parsed!==undefined)documents[collection]![key]=parsed;
   }
   if(invalid.length||!board||!owner)throw new ValidationError(invalid);

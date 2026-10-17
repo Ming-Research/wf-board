@@ -18,6 +18,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { server, wakeSocket } from "./helpers.ts";
+import { fakeSsh } from "./fake-ssh.ts";
 
 const BRANCH = "main";
 const identity = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -52,12 +53,15 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
     daemon: { pid: 100 as number | undefined, ok: true, flap: false, takes: true },
     saved: { outbox: [] } as DeployState,
   };
+  const git: DeployDeps["git"] = async args => {
+    try { return execFileSync("git", args, { cwd: r.checkout, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }); }
+    catch (error) { throw Object.assign(new Error(String((error as { stderr?: unknown }).stderr)), { code: (error as { status?: number }).status }); }
+  };
   const deps: DeployDeps = {
     branch: BRANCH, remote: "origin",
-    git: async args => {
-      try { return execFileSync("git", args, { cwd: r.checkout, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }); }
-      catch (error) { throw Object.assign(new Error(String((error as { stderr?: unknown }).stderr)), { code: (error as { status?: number }).status }); }
-    },
+    git,
+    // The fetch goes through its own dependency, which scripts/deploy.ts bounds in time (test below); here it is plain git.
+    network: git,
     // The head is read when npm runs: a build must come after the checkout has moved, in both directions.
     run: async (command, args) => {
       w.builds.push({ args: [command, ...args], head: r.head() });
@@ -75,7 +79,7 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
     notify: (title, message) => { w.notices.push([title, message]); },
     load: () => structuredClone(w.saved), save: state => { w.saved = structuredClone(state); },
     sleep: async ms => { w.clock += ms; }, now: () => w.clock, log: () => {},
-    waitMs: 90_000, stableMs: 5000,
+    waitMs: 90_000, stableMs: 5000, fetchRetryMs: 10_000,
   };
   return { w, deps, deploy: () => deployOnce({ ...deps, ...override }) };
 }
@@ -128,7 +132,13 @@ for (const [name, files, restarts] of [
   ["the page", { "web/index.html": "new", "web/app.ts": "new" }, false],
   ["a mix of listed paths", { "docs/design.md": "new", "test/a.test.ts": "new", "web/index.html": "new" }, false],
   ["the daemon's source", { "src/main.ts": "new" }, true],
-  ["a path that is not listed", { "README.md": "new" }, true],
+  ["the readme", { "README.md": "new" }, false],
+  ["the license", { "LICENSE": "new" }, false],
+  ["the agent instructions", { "AGENTS.md": "new" }, false],
+  ["the workflows", { ".github/workflows/ci.yml": "new" }, false],
+  ["a root docs file not listed", { "CHANGELOG.md": "new" }, true],
+  ["a file whose name starts with the readme", { "README.mdx": "new" }, true],
+  ["a file whose name starts with the license", { "LICENSE.ts": "new" }, true],
   ["the job's own script", { "scripts/deploy.ts": "new" }, true],
   ["packages", { "package.json": "{}" }, true],
   ["one source file among docs", { "docs/design.md": "new", "src/main.ts": "new" }, true],
@@ -345,7 +355,7 @@ test("a fetch that fails once and then works is no news", async t => {
   const r = await repos(t), { w, deps } = world(r);
   let failures = 1;
   const sha = r.land({ "src/a.ts": "a" }, "A");
-  const outcome = await deployOnce({ ...deps, git: async args => { if (args[0] === "fetch" && failures-- > 0) throw new Error("Could not resolve host"); return deps.git(args); } });
+  const outcome = await deployOnce({ ...deps, network: async args => { if (failures-- > 0) throw new Error("Could not resolve host"); return deps.network(args); } });
   assert.equal(outcome, "deployed");
   assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployed", sha]]);
 });
@@ -601,11 +611,17 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
   const readers: string[] = [];
   for (const file of [...loaded].sort()) if (/\b(readFile|readFileSync|createReadStream|readdir|readdirSync|openSync)\b/.test(await readFile(join(src, file), "utf8"))) readers.push(file);
   // http.ts reads the page files, store.ts the board's data directory, wake.ts, watch.ts and usage-watch.ts their state files
-  // (kept in that directory). A module that reads the checkout itself, such as docs/ or a template, would make a change there need a
+  // (kept in that directory), credentials.ts the credentials file (kept outside the checkout and the data directory). A module that reads the checkout itself, such as docs/ or a template, would make a change there need a
   // restart: NO_RESTART (src/deploy.ts) must change first.
-  assert.deepEqual(readers, ["http.ts", "store.ts", "usage-watch.ts", "wake.ts", "watch.ts"]);
+  assert.deepEqual(readers, ["credentials.ts", "http.ts", "store.ts", "usage-watch.ts", "wake.ts", "watch.ts"]);
   const http = await readFile(join(src, "http.ts"), "utf8");
-  assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, path === \"/\" ? \"index.html\" : \"dist/app.js\")"]);
+  // The one read of a file in http.ts is pageFile, and it is asked for the page files only: the page, its bundle and the diagram library.
+  assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, name)"]);
+  const asked = [...http.matchAll(/\b(?:optionalPageFile|pageFile)\("([^"]*)"\)/g)].map(m => m[1]);
+  assert.deepEqual([...new Set(asked)].sort(), ["dist/app.js", "dist/mermaid.js", "index.html"]);
+  // Every other mention is a definition: pageFile's own, optionalPageFile's, and the pageFile call inside optionalPageFile. A call with a name
+  // that is not a literal, or either passed on, would read a file this test cannot see.
+  assert.equal([...http.matchAll(/\b(?:optionalPageFile|pageFile)\b/g)].length, asked.length + 3);
   assert.ok(NO_RESTART.includes("web/"));
 });
 
@@ -619,7 +635,7 @@ test("the page files are read from disk on each request, so a rebuilt page needs
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const url = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
-  for (const [route, file] of [["/", "index.html"], ["/app.js", "dist/app.js"]] as const) {
+  for (const [route, file] of [["/", "index.html"], ["/app.js", "dist/app.js"], ["/mermaid.js", "dist/mermaid.js"]] as const) {
     for (const version of ["one", "two"]) {
       writeFileSync(join(dir, file), version);
       assert.equal(await (await fetch(url + route)).text(), version, `${route} after ${file} became ${version}`);
@@ -683,4 +699,26 @@ esac
   assert.deepEqual({ ...frames().at(-1), reason: undefined }, { n: 3, event: "deployFailed", version: blocked, running: page, reason: undefined });
   assert.equal(await run(), "refused");
   assert.equal(star.events().length, 3, "the same refusal is not pushed again");
+});
+
+test("scripts/deploy.ts: a fetch that never answers is killed at its cap with its ssh, tried three times, and the remote counts as unreachable", async t => {
+  const r = await repos(t);
+  const { url, port } = await server(t);
+  const star = await wakeSocket(t, url);
+  const ssh = await fakeSsh(t);
+  await ssh.set("stall");
+  sh(r.checkout, "remote", "set-url", "origin", ssh.url(r.origin));
+  // Without the cap the job waits for the fetch for good, and launchd never starts a second run: the timeout here turns that into a failure of the test.
+  const { stdout } = await promisify(execFile)(process.execPath, [join(import.meta.dirname, "../scripts/deploy.ts")], { timeout: 60_000, env: {
+    ...process.env, ...identity, ...ssh.env, WF_BOARD_REPO: r.checkout, WF_BOARD_PORT: String(port), WF_BOARD_LABEL: "test.label",
+    WF_BOARD_DEPLOY_STATE: join(r.dir, "state/deploy.json"), WF_BOARD_DEPLOY_WAIT_MS: "20000", WF_BOARD_DEPLOY_STABLE_MS: "0",
+    WF_BOARD_DEPLOY_NET_CAP_MS: "1000", WF_BOARD_DEPLOY_FETCH_RETRY_MS: "0",
+  } });
+  await star.sync();
+  assert.equal(stdout.trim().split("\n").at(-1)!.replace(/^\S+ /, ""), "unreachable");
+  assert.equal(await ssh.connections(), 3, "one connection for each try");
+  await ssh.gone();
+  const [frame] = star.events();
+  assert.equal(frame!.event, "deployFailed");
+  assert.match(String(frame!.reason), /could not fetch origin\/main: .*killed by the cap after 1 s/);
 });

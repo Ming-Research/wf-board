@@ -8,6 +8,7 @@ import { NUMBERING_MESSAGE, CARD_MIGRATION_MESSAGE } from "./store.ts";
 import { OwnerState } from "./model.ts";
 import type { Item } from "./model.ts";
 import { describeChanges } from "./query.ts";
+import { allowRange } from "./budget.ts";
 import { changedItemPlan, planChanged, changedItemTargets, targetsChanged, withoutHistoricalDetail, withoutFirstRating } from "./rules.ts";
 
 /** Owner-visible pieces: added or changed progress steps and targets, replies, and one for any other
@@ -136,6 +137,7 @@ async function computeSteps(store: Store, cursor: string | undefined, readMarks:
   OwnerState.pick({ readMarks: true }).parse({ readMarks });
   if (cursor && !(await inHistory(store, cursor, head))) throw new Error(`Read cursor ${cursor} is not in board history`);
   const commits = await commitsSince(store, cursor, head);
+  allowRange(commits.length);
   // One bounded range and its positions serve all marks, instead of rescanning the history for each document.
   const positions = new Map(commits.map((commit, index) => [commit.commit, index]));
   const markPositions = new Map<string, number>();

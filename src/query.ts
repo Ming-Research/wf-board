@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Decision, Difficulty, Item, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
+import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Note, Priority, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags, dispatchable } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
+import { allowRange } from "./budget.ts";
 
 export type Kind = "item" | "card" | "note";
 export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; priority?: Priority | ""; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
@@ -33,8 +34,9 @@ function noteItem(s: Snapshot, n: Note | undefined): string { if (!n) return "";
 function itemId(s: Snapshot, kind: Kind, id: string): string {
   return kind === "item" ? id : kind === "card" ? s.decisions[id]?.item ?? "" : noteItem(s, s.notes[id]);
 }
-export function row(s: Snapshot, r: Rules, kind: Kind, id: string): Row {
-  const owner = itemId(s, kind, id), areaId = r.lineOf(owner);
+/** `owner` is the item the document is on, when the caller knows it better than `s` does (a card that `s` no longer holds). */
+export function row(s: Snapshot, r: Rules, kind: Kind, id: string, owner = itemId(s, kind, id)): Row {
+  const areaId = r.lineOf(owner);
   const card = kind === "card" ? s.decisions[id] : kind === "note" && s.notes[id]?.target.startsWith("q:") ? s.decisions[s.notes[id]!.target.slice(2)] : undefined;
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
@@ -230,7 +232,7 @@ export function tagVocabulary(s: Snapshot, project?: string) {
   return boardTags(s.board).filter(t => project === undefined || tagApplies(t, project)).map(t => ({ name: t.name, meaning: t.meaning, ...(t.projects ? { projects: t.projects } : {}) }));
 }
 const tagsOf = (doc: { tags?: string[] }) => doc.tags?.length ? { tags: doc.tags } : {};
-/** Absent for unrated work and for records, which the 缺难度 check and the item's kind already say. */
+/** Absent for unrated work and for records; the 缺难度 check says when a rating is the one thing missing. */
 function difficultyOf(doc: { difficulty?: Difficulty } | undefined): { difficulty?: Difficulty } { return doc?.difficulty === undefined ? {} : { difficulty: doc.difficulty }; }
 const numOf = (doc: { num?: number }) => doc.num === undefined ? {} : { num: doc.num };
 export function brief(s: Snapshot, r: Rules, project: string) {
@@ -376,10 +378,11 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
 export interface DocumentChange { kind: Kind; id: string; title: string; summary: string; commits: CommitInfo[] }
 export async function changes(store: Store, s: Snapshot, since: string, f: Scope = {}) {
   if (f.under !== undefined && !Object.hasOwn(s.items, f.under) && !(await store.log({ kind: "item", id: f.under, limit: 1 })).length) throw new Error(`under ${f.under}: choose an existing or historical item subtree`);
-  const all = await store.log(), headIndex = all.findIndex(c => c.commit === s.head);
-  if (headIndex === -1) throw new Error("snapshot head: not found in store history");
-  const selected = new Set((await store.log({ since })).map(c => c.commit));
-  const commits = all.slice(headIndex).filter(c => selected.has(c.commit) && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since))).reverse();
+  // Only the commits of the range are listed and read, so what a call costs follows the range and never the length of the
+  // history (docs/design.md, section 4, Request budgets).
+  const listed = await store.log({ since, at: s.head });
+  allowRange(listed.length);
+  const commits = listed.filter(c => !/^\d{4}-\d{2}-\d{2}T/.test(since) || Date.parse(c.at) > Date.parse(since)).reverse();
   const docs = new Map<string, { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }>();
   for (const commit of commits) for (const file of commit.files) {
     const match = /^(items|decisions|notes)\/(.+)\.yaml$/.exec(file);
@@ -388,94 +391,42 @@ export async function changes(store: Store, s: Snapshot, since: string, f: Scope
     const key = `${kind}:${id}`, doc = docs.get(key) ?? { kind, id, commits: [] };
     doc.commits.push(commit); docs.set(key, doc);
   }
-  const r = makeRules(s), grouped = new Map<string, { areaId: string; area: string; documents: DocumentChange[] }>();
-  const historicalCache = new Map<string, unknown | null>();
-  const snapshots = new Map<string, Promise<Snapshot>>();
-  function snapshotAt(commit: string): Promise<Snapshot> {
-    let hit = snapshots.get(commit);
-    if (!hit) { hit = store.comparisonSnapshot(commit); snapshots.set(commit, hit); }
-    return hit;
-  }
-  /** A missing document's last content at this boundary, never a later revision. */
-  async function historicalDocument(kind: "item" | "decision" | "note", id: string, boundary: string): Promise<unknown | null> {
-    const cacheKey = `${boundary}:${kind}:${id}`;
-    if (historicalCache.has(cacheKey)) return historicalCache.get(cacheKey)!;
-    const collection = kind === "item" ? "items" : kind === "decision" ? "decisions" : "notes";
-    let found: unknown | null = (await snapshotAt(boundary))[collection][id] ?? null;
-    if (found === null) {
-      const path = `${collection}/${id}.yaml`, index = all.findIndex(commit => commit.commit === boundary);
-      for (const commit of all.slice(index)) {
-        if (!commit.files.includes(path)) continue;
-        found = (await snapshotAt(commit.commit))[collection][id] ?? null;
-        if (found !== null) break;
-      }
-    }
-    historicalCache.set(cacheKey, found);
-    return found;
-  }
+  // A document the snapshot no longer holds was deleted in the range. Its last version is its file in the commit before the
+  // one that deleted it: one file read, never a rebuilt board.
+  const gone: { items: Record<string, unknown>; decisions: Record<string, unknown>; notes: Record<string, unknown> } = { items: {}, decisions: {}, notes: {} };
+  const changed: Array<{ doc: { kind: Exclude<DocKind, "glossary">; id: string; commits: CommitInfo[] }; before: unknown | null; after: unknown | null }> = [];
   for (const doc of docs.values()) {
-    const first = doc.commits[0]!, last = doc.commits.at(-1)!;
+    const first = doc.commits[0]!, last = doc.commits.at(-1)!, collection = ({ item: "items", decision: "decisions", note: "notes" } as const)[doc.kind];
     const before = first.parents[0] ? await store.showCompared(doc.kind, doc.id, first.parents[0]) : null;
     const after = await store.showCompared(doc.kind, doc.id, last.commit);
-    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind;
-    // Deleted documents use their own final boundary. Existing documents use
-    // the captured page snapshot; neither can acquire a future owner or title.
-    const boundary = after === null ? last.parents[0] ?? last.commit : s.head;
-    const atBoundary = after === null ? await snapshotAt(boundary) : s;
-    let view = atBoundary;
-    const collection = kind === "item" ? "items" : kind === "card" ? "decisions" : "notes";
-    if (!Object.hasOwn(view[collection], doc.id)) {
-      const historical = await historicalDocument(doc.kind, doc.id, boundary);
-      if (historical === null) continue;
-      view = { ...view, [collection]: { ...view[collection], [doc.id]: historical } };
+    if (!Object.hasOwn(s[collection], doc.id)) {
+      const final = after ?? (last.parents[0] ? await store.showCompared(doc.kind, doc.id, last.parents[0]) : null);
+      if (final === null) continue;
+      gone[collection][doc.id] = final;
     }
-    /** Plans own children, so finding a deleted owner requires reading its last
-     * plan. A surviving owner that removed the row is a deliberate detach and
-     * must never be resurrected from an older snapshot. */
-    async function recoverOwner(id: string): Promise<string | undefined> {
-      const present = makeRules(view).parentOf(id);
-      if (present) return present;
-      // A document alive in the snapshot keeps the ownership the snapshot gives it: a root
-      // there stays a root, and no owner is recovered for it. The search below rebuilds a
-      // whole board for every earlier commit that touched an item, and every live chain
-      // ends at a root, so searching for live roots made one call exhaust the daemon's heap.
-      if (Object.hasOwn(s.items, id)) return undefined;
-      const index = all.findIndex(commit => commit.commit === boundary), tried = new Set<string>();
-      for (const commit of all.slice(index)) {
-        if (!commit.files.some(path => path.startsWith("items/"))) continue;
-        const historical = await snapshotAt(commit.commit), owner = makeRules(historical).parentOf(id);
-        if (!owner || tried.has(owner)) continue;
-        tried.add(owner);
-        if (Object.hasOwn(atBoundary.items, owner)) continue;
-        const lastOwner = await historicalDocument("item", owner, boundary) as Item | null;
-        if (!lastOwner?.plan.some(row => "item" in row && row.own && row.item === id)) continue;
-        view = { ...view, items: { ...view.items, [owner]: lastOwner } };
-        return owner;
-      }
-      return undefined;
-    }
-    async function recoverItem(id: string, seen = new Set<string>()): Promise<void> {
-      if (!id || seen.has(id)) return;
-      seen.add(id);
-      if (!Object.hasOwn(view.items, id)) {
-        const item = await historicalDocument("item", id, boundary) as Item | null;
-        if (!item) return;
-        view = { ...view, items: { ...view.items, [id]: item } };
-      }
-      const owner = await recoverOwner(id);
-      if (owner) await recoverItem(owner, seen);
-    }
-    if (kind === "note") {
-      const target = view.notes[doc.id]!.target;
-      if (target.startsWith("q:") && !Object.hasOwn(view.decisions, target.slice(2))) {
-        const card = await historicalDocument("decision", target.slice(2), boundary) as Decision | null;
-        if (card) view = { ...view, decisions: { ...view.decisions, [target.slice(2)]: card } };
-      }
-    }
-    await recoverItem(itemId(view, kind, doc.id));
-    const vr = view === s ? r : makeRules(view), owner = itemId(view, kind, doc.id);
+    changed.push({ doc, before, after });
+  }
+  // The board for the deleted documents: the snapshot with their last versions added, whose rules are worked out once, and
+  // only when a document needs them. A document whose item the snapshot holds takes the snapshot's own ownership: a root
+  // there stays a root, and a surviving owner that dropped the row stays detached. An item whose owner was deleted before
+  // the range has no owner to find here, and is grouped as the top of its own project.
+  const r = makeRules(s), grouped = new Map<string, { areaId: string; area: string; documents: DocumentChange[] }>();
+  const deleted = Object.values(gone).some(collection => Object.keys(collection).length > 0);
+  const view: Snapshot = deleted ? { ...s, items: { ...s.items, ...gone.items } as Snapshot["items"], decisions: { ...s.decisions, ...gone.decisions } as Snapshot["decisions"], notes: { ...s.notes, ...gone.notes } as Snapshot["notes"] } : s;
+  let viewRules: Rules | undefined;
+  const rulesFor = (owner: string): Rules => !deleted || Object.hasOwn(s.items, owner) ? r : (viewRules ??= makeRules(view));
+  /** A card that is gone from the view still has the item the store last saw it on. */
+  const cardItem = (card: string): string => view.decisions[card]?.item ?? store.cardItem(card) ?? "";
+  const ownerOf = (kind: Kind, id: string): string => {
+    if (kind === "item") return id;
+    if (kind === "card") return view.decisions[id]?.item ?? "";
+    const target = view.notes[id]!.target;
+    return target.startsWith("it:") ? target.slice(3) : cardItem(target.slice(2));
+  };
+  for (const { doc, before, after } of changed) {
+    const kind: Kind = doc.kind === "decision" ? "card" : doc.kind, owner = ownerOf(kind, doc.id), vr = rulesFor(owner);
     if (!inScope(vr, owner, f)) continue;
-    const meta = row(view, vr, kind, doc.id), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
+    const meta = row(view, vr, kind, doc.id, owner), group = grouped.get(meta.areaId) ?? { areaId: meta.areaId, area: meta.area, documents: [] };
     group.documents.push({ kind, id: doc.id, title: meta.title, summary: describeChanges(before, after, doc.kind), commits: doc.commits }); grouped.set(meta.areaId, group);
   }
   return [...grouped.values()];
@@ -489,9 +440,10 @@ async function resolveTime(store: Store, ref: string): Promise<string> {
   if (!/^\d{4}-\d{2}-\d{2}T/.test(ref)) return ref;
   const at = Date.parse(ref);
   if (!Number.isFinite(at)) throw new Error("time: provide a valid ISO timestamp");
-  const commit = (await store.log()).find(c => Date.parse(c.at) <= at);
+  // Git goes back from the head to the first commit at or before the time; it does not list the history to find it.
+  const commit = await store.commitAt(at);
   if (!commit) throw new Error(`time ${ref}: no board revision existed yet; choose a later time or a commit`);
-  return commit.commit;
+  return commit;
 }
 export async function diff(store: Store, kind: DocKind, id: string, from: string, to?: string): Promise<string> {
   await history(store, kind, id, 1);

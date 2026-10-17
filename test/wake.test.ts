@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -14,7 +14,6 @@ import { Item } from "../src/model.ts";
 import { Wake, WAKE_KINDS, CONTROL_FRAMES } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
-import { macNotify, notifyArgs, NOTIFY_SCRIPT } from "../src/notify.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { createHttpServer } from "../src/http.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -106,7 +105,7 @@ test("a receipt answers everything pushed before it, and writes nothing when it 
 test("with no receipt for the limit the owner is told once, a receipt starts the count again, and a restart keeps all of it", async t => {
   const file = join(await scratch(t), "wake.jsonl"), told: Array<[string, string]> = [];
   let clock = T0;
-  const open = () => new Wake({ file, now: () => clock, notify: (title, message) => { told.push([title, message]); } });
+  const open = () => { const wake = new Wake({ file, now: () => clock }); wake.onTell(notice => told.push([notice.title, notice.message])); return wake; };
   const a = open();
   a.push("note", noteFields("n1")); a.push("note", noteFields("n2"));
   a.receipt();
@@ -137,21 +136,11 @@ test("with no receipt for the limit the owner is told once, a receipt starts the
 test("the limit can be set shorter, and the alert names it in minutes", () => {
   const told: string[] = [];
   let clock = T0;
-  const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000, notify: title => { told.push(title); } });
+  const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
+  wake.onTell(notice => told.push(notice.title));
   wake.push("timed", { since: iso(T0), changed: [], working: [], architect: [], actions: "" });
   clock += 10 * 60_000; wake.checkReceipts();
   assert.deepEqual(told, ["架构师 10 分钟没响应"]);
-});
-
-test("a failing notifier is logged, never thrown into the write that caused the alert", async () => {
-  const errors: unknown[][] = [], original = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args); };
-  try {
-    new Wake({ now: () => T0, notify: () => { throw new Error("no display"); } }).tell("t", "m");
-    new Wake({ now: () => T0, notify: () => Promise.reject(new Error("no display")) }).tell("t", "m");
-    await setImmediate();
-  } finally { console.error = original; }
-  assert.equal(errors.length, 2);
 });
 
 test("a log file that cannot be written costs the numbers' continuity, never the push", async t => {
@@ -374,7 +363,8 @@ test("with no receipt for the limit the server's timer tells the owner once, and
   t.mock.timers.enable({ apis: ["setInterval"] });
   let clock = T0;
   const told: Array<[string, string]> = [];
-  const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000, notify: (title, message) => { told.push([title, message]); } });
+  const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * 60_000 });
+  wake.onTell(notice => told.push([notice.title, notice.message]));
   const { url, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: 1e12 });
   await api("/api/notes", { target: "it:a", kind: "comment", text: "one" }); await api("/api/send", {});
   assert.equal(wake.latest(), 1);
@@ -397,7 +387,8 @@ test("with no receipt for the limit the server's timer tells the owner once, and
 
 test("a card that stops work tells the owner once; a card without blocks, a revision that keeps blocks and a ruled card do not", async t => {
   const told: Array<[string, string]> = [];
-  const wake = new Wake({ notify: (title, message) => { told.push([title, message]); } });
+  const wake = new Wake();
+  wake.onTell(notice => told.push([notice.title, notice.message]));
   const targets: unknown[] = [];
   wake.onTell(notice => targets.push(notice.target));
   const { op } = await server(t, { wake });
@@ -418,54 +409,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   assert.equal(told.length, 3, "ruling a card says nothing");
 });
 
-/** An osascript stand-in: it appends its arguments, as JSON, to a log, and fails while a counter file says so. */
-async function fakeOsascript(dir: string, failures = 0) {
-  const command = join(dir, "osascript"), log = join(dir, "osascript.log"), count = join(dir, "osascript.count");
-  await writeFile(command, `#!${process.execPath}
-const fs = require("node:fs");
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-const seen = fs.existsSync(${JSON.stringify(count)}) ? Number(fs.readFileSync(${JSON.stringify(count)}, "utf8")) : 0;
-fs.writeFileSync(${JSON.stringify(count)}, String(seen + 1));
-process.exit(seen < ${failures} ? 1 : 0);
-`);
-  await chmod(command, 0o755);
-  return { command, calls: async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map(l => JSON.parse(l) as string[]) };
-}
-
-test("the notification runs osascript with the script lines, then the title and the message as plain arguments", async t => {
-  const fake = await fakeOsascript(await scratch(t));
-  const message = '问题 "含引号" \\ 反斜杠\n第二行 -开头';
-  await macNotify({ command: fake.command, retryMs: 0 })("挡事的卡 · Whitefoot", message);
-  const [call, ...more] = await fake.calls();
-  assert.deepEqual(more, []);
-  assert.deepEqual(call, notifyArgs("挡事的卡 · Whitefoot", message));
-  assert.deepEqual(call!.slice(0, NOTIFY_SCRIPT.length * 2), NOTIFY_SCRIPT.flatMap(line => ["-e", line]));
-  assert.deepEqual(call!.slice(-3), ["--", "挡事的卡 · Whitefoot", message], "quotes, backslashes and the newline arrive whole as the last argument, not inside the script");
-  assert.ok(NOTIFY_SCRIPT.every(line => !line.includes("挡事") && !line.includes("反斜杠")), "the script holds no text of the message");
-  assert.equal(notifyArgs("t", "x".repeat(1000)).at(-1)!.length, 240, "a long message is cut");
-});
-
-test("a failed osascript run is tried again up to the attempts, then the error comes out", async t => {
-  const dir = await scratch(t), fake = await fakeOsascript(dir, 2);
-  await macNotify({ command: fake.command, attempts: 3, retryMs: 0 })("t", "m");
-  assert.equal((await fake.calls()).length, 3, "two failures, then the one that worked");
-  const stubborn = await fakeOsascript(await scratch(t), 5);
-  await assert.rejects(macNotify({ command: stubborn.command, attempts: 2, retryMs: 0 })("t", "m"));
-  assert.equal((await stubborn.calls()).length, 2);
-  await assert.rejects(macNotify({ command: join(dir, "no-such-osascript"), attempts: 1 })("t", "m"));
-});
-
-test("a blocking card written through the server runs the notification command with the card's project, question and blocks", async t => {
-  const fake = await fakeOsascript(await scratch(t));
-  const wake = new Wake({ notify: macNotify({ command: fake.command, retryMs: 0 }) });
-  const { op } = await server(t, { wake });
-  await op.writeCard({ author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] });
-  await op.writeCard({ author, key: "hard", item: "a", question: "批准权限吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "批准" }], blocks: "发布停着" });
-  const calls = await until(fake.calls, c => c.length > 0, "the notification command");
-  assert.deepEqual(calls, [notifyArgs("挡事的卡 · Whitefoot", "批准权限吗？（挡住：发布停着）")], "one run, for the blocking card only");
-});
-
-// docs/design.md (The wake stream) gives the frames; this keeps it and src/wake.ts's table from drifting apart.
+// docs/design.md (The wake streams) gives the frames; this keeps it and src/wake.ts's table from drifting apart.
 test("the design doc's frame table lists exactly the kinds in the table and the control frames, with their fields", async () => {
   const doc = await readFile(join(import.meta.dirname, "../docs/design.md"), "utf8");
   const start = doc.indexOf("### The wake stream"), end = doc.indexOf("**Why not MCP push.**");
@@ -483,7 +427,7 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
 });
 
-// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake stream).
+// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake streams).
 const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: ["abc1234 Add a thing (#1)", { more: 2 }], restarted: true };
 const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
 
@@ -543,17 +487,30 @@ test("POST /api/wake refuses every other kind, every other field set and every b
   assert.deepEqual(star.events().map(f => f.n), [1], "only the control request was sent");
 });
 
-test("a told notice goes to the server's notify and to each listener with its card or item; a listener added later gets none of the earlier ones", () => {
+test("a told notice goes to each listener with its card or item; a listener added later gets none of the earlier ones", () => {
   const told: string[] = [];
-  const notified: string[] = [];
-  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z"), notify: title => { notified.push(title); } });
+  const wake = new Wake({ now: () => Date.parse("2026-10-16T10:00:00Z") });
   wake.tell("挡事的卡 · Whitefoot", "问题", { kind: "card", key: "choice" });
   const off = wake.onTell(notice => told.push(JSON.stringify(notice)));
   wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
   off();
   wake.tell("之后", "没人听");
-  assert.deepEqual(notified, ["挡事的卡 · Whitefoot", "架构师一小时没响应", "之后"], "the script notice still goes out for every tell");
   assert.deepEqual(told, [JSON.stringify({ title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } })]);
+});
+
+test("a listener that throws is logged; the listeners after it still get the notice, and tell does not throw", () => {
+  const errors: unknown[][] = [], original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  const got: string[] = [];
+  try {
+    const wake = new Wake({ now: () => T0 });
+    wake.onTell(() => { throw new Error("listener broke"); });
+    wake.onTell(notice => got.push(notice.title));
+    wake.tell("挡事的卡 · Whitefoot", "问题");
+  } finally { console.error = original; }
+  assert.deepEqual(got, ["挡事的卡 · Whitefoot"], "the listener after the one that threw still gets the notice");
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]![0]), /owner notice listener failed/);
 });
 
 test("a no-receipt notice opens the item or card its oldest unanswered event is about, and none when that event has no target", () => {

@@ -1038,9 +1038,11 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
         if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
-        // Work an unpaused root needs gets a difficulty before it is dispatched. What no such root needs (backlog work,
-        // what hangs under it, paused work) is not about to be, so it is not asked for one yet.
-        if (it.difficulty === undefined && neededSet().has(id)) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
+        // Asked for only when the rating is the one thing left before the item can be dispatched: it is todo, its next own
+        // step waits on nothing, and an unpaused root needs it. While another item is the next step (a study, say), the
+        // rating waits too, and what no such root needs (backlog work, what hangs under it, paused work) is not asked for.
+        const nextStepReady = rows.some(entry => entry.ready && "text" in entry.row && entry.row.state === "todo" && !entry.row.waits);
+        if (it.difficulty === undefined && neededSet().has(id) && st === "todo" && nextStepReady) out.push({ text: "缺难度：只有架构师能评，用 set_difficulty 评 1–5 级，或标「架构师做」；没评级的条目不算可以开工", label: "缺难度" });
       }
       return out;
     });

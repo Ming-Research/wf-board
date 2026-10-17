@@ -8,6 +8,7 @@ import { unreadSteps } from "../src/history.ts";
 import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
 import { Item, Dispatch, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
+import { hashToken } from "../src/credentials.ts";
 import { board, author, asArchitect } from "./helpers.ts";
 
 const architect = "架构师";
@@ -25,10 +26,13 @@ const refused = (pattern: RegExp) => (error: unknown) => error instanceof OpErro
 
 test("dispatch_start records every column on the item and appends the start line to its log", async t => {
   const { store, op } = await clocked(t);
-  await op.dispatchStart(start);
+  const { credential } = await op.dispatchStart(start);
 
   const it = store.snapshot().items.a!;
-  assert.deepEqual(it.dispatches, [{ agentId: "agent-0001", agent: "a-worker", role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", worktree: "~/dev/wf/worktrees/a", started: "2026-10-16T09:02:00Z", did: "实现一行" }]);
+  // The record keeps the hash of the credential the start issued, never the credential.
+  assert.match(credential!, /^wfb_/);
+  assert.deepEqual(it.dispatches, [{ agentId: "agent-0001", agent: "a-worker", role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", worktree: "~/dev/wf/worktrees/a", started: "2026-10-16T09:02:00Z", did: "实现一行", credential: hashToken(credential!) }]);
+  assert.ok(!JSON.stringify(store.snapshot()).includes(credential!), "the credential itself is stored nowhere");
   assert.deepEqual(it.log.at(-1), { at: "2026-10-16T10:00:00Z", by: author, text: "起：会话 a-worker（号 agent-0001），工程师，2 级 Sonnet，推理强度 xhigh，工作树 ~/dev/wf/worktrees/a，2026-10-16T09:02Z，做：实现一行" });
   // What the file holds is what the snapshot holds: the committed YAML parses back to the same dispatches.
   const committed = await store.show("item", "a", store.snapshot().head) as Item;
@@ -37,9 +41,9 @@ test("dispatch_start records every column on the item and appends the start line
 
 test("dispatch_start without the optional columns stores none of them and takes the server's clock", async t => {
   const { store, op } = await clocked(t);
-  await op.dispatchStart({ author, id: "b", role: "审查", level: 1, model: "Haiku", agent: "b-review", agentId: "r-1" });
+  const { credential } = await op.dispatchStart({ author, id: "b", role: "审查", level: 1, model: "Haiku", agent: "b-review", agentId: "r-1" });
   const it = store.snapshot().items.b!;
-  assert.deepEqual(it.dispatches, [{ agentId: "r-1", agent: "b-review", role: "审查", level: 1, model: "Haiku", started: "2026-10-16T10:00:00Z" }]);
+  assert.deepEqual(it.dispatches, [{ agentId: "r-1", agent: "b-review", role: "审查", level: 1, model: "Haiku", started: "2026-10-16T10:00:00Z", credential: hashToken(credential!) }]);
   assert.equal(it.log.at(-1)!.text, "起：会话 b-review（号 r-1），审查，1 级 Haiku，2026-10-16T10:00Z");
 });
 
@@ -328,7 +332,7 @@ test("the three tools round-trip over MCP, with the refusal text reaching the ca
   const { store, client, text, call } = await mcp(t);
   const tools = (await client.listTools()).tools;
   for (const name of ["dispatch_start", "dispatch_finish", "dispatches"]) assert.ok(tools.some(tool => tool.name === name), name);
-  assert.deepEqual(tools.find(tool => tool.name === "dispatch_finish")!.inputSchema.required!.slice().sort(), ["agentId", "author", "cost", "id", "result", "usage"]);
+  assert.deepEqual(tools.find(tool => tool.name === "dispatch_finish")!.inputSchema.required!.slice().sort(), ["agentId", "cost", "id", "result", "usage"]);
 
   const started = await call("dispatch_start", start);
   assert.equal(started.isError, undefined, text(started));

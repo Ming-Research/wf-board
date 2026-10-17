@@ -68,9 +68,11 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 1. **The page** for the owner, at `http://127.0.0.1:7417/`, with live updates
    pushed over server-sent events.
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
-   Codex session on the Mac connects to the same process.
-3. **The wake stream** at `/wake` (WebSocket), which pushes the architect's
-   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
+   Codex session on the Mac connects to the same process. It keeps no session:
+   each request stands alone (see *MCP without a session*).
+3. **The wake streams** (WebSocket): `/wake` pushes the architect's session what
+   needs it (owner notes, stalled work, a timed wake, the results of deploys), and
+   `/wake/<session name>` pushes another agent what needs it (section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -87,14 +89,60 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
-every ten minutes. The first push waits because the agents that reconnect after
-a restart catch up on writes in the first seconds, and a push holds the write
-queue for its network round trips (item `push-blocks-writes`). It does not push
-on shutdown (see Stopping). Each push writes its duration to the service log. If the server
+every ten minutes. The 60 seconds date from when a push held the write queue and the agents
+that reconnect after a restart catch up on writes in the first seconds; a push no longer
+holds the queue, so that reason is gone and the value stays as a provisional choice,
+since nothing measured favors another. It does not push on shutdown (see Stopping). Each push writes its duration to the service log. If the server
 is down, agents can still read the files with Grep and Read; nothing is
 hidden in a database.
+
+**Pushing and the write queue.** Writes go through one queue, one task at a time, so
+only one git change is in flight; its tasks are each write and the save of the
+owner's reading state on shutdown. A push is not a task of the queue. It takes the
+head commit as of its start and runs one `git push` of that commit beside the writes,
+over one connection; git itself says whether it sent commits, found the remote
+current, or was refused. Only a refusal is followed by one `fetch`, to tell a remote
+that is ahead of this clone (no error: the next push has nothing to send) from one that
+has diverged (an error). Commits written while a push runs go in the next one. One push
+runs at a time, and a call made while one runs gets its result. A push beside a write
+is safe because it reads objects and changes one remote-tracking reference, and its
+git runs with automatic maintenance off, so it never starts a repack of its own. The
+other direction is a write's commit starting a repack while a push reads objects. A
+40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
+maintenance triggered by each commit, in the foreground or the background, beside
+back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
+pushes each) there was no error, `git fsck` passed, and the remote's head was an
+ancestor of the local one. A push that did fail would be tried again at the next round
+and, if it kept failing, told by the lag push below.
+
+A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
+with the network down, never ends. In the queue, it held every write: in CI with a fake
+ssh, a write made 300 ms into a push waited 3.4 s when each connection took 1.2 s,
+8.8 s when each took 3 s, and did not finish within 20 s when a connection never
+answered. Writes have a 2 s limit (Time limits), so the queue must not wait
+for the network.
+
+**The rule: no task of the write queue waits for the network.** Every git command that
+reaches a remote runs through one function, `netGit` (`src/net-git.ts`): the store's push
+and the deploy job's fetch, and nothing else. It starts git in a process group of its own,
+with automatic maintenance off. ssh is git's child and a signal to git alone leaves it
+running, so a command that outlives its cap (five minutes) or whose caller asks it to stop
+is sent SIGTERM as a whole group and, two seconds later, SIGKILL. Five minutes is provisional:
+shorter than the push interval, so a stuck push ends before the next is due, and longer than
+a large catch-up needs (a week offline is about 20 MB, 20 s at 1 MB/s; deduced, the real
+uplink is not measured). It is reopened when the service log shows a push killed by the cap
+while it was still sending. The shutdown asks for the push's end the same way.
+
+**A copy that falls behind is told.** A stuck push no longer slows a write, so its harm
+is a remote copy that is out of date without anyone seeing it. When the copy has lacked
+commits for an hour, the architect gets one `backup-behind` push (section 8) with the
+number of commits left, the time of the last success (null if none since the start) and
+the last failure's reason. The hour counts from the last time the copy was known current:
+a push that sent or found nothing to send, or a round that found nothing to send; after a
+start, from the start, since the state is in memory. A copy that is current again and falls
+behind again is told again.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -106,38 +154,196 @@ the documents, checking them against the repository, reading the startup cache
 and the commits after it, replaying them) and the time from the start of the
 process to listening.
 
+**MCP without a session.** `/mcp` answers `POST` only, with JSON. Every request
+gets its own transport and tool server, closed when it has answered, and no
+session id is issued; `GET` and `DELETE` get 405, as there is no stream to open
+and no session to close (the board pushes through the wake stream, not through
+MCP). A restart of the board therefore invalidates nothing a client holds. This
+replaced a session table: a session lived in the process that made it, so a
+restart invalidated it, and a client caught in that gave up its tools for good
+when the board stayed down longer than the client keeps trying (about 16
+seconds; item `fast-restart-study`). A client that is not in a call knows
+nothing of a stop; one that is retries when the board is back. Who is writing
+comes from the request's `Authorization` header (section 9), not from a session.
+
+A write that was committed when the board stopped but not answered is sent
+again by the client. Four writes would silently add a line twice, and nothing
+else stops the second: `append_log`, `close_note`, `set_status` and
+`journal_entry`. Such a write is not made when the item's history holds a commit
+of the same operation on the same target from the same session, made in the
+last minute, that left the item holding the line this write adds (the last log
+line of the same author with the same text; for `journal_entry`, the same text
+at the end of the head; for `set_status`, also only while the item is in the state the
+call asks for, so a cancel after a reopen is a new decision). The answer is that first
+commit, marked `repeated`. The check reads history under the request's budget; when
+the budget is spent the write is made, at worst once too often. The
+rule reads the commit's message and `Session:` trailer and the item as the
+commit left it, so it holds across a restart with nothing kept in memory, and
+one function serves the four writes. A caller that names no session is not
+recognised and writes. The cost is that a second identical write within a
+minute from one session is not made, which the answer says. The other writes
+are refused or change nothing when repeated (a used key, a stale revision, an
+unchanged plan, a note already replied, an ended dispatch).
+
 **Stopping.** launchd sends SIGTERM and kills the process five seconds later.
 The daemon uses well under that:
 
 1. From the signal on, the server accepts no new connection and answers every
    request that still arrives (page, MCP or wake stream) with 503, `Connection:
    close` and `Retry-After: 2`. A client that retries on its old connection
-   therefore cannot start a new MCP session in a process that is about to exit;
-   such a session would hold the process open until it was killed, and its
-   client would believe it had reconnected and never ask again.
-2. The page's event streams, the wake connections and the idle stream of each
-   MCP session end at once, so their clients start to reconnect and are refused.
+   therefore starts no work in a process that is about to exit.
+2. The page's event streams and the wake connections end at once, so their
+   clients start to reconnect and are refused. MCP has no stream.
 3. A request already running, a tool call included, may finish. The connection
    it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
    every connection that is left is closed.
-4. The owner's reading state is committed locally, and the process exits.
+4. A push that is running is ended (below). The owner's reading state is committed locally, and the process exits.
 
-A push needs three round trips to GitHub (`ls-remote`, `fetch`, `push`). On
-2026-10-16, from the owner's Mac to the data repository's remote, six rounds of
-the three git commands in a clone at the remote's head took a median of 1.14 s,
-1.13 s and 1.25 s (the last as `push --dry-run`, so the transfer of new commits
-is not in it), and 3.01 to 4.18 s (median 3.75 s) for the three in a row. That
-leaves no safe margin in the five seconds, and a slow network exceeds it, so
+A push takes 4.1 to 6.6 seconds (Storage), more than the five seconds launchd allows, so
 shutdown does not push. The data is already committed locally, so nothing is
 lost: the remote copy is only a backup, and the first push after the next start
-sends what this run left. A push still running when the signal arrives holds
-the write queue, so the local commit of the reading state waits behind it (item
-`push-blocks-writes`).
+sends what this run left. A push still running when the signal arrives is ended
+at once, its group killed as in Storage, so it neither delays the local commit of
+the reading state nor keeps the process alive.
+
+A commit's automatic repack also runs in the foreground (see Storage). On
+2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
+wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
+runs; the same commit with the repack in the background took 25 to 103 ms). The
+study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
+to 1.5 s. Not measured: the first repack of the live repository (4,986 loose
+objects), a repack that merges existing packs, and a repack that overlaps a push.
+After deployment the architect checks the slowest write in the service log
+against three seconds.
+
+**Time limits.** Every page request and every MCP tool call is timed at the one
+place each passes through: the request handler in `src/http.ts`, and `register` in
+`src/mcp.ts`, which every tool goes through. One line of the service log says what
+ran, how it ended and for how many milliseconds: `GET /api/snapshot 200 62 ms`,
+`tool context ok 12 ms` (`error` for a tool that failed). A request whose
+connection closed before the answer went out ends as `closed`, with the time it
+had run, so a page that gave up waiting is timed too. `SlowOps`
+(`src/slow-ops.ts`) does the timing, the logging and the telling.
+
+An operation has a class, and is slow when it takes more than its class's limit:
+
+| Class | Limit | Operations |
+|---|---|---|
+| read | 1 s | `GET /`, `/app.js`, `/mermaid.js`, `/health`, `/api/snapshot`; every tool that reads the board except those of the next row |
+| history | 10 s | `GET /api/unread`, `GET /api/step`; the tools `changes`, `history` and `diff`, which read the git history |
+| write | 2 s | `POST /api/notes`, `/api/draft`, `/api/send`, `/api/read`, `/api/wake`; `DELETE /api/notes/<id>`; every tool that changes the board |
+
+`POST /api/read`, the owner's mark-read key, has a limit of its own, 0.3 s, since
+the owner waits on it. The key that jumps to the next unread change sends no
+request, so it has none here. The event stream (`GET /api/events`) and the
+requests of the MCP transport (`/mcp`) last as long as their client does, and a
+tool call is timed as its tool: they are logged with their time and never held
+to a limit. The wake socket (an upgrade, not a request) is not timed. The log
+line of a request carries its path without the query, and the operation's name
+(what the one-hour rule and the push go by) drops ids: a path the board does not
+serve is counted under one name, `<method> (unknown route)`, and
+`DELETE /api/notes/<id>` under `DELETE /api/notes/:id`, so the names stay a small
+fixed set. The routes the board serves are that one list (`PAGE_ROUTES` in
+`src/slow-ops.ts`, the table above with its streams): the router answers 404 to a
+request that matches no row of it, so a route cannot be served without a class,
+and the classes are never out of step with the routes.
+
+An operation over its limit is logged on a `slow` warning line with a summary of
+its parameters, and told to the architect as a `slow-op` push (section 8): its
+name, its time, its limit and the summary. One operation is told once an hour;
+its later slow calls are only logged, so one slow stretch does not become a string
+of pushes. The hour is counted from the pushes the board keeps, so a restart does
+not tell again. The summary holds no body text: numbers and the names of things
+(an id, a project, a kind, a filter, a search query cut at 60 characters) are
+written out, any other string shows only as its length (`head(2100 chars)`), and
+a list as its count.
+
+The 1, 2 and 10 seconds are starting values, not measurements. After a day on the
+live board, the times in the log show which ordinary operations exceed them; each
+is then looked at to see whether it is slow, and the number changed or the
+slowness fixed. No write waits for a push to the remote: the push runs beside the
+write queue (Storage).
+
+**Why at the entries.** The request handler and `register` are the places every
+operation already passes. A timer inside each tool or route would miss the next
+one someone adds. Logging alone leaves the architect to read the log; a timed
+probe of `/health` from outside cannot say which operation was slow.
+
+**Request budgets.** What a request that reads the history costs follows the range it
+asks about, never the length of the history, and a request that asks for more than it
+may fails alone while the service goes on. Before this, `changes` rebuilt the whole
+board as it was before each deleted document in the range, to find which item the
+document hung on: one rebuild took 2.7 to 3.1 s and kept about 510 MB of heap, all of
+them stayed until the request ended, and a range with 10 deleted notes ran the heap
+into its 4 GB limit and killed the process, with every session's connection and the
+owner's page (measured in CI on a synthetic board of the live one's size, 18,000
+commits; `scripts/bench-changes.ts`). Three rules follow.
+
+1. *Reads follow the range.* The commits of a query are listed from the range
+   alone (`store.log({since, at})`), and a time given to `diff` is resolved by git going
+   back from the head to the first commit at or before it (`Store.commitAt`), not
+   by listing the history. A document the head no longer holds is found by reading its
+   one file in the commit before the one that deleted it. The item it hangs on is
+   read from the document itself (a note's target, a card's item field, and for a
+   card that is gone too the item the store last saw it on, `Store.cardItem`); an
+   item's owner is looked for among the current items and the last versions of the
+   items deleted in the range, gathered into one view whose rules are worked out once.
+   An item whose owner was deleted before the range has no owner to find, and is
+   grouped as the top of its own project. A version conflict reads an item's
+   versions back only as far as the revision it was written against and not at all
+   for a revision above the current one.
+2. *Every request has a budget.* `src/budget.ts` holds it in the request's async
+   context. A page request (`src/http.ts`), a tool call (`register` in `src/mcp.ts`),
+   the timed wake, the start and a write made outside a request each open one;
+   a budget opened inside a request replaces its outer one. `REQUEST_LIMITS`: 64 MB of
+   history read, and 32 KB more for each commit of the range the request lists
+   (`allowRange`, called by `changes` and by the unread list); one rebuild of a whole
+   old board, which only a comparison reaching back before the plan format
+   conversion needs; and the heap, which may not pass 75% of its limit. The start
+   (`STARTUP_LIMITS`) reads 256 MB and 64 KB per replayed commit, and rebuilds no board.
+   A request over a limit fails with an error that says which and how to narrow the
+   range (a tool answers with it, a page request with 413).
+3. *Three places charge it*, all in `src/store.ts`: reading one historical file
+   (`readAt`, charged when git is read and not when the cache answers), rebuilding a whole old
+   board (`comparisonSnapshot`) and reading a git command's output
+   (`gitRead`, for `log`, `diff` and `ls-tree`; the commands a write runs, and the
+   one read its rollback makes of the head, are not charged). Each also looks at the heap, which counts the garbage not yet
+   collected and what other requests hold, so the 75% line is the last defense
+   against a count that missed something, and the normal queries stay well below it
+   (`scripts/bench-changes.ts` prints their peak against the line). With
+   `requireBudget` (the daemon sets it), a read of history that runs under no
+   budget fails, so a new path that forgets to open one fails the first time it runs;
+   a test checks that the only source files that start a process are `store.ts`,
+   `net-git.ts` (git against a remote, whose output is never read as history) and
+   the two that run `gh` and the notification command, and that those two do not
+   run git.
+
+   A read that two requests share (a file read or a board rebuild still pending, and the
+   unread list's memo) is charged to the request that started it. If that request's
+   budget stops it, the other request fails with the same error, and its retry is
+   served; this is accepted because two requests reading the same history at once is
+   rare and the failure is only a retry.
+
+The history caches are bounded by the heap they are estimated to hold: parsed
+documents 64 MB (16 bytes of heap per byte of file, as the whole-board figures
+measured) and 4096 entries, diffs 16 MB, and one whole old board.
+
+*Rejected.* Running history queries in a worker thread with a memory limit works (a
+256 MB limit stopped a runaway allocation in 3.4 to 6.4 s and left the main thread
+at its normal rate) but needs the board in the thread, 85 to 550 ms and 41 MB for
+each copy, a message protocol for the six readers of history, and a test that
+no reader stays on the main thread, which is the same test as for budgets. A child
+process costs more than a thread and isolates more than is needed. A budget costs
+a few counters and stops what actually grew: reading history. A runaway allocation that
+reads no history is not stopped by it.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
 deploy` writes its plist; launchd never overlaps two runs of one job). The logic
-is `src/deploy.ts`. A run fetches the main line, `origin/main`.
+is `src/deploy.ts`. A run fetches the main line, `origin/main`, through `netGit`
+(Storage): a fetch that outlives its cap of five minutes is killed with its ssh and counts
+as a failed try, so a remote that never answers cannot hold the job for good (launchd
+never starts a second run while one is going).
 When the checkout the daemon runs from is behind it, the run moves the checkout
 to its head with a fast-forward, installs the packages if `package-lock.json`
 changed, rebuilds the page bundle and, when a changed path needs it, restarts
@@ -147,9 +353,32 @@ restart.
 - A restart is skipped only when every changed path is in `NO_RESTART`
   (`src/deploy.ts`, the one place the list is defined): the daemon loads `src/`
   and the packages at its start and reads nothing else of the checkout but the
-  page files, which it reads from disk on each request. Any other path restarts.
+  page files, which it reads from disk on each request. The root's README.md,
+  LICENSE and AGENTS.md (exact paths) and the `.github/` directory are read by
+  no code the daemon runs, so they need no restart either. A path that only
+  starts with one of those names, such as `LICENSE.ts`, restarts. Any other
+  path restarts.
   A daemon that is down at the deploy is restarted whatever changed, since a
   deploy leaves the board up.
+- Pages open in the owner's browser are replaced after the deploy, and the job
+  does nothing for it. The page's version is a hash of the files the daemon
+  serves, `web/index.html`, `web/dist/app.js` and, once built, the diagram
+  library `web/dist/mermaid.js` (`src/page-version.ts`): it
+  changes exactly when a page loaded now would differ from one loaded before, so
+  a deploy of docs or tests changes nothing for an open page, and a rebuilt page
+  (or a rebuilt library) changes it with no restart. `GET /` fills the version into the page's own text
+  (the `page-version` meta tag), and `GET /api/events` opens with a `page` event
+  that carries the version on disk at that moment, to that stream alone. When a
+  deploy ends, the `deployed` push (`deployFailed` after a rollback) arrives at
+  `POST /api/wake`; the daemon then reads the page files again and, when the
+  version differs from the last one it told, sends a `page` event to every open
+  page. The pages already open are told only then, never between the job's merge
+  and its build, where the files do not agree yet: a page that connects in
+  that gap is told the version it sees, and is told again when the deploy ends.
+  A page that sees another version than its own reloads (section 7, Updating the
+  page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
+  the pages that connect afterwards, not the open ones: restarting the daemon
+  tells them too, since their streams reconnect.
 - The restart is `launchctl kickstart -k` on the daemon's own label, never a
   kill by process name. The daemon is healthy when launchd reports a process
   other than the one before, `/health` answers, and 5 seconds later the same
@@ -176,9 +405,9 @@ restart.
   rollback that failed on the package registry or a stale `index.lock`, is
   retried every five minutes and never leaves the checkout in an unknown state.
   When going back does not finish, the architect is told once; the owner is told
-  on the Mac, with the same notification code as the daemon, only when the
-  daemon does not answer, since then no daemon can push. The job only undoes
-  what it did to a checkout that is still the one it moved: on the main line's
+  on the Mac by a macOS notification, only when the daemon does not answer, since
+  then no daemon can push. The job only undoes what it did to a checkout that is
+  still the one it moved: on the main line's
   branch, without local changes to tracked files, and on the commit where the
   job last left it (the record keeps that, also while a move is under way), even
   when someone else's hand lands on the deploy's target or the commit to go back
@@ -192,7 +421,7 @@ restart.
   edit or commit is someone's, not the job's to move or undo.
 - The pushes reach the architect through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
-  next run. A fetch that still fails after three tries ten seconds apart, and a
+  next run. A fetch that still fails after three tries ten seconds apart (or killed at its cap), and a
   failure of the job itself, are pushed once with `version` null. Each kind of
   standing problem (the fetch, a refusal, a rollback that did not finish, the
   job itself) is remembered separately and forgotten by a run that ends with
@@ -209,6 +438,13 @@ target's code while the checkout and the page are back on the last healthy
 commit. The failure push is the signal; the architect checks the checkout and
 the daemon by hand. Recording the daemon's process id in the pending record
 would close it; that was judged not worth the added recovery logic.
+
+**Why the page's version is a hash of its files.** A commit id would change on
+every deploy, and every open page would reload for a change to docs or tests. A
+page that asked the daemon for its version on a timer would wait up to a period
+for the new one and add a timer to every open page. The job reaches the daemon
+only through `POST /api/wake`, which it already uses when a deploy ends, so the
+hash needs no new route and no change to the job.
 
 **Why a job beside the daemon.** The daemon cannot restart itself onto new code
 and also answer for whether that code runs; a deploy that fails must not depend
@@ -275,7 +511,8 @@ wf-board-data/
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
-  state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/wake.jsonl        the architect's wake stream: events, receipts and marks (not a board document; excluded from git)
+  state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
@@ -393,7 +630,9 @@ log:
   `agentId` (the session's full id, unique on the whole board), `agent` (its
   name), `role` (`工程师` or `审查`), `level` (1–5), `model`, optional
   `effort`, `worktree`, `started` and `did` (which rows of the item the
-  session does, one line), and once the session has ended a `finish` block:
+  session does, one line), `credential` (the SHA-256 of the token the session
+  writes with, from the start until the dispatch ends; section 9), and once
+  the session has ended a `finish` block:
   `ended`; `result` (`一次通过`, `返工后通过`, `换人` or `放弃`); the counts,
   `reports` and `kickbacks` for an engineer and `rounds` (review rounds: the first review and each re-review count one) for a review, never
   the other role's; optional `waited` minutes (spent waiting for the owner,
@@ -421,6 +660,10 @@ log:
   - A dispatch is recorded on the subtree root item the session was given. The
     board does not check that the item is one, and the tag tally counts the
     dispatch under that item's tags.
+  - `credential` holds a hash and never the token, which is answered once by
+    `dispatch_start`. `dispatch_finish` removes the hash, and removing it is what
+    revokes the credential: no state beside the record tells whether a
+    credential is valid.
   - `dispatch_start` and `dispatch_finish` each append a generated line to the
     item's log (`起：…`, `收：…`), the architect's hand-written line in
     machine form: the owner reads only the page, which shows logs and not
@@ -595,9 +838,15 @@ log:
   (reason 建条目时评). `changes` shows every change
   of difficulty; unread shows a changed level but not a first rating (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
-  check and is not listed as startable (`brief.todo`); a work item rated
-  `architect` raises no check and is not listed either, since the architect
-  schedules its own items itself. Only the architect clears 缺难度.
+  check only when the rating is the only thing left before it can be
+  dispatched: the item is todo, and one of its ready steps (every step before
+  it done) is a todo text step with no `waits` text. A step that is another
+  item or a card, such as an unfinished study sub-item, is not such a step, so
+  the item raises no check until that sub-item is done. A blocked item, or
+  one with a step in progress, raises none either. Work is not listed as
+  startable (`brief.todo`) without a rating; a work item rated `architect`
+  raises no check and is not listed either, since the architect schedules its
+  own items itself. Only the architect clears 缺难度.
 - **The read cursor.** The board's history is the git log, an ordered list of
   changes. The owner's reading state keeps a cursor into it and optional
   per-document `readMarks`, each a commit id through which that document is
@@ -632,8 +881,9 @@ log:
   line or the end of the text, fenced code excepted) is one block, whatever
   blank lines it holds. An item's head shows each one folded under its title;
   the sections a reader opened stay open across re-renders, kept in this
-  browser only. Added or changed blocks carry no colour of their own (the item's blue
-  line says it holds something new, and `n` lands on the first of them);
+  browser only. Added or changed blocks, a card's changed question included, carry a
+  blue line on their left, like the one beside an item's headline, and no colour of
+  their own; `n` lands on the first of them;
   removed content is not shown anywhere: no removed block, former title,
   plan row, link, target row, ask or card option. A changed recommendation
   marks the option; a changed question and the closing of a card mark the
@@ -941,8 +1191,8 @@ only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
 started and has no stored priority is. The same walk
-decides which items 缺难度 asks a difficulty for and which items `brief`
-lists as startable. Whether an item is needed is part of the summary
+decides which items 缺难度 asks a difficulty for (with the state and next-step
+conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
 priority and checks stay the same.
 
@@ -1004,7 +1254,7 @@ write-time refusals in the last column still apply to it:
 | 没有未完成的条目依赖它，却没写优先级 | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, or an item rated `architect`) | no |
+| 缺难度 (work an unpaused root needs, with no difficulty, that is todo and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, and only the architect may; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card, or an item rated `architect`) | no |
 | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
@@ -1362,16 +1612,21 @@ Every tool returns compact text built for an agent's context: ids, titles,
 status and the relevant lines, never whole files unless asked. An item or
 card row ends with its short number (`· #812`), and JSON rows carry `num`;
 `context` and `graph` accept `#812` or `812` as well as a key, an exact key
-winning over a number. Writes take
-`author`, the name of the project the session works for, selected from
-`projects` by matching `repo` to its repository's GitHub remote. The
+winning over a number. A write over a connection that carries a credential
+(section 9) is made by the credential's writer: `author` and `session` are left
+out, and one that is given and differs is ignored, with a note in the answer.
+Without a credential a write takes `author`, the name of the project the
+session works for, selected from `projects` by matching `repo` to its
+repository's GitHub remote (until the old tools are removed), and a write with
+neither is refused. The
 architect writes as `Architect`, a configured project like the others, from
 the session `架构师` (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-architect's session (`架构师`) is also a receipt for the wake stream (section 8).
+architect's session (`架构师`) is also a receipt for its wake stream, and another
+session's call carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
@@ -1427,6 +1682,12 @@ instructions within the limit and free of rule text.
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
 
+`changes`, `history` and `diff` read the git history, so each call runs under a request budget
+(section 4): a range too large for it ends the call with an error that names what ran out
+and says to narrow `since` or the filters. In `changes` a deleted document is placed by
+the current board and by the documents deleted in the range; an item whose owner was
+deleted before the range is its own area.
+
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
@@ -1469,7 +1730,7 @@ that delivers it, joined by a shared row. A write under the retired author
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
+| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by `Architect`; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
@@ -1610,6 +1871,10 @@ row is selectable as a dependency row was (`row:<item>@<row id>`), and
 comments on a selected row go to the item without an anchor.
 The selected item is saved per viewer in browser localStorage and restored
 when it still exists; unavailable storage does not prevent using the page.
+
+The blocks of the right column (the head text, the log, comments, the ask, cards, checks, the dependency lists and the
+comment field) set no maximum width: each is as wide as the column, so a wide window is used whole. A cap in
+characters would keep lines short but leave the right of a wide window empty, which the owner ruled out.
 
 Enter on a focused head selects its item; j/k move focus without opening detail.
 Reading requires a current selection or a selected detail item;
@@ -1755,6 +2020,53 @@ Blocks of 1 or 2 lines show none. Long lines scroll horizontally. Change
 marking wraps whole blocks, and glossary links skip text inside code, so
 neither writes markup into a token.
 
+Diagrams. A fence whose language is `mermaid` is drawn as a diagram, in item
+heads and log entries alike (`web/mermaid.ts`). `codeBlock` wraps such a block in
+`<div class="mermaid-block">` around its ordinary code block, and the page draws
+each wrapped block it shows, whichever render put it there: a `MutationObserver`
+on the body sees every block added, so a live update that repaints an item draws
+its blocks again, from a cache of what the library made of each source (by color
+scheme and source), which also keeps a block from showing code for a moment; a copy
+from the cache gets ids of its own, since the line markers of a diagram are found by id
+and the first copy may sit in a folded section. The
+library is mermaid from npm, pinned in `package.json`, bundled as one file,
+`web/dist/mermaid.js` (`web/mermaid-entry.ts`, built by `build:web` beside the
+page bundle), served at `GET /mermaid.js` with an `ETag` so the browser asks
+again and gets a 304 for an unchanged file. The page imports it only when it
+first meets a block, so a page that shows no diagram never fetches it and the
+main bundle does not carry it. The library runs with `securityLevel: "strict"`:
+board text is written by agents, and strict makes the text of a diagram plain
+text and leaves out the click handlers that call functions of the page. A drawn
+diagram stands in for its code (the code stays in the page, hidden). The library draws with its
+own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
+the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
+is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
+width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
+nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
+diagram makes the page scroll instead of being squeezed into the window, where its text would
+shrink until it could not be read. A narrow one is centered. A drawn diagram sits in a frame, and
+its toolbar is the top row of the frame, above the diagram, so it never covers the diagram. From
+the left: smaller, the size as a percentage of the diagram's own width, larger, 适应宽度 (back to
+the default size, which is the diagram's own width or the box's, whichever is less), and at the
+right a hint, 双指缩放，拖动或滚动查看, shown at every size. A diagram zooms with Ctrl and the
+wheel too, about the cursor (Chromium sends a pinch on a trackpad as Ctrl and the wheel; other
+browsers are not checked). The plain wheel is left alone and scrolls the page.
+An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll
+bar of its own (the system's hides itself when idle, so a diagram that went past its box looked
+cut off), shows a grabbing hand and shades the side that has more to show,
+along the whole height of the diagram (the scroll bar of a tall diagram is far below the part on
+the screen); a mouse drags it sideways in the box and up or down along the page. The box never scrolls vertically, so the wheel is never taken by it.
+Zoom and sideways scroll are kept per source: a diagram drawn again with the same source (a live
+update repaints its item, the page changes theme) keeps its view, and one whose source changed
+starts at the default size. The detail pane draws the diagrams it already has as soon as it is
+repainted, before it restores its scroll position, so that position is not cut short by the
+code a diagram stands in for. A block that
+does not parse keeps showing its code with the library's error under it, and the
+other blocks and the rest of the page are untouched. The diagrams use the
+library's `dark` theme when the page shows its dark colors (the owner's
+`data-theme` attribute on the root element, else the system's) and `default` otherwise,
+and are drawn again when either changes.
+
 Glossary links. In item heads, steps and log entries, card questions and option
 names, a card's legacy text, and note texts and replies, a glossary term links to its
 definition. The page has no glossary section. Titles are not linked. Terms
@@ -1857,6 +2169,32 @@ level, and whether that someone is working, waiting or has gone quiet.
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
 
+### Updating the page
+
+The page's live updates carry data, never code, so a page left open through a
+deploy would run the old page until it was reloaded by hand. The daemon says
+which version of the page it serves in a `page` event on `/api/events`: when a
+stream opens, and when a deploy has changed the page files (section 4,
+Deploying). The page knows the version it was served as from the `page-version`
+meta tag that `GET /` fills in. A page served without a version (the bundle was
+being built) never acts on an announcement. The same version changes nothing.
+
+Another version makes the page reload itself (`web/update.ts`):
+
+- At once, unless the owner is writing: a comment box open, a comment typed and
+  not saved (also after Esc, which keeps the text), a saved draft being edited,
+  or a request to the server in flight. Then a line 「看板已更新」 shows at the
+  top, and the page reloads when the writing is done; it looks again every half
+  second. Drafts saved but not yet sent are on the server and do not hold the
+  reload.
+- Before the reload the page keeps in `sessionStorage` where the list and the
+  detail were scrolled, and the page that follows scrolls them back once it is
+  drawn (a position older than 30 seconds is ignored). The selected item, the
+  folds, the open comment lists and the filters are in `localStorage` already.
+- A reload toward a version that left the page on another version less than a
+  minute ago is not repeated: the line asks for a reload by hand. Without this,
+  a page and a daemon that disagree about the version would reload without end.
+
 ## 8. Waking sessions
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
@@ -1879,15 +2217,34 @@ the background. Sending still waits for every pending draft save; a failed
 save prevents sending. A failed save or send restores the previous controls
 and draft text and shows the error; the committed snapshot stays authoritative.
 
-### The wake stream
+### The wake streams
 
-The wake stream is the board's one push channel. It has one listener, the
-architect, who is told only what needs it; every other session reads the board.
-What the architect does with an event, and how it listens, is in the
-architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
+The board pushes on one stream per recipient. The architect's stream, at
+`/wake`, carries what the architect must handle, and any call from its session
+answers it (Receipts, below). Every other agent the board pushes to (a session
+holding an item, later a reviewer or the observer) has its own stream at
+`/wake/<session name>` (Agents' streams, below), with its own numbers and
+retention and a record of how far it was delivered. What an agent does with a
+push, and how it listens, is in its rules and in `~/dev/wf/AGENTS.md`, section
+"Board".
 
-**What is pushed.** Ten kinds, defined in one table (`WAKE_KINDS` in
-`src/wake.ts`; `push` refuses a kind or field set the table does not list):
+**Where a push goes.** The kinds table gives each kind `to`: `pm`, the
+architect's stream, or `{holder: <field>}`, the stream of the session holding
+the item that field names, and the architect's when nobody holds it. A session
+*holds* an item while an engineer dispatch record on the item (section 5)
+names it as `agent` and has not ended; when several have not ended, the newest
+start wins, so a takeover holds the item from its start (`holderOf` in
+`src/dispatch.ts`). The dispatch record is written by the script that starts
+the engineer and ended when it is finished, so holding needs no call of the
+engineer's own and is never forgotten. Rejected: a claim and a release tool the
+engineer calls, which adds two calls an engineer can forget and a second record
+that can disagree with the dispatch; inferring the holder from who last wrote an
+item with a step in progress (the agent list's inference), which another
+session's single write turns to the wrong session.
+
+**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
+`src/wake.ts`; `push` refuses a kind or field set the table does not list).
+All go to the architect except `item-done`, which goes to the holder:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the architect too. A sent choice
@@ -1900,16 +2257,22 @@ architect's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   checks failed (`main-red`), a pull request an open item names whose checks
   failed (`pr-red`), one whose checks all passed and which can merge
   (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+- a page request or tool call that took longer than its time limit (`slow-op`,
+  section 4, Time limits), once per operation per hour;
+- a remote copy of the board's data that has stayed behind for an hour
+  (`backup-behind`; section 4, Storage);
 - what the look at the Actions billing finds (Watching Actions usage, below):
   the month's use reaching a level, a day of heavy use, or the included minutes
   all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below).
+  deploy did not happen. The job asks through `POST /api/wake` (below);
+- an item that became done (`item-done`), to the session holding each open item
+  that waits on it.
 
-Not pushed: a blocking card (the owner is told on the Mac and in open pages, below),
+Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
-table and one row below: a slow board operation (item slow-op-alerts).
+table and one row below.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -1926,7 +2289,9 @@ back. Only a kind the table marks `external` is taken (`deployed` and
 Another kind, a field set that is not exactly the kind's, a body that is not a
 JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
 Host and Origin rules are those of every other write, so only a program on this
-machine can ask.
+machine can ask. A `deployed` or `deployFailed` push also makes the daemon read the
+page files again and tell the open pages if their version changed (section 4,
+Deploying).
 
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all
@@ -1941,13 +2306,18 @@ the forms the server sends:
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
 | `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
+| `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
+| `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none |
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the architect's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
-`connected` and `gap` carry no number and are not events.
+`connected` and `gap` carry no number and are not events. A frame on an
+agent's stream also carries `line`, the one line the agent is shown for it (Size,
+below); the architect's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
@@ -1956,20 +2326,71 @@ handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
 event missed or sent twice between replay and live. A client drops an event
 numbered at or below the one it remembers (a repeat); a gap frame sets that number
-first, as above. Without `after` the client gets live events only. Every connected client gets every event. The server pings every 25
+first, as above. Without `after` the client gets live events only. Every client connected to the architect's stream gets every event of it, and none of an agent's. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.
 
 **Receipts.** A call to any MCP tool whose `session` is `架构师` answers every
-event pushed before the call arrived; the call counts when its arguments pass
+event pushed to the architect's stream before the call arrived; the call counts when its arguments pass
 the tool's schema, whatever the tool then does. A receipt writes a line to the
 file only when it answers something new. The architect is expected to make such
 a call after handling a wake, which it does anyway by reading or writing the
 board. The timed wake comes every 30 minutes, so an architect that is running
 answers within the hour.
 
-**No receipt.** When the oldest unanswered event is one hour old (the limit is
+**Agents' streams.** A client opens a WebSocket to
+`ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
+Host and Origin rules are those of `/wake`. The server answers 400 for an empty
+name, one longer than 80 characters, one holding a slash or a control character,
+the architect's name (its stream is `/wake`), a name that does not decode, and
+any query string. The board, not the client, keeps how far the stream was
+delivered, so the client sends no number: it gets `connected`, then `gap` when
+events never delivered were dropped by retention (it reads the board for what
+it missed), then every kept event not yet delivered, then live events of this
+stream only. Once it has printed the events up to `n`, the client sends the
+text frame `{"ack": n}`; from then on they are delivered and never sent again,
+on any connection or in any tool result. An ack at or below the delivered
+number, above the newest, or not a whole number changes nothing; any other
+message is ignored. A client killed between printing and acking gets those
+events once more: a repeat, never a loss. An agent's stream keeps its newest
+200 events, at most 256 KiB, with the delivered number and the session name, in
+`state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
+SHA-256: a name of 80 Chinese characters would be 720 bytes percent-encoded,
+past the 255 a file name may hold, and two names that differ only in case would
+share one file on a disk that ignores case. Numbers and delivery survive a
+restart. A stream with everything delivered, no push or delivery for seven
+days, whose session holds no item and has no socket on it, is dropped with its
+file.
+
+Rejected, for agents: a per-event receipt the agent sends with a tool call after
+handling the event, resending every unanswered event on each connection
+(the resource agent's earlier design), because the same event would reach the
+agent's context several times and each event would cost a call; the
+architect's rule that any call answers everything, because an engineer calls
+the board all the time while it works, and would answer events it never saw.
+
+**In a tool result.** A session that is working is not running its wait script,
+so the board gives it its undelivered events in the next tool result it gets:
+any tool, read or write, whose caller is a session other than the architect's
+(the credential's session when the connection has one, else the `session` the
+call names, trimmed). After the tool's own text and a blank line come the line
+`【看板推送】` and one line per event, oldest first, at most five; more are
+counted by kind in one more line and wait for the next call. The events shown
+are delivered. Rejected: waiting for the wait script alone, which leaves an
+owner's change of direction unseen through hours of implementation; an inbox
+tool the agent must remember to call, which costs a call each time and is
+mostly empty.
+
+**Size.** Whatever the board pushes or returns stays in the receiving agent's
+context until it is compacted, so a push to an agent says what needs handling
+and leaves the details to a read. Its one line (`lineOf` in `src/wake.ts`) is
+the number, the kind's label and what it is about (an item or pull request
+with its project, a title, counts instead of lists), at most 200 characters,
+cut with … past that; the tests measure it for every kind with the longest
+fields. An event reaches an agent once (above).
+
+**No receipt.** When the oldest unanswered event on the architect's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「架构师 1 小时没响应」,
 naming that event. The architect has stopped: its session crashed, waits at a
 permission prompt, or no longer holds the Monitor that carries the stream.
@@ -1979,25 +2400,18 @@ neither repeats an alert nor forgets one.
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
-no-receipt alert. Each notice goes two ways:
-
-- To every open board page, as an `owner` event on `/api/events`, carrying the
-  title, the message and a target (`{kind: "card" | "item", key}`, or none).
-  The page shows a browser notification (Notification API) when the owner
-  allowed notices. The notification's tag is `card:<key>` or `item:<key>`, or the
-  title when the notice has no target, so open tabs show one notice for the
-  same card or item. A click focuses the page and opens the card or item,
-  or the home view when there is no target. The event is live only: a page that
-  connects later gets nothing from before its connection, and a reconnect does
-  not replay. A closed page gets nothing; Web Push is not used.
-- To the Mac, through `osascript` with a fixed script that shows a macOS
-  notification, passing the title (`挡事的卡 · <project>`) and message
-  (`<question>（挡住：<blocks>）`) as arguments, not spliced into the script, so
-  any text is safe. The daemon is a LaunchAgent in the owner's login session,
-  which is what lets it show one; a failed run is tried again, up to three
-  times, and then logged. Script Editor must be allowed to notify in System
-  Settings. This route goes once the browser route is checked (wf-board item
-  chrome-notify).
+no-receipt alert. Each notice goes to every open board page, as an `owner`
+event on `/api/events`, carrying the title, the message and a target
+(`{kind: "card" | "item", key}`, or none). The page shows a browser
+notification (Notification API) when the owner allowed notices. The
+notification's tag is `card:<key>` or `item:<key>`, or the title when the notice
+has no target, so open tabs show one notice for the same card or item. A click
+focuses the page and opens the card or item, or the home view when there is no
+target. The event is live only: a page that connects later gets nothing from
+before its connection, and a reconnect does not replay. A closed page gets
+nothing; Web Push is not used. The daemon shows no macOS notification of its own;
+the deploy job's notice on the Mac (section 4, Deploying) is the only one that runs `osascript`,
+and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
 or card of its oldest unanswered event: a `stalled` event's item, or the item or
@@ -2185,8 +2599,8 @@ branch `main`, so it sets none); the GitHub watch reads the checks of that
 branch, or of the default branch when `mainline` is absent.
 Identity is the project itself. Each project has a responsible
 agent session started in its repository; several sessions may share that
-responsibility and coordinate among themselves. Sessions may be renamed
-freely, so no session names are recorded. This model supersedes per-project
+responsibility and coordinate among themselves. A session's name is recorded
+with its writes as an observation, never as ownership (section 6). This model supersedes per-project
 agent lists as well as per-item `agent` ownership and child handovers. An
 area with an absent or unconfigured group gets a shared rules check; older
 boards without `projects` load with an empty list.
@@ -2225,9 +2639,11 @@ way. A refusal names the item’s project
 and directs the caller to report what it needs from the item to `Architect`. Cross-project
 dependency targets remain allowed on a project’s own items. The page’s
 owner-note, send and read operations are separate from agent
-operations and remain unrestricted. Project names are supplied by trusted
-local callers; identity checks enforce the workflow, rather than
-authenticate against a caller impersonating another project.
+operations and remain unrestricted. This is how a call that carries no
+credential is checked, until the old tools are removed: project names are then
+supplied by the callers, and the checks enforce the workflow rather than
+authenticate against a caller impersonating another project. A call that
+carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
 `架构师` (`isArchitect` in `src/model.ts`). Both are needed because
@@ -2256,9 +2672,9 @@ both tools, the marker in the item schema, the inbox rules and the page's inbox
 are removed. Items in older commits can still hold the marker. Past commits
 are read as written (`show`, `diff`), and `comparisonSnapshot`, which
 validates a past commit's whole board with the current schema, drops the
-marker first and no other unknown field. Live data holding a marker is refused
-at start with the schema's own error, so nothing is read and silently
-discarded.
+marker, together with the other retired fields listed in the plan conversion
+section, and no other unknown field. Live data holding a marker is refused at
+start with the schema's own error, so nothing is read and silently discarded.
 
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
@@ -2288,6 +2704,81 @@ items under other sessions' areas and 21 more items whose prefix differs from
 their area's session. The owner chose (2026-10-11, option A): new keys need
 not carry a session prefix; existing keys stay, because notes and log text
 cite them.
+
+### Credentials
+
+Who is writing is told by the connection, not by the caller's own words. A caller
+that names its project and session itself can name them wrongly or borrow another's,
+and nothing in the call tells. So a request carries a credential, and the board reads
+the writer from it.
+
+- **What it protects against.** A wrong name and a borrowed one by mistake. It does not
+  protect against an agent on this Mac that reads another agent's configuration on
+  purpose: every agent has a shell. The credentials keep the checks honest; they are not a
+  boundary between mutually distrusting programs.
+- **The credential** is a random token, `wfb_` and 256 bits, sent as `Authorization: Bearer
+  <token>`; the board keeps only its SHA-256. Two kinds exist:
+  - A *dispatch credential* is issued by `dispatch_start`, answered once, and bound to the
+    dispatch record: the session's name (`agent`), its role (`工程师` or `审查`), the item the
+    dispatch is recorded on (the root of the subtree the session works on) and that item's
+    project. `dispatch_finish` removes it. A session that is stopped and resumed
+    keeps its credential, while the dispatch has not ended: a resumed background session
+    reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
+    start script puts the credential in that file.
+  - A *long-lived credential* belongs to the architect (`架构师`), the observer (`观察者`) or the
+    resource agent (`资源管理`): session name, role, project and, for the resource agent, the
+    records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
+    `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
+    only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
+    prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
+    the service log says why.
+- **The session name `架构师`** is the architect's alone: without a credential the board takes
+  author `Architect` writing from that session for the architect (section 6) and skips
+  checks for it. A file entry of another role under that name is refused, and so is
+  `dispatch_start` for an agent of that name (spaces around it are ignored, as everywhere the
+  board compares it). With a credential, a write is the architect's when the credential's
+  role is, whatever names it carries.
+- **A request** with no `Authorization` header can read the board; it can write only in the
+  old way, naming its author and session, until the old tools are removed. One with an
+  invalid header (an unknown token, or a revoked one) is refused on every call, reads
+  included, and never falls back to the old way: a revoked session that still names an
+  author would otherwise write on. One with a valid credential writes as the credential's
+  project and session, whatever it names itself; the call is told when it named another.
+- **What each role may write** is one table, `ACCESS` in `src/model.ts`, from role to the
+  *parts* of the board a write changes and how far: `board` (any item of any project) or
+  `subtree` (the items the credential names, with everything they own, and the writer's own
+  project's glossary). `ops.run` takes the parts of every write as an argument, so a write
+  cannot omit them, and refuses a part the role lacks before it reads anything; for a
+  `subtree` part it then checks, once the write is complete, that every document it changes
+  is inside the subtree. The check counts the board's own effects on other items as well
+  as what the call names: a row that makes a root with a stored priority wait on another
+  item changes that root (the board drops its priority and logs it), so a subtree
+  credential cannot add such a row. It also counts what a plan row takes in: a row that owns
+  an item puts it under the writer, so a subtree credential may own only items it already
+  writes.
+  - The architect has every part but `item.merge-row`, on the whole board. No role has
+    `item.merge-row`: only the GitHub watch marks a merge row done, and it writes without a
+    credential.
+  - The observer has every part but the ones only the architect has: `project.create`,
+    `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`, `item.cancel`,
+    `item.pause`, `item.move-project` and starting or ending a dispatch. It writes items of
+    any project, recorded under its credential's project and session.
+  - The resource agent writes the log of any item and ends dispatches; it writes the head
+    and plan of the records its credential names. This is a first answer, to be revised
+    when the resource agent's own design (item `resource-ops-study`) says what it needs.
+  - An engineer writes the log, plan, targets, links, cards and glossary terms of its
+    subtree, and the head of its items, which is the whole body until bodies are stored by
+    section (item `mcp-sections`); it narrows to the 改动 section then.
+    `write_card` names `card.write` and `item.plan` (a blocking card is also a row of its
+    item's plan); `withdraw_card` names `card.write` and `item.log` (the reason goes to the
+    item's log); `rule_card` is `card.rule`, which an engineer lacks.
+  - A review writes the log of its subtree.
+- **Rejected.** Passing the credential in an environment variable: a background session
+  does not receive the environment of the command that started it (tested 2026-10-16). A
+  per-directory MCP configuration (`claude mcp add --scope local`): it applies to the
+  whole repository and its worktrees, so it cannot give each session its own credential
+  (tested 2026-10-16, and it redirected other sessions' board connections while it was
+  there). Recording the credential per MCP session: the endpoint has no session.
 
 ## 10. Migration
 
@@ -2414,10 +2905,11 @@ endpoints spanning the schema change, caching historical documents and
 yielding between commits. A legacy status, parent or dependency edit counts
 as an `other` change on the edited item, rather than normalized plan progress
 on its owner, preserving what the owner saw before plans.
-Parsed historical documents are cached up to 4096 entries and normalized
-whole-board snapshots up to 4 entries, evicting the oldest insertions so
-walking old history does not retain every parsed version indefinitely;
-whole-board snapshots have a smaller bound because each holds the full board.
+Parsed historical documents are cached up to an estimated 64 MB of heap (and 4096
+entries) and one normalized whole-board snapshot is kept, evicting the oldest
+insertions so walking old history does not retain every parsed version
+indefinitely; a whole-board snapshot is built at most once per request (section 4,
+Request budgets).
 Normalized page baselines use the same converter;
 the conversion itself marks nothing new and is not a history step.
 `npm run convert:plans -- --data <copy> --dry-run --report <file>` writes the
@@ -2432,6 +2924,15 @@ owner archive field and reports the total number of entries removed, including
 ineffective and orphan entries; all other owner state is unchanged. The temporary migration and old-shape
 reader stay until conversion and the historical comparison baselines that
 need them have finished; raw audit `show` and `diff` remain unchanged.
+Older versions can also hold fields that the current schema does not accept:
+an item's area short name (`short`) and session (`agent`) and a project's
+session names (`agents`), which data-repository migration commits removed,
+and the removed inbox's `request` marker on an item. Normalizing a historical
+whole board omits exactly these named fields, in every shape, before the
+schema for that shape reads it, so those versions stay comparable. `show` and
+`diff` still return them as written. Any other unknown field still refuses the
+old version instead of being dropped, and current reads and writes stay
+strict.
 
 **Phase 1 mapping, item by item.**
 
@@ -2821,6 +3322,29 @@ Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
 new item), so incremental re-renders happen in between.
+
+Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
+log are drawn, with Chinese labels; a block that does not parse shows its code and the
+error while the blocks after it are drawn; hostile text (a script in a label, a
+`javascript:` link) leaves nothing that runs; a page with no diagram never fetches the
+library and one with diagrams fetches it once; the diagrams are drawn again after a live
+update repaints their item; a diagram is as wide as itself or its box, whichever is less, with
+nothing to scroll sideways in the box or the page, at a window 1500 px wide and one 700 px wide; the
+settings in a diagram's own frontmatter win over the page's; the buttons, and Ctrl with the wheel,
+zoom, the plain wheel scrolls the page and nothing else, an enlarged diagram can be scrolled to both
+its ends and dragged, and 适应宽度 restores the default size; the toolbar is the top row of the
+diagram's frame, with its items in order and the size in percent following the zoom; an enlarged
+diagram says it can be moved (scroll bar, hand, a shade at the edge with more) and the toolbar and
+the bar read in both color schemes; a live update that
+leaves a diagram's source alone leaves its zoom, its sideways scroll and the page's scroll alone, and one
+that changes the source starts it at the default size; the same diagram drawn twice in one page, the
+first copy in a folded section, has no id twice and the visible copy's line markers are its own;
+labels and lines read in both color schemes, and the `data-theme` attribute wins over the system's
+scheme. Each check also
+runs on a page with the one part it protects taken out by an edit applied while the page is
+bundled, where it must report the part's absence in a line that says what the check was
+waiting for and what the page held (a diagram that never appears can only be observed by
+waiting, so the wait is short), not a bare timeout or a page that did not start.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix

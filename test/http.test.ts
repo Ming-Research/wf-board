@@ -99,31 +99,27 @@ test("POST /api/send with no body at all is the batch send", async t => {
   assert.deepEqual(((await response.json()) as {sent: Array<{id: string}>}).sent.map(n => n.id), [one.data.id]);
 });
 
-test("stateful MCP client initializes, lists tools, reuses session and closes it", async t => {
+test("the MCP endpoint keeps no session: a client initializes, lists tools and calls one, and no stream or close is offered", async t => {
   const { url } = await server(t);
   const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
   const client = new Client({ name: "HTTP test", version: "1" }); t.after(() => client.close());
   await client.connect(transport);
-  const id = transport.sessionId; assert.ok(id);
+  assert.equal(transport.sessionId, undefined, "no session id is issued");
   const tools = await client.listTools(); assert.ok(tools.tools.some(t => t.name === "context"));
-  assert.equal(transport.sessionId, id);
   const result = await client.callTool({ name: "context", arguments: { id: "a" } }); assert.ok(!result.isError);
-  await transport.terminateSession();
-  assert.equal((await fetch(url + "/mcp", { headers: { "mcp-session-id": id, Accept: "text/event-stream" } })).status, 404);
+  for (const method of ["GET", "DELETE"]) {
+    const response = await fetch(url + "/mcp", { method, headers: { Accept: "text/event-stream" } });
+    assert.equal(response.status, 405, method);
+    assert.equal(response.headers.get("allow"), "POST");
+  }
 });
 
-test("abandoned MCP sessions are bounded: past the limit the least recently used one is closed", async t => {
-  const { url } = await server(t, { maxMcpSessions: 3 });
-  const ids: string[] = [];
-  for (let n = 0; n < 10; n++) {
-    const transport = new StreamableHTTPClientTransport(new URL(url + "/mcp"));
-    const client = new Client({ name: "Abandoned " + n, version: "1" }); t.after(() => client.close().catch(() => {}));
-    await client.connect(transport); ids.push(transport.sessionId!);   // never terminated, as a killed headless session
-  }
-  const alive: boolean[] = [];
-  for (const id of ids) alive.push((await fetch(url + "/mcp", { method: "DELETE", headers: { "mcp-session-id": id } })).status !== 404);
-  assert.equal(alive.filter(Boolean).length, 3, "only the limit's worth of sessions is retained after 10 abandoned ones");
-  assert.deepEqual(alive.slice(0, 7), Array(7).fill(false), "the oldest were the ones dropped");
+test("a request names no session, so one that carries a stale session id is answered like any other", async t => {
+  const { url } = await server(t);
+  const call = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+  const response = await fetch(url + "/mcp", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", "mcp-session-id": "a-session-of-an-earlier-process" }, body: JSON.stringify(call) });
+  assert.equal(response.status, 200);
+  assert.ok(((await response.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.some(tool => tool.name === "context"));
 });
 
 test("JSON body decoding preserves Chinese codepoints split across request chunks", async t => {
@@ -238,7 +234,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
   assert.equal(store.snapshot().notes[id]!.text, "Edited");
 });
 
-// A root with a missing shared row carries a (format) check in the plan model; it is not rated, so it carries 缺难度 too.
+// A root with a missing shared row carries a (format) check in the plan model; its next step waits on that row, so it is blocked and carries no 缺难度.
 const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
@@ -252,11 +248,12 @@ test("after a write the check scan rederives only the items the write can reach"
   await star.sync();
   assert.ok(checked.includes("other"), "the written item is checked again");
   assert.deepEqual(checked.filter(id => ["area", "a", "b"].includes(id)), [], "items the write cannot reach are not");
-  // A write that makes a check appear scans the new item, and a check that is not 无人推进 (this item carries two: the missing row and 缺难度) is pushed to no one.
+  // A write that makes a check appear scans the new item, and a check that is not 无人推进 (this item carries the missing row) is pushed to no one.
   await store.commit({ author, message: "Block item", puts: [blockedItem("c")] });
   await star.sync();
   assert.ok(checked.includes("c"));
-  assert.ok(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), "the item is not rated, so it carries 缺难度 as well");
+  assert.ok(shared(store.snapshot()).checks("c").some(c => c.text.startsWith("依赖的条目不存在")), "the missing row is still reported");
+  assert.equal(shared(store.snapshot()).checks("c").some(c => c.label === "缺难度"), false, "its next step waits on the missing row, so the rating is not what holds it");
   assert.deepEqual(star.events(), []);
 });
 

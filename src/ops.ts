@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "./model.ts";
-import type { PlanRow, ItemTarget, Link, Priority, Snapshot, DispatchUsage } from "./model.ts";
+import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, RETIRED_COORDINATOR, isArchitect, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject } from "./model.ts";
+import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
+import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
+import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
@@ -10,49 +12,50 @@ import { normalizeTime, startLogLine, finishLogLine } from "./dispatch.ts";
 
 export class OpError extends Error {}
 /** `dropped`: items whose stored priority the write removed because they are non-roots. */
-export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }> }
+/** `credential`: the token a new dispatch writes with, shown once (only the hash is kept). `repeated`: the write was already made a moment ago, by the same session with the same text; nothing was written again. */
+export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }>; credential?: string; repeated?: true }
 export interface Ops {
-  createProject(a: { author: string; session?: string; name: string; repo?: string; after?: string }): Promise<Result>;
-  updateProject(a: { author: string; session?: string; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
-  closeNote(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
-  appendLog(a: { author: string; session?: string; id: string; text: string }): Promise<Result>;
+  createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
+  updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
+  closeNote(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
+  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
+  appendLog(a: { author: string; session?: string; access?: Access; id: string; text: string }): Promise<Result>;
   /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
-  markMerged(a: { author: string; session?: string; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
+  markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
-  journalEntry(a: { author: string; session?: string; text: string }): Promise<Result>;
+  journalEntry(a: { author: string; session?: string; access?: Access; text: string }): Promise<Result>;
   /** Records a session the architect started on an item, and logs the start on the item. */
-  dispatchStart(a: { author: string; session?: string; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
+  dispatchStart(a: { author: string; session?: string; access?: Access; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
   /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
-  dispatchFinish(a: { author: string; session?: string; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
-  setPlan(a: { author: string; session?: string; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
-  setTargets(a: { author: string; session?: string; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
-  updateItem(a: { author: string; session?: string; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
-  setStatus(a: { author: string; session?: string; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
-  setTags(a: { author: string; session?: string; id: string; tags: string[] }): Promise<Result>;
+  dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
+  setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
+  setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
+  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
+  setStatus(a: { author: string; session?: string; access?: Access; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
+  setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
-  setTagsMany(a: { author: string; session?: string; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
+  setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
   /** Only the architect sets a difficulty, on an item of any project; the change is logged with its reason. */
-  setDifficulty(a: { author: string; session?: string; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
+  setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
-  setDifficultyMany(a: { author: string; session?: string; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
-  setTag(a: { author: string; session?: string; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
-  renameTag(a: { author: string; session?: string; name: string; to: string }): Promise<Result>;
-  removeTag(a: { author: string; session?: string; name: string; replace?: string }): Promise<Result>;
-  setPause(a: { author: string; session?: string; id: string; paused: boolean; reason?: string }): Promise<Result>;
-  moveItem(a: { author: string; session?: string; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
+  setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
+  setTag(a: { author: string; session?: string; access?: Access; name: string; meaning: string; projects?: string[] | null }): Promise<Result>;
+  renameTag(a: { author: string; session?: string; access?: Access; name: string; to: string }): Promise<Result>;
+  removeTag(a: { author: string; session?: string; access?: Access; name: string; replace?: string }): Promise<Result>;
+  setPause(a: { author: string; session?: string; access?: Access; id: string; paused: boolean; reason?: string }): Promise<Result>;
+  moveItem(a: { author: string; session?: string; access?: Access; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
   /** Moves an item and everything it owns to another project; an owner left behind keeps a shared row. */
-  moveItemProject(a: { author: string; session?: string; id: string; project: string; priority?: Priority }): Promise<Result>;
-  clearAsk(a: { author: string; session?: string; id: string; log: string }): Promise<Result>;
+  moveItemProject(a: { author: string; session?: string; access?: Access; id: string; project: string; priority?: Priority }): Promise<Result>;
+  clearAsk(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
   /** Creates a card and its row in the item's plan in one commit, or revises an open card's question, options and blocks. */
-  writeCard(a: { author: string; session?: string; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
+  writeCard(a: { author: string; session?: string; access?: Access; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
   /** Records the pick the owner made outside the page; a pick made on the page is recorded when the owner sends it. */
-  ruleCard(a: { author: string; session?: string; key: string; choice?: string; ruling?: string }): Promise<Result>;
+  ruleCard(a: { author: string; session?: string; access?: Access; key: string; choice?: string; ruling?: string }): Promise<Result>;
   /** Closes an open card nobody needs any more, with the reason in its item's log. */
-  withdrawCard(a: { author: string; session?: string; key: string; log: string }): Promise<Result>;
-  replyNote(a: { author: string; session?: string; id: string; reply: string; replace?: boolean }): Promise<Result>;
-  setTerm(a: { author: string; session?: string; term: string; definition: string }): Promise<Result>;
-  deleteTerm(a: { author: string; session?: string; term: string }): Promise<Result>;
+  withdrawCard(a: { author: string; session?: string; access?: Access; key: string; log: string }): Promise<Result>;
+  replyNote(a: { author: string; session?: string; access?: Access; id: string; reply: string; replace?: boolean }): Promise<Result>;
+  setTerm(a: { author: string; session?: string; access?: Access; term: string; definition: string }): Promise<Result>;
+  deleteTerm(a: { author: string; session?: string; access?: Access; term: string }): Promise<Result>;
 }
 
 // Shared across Ops instances: validation and multi-document writes are one
@@ -106,8 +109,8 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
   if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
-/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the architect (model `isArchitect`). */
-interface Writer { author: string; session?: string }
+/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the architect (model `isArchitect`), and the `access` the connection's credential grants, when it has one (credentials.ts). */
+interface Writer { author: string; session?: string; access?: Access }
 /** What the board reserves for the architect: every other writer is refused, and `what` names the operation in the message. */
 function onlyArchitect(who: Writer, what: string): void {
   if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may ${what}`);
@@ -140,7 +143,7 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
-interface Work { moved?: string[]; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
+interface Work { moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -208,7 +211,7 @@ function requireOwnership(s: Snapshot, project: string, who: Writer, id: string)
   const refusal = `item ${id} belongs to project ${project}; report what you need from it to the ${ARCHITECT}, who creates work another project needs in the project that delivers it`
     + (who.author === ARCHITECT ? `; ${ARCHITECT} writes other projects' items only with session ${ARCHITECT_SESSION}` : "");
   requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
-  if (who.author !== project && !isArchitect(who)) throw new OpError(refusal);
+  if (who.author !== project && !isArchitect(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
 }
 /** The author's own glossary, the only one it may change; an empty one when it has none yet. */
 function ownGlossary(s: Snapshot, author: string): Glossary {
@@ -230,14 +233,41 @@ function ownedNote(s: Snapshot, id: string, who: Writer): { note: Note; item: st
   return { note, item };
 }
 
+/** The parts an update_item changes, by the fields it gives. */
+function updateParts(a: { title?: string; head?: string; links?: unknown; priority?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
+  const parts: Part[] = [];
+  if (a.title !== undefined) parts.push("item.title");
+  if (a.head !== undefined) parts.push("item.head");
+  if (a.links !== undefined) parts.push("item.links");
+  if (a.priority !== undefined) parts.push("item.priority");
+  if (a.data !== undefined) parts.push("item.data");
+  if (a.order !== undefined) parts.push("item.order");
+  if (a.record !== undefined || a.accept !== undefined) parts.push("item.record");
+  return parts;
+}
+/** A write that adds a log line, made again by the same session within this long, is the retry of a write whose answer was lost, and is not made again (docs/design.md, section 4). */
+const REPEAT_MS = 60_000;
+
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z")): Ops {
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   async function stale(kind: "item" | "decision", id: string, rev: number, current: Item | Decision): Promise<never> {
     let before: unknown = null;
-    for (const commit of await store.log({ kind, id })) {
-      const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
-      if (doc?.rev === rev) { before = doc; break; }
+    // Each write raises the revision by one, so a revision above the current one never existed, and going back from the
+    // newest version, the first one below the wanted revision means it is not in the history. Neither case reads on.
+    try {
+      if (rev <= current.rev) {
+        const versions = await store.log({ kind, id });
+        allowRange(versions.length);
+        for (const commit of versions) {
+          const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
+          if (doc?.rev === rev) { before = doc; break; }
+          if (doc && doc.rev < rev) break;
+        }
+      }
+    } catch (error) {
+      // The conflict is still the answer when the history it is explained from is more than a request may read.
+      if (!(error instanceof BudgetError)) throw error;
     }
     throw new OpError(`rev ${rev}: current rev ${current.rev}; ${before ? describeChanges(before, current, kind) : "previous revision unavailable; " + currentTitle(current)}. Read context and redo with current rev ${current.rev}`);
   }
@@ -246,8 +276,38 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (!Number.isSafeInteger(rev) || rev < 1) throw new OpError("rev: provide the positive integer revision read from context");
     if (rev !== doc.rev) await stale(kind, id, rev, doc);
   }
-  function run(a: { author: string; session?: string }, make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
+  /** The items of the subtrees that start at `roots`: each root and everything it owns, at any depth. */
+  function subtreeOf(s: Snapshot, roots: readonly string[]): Set<string> {
+    const r = rulesOf(s), seen = new Set<string>();
+    const stack = roots.filter(id => Object.hasOwn(s.items, id));
+    for (let id = stack.pop(); id !== undefined; id = stack.pop()) if (!seen.has(id)) { seen.add(id); stack.push(...r.children(id).filter(child => Object.hasOwn(s.items, child))); }
+    return seen;
+  }
+  /** What the credential's role may do with these parts (docs/design.md, section 9): refused at once for a part the role has none of. */
+  function mayWrite(a: Writer, parts: readonly Part[]): void {
+    if (!a.access) return;
+    const refused = parts.filter(part => ACCESS[a.access!.role][part] === undefined);
+    if (refused.length) throw new OpError(`${refused.join(", ")}: a ${a.access.role} credential may not write ${refused.length === 1 ? "this part" : "these parts"}; report what you need to the ${ARCHITECT}, who writes it`);
+  }
+  /** After the write is made: when a part is limited to the credential's subtree, every document the write changes must be inside it. */
+  function withinScope(s: Snapshot, a: Writer, parts: readonly Part[], work: Work): void {
+    if (!a.access || !parts.some(part => ACCESS[a.access!.role][part] === "subtree")) return;
+    const { role, project, roots } = a.access, inside = subtreeOf(s, roots);
+    const outside = (id: string) => new OpError(`item ${id}: outside the subtree of ${roots.join(", ")}, the only items a ${role} credential writes for ${parts.join(", ")}`);
+    if (work.board) throw new OpError(`board: a ${role} credential does not change projects or tags`);
+    for (const put of work.puts) {
+      if (put.kind === "item" && !inside.has(put.id)) throw outside(put.id);
+      // A row that owns an item puts it under this one: the credential would then write it, so it may own only what it already writes.
+      else if (put.kind === "item") { for (const row of (put.doc as Item).plan ?? []) if ("item" in row && row.own && !inside.has(row.item)) throw outside(row.item); }
+      else if (put.kind === "decision" && !inside.has((put.doc as Decision).item)) throw outside((put.doc as Decision).item);
+      else if (put.kind === "note") { const t = (put.doc as Note).target, item = t.startsWith("it:") ? t.slice(3) : s.decisions[t.slice(2)]?.item ?? ""; if (!inside.has(item)) throw outside(item || t); }
+      else if (put.kind === "glossary" && put.id !== project) throw new OpError(`glossary ${put.id}: a ${role} credential writes only its own project's glossary (${project})`);
+    }
+  }
+  function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
+      const partList = typeof parts === "string" ? [parts] : parts;
+      mayWrite(a, partList);
       nonempty(a);
       for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
       if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
@@ -256,6 +316,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
+        if (work.replayed) return { ...work.replayed, repeated: true as const };
         if (!anyAuthor) requireAuthor(s, a.author);
         // Validate the prospective board, including indirect effects on children,
         // dependents and items whose owner actions a card/note write changes.
@@ -288,6 +349,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         // The rules above read `next` before these priority drops; derive the changed state once more.
         if (droppedHere) afterRules = candidate();
+        // Last of the writes, so the drops above count: they change an item the call did not name.
+        withinScope(s, a, partList, work);
         const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
         // Pause permission covers open work resumed through any indirect effect,
         // including unwritten descendants. Closing work is allowed when its
@@ -348,8 +411,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   const itemPut = (id: string, doc: Item): Put => ({ kind: "item", id, doc: parse(Item, doc), expectRev: doc.rev });
   const entry = (author: string, at: string, text: string) => ({ at, by: author, text });
   /** `reserved`: names an operation only the architect may do; its refusal comes before the ownership check. */
-  function edit(a: { author: string; session?: string; id: string }, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = "", reserved?: string): Promise<Result> {
-    return run(a, async (s, at) => {
+  function edit(a: Writer & { id: string }, part: Part, name: string, change: (it: Item, s: Snapshot, at: string) => Item | Promise<Item>, overwrite = false, suffix = "", reserved?: string): Promise<Result> {
+    return run(a, part, async (s, at) => {
       if (reserved) onlyArchitect(a, reserved);
       return { id: a.id, kind: "item", message: `${name} ${a.id}${suffix}`, puts: [itemPut(a.id, await change(ownedItem(s, a.id, a), s, at))] };
     }, overwrite);
@@ -428,14 +491,43 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     const doc = docOf(s, puts, id), moved = { ...doc, updated: at, log: [...doc.log, entry(by.author, at, `${old ? `从「${titleOf(s, puts, old)}」` : "从顶层"}${owner ? `移到「${titleOf(s, puts, owner)}」的计划` : "移到顶层"}`)] };
     putDoc(puts, itemPut(id, moved));
   }
+  /**
+   * The commit of a write the same session made a moment ago that this one repeats, or none. A write that was committed but not
+   * answered (the board restarted) is sent again by the client; the commit's message and session and the item as that commit left
+   * it tell it. `same` says whether that item holds the line (or the head text) this write would add. It is for the writes that
+   * add a line without any check of their own that stops a second one: append_log, close_note, set_status and journal_entry.
+   */
+  async function earlierWrite(it: Item, id: string, session: string | undefined, at: string, message: string, same: (doc: Item) => boolean): Promise<Result | undefined> {
+    const who = session?.trim();
+    // Any write of this window left the item updated in it, so an item last updated before the window has no earlier write to find.
+    if (!who || !(Date.parse(at) - Date.parse(it.updated) <= REPEAT_MS)) return undefined;
+    try {
+      for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
+        if (commit.session !== who || commit.message !== message) continue;
+        const doc = await store.show("item", id, commit.commit) as Item | null;
+        if (!doc) continue;
+        // The commits come newest first: a write of this kind older than the window is followed by older ones only.
+        if (!(Date.parse(at) - Date.parse(doc.updated) <= REPEAT_MS)) break;
+        if (same(doc)) return { commit: commit.commit, id, rev: doc.rev, summary: commit.message };
+      }
+    } catch (error) {
+      // The check is a courtesy to a retrying client: when the request's budget for reading history is spent, the write is made, at worst once too often.
+      if (!(error instanceof BudgetError)) throw error;
+    }
+    return undefined;
+  }
+  /** What a repeat of a write is answered with: the first write's result, and no write. */
+  const replay = (id: string, earlier: Result): Work => ({ id, kind: "item", message: earlier.summary, puts: [], replayed: earlier });
+  /** The log line a write added last, for `earlierWrite`'s `same`. */
+  const lastLine = (doc: Item, by: string, text: string): boolean => { const last = doc.log[doc.log.length - 1]; return last !== undefined && last.by === by && last.text === text; };
   return {
-    createProject: a => run(a, s => {
+    createProject: a => run(a, "project.create", s => {
       if (s.board.projects.some(p => p.name === a.name)) throw new OpError(`project ${a.name}: already exists`);
       const projects = [...s.board.projects, { name: a.name, ...(a.repo === undefined ? {} : { repo: a.repo }) }];
       const board = parse(Board, { ...s.board, projects: projectOrder(projects, a) });
       return { id: a.name, kind: "board", board, puts: [], message: `create_project ${a.name} ${a.author}${a.after === undefined ? "" : ` after ${a.after}`}` };
     }, false, true),
-    updateProject: a => run(a, s => {
+    updateProject: a => run(a, "project.update", s => {
       const project = requireProject(s, a.name);
       requireAuthor(s, a.author, `project ${a.name}: `);
       if ((a.repo !== undefined || a.mainline !== undefined) && a.author !== a.name && !isArchitect(a)) throw new OpError(`project ${a.name}: only that project or ${ARCHITECT} with session ${ARCHITECT_SESSION} may update its ${a.repo === undefined ? "mainline" : "repo"}`);
@@ -446,16 +538,18 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const projects = s.board.projects.map(p => p.name === a.name ? changed : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
     }),
-    closeNote: a => run(a, (s, at) => {
+    closeNote: a => run(a, "note.close", async (s, at) => {
       const { note, item } = ownedNote(s, a.id, a);
+      const it = requireItem(s, item), text = `关闭评论：${a.log}`;
+      const earlier = await earlierWrite(it, item, a.session, at, `close_note ${a.id}`, doc => lastLine(doc, a.author, text));
+      if (earlier) return { ...replay(a.id, earlier), kind: "note" };
       if (note.state === "draft") throw new OpError(`note ${a.id}: cannot close a draft note`);
-      const it = requireItem(s, item);
       return { id: a.id, kind: "note", message: `close_note ${a.id}`, puts: [
         { kind: "note", id: a.id, expectRev: note.rev, doc: { ...note, state: "done", repliedAt: at, repliedBy: a.author } },
-        itemPut(item, { ...it, updated: at, log: [...it.log, entry(a.author, at, `关闭评论：${a.log}`)] }),
+        itemPut(item, { ...it, updated: at, log: [...it.log, entry(a.author, at, text)] }),
       ] };
     }),
-    createItem: a => run(a, (s, at) => {
+    createItem: a => run(a, "item.create", (s, at) => {
       onlyArchitect(a, "create items");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
       // Only the architect creates items, so only the architect can rate the item as it is made, as in set_difficulty.
@@ -492,20 +586,27 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.owner) attach(s, puts, at, a, a.owner, a.key, a.after);
       return { id: a.key, kind: "item", puts, moved: children, message: `create_item ${a.key}` };
     }),
-    appendLog: a => edit(a, "append_log", (it, _s, at) => ({ ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })),
-    markMerged: a => edit(a, "mark_merged", (it, s, at) => {
+    appendLog: a => run(a, "item.log", async (s, at) => {
+      const it = ownedItem(s, a.id, a), earlier = await earlierWrite(it, a.id, a.session, at, `append_log ${a.id}`, doc => lastLine(doc, a.author, a.text));
+      if (earlier) return replay(a.id, earlier);
+      return { id: a.id, kind: "item", message: `append_log ${a.id}`, puts: [itemPut(a.id, { ...it, updated: at, log: [...it.log, entry(a.author, at, a.text)] })] };
+    }),
+    markMerged: a => edit(a, "item.merge-row", "mark_merged", (it, s, at) => {
       // The row as it is now decides, not the one the watch read before GitHub answered: a row edited, dropped or removed meanwhile stays as written.
       const row = it.plan.find(r => r.id === a.row);
       if (!row || !isOpenMergeStep(row) || !mergeRowDone(mergeRowPulls(s, a.id, row).map(prKey), new Set(a.merged.map(prKey)))) return it;
       const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row;
       return { ...it, updated: at, plan: it.plan.map(r => r === row ? stampPlanRow({ ...input, state: "done" }, row, at) : r), log: [...it.log, entry(a.author, at, a.log)] };
     }),
-    journalEntry: a => run(a, (s, at) => {
+    journalEntry: a => run(a, "journal", async (s, at) => {
       onlyArchitect(a, `write the journal under ${JOURNAL.notes}`);
       const { day, clock } = localStamp(at);
       const key = `architect-journal-${day}`, line = `**${clock}** ${a.text}`;
       if (Object.hasOwn(s.items, key)) {
         const it = ownedItem(s, key, a);
+        // The entry's text is in the head, after the time of day it was written at, so the repeat is told by the text alone.
+        const earlier = await earlierWrite(it, key, a.session, at, `journal_entry ${key}`, doc => doc.head?.endsWith(`** ${a.text}`) ?? false);
+        if (earlier) return replay(key, earlier);
         if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
         const head = it.head ? `${it.head}\n\n${line}` : line;
         const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
@@ -519,15 +620,22 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       attach(s, puts, at, a, JOURNAL.notes, key);
       return { id: key, kind: "item", puts, message: `journal_entry ${key}` };
     }),
-    dispatchStart: a => edit(a, "dispatch_start", (it, s, at) => {
-      for (const [id, other] of Object.entries(s.items)) {
-        const clash = other.dispatches?.find(d => d.agentId === a.agentId);
-        if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
-      }
-      const d = parse(Dispatch, { agentId: a.agentId, agent: a.agent, role: a.role, level: a.level, model: a.model, ...(a.effort === undefined ? {} : { effort: a.effort }), ...(a.worktree === undefined ? {} : { worktree: a.worktree }), started: dispatchTime(a.startedAt, at, "startedAt"), ...(a.did === undefined ? {} : { did: a.did }) });
-      return { ...it, updated: at, dispatches: [...it.dispatches ?? [], d], log: [...it.log, entry(a.author, at, startLogLine(d))] };
-    }, false, ` ${a.agent}`),
-    dispatchFinish: a => edit(a, "dispatch_finish", (it, _s, at) => {
+    dispatchStart: async a => {
+      // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
+      const issued: { token?: string } = {};
+      const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
+        if (isArchitectSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
+        for (const [id, other] of Object.entries(s.items)) {
+          const clash = other.dispatches?.find(d => d.agentId === a.agentId);
+          if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
+        }
+        issued.token = newToken();
+        const d = parse(Dispatch, { agentId: a.agentId, agent: a.agent, role: a.role, level: a.level, model: a.model, ...(a.effort === undefined ? {} : { effort: a.effort }), ...(a.worktree === undefined ? {} : { worktree: a.worktree }), started: dispatchTime(a.startedAt, at, "startedAt"), ...(a.did === undefined ? {} : { did: a.did }), credential: hashToken(issued.token) });
+        return { ...it, updated: at, dispatches: [...it.dispatches ?? [], d], log: [...it.log, entry(a.author, at, startLogLine(d))] };
+      }, false, ` ${a.agent}`);
+      return { ...result, credential: issued.token! };
+    },
+    dispatchFinish: a => edit(a, "dispatch.finish", "dispatch_finish", (it, _s, at) => {
       const list = it.dispatches ?? [], i = list.findIndex(d => d.agentId === a.agentId);
       if (i < 0) throw new OpError(`agentId ${a.agentId}: not dispatched on ${a.id}; recorded here: ${list.map(d => `${d.agentId} (${d.agent})`).join(", ") || "none"}`);
       const old = list[i]!;
@@ -541,10 +649,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // More than three decimals are rounded, as the tool says: costs are kept in whole thousandths so sums stay exact.
       const cost = milliDollars(a.cost) / 1000;
       const finish = { ended, result: a.result, ...(a.reports === undefined ? {} : { reports: a.reports }), ...(a.kickbacks === undefined ? {} : { kickbacks: a.kickbacks }), ...(a.rounds === undefined ? {} : { rounds: a.rounds }), ...(a.waited === undefined ? {} : { waited: a.waited }), signals: a.signals ?? [], usage: a.usage, cost, ...(a.note === undefined ? {} : { note: a.note }) };
-      const d = parse(Dispatch, { ...old, finish });
+      // The credential ends with the dispatch: its hash is not kept.
+      const { credential: _revoked, ...withoutCredential } = old;
+      const d = parse(Dispatch, { ...withoutCredential, finish });
       return { ...it, updated: at, dispatches: list.map((x, n) => n === i ? d : x), log: [...it.log, entry(a.author, at, finishLogLine(d, old.finish !== undefined))] };
     }, false, ` ${a.agentId}`),
-    setPlan: a => edit(a, "set_plan", (it, _s, at) => {
+    setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
       let plan: PlanRow[];
@@ -562,7 +672,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.rows !== undefined && it.provisional) { delete doc.provisional; doc.log = [...it.log, entry(a.author, at, "重写了计划")]; }
       return doc;
     }),
-    setTargets: a => edit(a, "set_targets", (it, _s, at) => {
+    setTargets: a => edit(a, "item.targets", "set_targets", (it, _s, at) => {
       if ([a.targets, a.target, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_targets: provide exactly one of targets, target or remove");
       const previous = it.targets ?? [];
       let targets: ItemTarget[];
@@ -582,8 +692,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return isDeepStrictEqual(targets, previous) ? it : { ...it, targets, updated: at };
     }),
-    setTags: a => edit(a, "set_tags", (it, s, at) => tagged(it, s, at, a.tags)),
-    setTagsMany: a => run(a, (s, at) => {
+    setTags: a => edit(a, "item.tags", "set_tags", (it, s, at) => tagged(it, s, at, a.tags)),
+    setTagsMany: a => run(a, "item.tags", (s, at) => {
       if (!Array.isArray(a.items) || !a.items.length) throw new OpError("items: give at least one {id, tags}");
       const seen = new Set<string>(), puts: Put[] = [];
       for (const [i, entry] of a.items.entries()) {
@@ -600,12 +710,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return { id: a.items[0]!.id, kind: "items", message: `set_tags ${a.items.length} items`, puts };
     }),
-    setDifficulty: a => run(a, (s, at) => {
+    setDifficulty: a => run(a, "item.difficulty", (s, at) => {
       onlyArchitect(a, "set an item's difficulty");
       const it = requireItem(s, a.id);
       return { id: a.id, kind: "item", message: `set_difficulty ${a.id}`, puts: [itemPut(a.id, rated(it, at, a.author, a.difficulty, a.reason))] };
     }),
-    setDifficultyMany: a => run(a, (s, at) => {
+    setDifficultyMany: a => run(a, "item.difficulty", (s, at) => {
       onlyArchitect(a, "set an item's difficulty");
       if (!Array.isArray(a.items) || !a.items.length) throw new OpError("items: give at least one {id, difficulty, reason}");
       const seen = new Set<string>(), puts: Put[] = [];
@@ -623,7 +733,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return { id: a.items[0]!.id, kind: "items", message: `set_difficulty ${a.items.length} items`, puts };
     }),
-    setTag: a => run(a, s => {
+    setTag: a => run(a, "tag-vocab", s => {
       onlyArchitect(a, TAG_VOCABULARY);
       const known = boardTags(s.board).find(t => t.name === a.name);
       const projects = a.projects === undefined ? known?.projects : a.projects ?? undefined;
@@ -634,7 +744,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const tags = known ? boardTags(s.board).map(t => t.name === a.name ? tag : t) : [...boardTags(s.board), tag];
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags }), puts: [], message: `set_tag ${a.name}` };
     }, false, true),
-    renameTag: a => run(a, (s, at) => {
+    renameTag: a => run(a, "tag-vocab", (s, at) => {
       onlyArchitect(a, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       parse(TagName, a.to);
@@ -644,7 +754,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const tags = boardTags(s.board).map(t => t.name === a.name ? { ...t, name: a.to } : t);
       return { id: a.to, kind: "board", board: parse(Board, { ...s.board, tags }), puts, message: `rename_tag ${a.name} ${a.to}` };
     }, false, true),
-    removeTag: a => run(a, (s, at) => {
+    removeTag: a => run(a, "tag-vocab", (s, at) => {
       onlyArchitect(a, TAG_VOCABULARY);
       if (!boardTags(s.board).some(t => t.name === a.name)) throw new OpError(`name ${a.name}: not in the tag vocabulary; call tags to list it`);
       const carrying = Object.entries(s.items).filter(([, it]) => it.tags?.includes(a.name));
@@ -661,7 +771,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       });
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, tags: boardTags(s.board).filter(t => t.name !== a.name) }), puts, message: `remove_tag ${a.name}${a.replace === undefined ? "" : ` → ${a.replace}`}` };
     }, false, true),
-    updateItem: a => run(a, async (s, at) => {
+    updateItem: a => run(a, updateParts(a), async (s, at) => {
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyArchitect(a, "change an item's title");
       const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
@@ -686,7 +796,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
     }, true),
-    setStatus: a => edit(a, "set_status", (it, s, at) => {
+    setStatus: a => run(a, "item.cancel", async (s, at) => {
+      onlyArchitect(a, "cancel or reopen an item");
+      const it = ownedItem(s, a.id, a), message = `set_status ${a.id} ${a.status}`;
+      // A repeat finds the item already as the first write left it; after a reopen, a cancel is a decision of its own.
+      const asked = a.status === "cancelled" ? it.status === "cancelled" : it.status !== "cancelled";
+      const earlier = asked ? await earlierWrite(it, a.id, a.session, at, message, doc => lastLine(doc, a.author, a.log)) : undefined;
+      if (earlier) return replay(a.id, earlier);
       if (it.record) throw new OpError("status: a record has no status");
       if (a.status !== "cancelled" && a.status !== "open") throw new OpError("status: only cancelled or open; all other statuses are derived from the plan");
       if (a.status === "open" && it.status !== "cancelled") throw new OpError("status: only a cancelled item can be reopened");
@@ -694,9 +810,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.status === "cancelled" && open.length) throw new OpError(`status: owned items are still open: ${open.join(", ")}; cancel or move each part first`);
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       if (a.status === "cancelled") doc.status = "cancelled"; else delete doc.status;
-      return doc;
-    }, false, ` ${a.status}`, "cancel or reopen an item"),
-    setPause: a => run(a, (s, at) => {
+      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc)] };
+    }),
+    setPause: a => run(a, "item.pause", (s, at) => {
       onlyArchitect(a, "pause or resume an item, at the owner's request");
       if (typeof a.paused !== "boolean") throw new OpError("paused: provide true to pause or false to resume");
       const it = requireItem(s, a.id);
@@ -713,7 +829,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)] };
     }, false, true),
-    moveItem: a => run(a, (s, at) => {
+    moveItem: a => run(a, "item.move", (s, at) => {
       ownedItem(s, a.id, a);
       if (a.owner && a.priority) throw new OpError("priority: refused with owner");
       const puts: Put[] = []; transfer(s, puts, at, a, a.id, a.owner, a.after);
@@ -725,7 +841,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       }
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
     }),
-    moveItemProject: a => run(a, (s, at) => {
+    moveItemProject: a => run(a, "item.move-project", (s, at) => {
       onlyArchitect(a, "move an item to another project");
       const root = ownedItem(s, a.id, a), from = root.group;
       requireProject(s, a.project);
@@ -774,12 +890,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       } else if (after.isOpenWork(a.id) && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project} with no stored priority; give priority P0 (urgent), P1 (soon) or P2 (later)`);
       return { id: a.id, kind: "item", puts, moved: ids, message: `move_item_project ${a.id} ${a.project}` };
     }),
-    clearAsk: a => edit(a, "clear_ask", (it, _s, at) => {
+    clearAsk: a => edit(a, "item.ask", "clear_ask", (it, _s, at) => {
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       delete doc.ask;
       return doc;
     }),
-    writeCard: a => run(a, async (s, at) => {
+    writeCard: a => run(a, ["card.write", "item.plan"], async (s, at) => {
       const item = ownedItem(s, a.item, a, "item");
       if (/[\r\n]/.test(a.question)) throw new OpError("question: write the question on one line; the grounds belong in the options and the item's head");
       if (!a.options.length) throw new OpError("options: give at least one option; fix and call again");
@@ -813,7 +929,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts };
     }, a.rev !== undefined),
-    ruleCard: a => run(a, (s, at) => {
+    ruleCard: a => run(a, "card.rule", (s, at) => {
       const card = requireCard(s, a.key);
       ownedItem(s, card.item, a);
       if (card.status !== "open") throw new OpError("status: only an open card can be ruled");
@@ -822,7 +938,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const doc = parse(Decision, { ...card, status: "ruled", ...(a.choice === undefined ? {} : { choice: a.choice }), ...(a.ruling === undefined ? {} : { ruling: a.ruling }), ruledAt: at, updated: at });
       return { id: a.key, kind: "decision", message: `rule_card ${a.key}`, puts: [{ kind: "decision", id: a.key, doc, expectRev: card.rev }] };
     }),
-    withdrawCard: a => run(a, (s, at) => {
+    withdrawCard: a => run(a, ["card.write", "item.log"], (s, at) => {
       const card = requireCard(s, a.key), item = ownedItem(s, card.item, a);
       if (card.status !== "open") throw new OpError("status: only an open card can be withdrawn");
       const doc = parse(Decision, { ...card, status: "withdrawn", ruledAt: at, updated: at });
@@ -831,13 +947,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         itemPut(card.item, { ...item, updated: at, log: [...item.log, entry(a.author, at, `撤回了决策卡「${card.question.replace(/\s+/g, " ").trim().slice(0, 60)}」：${a.log}`)] }),
       ] };
     }),
-    replyNote: a => run(a, (s, at) => {
+    replyNote: a => run(a, "note.reply", (s, at) => {
       const { note } = ownedNote(s, a.id, a);
       if (note.reply !== undefined && a.replace !== true) throw new OpError(`note ${a.id}: already replied by ${note.repliedBy ?? "unknown author"} at ${note.repliedAt ?? "unknown time"}; use replace: true for a deliberate replacement`);
       const doc = parse(Note, { ...note, reply: a.reply, repliedAt: at, repliedBy: a.author, state: "done" });
       return { id: a.id, kind: "note", message: `reply_note ${a.id}`, puts: [{ kind: "note", id: a.id, doc, expectRev: note.rev }] };
     }),
-    setTerm: a => run(a, (s, at) => {
+    setTerm: a => run(a, "term", (s, at) => {
       const glossary = ownGlossary(s, a.author);
       if (!Term.shape.term.safeParse(a.term).success) throw new OpError("term: write the term on one line without leading or trailing spaces");
       // A replaced term keeps its place, so the glossary's diff shows only the changed definition.
@@ -845,7 +961,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const terms = glossary.terms.some(t => t.term === a.term) ? glossary.terms.map(t => t.term === a.term ? entry : t) : [...glossary.terms, entry];
       return { id: a.author, kind: "glossary", message: `set_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: parse(Glossary, { ...glossary, terms }), expectRev: s.glossaries[a.author]?.rev ?? null }] };
     }),
-    deleteTerm: a => run(a, s => {
+    deleteTerm: a => run(a, "term", s => {
       const glossary = ownGlossary(s, a.author);
       if (!glossary.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${a.author}'s glossary; call glossary to see its terms`);
       return { id: a.author, kind: "glossary", message: `delete_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };

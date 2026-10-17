@@ -189,6 +189,8 @@ export const Dispatch = z.object({
   started: Time,
   /** Which rows of the item the session did, in one line. */
   did: StepText.optional(),
+  /** The SHA-256 of the credential the session writes with (docs/design.md, section 9): kept from the start until the dispatch ends, when it is removed, which revokes the credential. */
+  credential: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   /** Present once the session has ended. */
   finish: DispatchFinish.optional(),
 }).strict().superRefine((d, ctx) => {
@@ -226,7 +228,7 @@ export const Item = z.object({
    * read only for data written before tags existed, which the 缺标签 check lists until a session backfills it.
    */
   tags: z.array(TagName).refine(t => new Set(t).size === t.length, "Tags must be unique").optional(),
-  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists. */
+  /** Set only by the architect (set_difficulty); absent on a record, and on unrated work, which the 缺难度 check lists when only the rating is missing. */
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
@@ -356,13 +358,52 @@ export const ARCHITECT_SESSION = "架构师";
  * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
  * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
  * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
- * project author. The session name is not authenticated: this stops misuse, not impersonation.
+ * project author. A write over a credential is the architect's when the credential's role is, whatever names it carries
+ * (src/credentials.ts); the names of a write without one are not authenticated: that stops misuse, not impersonation.
  */
-export const isArchitect = (who: { author: string; session?: string }): boolean => who.author === ARCHITECT && isArchitectSession(who.session);
+export const isArchitect = (who: { author: string; session?: string; access?: { role: string } }): boolean =>
+  who.access ? who.access.role === "架构师" : who.author === ARCHITECT && isArchitectSession(who.session);
 /** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
+
+/**
+ * Who may write what (docs/design.md, section 9). A credential names a role; the role names, for each part of the board a write
+ * can change, how far the writer may go. This table is the one place that is defined: `ops.run` asks it for every write.
+ * The roles of the long-lived credentials are the architect, the observer and the resource agent; the roles of a dispatch
+ * credential are the dispatch's own (an engineer or a review).
+ */
+export const ROLES = ["架构师", "观察者", "资源管理", ...DISPATCH_ROLES] as const;
+export type Role = (typeof ROLES)[number];
+/** The roles a long-lived credential (kept in a file outside the data directory) can name. */
+export const LONG_LIVED_ROLES = ["架构师", "观察者", "资源管理"] as const;
+/** One part for each kind of write; a write names the parts it changes. */
+export const PARTS = [
+  "project.create", "project.update", "tag-vocab", "journal",
+  "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.priority", "item.order",
+  "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row",
+  "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish",
+] as const;
+export type Part = (typeof PARTS)[number];
+/** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. */
+export type Scope = "board" | "subtree";
+/** What only the architect does: the writes the board has reserved for it since it had an identity (ops `onlyArchitect`), and starting a dispatch. */
+const RESERVED: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.merge-row", "dispatch.start", "dispatch.finish"];
+const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
+export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
+  "架构师": partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
+  "观察者": partsAt("board", PARTS.filter(p => !RESERVED.includes(p))),
+  // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
+  "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },
+  // An engineer writes the progress of its own work. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
+  "工程师": partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "card.write", "term"]),
+  "审查": partsAt("subtree", ["item.log"]),
+};
+/** What a credential grants the ops: the writer's role and project, and the items its subtree starts from. */
+export interface Access { role: Role; project: string; roots: readonly string[] }
+/** Whether the role may write items of any project (otherwise only its own project's, and then only inside its subtree). */
+export const writesAnyProject = (role: Role): boolean => Object.values(ACCESS[role]).includes("board");
 
 /** A glossary's id and file name: the name of the project that keeps it, usable as one file name. */
 export const GlossaryId = z.string().regex(/^[^./\\\0\r\n][^/\\\0\r\n]{0,199}$/);
