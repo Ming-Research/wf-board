@@ -242,6 +242,7 @@ test("the texts that say who may do the process are built from one definition, a
   // The definition is pinned once, so that the expected texts built from it elsewhere cannot all agree on a typo.
   assert.equal(PROCESS_WRITERS, "Architect with session PM or 架构师");
   assert.equal(PROCESS_WRITERS_ZH, "PM 或架构师");
+  assert.equal(ARCHITECT_WRITER, "Architect with session 架构师");
   assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session PM or 架构师 may create items"));
   assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"), "the architect's session alone is another text");
   assert.ok(!rx`a${"."}b`.test("axb"), "an interpolated value matches literally");

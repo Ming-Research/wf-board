@@ -958,7 +958,7 @@ test("only Architect from session PM or 架构师 creates items, cancels or reop
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass", priority: "P1" });
   const before = store.snapshot(), count = (await store.log()).length, rev = before.items.a!.rev;
   const tag = { name: "新标签", meaning: "测试用" };
-  const only = (what: string) => new RegExp(`^author: only Architect with session ${what.startsWith("change the tag vocabulary") ? "" : "PM or "}架构师 may ${what}`);
+  const only = (what: string) => rx`^author: only ${what.startsWith("change the tag vocabulary") ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The item's own project, another project, and the Architect project with no session, another session or a near miss.
   const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }];
   const cases: Array<[() => Promise<unknown>, RegExp]> = [];
