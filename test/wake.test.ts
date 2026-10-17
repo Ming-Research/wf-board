@@ -442,7 +442,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   assert.equal(told.length, 3, "ruling a card says nothing");
 });
 
-// docs/design.md (The wake stream) gives the frames; this keeps it and src/wake.ts's table from drifting apart.
+// docs/design.md (The wake streams) gives the frames; this keeps it and src/wake.ts's table from drifting apart.
 test("the design doc's frame table lists exactly the kinds in the table and the control frames, with their fields", async () => {
   const doc = await readFile(join(import.meta.dirname, "../docs/design.md"), "utf8");
   const start = doc.indexOf("### The wake stream"), end = doc.indexOf("**Why not MCP push.**");
@@ -460,7 +460,7 @@ test("the design doc's frame table lists exactly the kinds in the table and the 
   for (const [event, fields] of expected) assert.deepEqual(forms.get(event), fields, `${event}: the doc's fields differ from the table`);
 });
 
-// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake stream).
+// POST /api/wake is how the deploy job, which runs beside the daemon, pushes to the architect (docs/design.md, The wake streams).
 const deployed = { event: "deployed", version: "a".repeat(40), previous: "b".repeat(40), changes: ["abc1234 Add a thing (#1)", { more: 2 }], restarted: true };
 const deployFailed = { event: "deployFailed", version: "a".repeat(40), running: null, reason: "the daemon was not healthy" };
 

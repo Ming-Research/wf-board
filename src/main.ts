@@ -32,8 +32,8 @@ async function main() {
   const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup, requireBudget: true });
   lap("open store");
   const op = ops(store);
-  // The pushes to the PM, kept in a file git leaves out so numbers continue across a restart.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl") });
+  // The pushes to the PM, and to each other agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake") });
   // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the PM, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
   // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the PM at its levels.

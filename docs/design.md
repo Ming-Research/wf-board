@@ -70,8 +70,9 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
 2. **MCP** for agents, over Streamable HTTP at `/mcp`. Every Claude Code and
    Codex session on the Mac connects to the same process. It keeps no session:
    each request stands alone (see *MCP without a session*).
-3. **The wake stream** at `/wake` (WebSocket), which pushes the PM's
-   session what needs it: owner notes, stalled work, a timed wake and the results of deploys.
+3. **The wake streams** (WebSocket): `/wake` pushes the PM's session what
+   needs it (owner notes, stalled work, a timed wake, the results of deploys; the architect, which keeps every right the PM has, answers it too), and
+   `/wake/<session name>` pushes another agent what needs it (section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -510,7 +511,8 @@ wf-board-data/
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
   state/owner.yaml        the owner's read cursor and read-ahead marks
-  state/wake.jsonl        the wake stream's events, receipts and marks (not a board document; excluded from git)
+  state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
+  state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
   state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
   import/                 the original artifact export, kept as provenance
@@ -742,7 +744,7 @@ log:
   attribution; a later one replaces it; a restart derives it from the
   trailers in history. This is an observation of who wrote, never an
   assignment of work to a session: no document stores a session, and
-  `history` and `changes` show the message without the trailer.
+  `history` shows the message without the trailer, and `changes` names the session of each commit.
   The same walk keeps, per session name, the last two distinct items it wrote
   to, newest first (`activity.agents`, read by the agent list, section 7). A
   write names the items it touched (an item, its card or a note on either)
@@ -831,8 +833,8 @@ log:
   line `难度：<from> → <to>，理由：<reason>` (from 未评 the first time), because
   changing the level changes who does the work. `create_item`, which only
   the PM and the architect call, takes `difficulty` and logs it as the first rating
-  (reason 建条目时评). `changes` shows every change
-  of difficulty; unread shows a changed level but not a first rating (below).
+  (reason 建条目时评). `changes` with `detail` lists
+  every change of difficulty (its default answer counts it among the other changes); unread shows a changed level but not a first rating (below).
   Work an unpaused root needs and that has no difficulty raises the 缺难度
   check only when the rating is the only thing left before it can be
   dispatched: the item is todo, and one of its ready steps (every step before
@@ -1533,7 +1535,8 @@ coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-PM's or the architect's session (`PM`, `架构师`) is also a receipt for the wake stream (section 8).
+PM's or the architect's session (`PM`, `架构师`) is also a receipt for the wake stream, and another
+session's call carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
@@ -1578,7 +1581,7 @@ instructions within the limit and free of rule text.
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
-| `changes(since, filters)` | What happened while I was away? | Items, cards and notes changed since a time or commit, grouped by area, each with one line on what changed |
+| `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
 | `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
@@ -1594,6 +1597,53 @@ instructions within the limit and free of rule text.
 and says to narrow `since` or the filters. In `changes` a deleted document is placed by
 the current board and by the documents deleted in the range; an item whose owner was
 deleted before the range is its own area.
+
+**The patrol read.** What a reader gets from `changes` stays in its context until it is
+compacted, so the default answer holds only what needs handling, and each thing appears
+once. A range is the commits after `since` (a time or a commit); `except` names sessions
+whose commits do not count.
+
+- *New flags.* A check flag is derived from the whole board and written by no commit, so
+  a flag is new when the head board carries it and the board when the range began did
+  not. That board is built from the head: each item, card and note the range wrote is put
+  back to its version before the range (the `changes` read already holds those), those the
+  range created are taken away, those it deleted are brought back, and the board settings
+  (projects, tag vocabulary) are put back when a range commit wrote them. Its rules are
+  worked out at the time the range began, so a flag that comes with time and no commit (a
+  step in progress that stands still) is new when it was not there at that time. Both
+  boards' checks are worked out in full, so the cost of a call is that of two rule builds
+  plus the range's reads; `scripts/bench-changes.ts` measures it against the lines of
+  section 4 on a hosted CI runner, and those figures, not a run on another machine, are
+  the reference. An earlier version of a document that does not fit today's schema (a
+  field since removed) cannot be put back: the document counts as absent from the old
+  board, and the answer's first line says how many versions that was. The same holds for
+  the board settings of before the range: the head's settings stand, and the version is
+  counted. The flags that settings change brings (a newly approved tag vocabulary, say)
+  are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
+  flag on both boards when its short label (else its text without the count of the
+  title-length flag) and the item or card it points at are equal. A new flag's row names
+  every session that wrote the item in the range, its cards and notes included, whether or
+  not `except` names it; with no writer the row says no session wrote it in the range (the
+  flag came from another item's change, or from time). Flags are never left out by
+  `except`: a flag its own writer caused, such as a pause others still wait on, is exactly
+  what a patrol must still see.
+- *New items.* Items whose first commit in the range is not an excluded session's, each
+  with its creator, its project and title, and its flags on the same row (so they are not
+  listed again as new flags).
+- *Notes and cards.* A note or card that is new, a note that gained a reply or changed
+  state, a card whose status changed, each with the item it is on, a short summary and the
+  sessions that wrote it. A draft is not listed (no one has it yet). A note or card an
+  excluded session created is not new to the reader, so only how it ended up counts: a
+  note with a reply, a card no longer open.
+- *The first line* counts every commit of the range, board-settings-only ones included,
+  and says how many `except` took out.
+- *The rest* only as counts by kind and by session; with `detail`, as the documents
+  grouped by area with their commits and each commit's session. Created items and the rows
+  above are not listed again.
+- *Size.* Each group lists at most `limit` rows (default 30) and counts the rest, so the
+  answer follows the rows to handle and not the documents changed.
+- The timed wake and this read share one function that tells who wrote to each item in a
+  list of commits.
 
 ### Changing things
 
@@ -2127,16 +2177,35 @@ the background. Sending still waits for every pending draft save; a failed
 save prevents sending. A failed save or send restores the previous controls
 and draft text and shows the error; the committed snapshot stays authoritative.
 
-### The wake stream
+### The wake streams
 
-The wake stream is the board's one push channel. It has one listener, the
-PM, who is told only what needs it; every other session reads the board.
-The architect, which keeps every right the PM has, answers the pushes as well
-when it works before the PM does. What the PM does with an event, and how it
-listens, is in the PM's rules and in `~/dev/wf/AGENTS.md`, section "Board".
+The board pushes on one stream per recipient. The PM's stream, at
+`/wake`, carries what the PM must handle, and any call from its session
+answers it (Receipts, below); the architect, which keeps every right the PM has,
+answers it as well when it works before the PM does. Every other agent the board
+pushes to (a session holding an item, later a reviewer or the observer) has its
+own stream at `/wake/<session name>` (Agents' streams, below), with its own
+numbers and retention and a record of how far it was delivered. What an agent
+does with a push, and how it listens, is in its rules and in
+`~/dev/wf/AGENTS.md`, section "Board".
 
-**What is pushed.** Twelve kinds, defined in one table (`WAKE_KINDS` in
-`src/wake.ts`; `push` refuses a kind or field set the table does not list):
+**Where a push goes.** The kinds table gives each kind `to`: `pm`, the
+PM's stream, or `{holder: <field>}`, the stream of the session holding
+the item that field names, and the PM's when nobody holds it. A session
+*holds* an item while an engineer dispatch record on the item (section 5)
+names it as `agent` and has not ended; when several have not ended, the newest
+start wins, so a takeover holds the item from its start (`holderOf` in
+`src/dispatch.ts`). The dispatch record is written by the script that starts
+the engineer and ended when it is finished, so holding needs no call of the
+engineer's own and is never forgotten. Rejected: a claim and a release tool the
+engineer calls, which adds two calls an engineer can forget and a second record
+that can disagree with the dispatch; inferring the holder from who last wrote an
+item with a step in progress (the agent list's inference), which another
+session's single write turns to the wrong session.
+
+**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
+`src/wake.ts`; `push` refuses a kind or field set the table does not list).
+All go to the PM except `item-done`, which goes to the holder:
 
 - an owner note: a note becomes `sent`, on any project's item or card, so the
   owner's comments on an engineer's item reach the PM too;
@@ -2156,7 +2225,9 @@ listens, is in the PM's rules and in `~/dev/wf/AGENTS.md`, section "Board".
   all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below).
+  deploy did not happen. The job asks through `POST /api/wake` (below);
+- an item that became done (`item-done`), to the session holding each open item
+  that waits on it.
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
@@ -2199,10 +2270,13 @@ the forms the server sends:
 | `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
 | `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the PM's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
-`connected` and `gap` carry no number and are not events.
+`connected` and `gap` carry no number and are not events. A frame on an
+agent's stream also carries `line`, the one line the agent is shown for it (Size,
+below); the architect's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
@@ -2211,21 +2285,72 @@ handled and connects with `after=<n>`; the server sends `connected`, then `gap`
 if needed, then every kept event numbered above `n`, then live events, with no
 event missed or sent twice between replay and live. A client drops an event
 numbered at or below the one it remembers (a repeat); a gap frame sets that number
-first, as above. Without `after` the client gets live events only. Every connected client gets every event. The server pings every 25
+first, as above. Without `after` the client gets live events only. Every client connected to the PM's stream gets every event of it, and none of an agent's. The server pings every 25
 seconds and closes a socket that did not answer the previous ping; it also
 closes a socket with more than 4 MiB of unsent frames. A client reconnects after
 any close.
 
 **Receipts.** A call to any MCP tool whose `session` is `PM` or `架构师`, or that
 carries a credential of either role (the role decides then, whatever session the
-call names), answers every event pushed before the call arrived; the call counts when its arguments pass
+call names), answers every event pushed to the PM's stream before the call arrived; the call counts when its arguments pass
 the tool's schema, whatever the tool then does. A receipt writes a line to the
 file only when it answers something new. The PM is expected to make such
 a call after handling a wake, which it does anyway by reading or writing the
 board. The timed wake comes every 30 minutes, so a PM that is running
 answers within the hour.
 
-**No receipt.** When the oldest unanswered event is one hour old (the limit is
+**Agents' streams.** A client opens a WebSocket to
+`ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
+Host and Origin rules are those of `/wake`. The server answers 400 for an empty
+name, one longer than 80 characters, one holding a slash or a control character,
+the name of the PM or the architect (their stream is `/wake`), a name that does not decode, and
+any query string. The board, not the client, keeps how far the stream was
+delivered, so the client sends no number: it gets `connected`, then `gap` when
+events never delivered were dropped by retention (it reads the board for what
+it missed), then every kept event not yet delivered, then live events of this
+stream only. Once it has printed the events up to `n`, the client sends the
+text frame `{"ack": n}`; from then on they are delivered and never sent again,
+on any connection or in any tool result. An ack at or below the delivered
+number, above the newest, or not a whole number changes nothing; any other
+message is ignored. A client killed between printing and acking gets those
+events once more: a repeat, never a loss. An agent's stream keeps its newest
+200 events, at most 256 KiB, with the delivered number and the session name, in
+`state/wake/<hash>.jsonl`, the hash being the first 32 hex digits of the name's
+SHA-256: a name of 80 Chinese characters would be 720 bytes percent-encoded,
+past the 255 a file name may hold, and two names that differ only in case would
+share one file on a disk that ignores case. Numbers and delivery survive a
+restart. A stream with everything delivered, no push or delivery for seven
+days, whose session holds no item and has no socket on it, is dropped with its
+file.
+
+Rejected, for agents: a per-event receipt the agent sends with a tool call after
+handling the event, resending every unanswered event on each connection
+(the resource agent's earlier design), because the same event would reach the
+agent's context several times and each event would cost a call; the
+rule of the PM's stream that any call answers everything, because an engineer calls
+the board all the time while it works, and would answer events it never saw.
+
+**In a tool result.** A session that is working is not running its wait script,
+so the board gives it its undelivered events in the next tool result it gets:
+any tool, read or write, whose caller is a session other than the PM's or the architect's
+(the credential's session when the connection has one, else the `session` the
+call names, trimmed). After the tool's own text and a blank line come the line
+`【看板推送】` and one line per event, oldest first, at most five; more are
+counted by kind in one more line and wait for the next call. The events shown
+are delivered. Rejected: waiting for the wait script alone, which leaves an
+owner's change of direction unseen through hours of implementation; an inbox
+tool the agent must remember to call, which costs a call each time and is
+mostly empty.
+
+**Size.** Whatever the board pushes or returns stays in the receiving agent's
+context until it is compacted, so a push to an agent says what needs handling
+and leaves the details to a read. Its one line (`lineOf` in `src/wake.ts`) is
+the number, the kind's label and what it is about (an item or pull request
+with its project, a title, counts instead of lists), at most 200 characters,
+cut with … past that; the tests measure it for every kind with the longest
+fields. An event reaches an agent once (above).
+
+**No receipt.** When the oldest unanswered event on the PM's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「PM 1 小时没响应」,
 naming that event. The PM has stopped: its session crashed, waits at a
 permission prompt, or no longer holds the Monitor that carries the stream.
