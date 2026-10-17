@@ -1,0 +1,105 @@
+name: tmp-timing
+# Temporary measurement for item ci-under-1min-study. Never merged: the branch is deleted when the study ends.
+on:
+  push:
+    branches: [ci-under-1min-study]
+permissions:
+  contents: read
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: conc2-a, conc: 2 }
+          - { name: conc2-b, conc: 2 }
+          - { name: conc2-c, conc: 2 }
+          - { name: conc4-a, conc: 4 }
+    name: e2e-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: machine
+        run: |
+          nproc; free -m | head -2; lscpu | grep -E 'Model name|^CPU\(s\)'
+          which google-chrome chromium chromium-browser 2>&1 || true
+          google-chrome --version 2>&1 || true
+      - run: npm run build:web
+      - name: e2e with timing
+        run: |
+          vmstat 2 > vmstat.txt &
+          VM=$!
+          /usr/bin/time -v node --test --test-concurrency=${{ matrix.conc }} \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/tmp-reporter.mjs --test-reporter-destination=e2e.jsonl \
+            'test/e2e/*.e2e.ts' > e2e.out 2> e2e.time || echo "exit $?"
+          kill $VM || true
+          cat e2e.time
+          grep -E '^(PHASES|ℹ (tests|pass|fail|duration))' e2e.out || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-${{ matrix.name }}
+          path: |
+            e2e.jsonl
+            e2e.time
+            vmstat.txt
+            e2e.out
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: a }
+          - { name: b }
+          - { name: c }
+    name: unit-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: unit with timing
+        run: |
+          vmstat 2 > vmstat.txt &
+          VM=$!
+          /usr/bin/time -v node --test \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/tmp-reporter.mjs --test-reporter-destination=unit.jsonl \
+            'test/**/*.test.ts' > unit.out 2> unit.time || echo "exit $?"
+          kill $VM || true
+          cat unit.time
+          grep -E '^ℹ (tests|pass|fail|duration)' unit.out || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-${{ matrix.name }}
+          path: |
+            unit.jsonl
+            unit.time
+            vmstat.txt
+            unit.out

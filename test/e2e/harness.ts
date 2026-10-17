@@ -20,6 +20,11 @@ import type { Generated } from "./board-gen.ts";
 import { seedBoard } from "./seed.ts";
 
 export const ROOT = join(import.meta.dirname, "../..");
+// TMP-MEASURE: accumulated wall time per phase, printed when the test process exits (item ci-under-1min-study; never merged).
+const PH: Record<string, { n: number; ms: number }> = {};
+const bump = (name: string, began: number) => { const p = PH[name] ??= { n: 0, ms: 0 }; p.n++; p.ms += performance.now() - began; };
+async function timed<T>(name: string, fn: () => Promise<T>): Promise<T> { const began = performance.now(); try { return await fn(); } finally { bump(name, began); } }
+process.on("exit", () => { const out: Record<string, { n: number; s: number }> = {}; for (const [k, v] of Object.entries(PH)) out[k] = { n: v.n, s: Math.round(v.ms) / 1000 }; console.log("PHASES " + (process.argv[1] ?? "").split("/").pop() + " " + JSON.stringify(out)); });
 interface Hooks { after(fn: () => unknown): void }
 
 export interface BoardServer { url: string; store: Store; gen: Generated; dir: string; webDir: string }
@@ -29,11 +34,15 @@ export function openAll(board: BoardServer): Record<string, unknown> {
 }
 /** Seeds a generated board into a temporary repository and serves it with the page from `webDir` (default web/). */
 export async function startBoard(t: Hooks, opts: { seed?: number; webDir?: string } = {}): Promise<BoardServer> {
+  return timed("startBoard", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-e2e-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const began = performance.now();
   const gen = generateBoard(opts.seed ?? 1);
-  const { store } = await seedBoard(dir, gen);
+  bump("generateBoard", began);
+  const { store } = await timed("seedBoard", () => seedBoard(dir, gen));
   return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, opts.webDir ?? join(ROOT, "web"));
+  });
 }
 /** The board served at an address of its own with the page from `webDir`: one board can be read through several pages. */
 export async function serveBoard(t: Hooks, board: BoardServer, webDir: string): Promise<BoardServer> {
@@ -47,7 +56,7 @@ export async function serveBoard(t: Hooks, board: BoardServer, webDir: string): 
 }
 
 export async function launch(t: Hooks): Promise<Browser> {
-  const browser = await chromium.launch();
+  const browser = await timed("chromium.launch", () => chromium.launch());
   t.after(() => browser.close());
   return browser;
 }
@@ -72,6 +81,9 @@ export class BoardPage {
   constructor(page: Page, context: BrowserContext, board: BoardServer) { this.page = page; this.context = context; this.board = board; }
   /** `init`: a script that runs before the page's own on every load. */
   static async open(browser: Browser, board: BoardServer, storage: Record<string, unknown> = {}, init?: string): Promise<BoardPage> {
+    return timed("BoardPage.open", () => BoardPage.open0(browser, board, storage, init));
+  }
+  static async open0(browser: Browser, board: BoardServer, storage: Record<string, unknown> = {}, init?: string): Promise<BoardPage> {
     const context = await browser.newContext({ viewport: { width: 1500, height: 1000 }, reducedMotion: "reduce", colorScheme: "light" });
     // The page's web fonts come from Google; the tests read declared font stacks and stay offline.
     await context.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
@@ -84,7 +96,8 @@ export class BoardPage {
     return bp;
   }
   /** Clears the viewer's stored state, writes `storage` (values JSON-encoded unless strings), loads the page and waits. */
-  async reset(storage: Record<string, unknown> = {}) {
+  async reset(storage: Record<string, unknown> = {}) { return timed("reset", () => this.reset0(storage)); }
+  async reset0(storage: Record<string, unknown> = {}) {
     await this.page.goto(this.board.url + "/health");
     await this.page.evaluate(entries => { localStorage.clear(); for (const [k, v] of entries) localStorage.setItem(k, v); }, Object.entries(storage).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)] as [string, string]));
     await this.page.goto(this.board.url + "/");
@@ -94,7 +107,8 @@ export class BoardPage {
   }
   /** Waits until no fetch is in flight and the page drew nothing across two animation frames: a navigation waits a frame
    * for its draw before it fetches and again before it lands, and neither wait has a fetch in flight. */
-  async settle() {
+  async settle() { return timed("settle", () => this.settle0()); }
+  async settle0() {
     const state = () => this.page.evaluate(() => { const w = window as unknown as { __inflight: number; __draws: number }; return { inflight: w.__inflight, draws: w.__draws }; });
     for (let k = 0; k < 50; k++) {
       await this.page.waitForFunction(() => (window as unknown as { __inflight: number }).__inflight === 0, null, { timeout: 15_000 });
@@ -187,6 +201,9 @@ export async function reverted(file: Revert["file"], reverts: Revert[]): Promise
 }
 /** A page directory serving the current page with the given reverts applied. */
 export async function variantWeb(t: Hooks, reverts: Revert[]): Promise<string> {
+  return timed("variantWeb", () => variantWeb0(t, reverts));
+}
+async function variantWeb0(t: Hooks, reverts: Revert[]): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-variant-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, "dist"));
