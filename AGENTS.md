@@ -49,6 +49,9 @@ matches what the artifact board offered.
   who is running, the state word, the level) derived from it, the steps in
   progress and the dispatch records. Imported by the server and bundled into
   the page.
+- `src/candidates.ts`: the items an engineer could be started on and the two pools of engineer slots, read from the whole
+  board (the `candidates` tool, and what the push that says work can be handed out reads): the board lists, the architect
+  chooses (design section 6, The candidates read).
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
@@ -61,6 +64,10 @@ matches what the artifact board offered.
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
+- `src/head-sections.ts`: an item head split into its sections (`context`'s
+  default answer and `section`); `src/tool-errors.ts`: the parameter table and
+  example a refused call is answered with, and the wrong names the tools read as
+  the right ones. Both are in `docs/design.md`, section 6, Lean replies.
 - `src/wake.ts`: the PM's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
   `src/liveness.ts`: whether the sessions holding items are still there (the
@@ -68,6 +75,8 @@ matches what the artifact board offered.
   `src/timed-wake.ts`: what the PM's half-hourly and the architect's hourly wake carry. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
+- `src/offers.ts`: the pools of engineer slots that have a free slot and candidates, and what the PM was last told of them (the
+  `dispatch` push and the timed wake's reminder), made from `src/candidates.ts`.
 - `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
   for the deploy pushes and the red main line.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);
