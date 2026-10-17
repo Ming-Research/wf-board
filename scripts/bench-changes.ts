@@ -65,7 +65,7 @@ function board() {
   for (let k = 0; k < DECISIONS; k++) {
     const key = `c${k}`, item = ids[(k * 7) % ids.length]!;
     decisions.push(key);
-    files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, background: pad(5200), options: [{ key: "A", text: "Do it", recommended: true }, { key: "B", text: "Do not" }], status: "ruled", choice: "A", ruling: "A", ruledAt: at, at, updated: at, rev: 1 }));
+    files.set(`decisions/${key}.yaml`, yaml({ num: ITEMS + k + 1, item, question: `Question ${k}?`, legacy: { background: pad(5200) }, options: [{ key: "A", text: "", detail: "Do it", recommended: true }, { key: "B", text: "", detail: "Do not" }], status: "ruled", choice: "A", ruling: "A", ruledAt: at, at, updated: at, rev: 1 }));
   }
   for (let k = 0; k < NOTES; k++) files.set(`notes/n${k}.yaml`, noteYaml(k));
   const commitTime = (k: number) => start + (k + 1) * 3 * MINUTE;

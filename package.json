@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "convert:plans": "node src/convert-plans-cli.ts",
+    "migrate:cards": "node src/migrate-cards-cli.ts",
     "migrate:architect-level": "node src/migrate-architect-level-cli.ts",
     "check": "tsc -p tsconfig.json",
     "test": "node --test 'test/**/*.test.ts'",
