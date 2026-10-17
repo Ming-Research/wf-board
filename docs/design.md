@@ -3392,9 +3392,10 @@ the board.
   fake DOM; and in a real browser the list above the projects, 在树中
   landing on the tree's row and 返回 coming back, and every tree click still
   landing with a cell unfolded.
-- CI on GitHub-hosted runners for each pull request push and each main-line
-  merge; the write-path benchmark runs by hand, as a workflow that reports and
-  never fails the run.
+- CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
+  pull request, when the engineer starts it (below), with a temporary quick
+  workflow for the pushes in between; the write-path benchmark runs by hand,
+  as a workflow that reports and never fails the run.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
@@ -3506,6 +3507,96 @@ the bug. A fix is reversed by undoing its commit's hunks, or, where later
 work rewrote the lines around it, by a targeted edit that removes just the
 fix. A witness whose edits no longer match the current file fails and is
 updated or retired on purpose.
+
+### Fast checks while writing, and the full CI at the end
+
+The full CI (`.github/workflows/ci.yml`: `test`, `e2e` and `no-tmp-workflow`)
+takes about 12 minutes with its queue, and a change under way is pushed many
+times. A push to a pull request branch therefore does not start it. The same
+file serves every project that adopts this scheme; only the test jobs differ.
+
+- **While writing**, the engineer adds a temporary workflow
+  `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
+  that runs only what the change touches: the test files and e2e cases it
+  changed or affects, with the type check when it touches shared types. The
+  push result is listed on the pull request like any push check. Wait for it
+  with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
+  of the commit; the pull request form would wait on `full-ci` below. The
+  skeleton:
+
+  ```yaml
+  name: tmp-quick
+  # Temporary: delete before the last full CI, which fails while this file exists.
+  on:
+    push:
+      branches-ignore: [main]
+  concurrency:
+    group: tmp-quick-${{ github.ref }}
+    cancel-in-progress: true
+  jobs:
+    unit:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v5
+        - uses: actions/setup-node@v5
+          with:
+            node-version: 24
+            cache: npm
+        - run: npm ci
+        # The test files the change touches.
+        - run: node --test test/watch.test.ts
+    e2e:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v5
+        - uses: actions/setup-node@v5
+          with:
+            node-version: 24
+            cache: npm
+        - run: npm ci
+        # The browser steps of ci.yml's e2e job, from `id: playwright` through
+        # `install-deps`, unchanged.
+        - run: npm run build:web
+        # The e2e cases the change touches, picked by test name.
+        - run: node --test --test-name-pattern='the messages button' test/e2e/messages.e2e.ts
+  ```
+
+- **At the end**, once the change is done and reviewed: merge the main line
+  into the branch, delete the `tmp-` file, push, start the full CI with
+  `gh workflow run ci.yml --ref <branch>` and wait with
+  `wait-ci.mjs <owner/repo> <PR> <sha>`. Green on the head commit is what lets
+  the pull request be marked ready; a later push needs a new run.
+- **The main line** runs the full CI on every push, as before.
+- **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
+  `.github/workflows`. It runs in every full CI, so the last run before a merge
+  stops a temporary workflow that was not deleted, and the main line's own run
+  stops one that got in anyway.
+- **Status `full-ci`**: a run started by hand is attached to the head commit
+  (`gh run list --commit` and the commit's check-run list show it), but it is
+  not among the checks a pull request lists, which is what `gh pr checks`, the
+  engineer's wait script and the board's watch read. Observed on a test pull
+  request (2026-10-17); not in GitHub's documentation. So the last job of the
+  full CI (`result`) writes the outcome of its jobs to the head commit as the
+  commit status `full-ci` (success or failure, linking to the run), and
+  `ci-mark.yml` writes `full-ci` as pending on every pull request push, unless
+  the commit already has one. A pull request therefore reads pending until a
+  full CI has run on its head commit, and the board does not push "can be
+  merged" for a commit that never had one. A newer status of the same name
+  replaces the older, so a rerun after a failure replaces the red.
+- **The merge**: the run a pull request starts tests the branch merged with
+  the main line as it was at that push; a run started by hand tests the branch
+  head. The engineer merges the main line into the branch before starting it,
+  so the head is what a merge would land. If the main line moves again without
+  a conflict, the pull request is merged as it is and the main line's own run
+  covers the combination (two parallel merges, each green, went red together on
+  2026-10-17 and that run caught it).
+
+Alternatives. The board reading the commit's check suites instead of a status:
+it would fix the board only, not `gh pr checks` or the wait script, whose pull
+request form would still turn green at once on the checks that did run.
+Starting the full CI by a pull request label: a label would have to be added
+and removed for each run, and any other label would start it too. Neither was
+tried; both are rejected on those grounds.
 
 ### Private content check
 
