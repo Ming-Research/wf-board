@@ -7,7 +7,7 @@
 // the daemon's pieces as main.ts does (store, ops, MCP server, HTTP server with one page connected to /api/events),
 // then replays set_tags writes through MCP, the path agent sessions use. It prints CPU milliseconds per write
 // (process.cpuUsage, this process only; git children excluded), garbage-collection milliseconds per write, the bytes
-// of each change event the page receives, and peak RSS.
+// of each change event the page receives, and peak RSS. It also prints the characters of each project's brief on that board.
 //
 // Usage: node scripts/bench-writes.ts [--src <dir>] [--label <text>] [--items N] [--writes N] [--history N]
 //          [--messages N] [--write set_tags|send_message]
@@ -133,6 +133,9 @@ try {
   t0 = Date.now();
   const store = await Store.open(dir);
   const opened = Date.now() - t0, op = ops(store);
+  // The size of each project's brief, which an agent reads at the start of a session: the status-shows-progress change must not grow it.
+  const { brief } = await load("query.ts"), { rules } = await load("rules.ts"), start = store.snapshot(), derived = rules(start);
+  const briefChars: Record<string, number> = Object.fromEntries(start.board.projects.map((p: { name: string }) => [p.name, JSON.stringify(brief(start, derived, p.name)).length]));
   const server: http.Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(src, "../web"), createMcp: () => createMcpServer({ store, ops: op }) });
   await new Promise<void>(ok => server.listen(0, "127.0.0.1", ok));
   const port = (server.address() as AddressInfo).port;
@@ -173,7 +176,7 @@ try {
     cpuMsPerWrite: +((used.user + used.system) / 1000 / WRITES).toFixed(1), userMsPerWrite: +(used.user / 1000 / WRITES).toFixed(1), systemMsPerWrite: +(used.system / 1000 / WRITES).toFixed(1),
     gcMsPerWrite: +(gc / WRITES).toFixed(1), wallMsPerWrite: +(wall / WRITES).toFixed(1),
     eventBytesPerChange: Math.round((bytes - bytesBefore) / Math.max(1, events - eventsBefore)), changeEvents: events - eventsBefore,
-    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened,
+    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened, briefChars,
     messages: Object.values(store.snapshot().messages ?? {}).reduce((n: number, day) => n + (day as { messages: unknown[] }).messages.length, 0), write: WRITE,
     snapshotBytes: JSON.stringify(store.snapshot()).length,
     // What GET /api/snapshot sends the page; code from before messages has no such function and sends the snapshot whole.
@@ -183,6 +186,7 @@ try {
   console.log(`  CPU ms/write ${result.cpuMsPerWrite} (user ${result.userMsPerWrite}, system ${result.systemMsPerWrite}); GC ms/write ${result.gcMsPerWrite}; wall ms/write ${result.wallMsPerWrite}`);
   console.log(`  event bytes/change ${result.eventBytesPerChange} over ${result.changeEvents} events; peak RSS ${result.peakRssMB} MB; build ${built} ms, open ${opened} ms`);
   console.log(`  snapshot ${result.snapshotBytes} bytes, as the page gets it ${result.pageSnapshotBytes} bytes`);
+  console.log(`  brief characters per project: ${Object.entries(briefChars).map(([name, n]) => `${name} ${n}`).join(", ")}; total ${Object.values(briefChars).reduce((a, b) => a + b, 0)}`);
   console.log(`BENCH ${JSON.stringify(result)}`);
   await client.close(); await mcp.close(); stream.destroy();
   await new Promise<void>(ok => server.close(() => ok()));
