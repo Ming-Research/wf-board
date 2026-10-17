@@ -4584,3 +4584,14 @@ test("a tree row in progress carries a band as wide as its plan's share, and a p
   assert.equal(rowOf(p, "child").querySelector(".steps-ratio"), null, "the band replaces the count on the tree row");
 });
 
+
+test("a row in progress or idle draws its band, and a row not started draws none", async () => {
+  const s = nativeSnapshot();
+  const base = s.items.child!;
+  s.items.idle = {...base, title: "Idle", plan: planWork([planStep("one", "One", "done"), planStep("two", "Second step")])};
+  s.items.fresh = {...base, title: "Fresh", plan: planWork([planStep("one", "First step")])};
+  s.items.area!.plan = planWork([ownedRow("child"), ownedRow("idle"), ownedRow("fresh")]);
+  const p = await page(s, []); await expand(p);
+  assert.ok(rowOf(p, "idle").querySelector(".progress-band"), "an idle row draws its band");
+  assert.equal(rowOf(p, "fresh").querySelector(".progress-band"), null, "a todo row draws no band");
+});

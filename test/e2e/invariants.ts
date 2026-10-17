@@ -910,8 +910,10 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
   if (!todo) v.push("progress-band: the board has no todo item");
   // Statuses that must carry no band. The generated board must have an item of each; cancelled is not among them, because
   // the tree hides a cancelled item that has no open work under it (test/e2e/board-gen.ts), so no tree row can show it.
+  // The tree hides a done item with no open work under it, so a done item can be absent from the page; the board itself must have one.
   const plainStatuses = ["todo", "done", "blocked", "paused"];
-  for (const status of plainStatuses) if (!withStatus(status)) v.push(`progress-band: the board has no item with status ${status}`);
+  const allIds = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
+  for (const status of plainStatuses) if (!allIds.some(id => o.r.statusOf(id) === status)) v.push(`progress-band: the board has no item with status ${status}`);
   const plain = plainStatuses.map(withStatus).filter((id): id is string => !!id);
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
