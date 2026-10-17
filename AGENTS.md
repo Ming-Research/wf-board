@@ -71,6 +71,8 @@ matches what the artifact board offered.
   `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
+- `src/offers.ts`: the pools of engineer slots that have a free slot and candidates, and what the PM was last told of them (the
+  `dispatch` push and the timed wake's reminder), made from `src/candidates.ts`.
 - `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
   for the deploy pushes and the red main line.
 - `src/github.ts`, `src/watch.ts`: the look at GitHub every five minutes (checks, PRs, merge rows);

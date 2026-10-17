@@ -2466,7 +2466,7 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Seventeen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `main-red`, `deployed`,
@@ -2482,6 +2482,9 @@ which goes to its recipient:
 - the timed wake, every 30 minutes, with what changed since the last one and
   counts, never a standing list, and the keys of the reviews and finished items
   not yet taken up (Size, below);
+- work can be handed out (`dispatch`): a pool of engineer slots has a free slot and
+  candidates, and more free slots or more candidates than the PM was last told in that
+  pool (Offers, below);
 - a review is needed (`review`): the item's review step, the plan step whose id is `review`,
   such as 「审查（3 级）」, became in progress, and no reviewer is on the item yet. The
   push carries the level the step's text names; the pull request and the range to
@@ -2515,6 +2518,24 @@ which goes to its recipient:
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
+
+**Offers.** Every minute the board reads which pool of engineer slots has a free
+slot and how many candidates it has (`candidates`, `src/candidates.ts`; section 6, The
+candidates read) and keeps, for each pool, the free slots and candidates the PM was last told
+(`src/offers.ts`, from the `total` of each pool). When
+a pool has something to hand out, a free slot and a candidate, and more free slots or more
+candidates than it was last told, the board pushes `dispatch` with the pool, its free slots and
+limit, and the number of candidates, and that is what the PM is then told. When a look finds fewer, what it was told
+follows down to the lower number: the PM's own start lowers both, so it pushes nothing, and only a slot that
+frees afterwards, or a candidate that appears, pushes again. The push names no
+item: which candidate to start is the architect's choice, and the board does not rank
+them for the PM, who asks the architect. At start what the PM is told is recorded and nothing is pushed, like the other standing states;
+nothing is written while the board is stopped, so none is lost. Which waits free a slot is src/candidates.ts'
+answer (the PM rules: a worker waiting for CI keeps its slot); a wait that frees one raises `free` and pushes. Rejected: a push at every
+write, which would run the whole board's ranking on each of them; a push naming the next item,
+which makes the board choose among the candidates; a push whenever the numbers differ, which
+tells the PM about its own starts. The timed wake carries the current offers, so an offer the PM did
+not act on, or a push it did not get, is repeated at most every 30 minutes.
 
 **Deploys and the red main line.** A pull request's merge to the main line is made by the
 engineer that holds its item, so what the merge did to the main line is told to that
@@ -2562,7 +2583,8 @@ the forms the server sends:
 |---|---|
 | `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect, pm, review, finished, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `review` and `finished` are the item keys (at most 20, then `{more: n}`) of what the PM was told once and may not have taken up: items whose review step is in progress with no reviewer on them, and done items a session still holds. They are the reminder for a push lost or a PM that was away, since those two pushes are not repeated otherwise. `actions` is a sentence from the Actions usage watch when it needs handling (the billing cannot be read, or has a runner name the account does not know), else empty |
+| `{n, at, event:"timed", since, changed, working, architect, pm, review, finished, dispatch, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `review` and `finished` are the item keys (at most 20, then `{more: n}`) of what the PM was told once and may not have taken up: items whose review step is in progress with no reviewer on them, and done items a session still holds. They are the reminder for a push lost or a PM that was away, since those two pushes are not repeated otherwise. `dispatch` lists the current offers (Offers), as `{pool, free, limit, candidates}`. `actions` is a sentence from the Actions usage watch when it needs handling (the billing cannot be read, or has a runner name the account does not know), else empty |
+| `{n, at, event:"dispatch", pool, free, limit, candidates}` | A pool of engineer slots has `free` free slots of its `limit` and `candidates` candidates, more of one of them than the PM was last told in the pool (Offers). `pool` is `1` or `2+` |
 | `{n, at, event:"review", item, project, title, level}` | The item's review step (id `review`) became in progress and no reviewer has an open dispatch on the item. `level` is the review level the step's text names (`（N 级）`), null when it names none |
 | `{n, at, event:"finished", item, project, title, session}` | An item that a session holds became done. `session` is the session holding it, which the PM stops |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the PM's when nobody does (Deploys and the red main line) |
