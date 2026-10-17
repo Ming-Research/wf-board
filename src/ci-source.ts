@@ -46,6 +46,8 @@ const notStarted = (s: { context: string; state: string; target_url: string | nu
 
 /** The most checks and statuses one request reads; more are `unfinished`, as in the GraphQL look. */
 const PAGE = 100;
+/** How long one request may take. */
+const REQUEST_TIMEOUT_MS = 20_000;
 /** How many answers are kept to be asked about again: far above the PRs the open items name at a time. */
 const KEPT = 400;
 
@@ -74,12 +76,16 @@ export function restSource(o: RestOptions): CiSource {
       token ??= o.token().then(text => text.trim(), error => { token = undefined; throw error; });
       const bearer = await token;
       const earlier = kept.get(path);
-      const response = await get(base + path, { headers: {
-        authorization: `Bearer ${bearer}`,
-        // The same every time: the ETag belongs to the answer for these headers, and GitHub answers 200 again when they differ.
-        accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "wf-board",
-        ...(earlier ? { "if-none-match": earlier.etag } : {}),
-      } });
+      const response = await get(base + path, {
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          // The same every time: the ETag belongs to the answer for these headers, and GitHub answers 200 again when they differ.
+          accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "wf-board",
+          ...(earlier ? { "if-none-match": earlier.etag } : {}),
+        },
+        // A request GitHub never answers must not hold a look for good: the next look is 30 seconds away.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       const left = Number(response.headers.get("x-ratelimit-remaining"));
       if (response.headers.get("x-ratelimit-remaining") !== null && Number.isFinite(left)) remaining = left;
       if (response.status === 304 && earlier) { response.body?.cancel().catch(() => {}); return earlier.value as T; }

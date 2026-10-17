@@ -3142,7 +3142,9 @@ was told for it, is kept in `state/ci-watch.json` beside the board (git excludes
 neither tells a round twice nor loses one. The first look at a repository tells nothing of a
 round already over (`judge`, baseline): those are the backlog from before the board looked, as
 for orphan pushes. A pull request that an item names later, in a repository looked at before, is
-news when first seen finished, since the engineer has just opened it.
+news when first seen finished, since the engineer has just opened it. Known limit: a check GitHub
+creates only after the first looks of a new commit is not there yet to be waited for, so a
+round read as over in the first seconds after a push may be followed by another message when that check ends.
 
 **Who is told.** The session holding the item that names the pull request (section 8, The wake
 streams; an item that no session holds tells nobody, and a reviewer holds nothing), by
