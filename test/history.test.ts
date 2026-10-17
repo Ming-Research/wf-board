@@ -96,6 +96,17 @@ test("a message is never an unread step and does not split the same author's con
   assert.equal((await stepDiff(store, steps[0]!, "item", "a")).before !== null, true, "the step's diff still spans the item's change");
 });
 
+test("a message that carries the owner's pending reading state still does not split the steps around it", async t => {
+  const { store, op } = await board(t), cursor = store.snapshot().head, own = ownerOps(store);
+  const first = await op.setPlan({ author, session: "eng", id: "a", row: { id: "progress", state: "todo", text: "first" } });
+  await own.read({ doc: "item:b" });
+  const message = await op.sendMessage({ author, session: "eng", to: "架构师", text: "看 a" });
+  assert.ok((await store.log({ limit: 1 }))[0]!.files.includes("state/owner.yaml"), "the reading state rode on the message's commit");
+  const second = await op.setPlan({ author, session: "eng", id: "a", row: { id: "progress", state: "doing", text: "second" } });
+  assert.deepEqual((await unreadSteps(store, cursor)).map(s => s.commits), [[first.commit, second.commit]]);
+  assert.notEqual(message.commit, second.commit);
+});
+
 test("the one-time numbering commit is never an unread step", async t => {
   const { dir, store, op } = await board(t);
   const git = async (...args: string[]) => (await promisify(execFile)("git", args, { cwd: dir })).stdout.trim();

@@ -4,7 +4,7 @@ import type { Duplex } from "node:stream";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Decision, Message, Note } from "./model.ts";
+import type { Decision, MessageDay, Note } from "./model.ts";
 import { isArchitectSession } from "./model.ts";
 import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
 import type { Snapshot } from "./model.ts";
@@ -30,14 +30,15 @@ import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 import { pageVersion, stampPage } from "./page-version.ts";
 
-/** The most messages the page is sent with the board, the newest; the messages tool finds older ones (docs/design.md, Messages). */
+/** How many of the newest messages the page is sent with the board; the messages tool finds older ones (docs/design.md, Messages). */
 export const PAGE_MESSAGES = 200;
-/** The board as the page gets it: every document, and only the newest PAGE_MESSAGES messages. */
+/** The board as the page gets it: every document, and only the days of messages that hold the newest PAGE_MESSAGES. */
 export function pageSnapshot(s: Snapshot): Snapshot {
-  const ids = Object.keys(s.messages ?? {});
-  if (ids.length <= PAGE_MESSAGES) return s;
-  // Ids begin with the time sent, so the greatest are the newest.
-  return { ...s, messages: Object.fromEntries(ids.sort().slice(-PAGE_MESSAGES).map(id => [id, s.messages![id]!])) };
+  const days = Object.keys(s.messages ?? {}).sort().reverse(), kept: string[] = [];
+  let count = 0;
+  for (const day of days) { if (count >= PAGE_MESSAGES) break; kept.push(day); count += s.messages![day]!.messages.length; }
+  if (kept.length === days.length) return s;
+  return { ...s, messages: Object.fromEntries(kept.map(day => [day, s.messages![day]!])) };
 }
 /** The most a push through POST /api/wake may carry, as JSON: a deploy's list of changes is far below it. */
 const MAX_EXTERNAL_PUSH = 16 * 1024;
@@ -337,9 +338,9 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         wake.push("note", { note: doc.id, target: n.target, kind: n.kind, title: card?.question ?? s.items[item]?.title ?? n.target, project: r.projectOf(item) });
       }
       // A message is written once and pushed once, to its recipient's stream (docs/design.md, Messages).
-      if (doc.kind === "message" && doc.after && !doc.before) {
-        const m = doc.after as Message;
-        wake.push("message", { message: doc.id, from: m.from, project: m.project, to: m.to, item: m.item ?? null, text: m.text });
+      if (doc.kind === "message") {
+        const before = new Set((doc.before as MessageDay | null)?.messages.map(m => m.id));
+        for (const m of (doc.after as MessageDay | null)?.messages ?? []) if (!before.has(m.id)) wake.push("message", { message: m.id, from: m.from, project: m.project, to: m.to, item: m.item ?? null, text: m.text });
       }
     }
     // Only the items this change can reach, when the last scan read the snapshot this change was made against.

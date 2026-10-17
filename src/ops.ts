@@ -925,22 +925,27 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!glossary.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${a.author}'s glossary; call glossary to see its terms`);
       return { id: a.author, kind: "glossary", message: `delete_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };
     }),
-    sendMessage: a => run(a, "message.send", (s, at) => {
-      const from = typeof a.session === "string" ? a.session.trim() : "";
-      if (!from) throw new OpError("session: a message says who sent it; give your session name");
-      const to = typeof a.to === "string" ? a.to.trim() : "";
-      const reachable = new Set([ARCHITECT_SESSION, ...openAgents(s), ...options.sessions?.() ?? []]);
-      if (!reachable.has(to)) throw new OpError(`to ${to || "(empty)"}: no session the board can reach has that name; send to one of: ${[...reachable].join(", ")}`);
-      const text = typeof a.text === "string" ? a.text : "";
-      if (!text.trim()) throw new OpError("text: say which item to read and what you wait for");
-      const length = [...text].length;
-      if (length > MESSAGE_TEXT_LIMIT) throw new OpError(`text: ${length} characters, at most ${MESSAGE_TEXT_LIMIT}; a message is only a doorbell: write the content on the item, and say here which item to read and what you wait for`);
-      if (/\p{Cc}/u.test(text)) throw new OpError("text: write one line, without line breaks or other control characters");
-      if (a.item !== undefined && !Object.hasOwn(s.items, a.item)) throw new OpError(`item ${a.item}: not on the board; give the key of the item the message is about, or leave it out`);
-      // Named by its time, so the files sort in the order they were sent, and four random hex digits for two sent in one second.
-      const id = `${at.replace(/[-:]|\.\d+/g, "")}-${randomBytes(2).toString("hex")}`;
-      const doc = parse(Message, { from, project: a.author, to, text, ...(a.item === undefined ? {} : { item: a.item }), at, rev: 1 });
-      return { id, kind: "message", message: `send_message ${id} to ${to}`, puts: [{ kind: "message", id, doc, expectRev: null }] };
-    }),
+    sendMessage: async a => {
+      let sent = "";
+      const result = await run(a, "message.send", (s, at) => {
+        const from = typeof a.session === "string" ? a.session.trim() : "";
+        if (!from) throw new OpError("session: a message says who sent it; give your session name");
+        const to = typeof a.to === "string" ? a.to.trim() : "";
+        const reachable = new Set([ARCHITECT_SESSION, ...openAgents(s), ...options.sessions?.() ?? []]);
+        if (!reachable.has(to)) throw new OpError(`to ${to || "(empty)"}: no session the board can reach has that name; send to one of: ${[...reachable].join(", ")}`);
+        const text = typeof a.text === "string" ? a.text : "";
+        const length = [...text].length;
+        if (length > MESSAGE_TEXT_LIMIT) throw new OpError(`text: ${length} characters, at most ${MESSAGE_TEXT_LIMIT}; a message is only a doorbell: write the content on the item, and say here which item to read and what you wait for`);
+        if (/\p{Cc}/u.test(text)) throw new OpError("text: write one line, without line breaks or other control characters");
+        if (a.item !== undefined && !Object.hasOwn(s.items, a.item)) throw new OpError(`item ${a.item}: not on the board; give the key of the item the message is about, or leave it out`);
+        // The day's messages are one document (model MessageDay): the message joins the end of the day it is sent on.
+        const day = at.slice(0, 10), today = s.messages?.[day];
+        // Named by its time, so ids sort in the order sent, and four random hex digits for two sent in one second.
+        do sent = `${at.replace(/[-:]|\.\d+/g, "")}-${randomBytes(2).toString("hex")}`; while (today?.messages.some(m => m.id === sent));
+        const message = parse(Message, { id: sent, from, project: a.author, to, text, ...(a.item === undefined ? {} : { item: a.item }), at });
+        return { id: day, kind: "message", message: `send_message ${sent} to ${to}`, puts: [{ kind: "message", id: day, doc: { messages: [...today?.messages ?? [], message], rev: today?.rev ?? 1 }, expectRev: today?.rev ?? null }] };
+      });
+      return { ...result, id: sent };
+    },
   };
 }

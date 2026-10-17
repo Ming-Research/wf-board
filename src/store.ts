@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { Board, Decision, Glossary, GlossaryId, Item, Key, Message, Note, Numbers, OwnerState } from "./model.ts";
+import { Board, Decision, Glossary, GlossaryId, Item, Key, MessageDay, MessageDayId, Note, Numbers, OwnerState } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
@@ -39,11 +39,11 @@ export interface CommitInfo { commit: string; parents: string[]; at: string; aut
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
-type Doc = Item | Decision | Note | Glossary | Message;
-const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary, message: Message };
+type Doc = Item | Decision | Note | Glossary | MessageDay;
+const schemas: Record<DocKind, z.ZodType<Doc>> = { item: Item, decision: Decision, note: Note, glossary: Glossary, message: MessageDay };
 const collections = { item: "items", decision: "decisions", note: "notes", glossary: "glossaries", message: "messages" } as const;
-/** A glossary is named by its project, which may be Chinese (总管); other documents by their key. */
-const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId, message: Key };
+/** A glossary is named by its project, which may be Chinese (总管); a day's messages by the day; other documents by their key. */
+const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note: Key, glossary: GlossaryId, message: MessageDayId };
 /** The documents of one kind in a snapshot; a snapshot built outside the store may have no messages. */
 const docsOf = (s: Snapshot, kind: DocKind): Record<string, Doc> => (s[collections[kind]] ?? {}) as Record<string, Doc>;
 const run = promisify(execFile);
@@ -401,7 +401,7 @@ export class Store {
       }
     }
     const board = await load("board.yaml", Board);
-    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> & { messages: Record<string, Message> } = { items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {} };
+    const docs: Pick<Snapshot, "items" | "decisions" | "notes" | "glossaries"> & { messages: Record<string, MessageDay> } = { items: {}, decisions: {}, notes: {}, glossaries: {}, messages: {} };
     for (const kind of ["item", "decision", "note", "glossary", "message"] as const) {
       let files: string[] = [];
       try { files = await readdir(join(dir, collections[kind])); }

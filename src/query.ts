@@ -269,14 +269,13 @@ export function glossary(s: Snapshot, project?: string) {
 /** `since` inclusive and `until` exclusive, as full UTC times. */
 export interface MessageFilters { to?: string; from?: string; item?: string; since?: string; until?: string; limit?: number }
 /** The messages between agents that match every filter given, newest first, at most `limit` (default 50). */
-export function messages(s: Snapshot, f: MessageFilters = {}): Array<Message & { id: string }> {
+export function messages(s: Snapshot, f: MessageFilters = {}): Message[] {
   const since = f.since === undefined ? -Infinity : Date.parse(f.since), until = f.until === undefined ? Infinity : Date.parse(f.until);
-  return Object.entries(s.messages ?? {})
-    .filter(([, m]) => (f.to === undefined || m.to === f.to) && (f.from === undefined || m.from === f.from) && (f.item === undefined || m.item === f.item) && Date.parse(m.at) >= since && Date.parse(m.at) < until)
+  return Object.values(s.messages ?? {}).flatMap(day => day.messages)
+    .filter(m => (f.to === undefined || m.to === f.to) && (f.from === undefined || m.from === f.from) && (f.item === undefined || m.item === f.item) && Date.parse(m.at) >= since && Date.parse(m.at) < until)
     // Ids begin with the time sent, so they order two messages of one second.
-    .sort(([ia, a], [ib, b]) => Date.parse(b.at) - Date.parse(a.at) || (ia < ib ? 1 : ia > ib ? -1 : 0))
-    .slice(0, f.limit ?? 50)
-    .map(([id, m]) => ({ id, ...m }));
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+    .slice(0, f.limit ?? 50);
 }
 export function followups(s: Snapshot, r: Rules, { minutes }: { minutes: number }, now = new Date().toISOString()) {
   if (!Number.isFinite(minutes) || minutes < 0) throw new Error("minutes: provide a nonnegative age");

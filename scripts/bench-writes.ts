@@ -77,11 +77,16 @@ function board() {
     files.set(`notes/n${k}.yaml`, yaml({ target: onCard ? `q:${decisions[k % decisions.length]}` : `it:${ids[(k * 5) % ids.length]}`, kind: onCard ? "choice" : "comment", ...(onCard ? { choice: "A" } : {}),
       text: `Note ${k}`, at, state: done ? "done" : "sent", sentAt: at, ...(done ? { reply: "Handled", repliedAt: at, repliedBy: "Firn" } : {}), rev: 1 }));
   }
-  // Messages as agents write them: a sentence naming an item, from an engineer to the architect.
+  // Messages as agents write them, 140 a day before the history starts: a sentence naming an item, from an engineer to the
+  // architect, one file per UTC day (docs/design.md, Messages).
+  const days = new Map<string, unknown[]>();
   for (let k = 0; k < MESSAGES; k++) {
-    const id = ids[(k * 3) % ids.length]!, time = iso(start + k * 1000);
-    files.set(`messages/${time.replace(/[-:]/g, "")}-${(k % 65536).toString(16).padStart(4, "0")}.yaml`, yaml({ from: `eng-${id}`, project: group.get(id), to: "架构师", text: `${id} 的 PR 可以看了：读条目日志最后一条，等你验收，审查的发现都改了`, item: id, at: time, rev: 1 }));
+    const id = ids[(k * 3) % ids.length]!, time = iso(start - (MESSAGES - k) * Math.floor(86_400_000 / 140));
+    const list = days.get(time.slice(0, 10)) ?? [];
+    list.push({ id: `${time.replace(/[-:]/g, "")}-${(k % 65536).toString(16).padStart(4, "0")}`, from: `eng-${id}`, project: group.get(id), to: "架构师", text: `${id} 的 PR 可以看了：读条目日志最后一条，等你验收，审查的发现都改了`, item: id, at: time });
+    days.set(time.slice(0, 10), list);
   }
+  for (const [day, messages] of days) files.set(`messages/${day}.yaml`, yaml({ messages, rev: 1 }));
   const commitTime = (k: number) => start + (k + 1) * 3 * MINUTE;
   // Item `n` is written by history commits n, n + ITEMS, ...; version v carries the log entries of its first v + 1 writes.
   const item = (n: number, versions: number): string => {
@@ -169,7 +174,7 @@ try {
     gcMsPerWrite: +(gc / WRITES).toFixed(1), wallMsPerWrite: +(wall / WRITES).toFixed(1),
     eventBytesPerChange: Math.round((bytes - bytesBefore) / Math.max(1, events - eventsBefore)), changeEvents: events - eventsBefore,
     peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened,
-    messages: Object.keys(store.snapshot().messages ?? {}).length, write: WRITE,
+    messages: Object.values(store.snapshot().messages ?? {}).reduce((n: number, day) => n + (day as { messages: unknown[] }).messages.length, 0), write: WRITE,
     snapshotBytes: JSON.stringify(store.snapshot()).length,
     // What GET /api/snapshot sends the page; code from before messages has no such function and sends the snapshot whole.
     pageSnapshotBytes: JSON.stringify((await load("http.ts")).pageSnapshot?.(store.snapshot()) ?? store.snapshot()).length,

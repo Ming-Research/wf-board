@@ -510,7 +510,7 @@ wf-board-data/
   decisions/<key>.yaml    one file per decision card
   notes/<id>.yaml         one file per owner note with its reply
   glossaries/<project>.yaml  one file per project glossary, named by the project
-  messages/<id>.yaml      one file per message one agent sent another (section 8, Messages)
+  messages/<day>.yaml     one file per UTC day: the messages agents sent each other that day (section 8, Messages)
   state/owner.yaml        the owner's read cursor and read-ahead marks
   state/wake.jsonl        the architect's wake stream: events, receipts and marks (not a board document; excluded from git)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
@@ -806,13 +806,17 @@ log:
   stamps `updated` and `by`. A replaced term keeps its place. A glossary is
   not an unread document: its changes neither count as 新 nor appear in
   `changes`.
-- **Messages.** A message is `{from, project, to, text, item?, at, rev}`:
-  the sending session and its project, the receiving session, one line of at
-  most 150 characters, the item it is about, and the time sent. Its id is that
-  time to the second, then four random hex digits (`20261017T160512Z-3fa9`), so
-  the files sort in the order sent. A message is written once and never
-  changed. Like a glossary it is not an unread document, and it is no work on
-  the board (section 8, Messages).
+- **Messages.** A file `messages/2026-10-17.yaml` is `{messages, rev}`: the
+  messages sent on that UTC day, in the order sent. A message is `{id, from,
+  project, to, text, item?, at}`: its id, the sending session and its project,
+  the receiving session, one line of at most 150 characters, the item it is
+  about, and the time sent. The id is that time to the second, then four random
+  hex digits (`20261017T160512Z-3fa9`), so ids sort in the order sent. A
+  message is written once and never changed: sending one adds it to the end of
+  its day's file. One file a day keeps the number of files, and so git's index,
+  growing by one a day however many messages are sent (section 8, Messages).
+  Like a glossary, messages are not unread documents, and they are no work on
+  the board.
 - **Tags.** The board keeps one approved vocabulary, `tags: [{name, meaning,
   projects?}]`, in `board.yaml`; each item carries `tags: [name]`. A name is 1–12
   characters without whitespace or commas and unique; `meaning` is one sentence
@@ -2145,9 +2149,9 @@ selects it, how long ago, and the text with its inline formatting; the newest
 is first. The button counts, as 「新 n」, the messages that came since the list
 was last open; the newest message seen is kept in the browser, so a reload
 keeps the count. A message joins the list from the change event that carries
-it and repaints only the list. The page is sent the newest 200 messages with the
-board (`PAGE_MESSAGES` in `src/http.ts`), so the page does not grow with the
-board's history; `messages` finds older ones.
+it and repaints only the list. The page is sent, with the board, the days of
+messages that hold the newest 200 (`PAGE_MESSAGES` in `src/http.ts`), so the page
+does not grow with the board's history; `messages` finds older ones.
 
 ### Updating the page
 
@@ -2422,8 +2426,9 @@ message through the board, not with a message between sessions: the recipient
 gets it whether or not its process is running, and the message stays on the
 board, where the owner and later readers find it.
 
-- **Sending.** `send_message(to, text, item?)` writes one message document
-  (section 5) under the caller's session and project, in one commit. The
+- **Sending.** `send_message(to, text, item?)` adds one message to the end of
+  its day's file (section 5) under the caller's session and project, in one
+  commit. The
   recipient is the architect's session, a session with an open dispatch of any
   role (an engineer or a review; `openAgents` in `src/dispatch.ts`), or the
   session of a long-lived credential (the observer, the resource agent).
@@ -2453,7 +2458,14 @@ machine, so the owner's history of messages could not be complete; writing a
 message into an item's log, which has no place for a message about no item
 (asking for the 14900K, reporting a rule problem) and gives the page no list by
 time; 500 characters cut when pushed, because a cut text may lose the item to
-read, and the line limit would then not hold.
+read, and the line limit would then not hold; one file per message, because
+every file is one more for the board to read at start and for git to check on
+every commit: with 50,000 messages (about a year at 140 a day) on a board of the
+live one's size, opening took 17.2–17.8 s instead of 5.3–5.4 s and an ordinary
+write 153–158 ms instead of 73–76 (three interleaved rounds on a GitHub-hosted
+runner, a rough measure; the write benchmark, `scripts/bench-writes.ts
+--messages`); archiving old messages into monthly files instead, because it
+keeps a second place to read messages from and a job that moves them.
 
 ### Watching GitHub
 

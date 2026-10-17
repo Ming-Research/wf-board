@@ -12,7 +12,7 @@ import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
 import type { Target } from "./find.ts";
-import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch, Message } from "../src/model.ts";
+import type { Snapshot, Item, Decision, Note, Board, OwnerState, LogEntry, Glossary, AgentTouch, Message, MessageDay } from "../src/model.ts";
 import type { Step } from "../src/history.ts";
 import type { OwnerOps } from "../src/owner-ops.ts";
 type ViewItem = Item & { id: string };
@@ -1753,18 +1753,18 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // The newest message the owner has seen in the open list. Ids begin with the time sent, so a later message has a greater id.
   let messagesSeen = "";
   try { messagesSeen = localStorage.getItem("board-messages-seen") ?? ""; } catch (e) {}
-  function messageList(): Array<[string, Message]> {
-    return cached("messages", () => Object.entries(snapshot.messages ?? {}).sort(([ia, a], [ib, b]) => Date.parse(b.at) - Date.parse(a.at) || (ia < ib ? 1 : ia > ib ? -1 : 0)));
+  function messageList(): Message[] {
+    return cached("messages", () => Object.values(snapshot.messages ?? {}).flatMap(day => day.messages).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)));
   }
   function renderMessages() {
     const host = get("messages"); if (!host) return;
     const list = messageList();
-    if (messagesOpen && list.length && list[0]![0] > messagesSeen) {
-      messagesSeen = list[0]![0];
+    if (messagesOpen && list.length && list[0]!.id > messagesSeen) {
+      messagesSeen = list[0]!.id;
       try { localStorage.setItem("board-messages-seen", messagesSeen); } catch (e) {}
     }
-    const fresh = list.filter(([id]) => id > messagesSeen).length;
-    const signature = JSON.stringify([messagesOpen, fresh, messagesOpen ? list.map(([id, m]) => [id, agoText(m.at), m.item ? snapshot.items[m.item]?.title ?? null : 0]) : 0]);
+    const fresh = list.filter(m => m.id > messagesSeen).length;
+    const signature = JSON.stringify([messagesOpen, fresh, messagesOpen ? list.map(m => [m.id, agoText(m.at), m.item ? snapshot.items[m.item]?.title ?? null : 0]) : 0]);
     if (signature === messagesSignature) return;
     messagesSignature = signature;
     host.innerHTML = "";
@@ -1778,9 +1778,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!list.length) panel.appendChild(el("p", "empty", "还没有消息。"));
     else {
       const ul = el("ul", "message-list");
-      for (const [id, m] of list) {
+      for (const m of list) {
         const li = el("li", "message");
-        li.dataset.message = id;
+        li.dataset.message = m.id;
         const head = el("div", "message-head");
         head.appendChild(el("span", "message-who", esc(m.from + "（" + m.project + "）→ " + m.to)));
         if (m.item) head.appendChild(el("span", "message-item", inline("[[it:" + m.item + "]]")));
@@ -2998,7 +2998,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (doc.kind === "board") snapshot.board = doc.after as Board;
         else if (doc.kind === "owner") snapshot.owner = doc.after as OwnerState;
         else if (doc.kind === "glossary") { if (doc.after === null) delete snapshot.glossaries[doc.id]; else snapshot.glossaries[doc.id] = doc.after as Glossary; }
-        else if (doc.kind === "message") { if (doc.after === null) delete snapshot.messages![doc.id]; else snapshot.messages![doc.id] = doc.after as Message; }
+        else if (doc.kind === "message") { if (doc.after === null) delete snapshot.messages![doc.id]; else snapshot.messages![doc.id] = doc.after as MessageDay; }
         else {
           const collection = doc.kind === "item" ? snapshot.items : doc.kind === "decision" ? snapshot.decisions : snapshot.notes;
           if (doc.after === null) delete collection[doc.id]; else Object.assign(collection, { [doc.id]: doc.after });

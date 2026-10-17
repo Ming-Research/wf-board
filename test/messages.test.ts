@@ -30,15 +30,29 @@ async function tool(t: { after(fn: () => void | Promise<void>): void }, store: S
   return (result.content as Array<{ text: string }>).map(c => c.text).join("\n");
 }
 
-test("a message is one commit of one file, kept across a restart, and starts no active time", async t => {
-  const { dir, store, op } = await board(t);
+test("a message is one commit that adds it to its day's file, kept across a restart, and starts no active time", async t => {
+  const { dir, store } = await board(t);
+  let clock = later;
+  const op = ops(store, () => clock);
   const writes = store.snapshot().activity?.writes.length ?? 0;
   const sent = await op.sendMessage({ ...eng, to: "架构师", text: "b 的 PR 可以看了，等你验收", item: "b" });
   assert.match(sent.id, /^20261011T020304Z-[0-9a-f]{4}$/, "named by the time it was sent");
-  assert.deepEqual(store.snapshot().messages![sent.id], { from: "b-worker", project: "Whitefoot", to: "架构师", text: "b 的 PR 可以看了，等你验收", item: "b", at: later, rev: 1 });
+  const first = { id: sent.id, from: "b-worker", project: "Whitefoot", to: "架构师", text: "b 的 PR 可以看了，等你验收", item: "b", at: later };
+  assert.deepEqual(store.snapshot().messages, { "2026-10-11": { messages: [first], rev: 1 } });
   const [commit] = await store.log({ limit: 1 });
-  assert.deepEqual([commit!.files, commit!.author, commit!.session], [[`messages/${sent.id}.yaml`], "Whitefoot", "b-worker"]);
+  assert.deepEqual([commit!.files, commit!.author, commit!.session], [["messages/2026-10-11.yaml"], "Whitefoot", "b-worker"]);
   assert.equal(store.snapshot().activity?.writes.length ?? 0, writes, "a message is no work on the board");
+  // Two in the same second get two ids; they join the end of the day's file. The next UTC day starts a file of its own.
+  const again = await op.sendMessage({ ...eng, to: "架构师", text: "再看一下" });
+  const third = await op.sendMessage({ ...eng, to: "架构师", text: "又一条" });
+  clock = "2026-10-12T00:00:01Z";
+  const nextDay = await op.sendMessage({ ...eng, to: "架构师", text: "第二天" });
+  const days = store.snapshot().messages!;
+  assert.deepEqual(Object.keys(days).sort(), ["2026-10-11", "2026-10-12"]);
+  assert.deepEqual(days["2026-10-11"]!.messages.map(m => m.id), [sent.id, again.id, third.id]);
+  assert.equal(new Set([sent.id, again.id, third.id]).size, 3);
+  assert.deepEqual([days["2026-10-11"]!.rev, days["2026-10-12"]!.messages.map(m => m.id)], [3, [nextDay.id]]);
+  assert.deepEqual((await store.log({ limit: 1 }))[0]!.files, ["messages/2026-10-12.yaml"]);
   const reopened = await Store.open(dir);
   assert.deepEqual(reopened.snapshot().messages, store.snapshot().messages);
   assert.equal(reopened.snapshot().activity?.writes.length ?? 0, writes, "nor when the history is read again");
@@ -58,7 +72,8 @@ test("a message to a name the board cannot reach, or one that is too long, not o
   // The limit counts characters, a Chinese character as one: 150 of them is the most, and taken whole.
   const full = "满".repeat(MESSAGE_TEXT_LIMIT);
   const { id } = await op.sendMessage({ ...eng, to: " 架构师 ", text: full });
-  assert.deepEqual([store.snapshot().messages![id]!.text, store.snapshot().messages![id]!.to], [full, "架构师"]);
+  const kept = store.snapshot().messages!["2026-10-11"]!.messages.find(m => m.id === id)!;
+  assert.deepEqual([kept.text, kept.to], [full, "架构师"]);
 });
 
 test("a message goes to the architect, to a session with an open dispatch of any role, or to a long-lived credential's session", async t => {
@@ -66,7 +81,7 @@ test("a message goes to the architect, to a session with an open dispatch of any
   const op = ops(store, () => later, { sessions: () => ["观察者", "资源管理"] });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "审查", level: 2, model: "Sonnet", agent: "b-review", agentId: "agent-r" });
   for (const to of ["架构师", "观察者", "资源管理", "b-review"]) await op.sendMessage({ ...eng, to, text: "看 b" });
-  assert.deepEqual(Object.values(store.snapshot().messages!).map(m => m.to).sort(), ["b-review", "架构师", "观察者", "资源管理"].sort());
+  assert.deepEqual(Object.values(store.snapshot().messages!).flatMap(day => day.messages).map(m => m.to).sort(), ["b-review", "架构师", "观察者", "资源管理"].sort());
   await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1, rounds: 1 });
   await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
 });
@@ -125,15 +140,15 @@ test("send_message sends as the call's session; messages lists them newest first
   assert.equal(await list({ to: "nobody" }), "No messages.");
 });
 
-test("the page is sent the newest PAGE_MESSAGES messages; the board keeps them all", async t => {
+test("the page is sent the days holding the newest PAGE_MESSAGES messages; the board keeps them all", async t => {
   const { store } = await board(t);
   const s = store.snapshot();
-  const at = (i: number) => new Date(Date.parse("2026-10-11T00:00:00Z") + i * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-  const id = (i: number) => `${at(i).replace(/[-:]/g, "")}-0000`;
-  const many = Object.fromEntries(Array.from({ length: PAGE_MESSAGES + 1 }, (_, i) => [id(i), { from: "a", project: "Whitefoot", to: "架构师", text: String(i), at: at(i), rev: 1 }]));
-  const sent = pageSnapshot({ ...s, messages: many });
-  assert.deepEqual(Object.keys(sent.messages!).sort(), Array.from({ length: PAGE_MESSAGES }, (_, i) => id(i + 1)), "the oldest is left out");
+  // Five days of 60 messages: the newest 200 lie in the last four days, so the first is left out.
+  const day = (d: number, n: number) => ({ messages: Array.from({ length: n }, (_, i) => ({ id: `2026101${d}T0000${String(i).padStart(2, "0")}Z-0000`, from: "a", project: "Whitefoot", to: "架构师", text: String(i), at: `2026-10-1${d}T00:00:${String(i).padStart(2, "0")}Z` })), rev: 1 });
+  const days = Object.fromEntries([1, 2, 3, 4, 5].map(d => [`2026-10-1${d}`, day(d, 60)]));
+  const sent = pageSnapshot({ ...s, messages: days });
+  assert.deepEqual(Object.keys(sent.messages!).sort(), ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"], "the oldest day is left out");
   assert.equal(sent.items, s.items, "everything else is the board as it is");
-  const few = { ...s, messages: { [id(0)]: many[id(0)]! } };
-  assert.equal(pageSnapshot(few), few, "a board with few messages is sent as it is");
+  const few = { ...s, messages: { "2026-10-11": day(1, 60), "2026-10-12": day(2, 60) } };
+  assert.equal(pageSnapshot(few), few, "a board with fewer messages is sent as it is");
 });
