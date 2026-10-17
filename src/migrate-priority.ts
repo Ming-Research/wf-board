@@ -5,8 +5,8 @@
 // the first start with this code clears the field in one commit, and the command in migrate-priority-cli.ts does the same
 // offline on a copy. The commit is bookkeeping: it sets no `updated` and adds no log line, so no item looks changed; the value
 // each item held stays in git history and in the report. Delete this file, the command, its test, the npm script, the start
-// option in store.ts and main.ts, the commit's bookkeeping checks in store.ts and timed-wake.ts and the design paragraph once it
-// has run on the live board. What stays is store.ts's omission of the field from old versions.
+// option in store.ts and main.ts, the commit's bookkeeping checks in store.ts and timed-wake.ts, Txn.rewrite with its condition in
+// Store.commit, and the design paragraph once it has run on the live board. What stays is store.ts's omission of the field from old versions.
 
 /** What the refusal to start says about an item file that still holds the field. */
 export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer exists; start with the migration, or clear it once with the daemon stopped: npm run migrate:priority -- --data DIR";

@@ -11,7 +11,7 @@ import { parse, stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { unreadSteps } from "../src/history.ts";
 import { timedWake } from "../src/timed-wake.ts";
-import { ActivityIndex } from "../src/rules.ts";
+import { ACTIVE_WINDOW_MS, ActivityIndex } from "../src/rules.ts";
 import { priorityReport } from "../src/migrate-priority.ts";
 import { board } from "./helpers.ts";
 
@@ -87,7 +87,9 @@ test("the clearing is bookkeeping: it restarts no clock, starts no active time a
   // What the rules read is that index and the items' own times: the clock of each root is still the earlier commit's, and no active window opens at the clearing.
   const index = ActivityIndex.build(s), now = Date.now();
   for (const id of IDS) assert.equal(index.changedAt(id, now), Date.parse(held!.at), `${id}'s change clock is not restarted`);
-  assert.ok(index.intervals(now).every(([start]) => start < Date.parse(clearing!.at)), "no active window opens at the clearing");
+  // A clearing a second after the earlier commit would only lengthen its window, so the end of the last window is read far enough on.
+  const windows = index.intervals(Date.parse(held!.at) + 3 * 60 * 60 * 1000);
+  assert.equal(windows.at(-1)![1], Date.parse(held!.at) + ACTIVE_WINDOW_MS, "no active window opens or grows at the clearing");
   const fields = await timedWake(store, s, store.derived.rules(s, Date.now()), { at: held!.at, head: heldHead }, held!.at);
   assert.deepEqual(fields.changed, [], "and the timed wake lists nothing the clearing wrote");
 });

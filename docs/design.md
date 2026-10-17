@@ -1221,8 +1221,8 @@ Items store no priority and the board derives none. The owner found that a
 large share of items showed P0 (a root's value reached everything it needs), so
 the value ranked nothing. What must come first is a dependency, and which ready
 work to start is the architect's call from the owner's principles, kept in the
-architect's context and not on the board. Siblings and the lists built from
-them sort ended items last, then by `order` (`compareSiblings`); the page's
+architect's context and not on the board. Siblings, and `brief`'s paused and
+in-progress lists, sort ended items last, then by `order` (`compareSiblings`); the page's
 waiting panel lists the longest wait first. A write that still names
 `priority` (any tool that took it, or an operation) is refused with a message
 saying the field was removed, so a session working from old instructions
@@ -3555,8 +3555,9 @@ field from old versions, so unread shows nothing for it, and activity and the
 timed wake leave the commit out, so no item's last-change time or no-progress
 clock restarts and the wake lists nothing it wrote. A second start writes
 nothing. The command, its module, its test, the npm script, the start option, the
-daemon's use of it and the two checks that leave the commit out of activity and
-the timed wake are deleted after the run on the live board; what stays is the
+daemon's use of it, the two checks that leave the commit out of activity and the
+timed wake, and the transaction flag (`rewrite`) that lets it write unchanged
+documents are deleted after the run on the live board; what stays is the
 omission of the field from old versions in historical comparison.
 
 ### Owner-wide rules to change
