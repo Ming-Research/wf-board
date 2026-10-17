@@ -2005,8 +2005,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const baseline = unreadBefore<Item>("item",it.id);
     const before = baseline;
     const st = statusOf(it) ?? "record";
-    // The share of the plan a row in progress or idle draws as its band in the tree (docs/design.md, How the page shows a plan).
-    const share = !detail && (st === "wip" || st === "idle") ? derived.progressShare(it.id) : 0;
+    // The share of the plan a row in progress or idle draws as its band in the left tree; the agent list draws none (docs/design.md, How the page shows a plan).
+    const share = !detail && !m && (st === "wip" || st === "idle") ? derived.progressShare(it.id) : 0;
     const context = filtering(groupOf(it)) ? !filterMatches().hit.has(it.id) : !detail && ended(it);
     const box = el("div", "item " + st + (up(it) ? "" : " line") + (baseline === null ? " fresh" : "") + (context ? " ctx" : ""));
     box.id = detail ? "detail-it-" + it.id : (m ? m.prefix : "") + "it-" + it.id;
@@ -2031,7 +2031,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     // A tree row that draws the band shows no count of its done rows: the band already says how far it is.
-    if (it.plan.length && !(!detail && share > 0)) {
+    if (it.plan.length && !(share > 0)) {
       const ratio = derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }

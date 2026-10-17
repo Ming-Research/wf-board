@@ -1390,9 +1390,8 @@ then the comments on it, then history.
 
 The progress line is one line of text under the title and chips of an open item that has
 plan rows, read from `Rules.progress`; the tree rows show no line, only the band
-below. Status says
-whether someone is on the item; the line says how far it is and what holds it up,
-in one of three forms by status:
+below. Status says whether someone is on the item; the line says how far it is
+and what holds it up, in one of three forms by status:
 
 - todo or idle: `做完 5/7，下一步：<text of the first ready row>`;
 - blocked: `卡在：<what it waits on>`, the titles of the shared items and
@@ -1406,17 +1405,24 @@ A paused, done or cancelled item shows no line.
 
 The left tree draws a band behind the row of each item whose status is wip or
 idle, from the row's left edge over the first `Rules.progressShare` of its
-width. The share is the sum of the weights of the plan rows that count
-(dropped rows excluded) over the number of those rows, 0 when there are none:
-a done row weighs 1, a row in progress ½, a card decided or withdrawn 1 and
-open 0; a sub-item row, owned or shared, weighs by its status: done or
-cancelled 1, wip or idle ½, anything else 0, and its own rows are not counted.
-The band's gradient runs from `--prog-from` to `--prog-to` across the full
-row width, so a short band shows only the start colour: the colour at any
-point of the band is the colour that point has in the whole row. Items of
+width. The agent list (the sessions panel's unfolded items) draws none. The
+share is the sum of the weights of the plan rows that count, over the number of
+those rows, 0 when there are none. A row counts unless it is dropped (its
+`excluded` flag) or it is a cancelled sub-item, owned or shared, which is left
+out of the share and the denominator alike. Weights: a done row 1, a row in
+progress ½, a card decided or withdrawn 1 and open 0; a sub-item row weighs by
+its status: done 1, wip or idle ½, anything else 0; a record counts 1. The plan
+ratio shown on the detail column is unchanged: it still counts a shared
+cancelled row. The band's gradient runs from `--prog-from` to `--prog-to` across
+the full row width, so a short band shows only the start colour: the colour at
+any point of the band is the colour that point has in the whole row. Items of
 other statuses draw no band. A tree row that draws a band shows no `done/total`
-count, since the band already shows the share; the detail keeps its ratio. The owner asked for this on the board, so the
-left list shows how far each open item is without opening it.
+count, since the band already shows the share; the detail keeps its ratio. A
+selected or current row keeps its highlight: its band is drawn at 45 % opacity.
+Both colour pairs keep the text tokens at 4.5:1 or more against both ends of
+the band, in both themes; the values were computed from the tokens, not
+measured in a browser. The owner asked for this on the board, so the left list
+shows how far each open item is without opening it.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
@@ -1537,8 +1543,9 @@ At phone width (below 560 pixels) nothing changes structurally: rows already
 wrap; the chip and ratio of an owned row move to the second line, the group
 bracket narrows to 1 pixel, and the 16-pixel gutter stays so glyphs align.
 Unread changed rows carry the existing blue bar to the left of the gutter.
-The tree row of an item shows its plan ratio (`1/7`) where the steps ratio
-was; leaf counts count owned descendants that own no work items, by status.
+A tree row shows its plan ratio (`1/7`) where the steps ratio was, unless it
+draws a band (above); leaf counts count owned descendants that own no work
+items, by status.
 
 #### Comments
 

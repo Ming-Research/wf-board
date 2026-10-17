@@ -802,23 +802,26 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
 // schemes (docs/design.md, How the page shows a plan).
 export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], page = bp.page, ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
-  const part = ids.find(id => o.r.statusOf(id) === "wip"), idle = ids.find(id => o.r.statusOf(id) === "idle"), todo = ids.find(id => o.r.statusOf(id) === "todo");
+  const withStatus = (status: string) => ids.find(id => o.r.statusOf(id) === status);
+  const part = withStatus("wip"), idle = withStatus("idle"), todo = withStatus("todo");
   if (!part) v.push("progress-band: the board has no item in progress");
   if (!todo) v.push("progress-band: the board has no todo item");
+  // Statuses that must carry no band; a status the generated board lacks is not checked (the lack is not a failure).
+  const plain = ["todo", "done", "cancelled", "blocked", "paused"].map(withStatus).filter((id): id is string => !!id);
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
-    for (const id of [part, idle, todo]) {
+    for (const id of [part, idle, ...plain]) {
       if (!id) continue;
       const status = o.r.statusOf(id);
       const got = await page.evaluate((key: string) => {
         const row = document.getElementById("it-" + key)?.querySelector<HTMLElement>(":scope > .item-row.tree-row") ?? null;
         const band = row?.querySelector<HTMLElement>(":scope > .progress-band") ?? null;
-        // The colour the page's first gradient stop resolves to in this scheme, read through a probe element.
-        const probe = document.createElement("span"); probe.style.backgroundColor = "var(--prog-from)"; document.body.appendChild(probe);
-        const from = getComputedStyle(probe).backgroundColor; probe.remove();
+        // The colours the page's gradient stops resolve to in this scheme, read through probe elements.
+        const probe = (name: string) => { const e = document.createElement("span"); e.style.backgroundColor = "var(" + name + ")"; document.body.appendChild(e); const c = getComputedStyle(e).backgroundColor; e.remove(); return c; };
         const style = band ? getComputedStyle(band) : null;
         return {
-          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from, count: !!row?.querySelector(".steps-ratio"),
+          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from: probe("--prog-from"), to: probe("--prog-to"),
+          count: !!row?.querySelector(".steps-ratio"),
           band: band && style ? { width: band.getBoundingClientRect().width, image: style.backgroundImage, size: style.backgroundSize } : null,
         };
       }, id);
@@ -833,9 +836,11 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
       if (!got.band) { v.push(`progress-band (${scheme}): ${id} (${status}) carries no band`); continue; }
       const want = o.r.progressShare(id), ratio = got.band.width / got.rowWidth;
       if (Math.abs(ratio - want) > 0.01) v.push(`progress-band (${scheme}): ${id} is ${(ratio * 100).toFixed(1)}% of the row wide, not the plan's ${(want * 100).toFixed(1)}%`);
-      const size = parseFloat(got.band.size);
-      if (Math.abs(size - got.rowWidth) > 1) v.push(`progress-band (${scheme}): ${id}'s gradient is ${size}px wide, not the row's ${got.rowWidth}px`);
-      if (!got.band.image.includes("linear-gradient") || !got.band.image.includes(got.from)) v.push(`progress-band (${scheme}): ${id}'s gradient does not start in ${got.from}: ${got.band.image}`);
+      // Chromium returns background-size as a percentage of the band: the gradient spans the band's width times that, which must be the row's width.
+      const [first = ""] = got.band.size.split(" "), gradient = first.endsWith("%") ? got.band.width * parseFloat(first) / 100 : parseFloat(first);
+      if (Math.abs(gradient - got.rowWidth) > 1) v.push(`progress-band (${scheme}): ${id}'s gradient is ${gradient.toFixed(1)}px wide, not the row's ${got.rowWidth}px`);
+      const { image } = got.band, fromAt = image.indexOf(got.from), toAt = image.indexOf(got.to);
+      if (!image.includes("linear-gradient") || fromAt < 0 || toAt <= fromAt) v.push(`progress-band (${scheme}): ${id}'s gradient does not run from ${got.from} to ${got.to}: ${image}`);
     }
   }
   await page.emulateMedia({ colorScheme: "light" });

@@ -348,8 +348,8 @@ export interface DerivedPlanRow {
   glyph: string;
   dropped: boolean;
   excluded: boolean;
-  /** How much the row adds to its plan's progress share: done 1, in progress ½, else 0 (docs/design.md, How the page shows a plan). */
-  weight: number;
+  /** How much the row adds to its plan's progress share: done 1, in progress ½, else 0; null when the row is left out of the share (a cancelled sub-item). */
+  weight: number | null;
 }
 /** The progress line of an item (docs/design.md, How the page shows a plan). */
 export interface Progress {
@@ -772,11 +772,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return include ? ordered() : cached("areas", "", ordered);
   }
   function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded" | "weight"> & { paused?: boolean } {
-    if ("text" in row) return {
-      state: row.state === "doing" ? "progress" : row.state === "todo" ? "open" : "resolved",
-      dropped: row.state === "dropped", excluded: row.state === "dropped",
-      weight: row.state === "done" ? 1 : row.state === "doing" ? 0.5 : 0,
-    };
+    if ("text" in row) {
+      // The state is read once: the walk is bounded per snapshot (test/rules.test.ts, shared diamonds).
+      const { state } = row;
+      return {
+        state: state === "doing" ? "progress" : state === "todo" ? "open" : "resolved",
+        dropped: state === "dropped", excluded: state === "dropped",
+        weight: state === "done" ? 1 : state === "doing" ? 0.5 : 0,
+      };
+    }
     if ("card" in row) {
       const open = !s.decisions[row.card] || s.decisions[row.card]?.status === "open";
       return { state: open ? "waiting" : "resolved", dropped: false, excluded: false, weight: open ? 0 : 1 };
@@ -786,8 +790,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     if (target.record) return { state: "resolved", dropped: false, excluded: row.own, weight: 1 };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
     const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
-    // A sub-item counts as its status says, shared or owned: done or cancelled whole, in progress or idle half.
-    const weight = status === "done" || status === "cancelled" ? 1 : status === "wip" || status === "idle" ? 0.5 : 0;
+    // A sub-item counts as its status says, shared or owned: done whole, in progress or idle half; a cancelled one is left out of the share.
+    const weight = status === "cancelled" ? null : status === "done" ? 1 : status === "wip" || status === "idle" ? 0.5 : 0;
     return { state, dropped, excluded: dropped, paused: status === "paused", weight };
   }
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
@@ -810,8 +814,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return { done: rows.filter(row => row.state === "resolved").length, total: rows.length };
   }
   function progressShare(id: string): number {
-    const rows = planRows(id).filter(row => !row.excluded);
-    return rows.length ? rows.reduce((sum, row) => sum + row.weight, 0) / rows.length : 0;
+    const rows = planRows(id).filter(row => !row.excluded && row.weight !== null);
+    return rows.length ? rows.reduce((sum, row) => sum + row.weight!, 0) / rows.length : 0;
   }
   function planGroups(id: string): Array<{ start: number; end: number; level: number }> {
     const rows = planRows(id), groups: Array<{ start: number; end: number; level: number }> = [];

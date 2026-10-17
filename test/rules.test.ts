@@ -313,6 +313,25 @@ test("progressShare counts a sub-item row by its status, shared or owned, and a 
   assert.equal(rules(s).progressShare("a"), 0.5, "a ruled card counts whole");
 });
 
+test("progressShare weighs each kind of sub-item by its status, and leaves a cancelled one out of the share", () => {
+  const s = snapshot({ a: {}, w: {}, d: {}, i: {}, t: {}, c: { status: "cancelled" }, r: { record: true } });
+  s.items.w!.plan = [step("work", "doing"), accept()];
+  s.items.d!.plan = [step("work", "done"), accept("done")];
+  s.items.i!.plan = [step("work", "done"), accept()];
+  s.items.t!.plan = [step("work"), accept()];
+  // The item's plan is the given rows plus the acceptance step, which counts 0 while it is todo.
+  const share = (rows: PlanRow[]) => { s.items.a!.plan = [...rows, accept()]; return rules(s).progressShare("a"); };
+  assert.equal(share([own("w")]), 0.25, "an owned sub-item in progress counts half of its row");
+  assert.equal(share([own("d")]), 0.5, "an owned sub-item done counts whole");
+  assert.equal(share([own("i")]), 0.25, "an owned sub-item idle counts half");
+  assert.equal(share([own("t")]), 0, "an owned sub-item not started counts nothing");
+  assert.equal(share([shared("r")]), 0.5, "a shared record counts whole");
+  assert.equal(share([own("c")]), 0, "an owned cancelled sub-item is left out of the share");
+  s.items.a!.plan = [shared("c"), accept("done")];
+  assert.equal(rules(s).progressShare("a"), 1, "a shared cancelled sub-item is left out too: the done acceptance step is the whole share");
+  assert.equal(rules(s).planRatio("a").total, 2, "the plan ratio keeps counting a shared cancelled row, as before");
+});
+
 test("only-acceptance and placeholder checks inspect every acceptance scenario", () => {
   const s = snapshot({ a: {} });
   s.items.a!.plan = [step("work", "done"), accept("done"), { ...accept(), id: "scenario", text: "（转换时没找到完成条件，待补）" }];

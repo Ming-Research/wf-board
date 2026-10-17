@@ -2212,7 +2212,7 @@ test("plans keep cancelled owned rows and missing targets while backlinks omit o
   const p=await page(s,unread("item","area"));
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
-  assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
+  assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","progress-band","counts"],"area is in progress, so its row carries the band");
   for (const cls of ["st","prio","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
@@ -4402,12 +4402,15 @@ test("the detail's progress line says how far a todo or part-done item is, what 
   assert.equal(item(p,"quiet").children.filter(c=>c.classList.contains("progress-line")).length, 1);
 });
 
-test("a tree row in progress carries a band as wide as its plan's share, behind the row", async () => {
+test("a tree row in progress carries a band as wide as its plan's share, and a parent counts its child in progress", async () => {
   const p = await page(snapshot(), []); await expand(p);
-  const band = rowOf(p, "child").querySelector(".progress-band") as Element | null;
-  assert.ok(band, "a wip row carries its band");
-  const share = parseFloat((band as unknown as { style: Record<string, string> }).style["--p"]!);
-  assert.ok(share > 0 && share <= 1, "the band's width is the plan's share, 0 to 1");
-  assert.equal(rowOf(p, "area").querySelector(".progress-band"), null, "the area row is not in progress: no band");
+  // child's plan: one row in progress (½) and the acceptance step (0), so ¼; area's only counted row is child, so ¼ too.
+  const bandOf = (id: string) => rowOf(p, id).querySelector(".progress-band") as Element | null;
+  const shareOf = (id: string) => parseFloat((bandOf(id) as unknown as { style: Record<string, string> }).style["--p"]!);
+  assert.ok(bandOf("child"), "a wip row carries its band");
+  assert.equal(shareOf("child"), 0.25);
+  assert.equal(shareOf("child"), rules(nativeSnapshot()).progressShare("child"), "the page draws the share the rules compute");
+  assert.equal(shareOf("area"), 0.25, "the parent's band counts its child in progress at half");
   assert.equal(rowOf(p, "child").querySelector(".steps-ratio"), null, "the band replaces the count on the tree row");
 });
+
