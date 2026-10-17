@@ -23,14 +23,15 @@ const PAGE = (padding: number) => ({ look: "classic", flowchart: { look: "classi
 // A diagram as wide as the detail pane rather than the text column: the pane is a container, and a block takes its width.
 const WIDE = "body.wide #item-detail { container-type: inline-size; } .rich .mermaid-block { width: 100cqw; max-width: 100cqw; }";
 const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
+const C = { cfg: PAGE(8), elk: { fromConfig: { edge: 12 } } };
 const VARIANTS: Variant[] = JSON.parse(process.env.VARIANTS ?? "null") ?? [
   { name: "elk" },
+  { name: "dagre", cfg: DAGRE },
   { name: "c-p8-e12", ...C },
-  { name: "elk-wide", css: WIDE },
-  { name: "c-p8-e12-wide", ...C, css: WIDE },
+  { name: "elk-2400", window: 2400 },
+  { name: "c-p8-e12-2400", ...C, window: 2400 },
   { name: "elk-1280", window: 1280 },
-  { name: "c-p8-e12-wide-1280", ...C, css: WIDE, window: 1280 },
-  { name: "c-p8-e12-wide-1920", ...C, css: WIDE, window: 1920 },
+  { name: "c-p8-e12-1280", ...C, window: 1280 },
 ];
 const CHARTS: Array<[string, string]> = [["role", ROLE], ["role-narrow", ROLE_NARROW], ["role-own", ROLE_OWN], ["lanes", LANES], ...SMALL];
 
@@ -108,7 +109,7 @@ function measure(block: Element) {
   const text = svg.querySelector(".nodeLabel, .label foreignObject div, text");
   const font = text ? parseFloat(getComputedStyle(text).fontSize) : NaN;
   return {
-    w: Math.round(vb.width), h: Math.round(vb.height), shown: Math.round(box.width), shownH: Math.round(box.height),
+    box: block.querySelector(".mermaid-fig")?.clientWidth ?? 0, w: Math.round(vb.width), h: Math.round(vb.height), shown: Math.round(box.width), shownH: Math.round(box.height),
     screenFont: Math.round(font * s * 10) / 10, fill: Math.round(area / (vb.width * vb.height) * 100),
     arrows, side, horizontal, ends, minRun: Math.min(...runs), shortRuns: runs.filter(r => r < 10).length,
     boxes: [...nodes].map(([k, r]) => `${k}:${Math.round(r.left)}-${Math.round(r.right)}@${Math.round(r.top)}`).join(" "), gap: Math.round(gap), labelOnBox, labelOnLabel, through, throughList,
@@ -179,10 +180,10 @@ async function main() {
   }
   await writeFile(join(OUT, "results.json"), JSON.stringify(results, null, 1));
   // The table of the role chart.
-  console.log("\nvariant | w×h | shown w×h | font on screen | fill% | side/arrows | horizontal | min run | runs<10 | gap | label on box | label on label | through");
+  console.log("\nvariant | box | w×h | shown w×h | font on screen | fill% | side/arrows | horizontal | min run | runs<10 | gap | label on box | label on label | through");
   for (const v of VARIANTS) {
     const m = results[`${v.name} role`] as ReturnType<typeof measure> | undefined;
-    if (m) console.log(`${v.name} | ${m.w}×${m.h} | ${m.shown}×${m.shownH} | ${m.screenFont} | ${m.fill} | ${m.side}/${m.arrows} | ${m.horizontal} | ${m.minRun} | ${m.shortRuns} | ${m.gap} | ${m.labelOnBox} | ${m.labelOnLabel} | ${m.through}`);
+    if (m) console.log(`${v.name} | ${m.box} | ${m.w}×${m.h} | ${m.shown}×${m.shownH} | ${m.screenFont} | ${m.fill} | ${m.side}/${m.arrows} | ${m.horizontal} | ${m.minRun} | ${m.shortRuns} | ${m.gap} | ${m.labelOnBox} | ${m.labelOnLabel} | ${m.through}`);
   }
 }
 
