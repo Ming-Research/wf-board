@@ -110,7 +110,7 @@ test("the pools take items by level and count the engineers that are working, no
   const b = await empty(t);
   await b.root("r", "P0");
   await b.child("low", "r", { difficulty: 1 }); await b.child("mid", "r", { difficulty: 3 }); await b.child("high", "r", { difficulty: 5 });
-  assert.deepEqual(POOLS.map(p => [p.pool, p.limit]), [["1", 10], ["2+", 6]]);
+  assert.deepEqual(POOLS.map(p => p.pool), ["1", "2+"]);
   assert.deepEqual(ids(b.pool("1").listed), ["low"], "level 1 is the first pool");
   assert.deepEqual(ids(b.pool("2+").listed), ["mid", "high"], "levels 3 and 5 are the second");
   // Engineers of level 3. working: a step in progress that waits on nothing.
@@ -137,21 +137,21 @@ test("the pools take items by level and count the engineers that are working, no
   await b.child("l1", "r", { difficulty: 1, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("l1", 1);
   await b.child("l2", "r", { difficulty: 1, plan: [{ id: "run", text: "等跑完", state: "doing", waits: "14900K 上的测量" }] }); await b.engineer("l2", 1);
   const two = b.pool("2+"), one = b.pool("1");
-  assert.deepEqual([two.limit, two.working, two.free], [6, 4, 2], "w1, w2 (CI), c5 and w6 work; w3 w4 w5 w7 w8 wait");
-  assert.deepEqual([one.limit, one.working, one.free], [10, 1, 9]);
+  assert.equal(two.working, 4, "w1, w2 (CI), c5 and w6 work; w3 w4 w5 w7 w8 wait");
+  assert.equal(one.working, 1);
   assert.deepEqual(ids(two.listed), ["mid", "high"], "a held item is not a candidate");
 });
 
-test("a pool with no free slot lists no rows and counts its candidates", async t => {
+test("a pool with more engineers working than any limit still lists its candidates, and the answer names no limit or free slot", async t => {
   const b = await empty(t);
   await b.root("r", "P0");
   for (let k = 1; k <= 7; k++) { await b.child(`w${k}`, "r", { plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer(`w${k}`, 2); }
   await b.child("p", "r"); await b.child("q", "r");
   const two = b.pool("2+");
-  assert.deepEqual([two.working, two.free, two.listed, two.more, two.total], [7, 0, [], 2, 2], "seven working over the limit of six: no slot, no rows, two candidates, counted all the same");
+  assert.deepEqual([two.working, two.listed.length, two.more, two.total], [7, 2, 0, 2], "seven working and two candidates, both listed: the board holds no limit to stop the list");
   const text = candidatesText(b.view());
-  assert.match(text, /2 级以上：上限 6，在干活 7，空 0，候选 2\n  还有 2 条能开工没列出/);
-  assert.match(text, /还有 2 条能开工没列出/);
+  assert.match(text, /2 级以上：在干活 7，候选 2\n  p · p · 难度 2 · Whitefoot · #\d+\n  q · q · 难度 2 · Whitefoot · #\d+$/);
+  assert.doesNotMatch(text, /上限|空 \d/, "the board does not say how many slots there are or how many are free");
 });
 
 test("an item is a candidate only when a root needs it, it can start, it is rated, and nothing holds it", async t => {
@@ -209,7 +209,7 @@ test("candidates answers a few lines, under= answers one parent's items, and an 
   await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
   const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
   const all = await text({});
-  assert.match(all, /^1 级：上限 10，在干活 0，空 10，候选 1\n  solo · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：上限 6，在干活 0，空 6，候选 4\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
+  assert.match(all, /^1 级：在干活 0，候选 1\n  solo · solo · 难度 1 · Whitefoot · #\d+\n2 级以上：在干活 0，候选 4\n  g · g · Whitefoot · #\d+ · 下面有 4 条能开工，candidates under=g 看逐条$/);
   assert.match(await text({ under: "g" }), /^g · g 下面能开工的\n  g1 · g1 · 难度 2 · Whitefoot · #\d+\n  g2 /);
   const bad = await client.callTool({ name: "candidates", arguments: { under: "nope" } });
   assert.equal(bad.isError, true);

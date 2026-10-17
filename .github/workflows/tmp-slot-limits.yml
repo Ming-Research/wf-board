@@ -1,0 +1,21 @@
+name: tmp-slot-limits
+# Temporary quick check for the slot-limits-by-pm branch: runs the tests this change touches on each push. Removed before the
+# branch is ready (the full CI rejects a tmp-* workflow left in a branch).
+on:
+  push:
+    branches: [slot-limits-by-pm]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      - run: node --test test/candidates.test.ts test/wake.test.ts test/wake-agents.test.ts

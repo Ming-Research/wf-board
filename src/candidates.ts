@@ -7,15 +7,15 @@ import type { Difficulty, Dispatch, Snapshot } from "./model.ts";
 import { isReviewStep, waitsOnRun } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
-/** The two pools of engineers working at the same time, and the most each holds (set by the owner). */
+/** The two pools of engineers. The board holds no limit on either: the owner gives the PM the numbers, and the PM compares them with the working count. */
 export const POOLS = [
-  { pool: "1", limit: 10, text: "1 级", covers: (level: number) => level === 1 },
-  { pool: "2+", limit: 6, text: "2 级以上", covers: (level: number) => level >= 2 },
+  { pool: "1", text: "1 级", covers: (level: number) => level === 1 },
+  { pool: "2+", text: "2 级以上", covers: (level: number) => level >= 2 },
 ] as const;
 export type Pool = (typeof POOLS)[number]["pool"];
 /** More candidates than this under one parent are listed as the parent and a count. */
 export const GROUP_OVER = 3;
-/** The most rows listed for a pool while a slot is free, and under one parent: the rest are counted, and `under` lists a parent's. */
+/** The most rows listed for a pool, and under one parent: the rest are counted, and `under` lists a parent's. */
 export const ROWS_LISTED = 10;
 export const UNDER_LISTED = 10;
 
@@ -24,14 +24,11 @@ export interface Candidate { id: string; num?: number; project: string; title: s
 export interface CandidateGroup { parent: string; num?: number; project: string; title: string; count: number }
 export interface PoolView {
   pool: Pool;
-  limit: number;
   /** Engineers holding an item and not waiting. */
   working: number;
-  /** `limit - working`, never below 0. */
-  free: number;
-  /** The first rows in the default order, at most ROWS_LISTED, while a slot is free; none when no slot is free. */
+  /** The first rows in the default order, at most ROWS_LISTED. */
   listed: Array<Candidate | CandidateGroup>;
-  /** The candidates of the pool, listed or not, whether or not a slot is free. A group row counts a parent's candidates of every level, so the pool's own count is this and not read from the rows. */
+  /** The candidates of the pool, listed or not. A group row counts a parent's candidates of every level, so the pool's own count is this and not read from the rows. */
   total: number;
   /** Candidates of the pool that `listed` does not cover. */
   more: number;
@@ -96,11 +93,11 @@ function workingBy(s: Snapshot, r: Rules): Map<Pool, number> {
  */
 export function candidates(s: Snapshot, r: Rules): Candidates {
   const working = workingBy(s, r), all = candidateIds(s, r);
-  // A parent with more than GROUP_OVER candidates, of any level, is grouped; the slots and the counts of a pool do not read the groups.
+  // A parent with more than GROUP_OVER candidates, of any level, is grouped; the counts of a pool do not read the groups.
   const perParent = new Map<string, number>();
   for (const id of all) { const p = r.parentOf(id); if (p !== undefined) perParent.set(p, (perParent.get(p) ?? 0) + 1); }
   const grouping = (p: string | undefined): p is string => p !== undefined && perParent.get(p)! > GROUP_OVER;
-  return { pools: POOLS.map(({ pool, limit, covers }) => {
+  return { pools: POOLS.map(({ pool, covers }) => {
     const mine = all.filter(id => covers(s.items[id]!.difficulty!));
     const rows: Array<{ row: Candidate | CandidateGroup; items: number }> = [], grouped = new Set<string>();
     for (const id of mine) {
@@ -111,8 +108,8 @@ export function candidates(s: Snapshot, r: Rules): Candidates {
       const parent = s.items[p]!;
       rows.push({ row: { parent: p, ...(parent.num === undefined ? {} : { num: parent.num }), project: r.projectOf(p), title: parent.title, count: perParent.get(p)! }, items: mine.filter(x => r.parentOf(x) === p).length });
     }
-    const free = Math.max(0, limit - working.get(pool)!), shown = free ? rows.slice(0, ROWS_LISTED) : [];
-    return { pool, limit, working: working.get(pool)!, free, listed: shown.map(x => x.row), total: mine.length, more: mine.length - shown.reduce((n, x) => n + x.items, 0) };
+    const shown = rows.slice(0, ROWS_LISTED);
+    return { pool, working: working.get(pool)!, listed: shown.map(x => x.row), total: mine.length, more: mine.length - shown.reduce((n, x) => n + x.items, 0) };
   }) };
 }
 
@@ -132,7 +129,7 @@ function itemLine(x: Candidate): string {
 /** The text a tool answers with: a line per pool, then its rows. */
 export function candidatesText(view: Candidates): string {
   return view.pools.map(p => {
-    const head = `${POOLS.find(x => x.pool === p.pool)!.text}：上限 ${p.limit}，在干活 ${p.working}，空 ${p.free}，候选 ${p.total}`;
+    const head = `${POOLS.find(x => x.pool === p.pool)!.text}：在干活 ${p.working}，候选 ${p.total}`;
     const rows = p.listed.map(x => isGroup(x) ? `  ${x.parent} · ${x.title} · ${x.project}${numText(x)} · 下面有 ${x.count} 条能开工，candidates under=${x.parent} 看逐条` : `  ${itemLine(x)}`);
     return [head, ...rows, ...(p.more ? [`  还有 ${p.more} 条能开工没列出`] : [])].join("\n");
   }).join("\n");
