@@ -27,7 +27,7 @@ function dark(): boolean {
 
 /** What the library made of each source, by theme and source, so a block the page draws again (a live update repaints the item it is in)
  * shows its diagram or its error at once instead of source text until the library answers. */
-const drawn = new Map<string, { svg: string } | { error: string }>();
+const drawn = new Map<string, { svg: string; id: string } | { error: string }>();
 // Mermaid draws one diagram at a time, each with the configuration set just before it.
 let queue: Promise<unknown> = Promise.resolve();
 let serial = 0;
@@ -36,6 +36,10 @@ function figure(svg: string): HTMLElement {
   const box = document.createElement("div");
   box.className = "mermaid-fig";
   box.innerHTML = svg;
+  // The library sizes a drawing to its container (a width of 100% and a maximum width). The diagram is shown at its own size instead, and
+  // its box scrolls sideways when that is wider than the text.
+  const drawing = box.querySelector("svg"), width = drawing?.viewBox.baseVal.width;
+  if (drawing && width) drawing.style.width = width + "px";
   return box;
 }
 
@@ -57,7 +61,9 @@ function fail(block: HTMLElement, message: string) {
 function draw(block: HTMLElement) {
   const source = block.querySelector("code")?.textContent ?? "", theme = dark() ? "dark" : "default", key = theme + "\n" + source;
   const known = drawn.get(key);
-  if (known) { if ("svg" in known) show(block, known.svg); else fail(block, known.error); return; }
+  // The copy gets ids of its own: the first copy of the same diagram may be hidden (a folded section), and the markers a line points at
+  // are found by id.
+  if (known) { if ("svg" in known) show(block, known.svg.replaceAll(known.id, "mermaid-" + ++serial)); else fail(block, known.error); return; }
   block.dataset.state = "loading";
   const id = "mermaid-" + ++serial;
   queue = queue.then(async () => {
@@ -74,7 +80,7 @@ function draw(block: HTMLElement) {
         fontFamily: getComputedStyle(document.body).fontFamily,
       });
       const { svg } = await mermaid.render(id, source);
-      drawn.set(key, { svg });
+      drawn.set(key, { svg, id });
       if (block.isConnected) show(block, svg);
     } catch (error) {
       // Mermaid leaves the half-drawn diagram of a failed render in the page.

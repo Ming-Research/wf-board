@@ -372,7 +372,7 @@ restart.
   `POST /api/wake`; the daemon then reads the page files again and, when the
   version differs from the last one it told, sends a `page` event to every open
   page. The pages already open are told only then, never between the job's merge
-  and its build, where the two files do not agree yet: a page that connects in
+  and its build, where the files do not agree yet: a page that connects in
   that gap is told the version it sees, and is told again when the deploy ends.
   A page that sees another version than its own reloads (section 7, Updating the
   page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
@@ -1929,7 +1929,9 @@ heads and log entries alike (`web/mermaid.ts`). `codeBlock` wraps such a block i
 each wrapped block it shows, whichever render put it there: a `MutationObserver`
 on the body sees every block added, so a live update that repaints an item draws
 its blocks again, from a cache of what the library made of each source (by color
-scheme and source), which also keeps a block from showing code for a moment. The
+scheme and source), which also keeps a block from showing code for a moment; a copy
+from the cache gets ids of its own, since the line markers of a diagram are found by id
+and the first copy may sit in a folded section. The
 library is mermaid from npm, pinned in `package.json`, bundled as one file,
 `web/dist/mermaid.js` (`web/mermaid-entry.ts`, built by `build:web` beside the
 page bundle), served at `GET /mermaid.js` with an `ETag` so the browser asks
@@ -1938,12 +1940,14 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden). A block that
+diagram stands in for its code (the code stays in the page, hidden) and is shown at its own
+size: a narrow one is centered, and one wider than the text scrolls sideways in its own box,
+so the page itself never scrolls sideways. A block that
 does not parse keeps showing its code with the library's error under it, and the
 other blocks and the rest of the page are untouched. The diagrams use the
 library's `dark` theme when the page shows its dark colors (the owner's
-`data-theme`, else the system's) and `default` otherwise, and are drawn again
-when that changes.
+`data-theme` attribute on the root element, else the system's) and `default` otherwise,
+and are drawn again when either changes.
 
 Glossary links. In item heads, steps and log entries, card questions, backgrounds,
 options and rulings, and note texts and replies, a glossary term links to its
@@ -3066,9 +3070,14 @@ log are drawn, with Chinese labels; a block that does not parse shows its code a
 error while the blocks after it are drawn; hostile text (a script in a label, a
 `javascript:` link) leaves nothing that runs; a page with no diagram never fetches the
 library and one with diagrams fetches it once; the diagrams are drawn again after a live
-update repaints their item; labels and lines read in both color schemes. Each check also
+update repaints their item; a wide diagram keeps its own size and scrolls in its box while the page
+does not scroll sideways; the same diagram drawn twice in one page, the first copy in a folded
+section, has no id twice and the visible copy's line markers are its own; labels
+and lines read in both color schemes, and the `data-theme` attribute wins over the system's
+scheme. Each check also
 runs on a page with the one part it protects taken out by an edit applied while the page is
-bundled, where it must report the part's absence.
+bundled, where it must report the part's absence for the reason the check protects, not for
+a timeout or a page that did not start.
 
 **Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
 current page, where it must find nothing, and on the page with a past fix
