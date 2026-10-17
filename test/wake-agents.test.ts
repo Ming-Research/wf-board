@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -256,6 +256,9 @@ test("any session name up to 80 characters has a stream that survives a restart,
   const back = new Wake({ dir, now: () => T0 });
   assert.equal(back.hasAgent("named"), true);
   assert.deepEqual([back.agent("named").latest(), back.agent("named").deliveredUpTo(), back.agent("named").pending().frames.map(f => f.note)], [3, 2, ["x2"]]);
+  // A record is the name only when name is all it holds: an event carrying a name field, even first, is not taken for it.
+  await writeFile(join(dir, agentFileName("real")), [{ n: 1, at: "2026-10-17T00:00:00.000Z", event: "note", name: "impostor" }, { name: "real" }].map(l => JSON.stringify(l) + "\n").join(""));
+  assert.equal(new Wake({ dir, now: () => T0 }).hasAgent("real"), true);
 });
 
 test("a stream whose wait script is connected is kept however long it goes unused, and its socket keeps getting its pushes", async t => {
