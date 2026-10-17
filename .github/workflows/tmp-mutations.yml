@@ -1,0 +1,31 @@
+# Temporary (wake-routing R2): removes the only-key check on a stream file's name line and requires the tests to fail. Removed next.
+name: tmp-mutations
+on:
+  push:
+    branches: [wake-routing]
+jobs:
+  mutations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: without the only-key check the tests fail
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          path = "src/wake.ts"
+          text = open(path).read()
+          old = "Object.keys(record).length === 1 && "
+          assert text.count(old) == 1
+          open(path, "w").write(text.replace(old, ""))
+          PY
+          if timeout 120 node --test --test-timeout=30000 test/wake-agents.test.ts > /tmp/r2.log 2>&1; then
+            echo "::error::R2-only-key-dropped: the tests still pass"; exit 1
+          fi
+          echo "R2-only-key-dropped: caught"; grep -E "^✖|^ℹ (pass|fail)" /tmp/r2.log | head -6 || true
