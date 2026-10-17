@@ -32,7 +32,7 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/base" origin/main
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
           echo "base $(git -C "$RUNNER_TEMP/base" rev-parse HEAD)"
-          PROBE_BASE="$RUNNER_TEMP/base" node --test test/e2e/probe-*.e2e.ts
+          PROBE_BASE="$RUNNER_TEMP/base" node --test test/e2e/${PROBE_FILE:-probe-contention}.e2e.ts
       - if: always()
         uses: actions/upload-artifact@v4
         with:
