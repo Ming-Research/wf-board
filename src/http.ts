@@ -21,7 +21,6 @@ import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import type { AgentStream } from "./wake.ts";
-import { Liveness } from "./liveness.ts";
 import { holderOf, holders } from "./dispatch.ts";
 import { timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
@@ -37,7 +36,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; liveness?: Liveness; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -47,8 +46,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   let closing = false;
   // The numbered streams of pushes, the PM's receipts and the owner's notifications (src/wake.ts).
   const wake = deps.wake ?? new Wake({ now });
-  // Whether the sessions holding items are still there: it hears a sign from every wait-script connection here, and from every tool call in src/mcp.ts.
-  const liveness = deps.liveness ?? new Liveness({ wake, now });
   // A push routed to an item's holder goes to the session holding it now (docs/design.md, The wake streams).
   wake.routeBy(item => holderOf(store.snapshot(), item));
   // Each wake socket, with the agent stream it reads; none for the PM's stream at /wake.
@@ -247,11 +244,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isArchitectSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
-      // A connected wait script is a sign of life, and so is its end: the silence counts from the moment it went.
-      liveness.see(name);
       socket.on("pong", () => { connection.alive = true; });
       socket.on("error", console.error);
-      socket.on("close", () => { connections.delete(connection); liveness.see(name); });
+      // A wait script connected is a sign of life at each round of the minute timer, and its end is one: the silence counts from the moment it went.
+      socket.on("close", () => { connections.delete(connection); wake.liveness.see(name); });
       socket.on("message", data => {
         let ack: unknown;
         try { ack = (JSON.parse(data.toString()) as { ack?: unknown }).ack; } catch { return; }
@@ -368,7 +364,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     scanChecks(true); wake.checkReceipts();
     const s = store.snapshot(), held = holders(s), r = store.derived.rules(s, now());
     wake.prune(name => held.has(name) || connected(name));
-    liveness.check(held, connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
+    wake.liveness.check(held, connected, item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
     void timed();
   }, deps.checkIntervalMs ?? 60_000);
   checker.unref();

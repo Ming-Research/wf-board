@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Liveness } from "./liveness.ts";
 
 /** Where a kind of push goes: the PM's stream, or the stream of the session holding the item that `holder` names (an item key
  * among the fields), and the PM's when no session holds it (docs/design.md, The wake streams). */
@@ -281,6 +282,8 @@ export class AgentStream extends NumberedLog {
 export interface WakeOptions extends LogOptions {
   /** Where the agents' streams are kept, one file each; without it they live in memory only. */
   dir?: string;
+  /** Where the marks of the liveness checks are kept (src/liveness.ts); without it they live in memory only. */
+  livenessFile?: string;
   receiptLimitMs?: number;
 }
 
@@ -310,6 +313,9 @@ export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 export class Wake extends NumberedLog {
   readonly receiptLimitMs: number;
   private readonly dir?: string;
+  /** Whether the sessions holding items are still there: a call or a connection is a sign (`liveness.see`), and the server's
+   * minute timer runs `liveness.check`, which pushes the ask and the "no answer" through this object. */
+  readonly liveness: Liveness;
   private receipted = 0;
   private alerted = false;
   private marked?: TimedMark;
@@ -323,6 +329,7 @@ export class Wake extends NumberedLog {
     super(options, 1000, 2 * 1024 * 1024);
     this.dir = options.dir;
     this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
+    this.liveness = new Liveness({ wake: this, now: this.now, file: options.livenessFile });
     this.loadFile();
     // The agents' streams are read at start, so what is undelivered reaches a tool result before any wait script connects.
     try {

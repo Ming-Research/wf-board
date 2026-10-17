@@ -2299,9 +2299,8 @@ mostly empty.
 
 **Liveness.** The board asks whether a session holding an item is still there
 (`src/liveness.ts`, from the server's minute timer). A *sign of life* is a call
-to any tool as that session (the same name the tool result uses), a connection
-of its wait script to its stream, and the end of such a connection; while the
-script is connected, each tick counts as a sign. A session holding an item
+to any tool as that session (the same name the tool result uses), its wait
+script being connected at a round of the timer, and the end of that connection. A session holding an item
 (above) that gives no sign for 30 minutes is asked: an `ask-alive` goes into its
 stream, and any sign answers it. If it gives none for another 30 minutes,
 `no-answer` goes to the architect with the session, item, project and the time

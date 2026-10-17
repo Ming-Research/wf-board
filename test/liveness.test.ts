@@ -9,9 +9,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, server, agentSocket, asArchitect } from "./helpers.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
-import { ASK_AFTER_MS, Liveness, TELL_AFTER_MS } from "../src/liveness.ts";
+import type { Snapshot } from "../src/model.ts";
+import { ASK_AFTER_MS, TELL_AFTER_MS } from "../src/liveness.ts";
 import { FOOTER_HEAD, FOOTER_LINES, Wake, WAKE_KINDS, lineOf } from "../src/wake.ts";
 import type { Told } from "../src/wake.ts";
+import { holders } from "../src/dispatch.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Resolved } from "../src/credentials.ts";
 
@@ -24,19 +26,20 @@ async function scratch(t: { after(fn: () => void | Promise<void>): void }) {
 }
 const about = (item: string) => ({ project: "Whitefoot", title: "标题 " + item });
 
-/** A wake, a clock and the sessions holding items, which the tests move; `check` is one round of the minute timer. */
-function rig(options: { file?: string; clock?: { now: number } } = {}) {
-  const clock = options.clock ?? { now: T0 };
-  const wake = new Wake({ now: () => clock.now });
-  const held = new Map<string, string[]>([["eng", ["it1"]]]);
+/** A board start: a wake over a clock the tests move, with the session `eng` holding `it1` and `it2`; `check` is one round of the minute
+ * timer, `asks` what `eng` has been asked and `told` what the PM has been told. `restart` starts the board again over the same marks file. */
+function rig(file?: string, clock = { now: T0 }) {
+  const wake = new Wake({ now: () => clock.now, livenessFile: file });
+  const held = new Map<string, string[]>([["eng", ["it1", "it2"]]]);
   wake.routeBy(item => [...held].find(([, items]) => items.includes(item))?.[0]);
-  const make = () => new Liveness({ wake, now: () => clock.now, file: options.file });
-  const liveness = make();
-  const at = (minutes: number) => { clock.now = T0 + minutes * MIN; };
-  const check = (connected: (name: string) => boolean = () => false) => liveness.check(held, connected, about);
-  const asks = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
-  const told = () => wake.since(0).frames.filter(f => f.event === "no-answer");
-  return { clock, wake, held, liveness, make, at, check, asks, told };
+  return {
+    clock, wake, held, liveness: wake.liveness,
+    at: (minutes: number) => { clock.now = T0 + minutes * MIN; },
+    check: (connected: (name: string) => boolean = () => false) => wake.liveness.check(held, connected, about),
+    asks: () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive"),
+    told: () => wake.since(0).frames.filter(f => f.event === "no-answer"),
+    restart: () => rig(file, clock),
+  };
 }
 
 test("the times are 30 minutes to the ask and 30 more to the PM, and the kinds go where the design says", () => {
@@ -120,32 +123,29 @@ test("a session holding nothing is not watched, and what the board knew of it is
 
 test("the asked and told marks survive a restart: a restart repeats nothing, and a session asked before it has its whole time after it", async t => {
   const file = join(await scratch(t), "liveness.json");
-  const r = rig({ file });
+  const r = rig(file);
   r.check(); r.at(30); r.check();
   assert.equal(r.asks().length, 1);
   r.at(40);
-  const restarted = r.make();
-  r.at(69); restarted.check(r.held, () => false, about);
-  assert.equal(r.told().length, 0, "the silence starts anew at the restart, so 30 minutes after the ask is not yet 30 after the restart");
-  assert.equal(r.asks().length, 1, "and the restart does not ask again");
-  r.at(70); restarted.check(r.held, () => false, about);
-  assert.equal(r.told().length, 1, "30 minutes after the restart the PM is told");
+  const second = r.restart();
+  r.at(69); second.check();
+  assert.deepEqual([second.asks().length, second.told().length], [0, 0], "the restart does not ask again, and the silence starts anew at it, so 30 minutes after the ask is not yet 30 after the restart");
+  r.at(70); second.check();
+  assert.deepEqual([second.asks().length, second.told().length], [0, 1], "30 minutes after the restart the PM is told");
   r.at(500);
-  const again = r.make();
-  again.check(r.held, () => false, about);
-  r.at(900); again.check(r.held, () => false, about);
-  assert.deepEqual([r.asks().length, r.told().length], [1, 1], "a told silence stays told through a restart");
-  again.see("eng");
+  const third = r.restart();
+  third.check(); r.at(900); third.check();
+  assert.deepEqual([third.asks().length, third.told().length], [0, 0], "a told silence stays told through a restart");
+  third.liveness.see("eng");
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {}, "a sign takes the marks out of the file");
-  const third = r.make();
-  third.check(r.held, () => false, about);
-  r.at(931); third.check(r.held, () => false, about);
-  assert.equal(r.asks().length, 2, "a new silence after the sign is asked");
+  const fourth = r.restart();
+  fourth.check(); r.at(931); fourth.check();
+  assert.equal(fourth.asks().length, 1, "a new silence after the sign is asked");
 });
 
 test("a session that stops holding its item loses its marks, so holding again starts a silence from nothing", async t => {
   const file = join(await scratch(t), "liveness.json");
-  const r = rig({ file });
+  const r = rig(file);
   r.check(); r.at(30); r.check();
   assert.ok(JSON.parse(await readFile(file, "utf8")).eng.asked);
   r.at(31); r.liveness.check(new Map(), () => false, about);
@@ -160,7 +160,7 @@ test("a session that stops holding its item loses its marks, so holding again st
 test("a marks file that cannot be read starts every silence at the start", async t => {
   const file = join(await scratch(t), "liveness.json");
   await writeFile(file, "not json");
-  const r = rig({ file });
+  const r = rig(file);
   r.check(); r.at(29); r.check();
   assert.equal(r.asks().length, 0);
   r.at(30); r.check();
@@ -212,53 +212,62 @@ test("a no-answer the PM leaves unanswered for an hour tells the owner, and a cl
 });
 
 test("a tool call is a sign of life for the session it is made as: the credential's, else the name the call gives, never the PM's", async t => {
-  const { store, op } = await board(t);
-  const seen: string[] = [], liveness = { see: (name: string) => { seen.push(name); } } as unknown as Liveness;
+  const { store, op } = await board(t), wake = new Wake({ now: () => T0 });
+  const see = t.mock.method(wake.liveness, "see");
   const call = async (args: Record<string, unknown>, credential?: Resolved) => {
-    const mcp = createMcpServer({ store, ops: op, liveness, credential }), client = new Client({ name: "Sign", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+    const mcp = createMcpServer({ store, ops: op, wake, credential }), client = new Client({ name: "Sign", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
     await mcp.connect(st); await client.connect(ct);
     t.after(async () => { await client.close(); await mcp.close(); });
     return client.callTool({ name: "projects", arguments: args });
   };
+  const seen = () => see.mock.calls.map(c => c.arguments[0]);
   await call({ session: "eng" });
   await call({ session: " eng-2 " });
   await call({});
   await call({ session: ARCHITECT_SESSION });
-  assert.deepEqual(seen, ["eng", "eng-2"], "a read counts, the name is trimmed, no name and the PM count for no one");
+  assert.deepEqual(seen(), ["eng", "eng-2"], "a read counts, the name is trimmed, no name and the PM count for no one");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
   await call({ session: "eng" }, credential);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
   await call({ session: "eng" }, architect);
-  assert.deepEqual(seen, ["eng", "eng-2", "cred-eng"], "the credential's session, not the one the call names; the PM's credential is no one's sign");
+  assert.deepEqual(seen(), ["eng", "eng-2", "cred-eng"], "the credential's session, not the one the call names; the PM's credential is no one's sign");
 });
 
-/** A Liveness that remembers who gave a sign, so a test can wait for the server to have heard one. */
-class Watched extends Liveness {
-  signs: string[] = [];
-  override see(name: string): void { this.signs.push(name); super.see(name); }
-}
+test("holders maps each session to the items it holds, in item order, by the one reading of holding", () => {
+  const d = (agent: string, started: string, extra: object = {}) => ({ role: "工程师", agent, agentId: agent + started, level: 2, model: "m", started, ...extra });
+  const s = { items: {
+    x: { dispatches: [d("eng", "2026-10-16T01:00:00Z")] },
+    y: { dispatches: [d("other", "2026-10-16T01:00:00Z"), d("eng", "2026-10-16T02:00:00Z")] },
+    z: { dispatches: [d("eng", "2026-10-16T01:00:00Z", { finish: {} })] },
+    w: { dispatches: [{ ...d("rev", "2026-10-16T01:00:00Z"), role: "审查" }] },
+    v: { dispatches: [d("late", "2026-10-16T01:00:00Z")] },
+  } } as unknown as Pick<Snapshot, "items">;
+  assert.deepEqual([...holders(s)], [["eng", ["x", "y"]], ["late", ["v"]]]);
+});
 
 test("on the server a connected wait script is a sign and its end starts the silence; a silent holder is asked, then the PM is told, with the item's project and title", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
-  const clock = { now: T0 }, wake = new Wake({ now: () => clock.now }), liveness = new Watched({ wake, now: () => clock.now });
-  const { url, op } = await server(t, { wake, liveness, now: () => clock.now, checkIntervalMs: 1000 });
+  const clock = { now: T0 }, wake = new Wake({ now: () => clock.now });
+  const see = t.mock.method(wake.liveness, "see");
+  const { url, op } = await server(t, { wake, now: () => clock.now, checkIntervalMs: 1000 });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "eng", agentId: "agent-1" });
   const tick = async () => { t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve)); };
   const asked = () => wake.agent("eng").since(0).frames.filter(f => f.event === "ask-alive");
+  const told = () => wake.since(0).frames.filter(f => f.event === "no-answer");
   const script = await agentSocket(t, url, "eng");
   await tick();
   clock.now += 120 * MIN; await tick();
   assert.equal(asked().length, 0, "connected for two hours, never asked");
-  const before = liveness.signs.length;
+  const before = see.mock.calls.length;
   script.socket.close();
-  for (let i = 0; i < 400 && liveness.signs.length === before; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(liveness.signs.length, before + 1, "the end of the connection is a sign too");
+  for (let i = 0; i < 400 && see.mock.calls.length === before; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(see.mock.calls.length, before + 1, "the end of the connection is a sign too");
   clock.now += 29 * MIN; await tick();
   assert.equal(asked().length, 0);
   clock.now += 2 * MIN; await tick();
   assert.deepEqual(asked().map(f => [f.item, f.project, f.title]), [["b", "Whitefoot", "阻塞证据"]], "30 minutes after the connection ended");
   clock.now += 29 * MIN; await tick();
-  assert.equal(wake.since(0).frames.filter(f => f.event === "no-answer").length, 0);
+  assert.equal(told().length, 0);
   clock.now += 1 * MIN; await tick();
-  assert.deepEqual(wake.since(0).frames.filter(f => f.event === "no-answer").map(f => [f.session, f.item, f.project, f.title]), [["eng", "b", "Whitefoot", "阻塞证据"]]);
+  assert.deepEqual(told().map(f => [f.session, f.item, f.project, f.title]), [["eng", "b", "Whitefoot", "阻塞证据"]]);
 });
