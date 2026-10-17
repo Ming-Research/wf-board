@@ -1223,6 +1223,17 @@ export class Store {
       return convertPlans(loaded.snapshot as Legacy.Snapshot, { at }).snapshot;
     });
   }
+  /** A version of a document that history returned as written, in today's shape: retired fields dropped, defaults filled. A
+   * version that does not fit today's schema is refused, naming the document. */
+  earlier(kind: Exclude<DocKind, "glossary">, id: string, doc: unknown): Doc {
+    return validated(schemas[kind], withoutRetiredFields(docPath(kind, id), doc), docPath(kind, id));
+  }
+  /** The board's settings (projects, tag vocabulary) as `commit` had them; null when it had no board file. */
+  async boardAt(commit: string): Promise<Board | null> {
+    const hash = await this.resolveCommit(commit);
+    const doc = await this.readAt("board.yaml", hash);
+    return doc === null ? null : validated(Board, withoutRetiredFields("board.yaml", doc), `${hash}:board.yaml`);
+  }
   async showCompared(kind: DocKind, id: string, commit: string): Promise<unknown | null> {
     docPath(kind, id);
     const raw = await this.show(kind, id, commit);
