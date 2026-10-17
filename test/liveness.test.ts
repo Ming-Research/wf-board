@@ -249,13 +249,16 @@ test("a tool call is a sign of life for the session it is made as: the credentia
   await call({ session: "eng" });
   await call({ session: " eng-2 " });
   await call({});
+  await call({ session: "PM" });
   await call({ session: ARCHITECT_SESSION });
-  assert.deepEqual(seen(), ["eng", "eng-2"], "a read counts, the name is trimmed, no name and the PM count for no one");
+  assert.deepEqual(seen(), ["eng", "eng-2", ARCHITECT_SESSION], "a read counts, the name is trimmed, no name and the PM count for no one; the architect has an agent's stream, so its calls count");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
   await call({ session: "eng" }, credential);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
   await call({ session: "eng" }, architect);
-  assert.deepEqual(seen(), ["eng", "eng-2", "cred-eng"], "the credential's session, not the one the call names; the PM's credential is no one's sign");
+  const pm: Resolved = { ok: true, who: { author: "PM", session: "PM", access: { role: "PM", project: "PM", roots: [] } } };
+  await call({ session: "eng" }, pm);
+  assert.deepEqual(seen(), ["eng", "eng-2", ARCHITECT_SESSION, "cred-eng", ARCHITECT_SESSION], "the credential's session, not the one the call names; the PM's credential is no one's sign");
 });
 
 test("holders maps each session to the items it holds, in item order, by the one reading of holding", () => {
