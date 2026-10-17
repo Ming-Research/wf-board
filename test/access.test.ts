@@ -31,7 +31,7 @@ test("the writes the code reserves are the parts the table withholds from the ob
   const { op } = await board(t);
   const legacy = { author: "Whitefoot", session: "someone" };
   const reserved: Array<[Part, RegExp, () => Promise<unknown>]> = [
-    ["item.create", rx`only ${PROCESS_WRITERS}`, () => op.createItem({ ...legacy, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" })],
+    ["item.create", rx`only ${PROCESS_WRITERS}`, () => op.createItem({ ...legacy, key: "n", title: "N", accept: "ok", group: "Whitefoot" })],
     ["journal", rx`only ${ARCHITECT_WRITER} may write the journal`, () => op.journalEntry({ ...legacy, text: "x" })],
     ["item.difficulty", rx`only ${PROCESS_WRITERS}`, () => op.setDifficulty({ ...legacy, id: "a", difficulty: 2, reason: "r" })],
     ["tag-vocab", rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`, () => op.setTag({ ...legacy, name: "标签", meaning: "m" })],
@@ -53,7 +53,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   createProject: [{ parts: ["project.create"], args: { name: "N" } }],
   updateProject: [{ parts: ["project.update"], args: { name: "Whitefoot", repo: "o/r" } }],
   closeNote: [{ parts: ["note.close"], args: { id: "note-1", log: "l" } }],
-  createItem: [{ parts: ["item.create"], args: { key: "n", title: "N", accept: "ok", priority: "P1", group: "Whitefoot" } }],
+  createItem: [{ parts: ["item.create"], args: { key: "n", title: "N", accept: "ok", group: "Whitefoot" } }],
   appendLog: [{ parts: ["item.log"], args: { id: "a", text: "t" } }],
   markMerged: [{ parts: ["item.merge-row"], args: { id: "a", row: "r", merged: [], log: "l" } }],
   journalEntry: [{ parts: ["journal"], args: { text: "t" } }],
@@ -63,7 +63,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   setTargets: [{ parts: ["item.targets"], args: { id: "a", remove: "r" } }],
   updateItem: [
     { parts: ["item.title"], args: { id: "a", rev: 1, title: "t" } }, { parts: ["item.head"], args: { id: "a", rev: 1, head: "h", reason: "r" } },
-    { parts: ["item.links"], args: { id: "a", rev: 1, links: [] } }, { parts: ["item.priority"], args: { id: "a", rev: 1, priority: "P1" } },
+    { parts: ["item.links"], args: { id: "a", rev: 1, links: [] } },
     { parts: ["item.data"], args: { id: "a", rev: 1, data: "d" } }, { parts: ["item.order"], args: { id: "a", rev: 1, order: 1 } },
     { parts: ["item.record"], args: { id: "a", rev: 1, record: true } }, { parts: ["item.head", "item.links"], args: { id: "a", rev: 1, head: "h", reason: "r", links: [] } },
   ],
@@ -139,16 +139,9 @@ test("a card is written inside the subtree only, and a write that reaches anothe
   await assert.rejects(op.moveItem({ ...who, id: "a", owner: "b" }), (e: unknown) => e instanceof OpError && /item\.move: a 工程师 credential may not write/.test(e.message));
 });
 
-test("a subtree credential cannot change an item outside its subtree through the effect of its own write, nor take one into its subtree", async t => {
+test("a subtree credential cannot take an item into its subtree", async t => {
   const { op, store } = await board(t);
   const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
-  // `other` is a root with a stored priority: a row of `a` that waits on it makes it a non-root, and the board then drops its
-  // priority and logs that in `other` (a document of the Firn project, outside the subtree).
-  const before = store.snapshot();
-  assert.ok(before.items.other!.priority);
-  await assert.rejects(op.setPlan({ ...who, id: "a", row: { item: "other", own: false } }), (e: unknown) => e instanceof OpError && /item other: outside the subtree of a/.test(e.message));
-  assert.equal(store.snapshot().head, before.head, "nothing was written");
-  assert.ok(store.snapshot().items.other!.priority, "and the other item kept its priority");
   // An own row for an unowned top item of the same project would put it under the subtree, where the credential then writes.
   await op.createItem({ ...asArchitect, key: "free", title: "Free", record: true, group: "Whitefoot" });
   const head = store.snapshot().head;
@@ -189,7 +182,7 @@ test("the observer writes items of any project, but nothing the architect reserv
   await op.appendLog({ ...who, id: "other", text: "rule change" });
   assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "Architect");
   await op.updateItem({ ...who, id: "a", rev: store.snapshot().items.a!.rev, head: "new head", reason: "rules" });
-  await assert.rejects(op.createItem({ ...who, key: "n", title: "N", priority: "P1", accept: "ok", group: "Architect" }), (e: unknown) => e instanceof OpError && /item\.create: a 观察者 credential may not write/.test(e.message));
+  await assert.rejects(op.createItem({ ...who, key: "n", title: "N", accept: "ok", group: "Architect" }), (e: unknown) => e instanceof OpError && /item\.create: a 观察者 credential may not write/.test(e.message));
   await assert.rejects(op.setDifficulty({ ...who, id: "a", difficulty: 2, reason: "r" }), (e: unknown) => e instanceof OpError && /may not write/.test(e.message));
 });
 
@@ -210,7 +203,7 @@ test("a credential speaks for the PM by its role, whatever author and session it
   // role is not the PM's, so it has no right over another project's items (`a` belongs to Whitefoot).
   const engineerAsPM = { ...asPM, access: { role: "工程师" as const, project: "PM", roots: ["a"] } };
   await assert.rejects(op.appendLog({ ...engineerAsPM, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
-  await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", priority: "P1", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item n: outside the subtree of a, the only items a 工程师 credential writes for item\.create/.test(e.message));
+  await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item n: outside the subtree of a, the only items a 工程师 credential writes for item\.create/.test(e.message));
   assert.equal(store.snapshot().head, head);
   // The PM's own credential does, with other names than the PM's.
   await op.appendLog({ author: "Whitefoot", session: "other-name", access: { role: "PM" as const, project: "PM", roots: [] }, id: "a", text: "from the PM" });
@@ -220,7 +213,7 @@ test("a credential speaks for the PM by its role, whatever author and session it
 test("the PM's credential does what the process needs in any project, and not what only the architect does", async t => {
   const { op, store } = await board(t);
   const who = { ...asPM, access: { role: "PM" as const, project: "PM", roots: [] } };
-  await op.createItem({ ...who, key: "made", title: "Made", priority: "P1", accept: "ok", group: "Whitefoot" });
+  await op.createItem({ ...who, key: "made", title: "Made", accept: "ok", group: "Whitefoot" });
   await op.setDifficulty({ ...who, id: "made", difficulty: 2, reason: "r" });
   await op.setPause({ ...who, id: "made", paused: true, reason: "later" });
   await op.setPause({ ...who, id: "made", paused: false });
@@ -237,7 +230,7 @@ test("the PM's credential does what the process needs in any project, and not wh
 test("the architect's credential does what the architect does, in any project", async t => {
   const { op, store } = await board(t);
   const who = { author: "Architect", session: "架构师", access: { role: "架构师" as const, project: "Architect", roots: [] } };
-  await op.createItem({ ...who, key: "made", title: "Made", priority: "P1", accept: "ok", group: "Whitefoot" });
+  await op.createItem({ ...who, key: "made", title: "Made", accept: "ok", group: "Whitefoot" });
   await op.appendLog({ ...who, id: "other", text: "from the architect" });
   assert.ok(store.snapshot().items.made);
   assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "Architect");
@@ -271,7 +264,7 @@ test("an engineer makes sub-items inside its subtree, rated and tagged, and cann
   assert.equal(rules(store.snapshot()).parentOf("subsub"), "sub");
   const head = store.snapshot().head;
   // A top item is owned by no item of the subtree; an owner outside it, whether a sibling or another project's, is no owner.
-  await assert.rejects(op.createItem({ ...who, ...make, key: "top", group: "Whitefoot", priority: "P1" }), outside("top", "a"));
+  await assert.rejects(op.createItem({ ...who, ...make, key: "top", group: "Whitefoot" }), outside("top", "a"));
   await assert.rejects(op.createItem({ ...who, ...make, key: "n2", owner: "b" }), outside("b", "a"));
   await assert.rejects(op.createItem({ ...who, ...make, key: "n3", owner: "other" }), (e: unknown) => e instanceof OpError && /item other belongs to project Firn/.test(e.message));
   // Existing items moved into the new item's plan are written too, and so must be inside.
@@ -293,7 +286,7 @@ test("an engineer rates and tags the items of its subtree and no others", async 
   await op.setTagsMany({ ...who(["area"]), items: [{ id: "a", tags: ["报错信息"] }, { id: "b", tags: ["健全性"] }] });
   assert.deepEqual([store.snapshot().items.a!.tags, store.snapshot().items.b!.tags], [["报错信息"], ["健全性"]]);
   // Outside the subtree: the sibling b of a for tags, an item of a tree of its own for ratings; one entry of a list refuses the whole list.
-  await op.createItem({ ...asArchitect, key: "solo", title: "另一棵树", group: "Whitefoot", priority: "P1", accept: "通过", tags: ["健全性"], difficulty: 2 });
+  await op.createItem({ ...asArchitect, key: "solo", title: "另一棵树", group: "Whitefoot", accept: "通过", tags: ["健全性"], difficulty: 2 });
   const head = store.snapshot().head;
   const calls: Array<[string, () => Promise<unknown>, string, string]> = [
     ["set_difficulty", () => op.setDifficulty({ ...who(["area"]), id: "solo", difficulty: 5, reason: "r" }), "solo", "area"],

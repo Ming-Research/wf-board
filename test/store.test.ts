@@ -12,7 +12,7 @@ import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type Cha
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
-const item = (title = "An item", head = "A head") => ({ title, group: "P", head, plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], priority: "P1" as const, updated: at });
+const item = (title = "An item", head = "A head") => ({ title, group: "P", head, plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], updated: at });
 async function setup(t: { after(fn: () => Promise<void>): void }) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-store-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

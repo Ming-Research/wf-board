@@ -187,7 +187,7 @@ test("only the kinds in the table are pushed: not a blocking card, an ask or a f
   await op.writeCard({ author, key: "hard", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }], blocks: "合并停着" });
   const other = store.snapshot().items.other!;
   await store.commit({ author, message: "set ask", puts: [{ kind: "item", id: "other", expectRev: other.rev, doc: { ...other, ask: { text: "请合并" } } }] });
-  await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
+  await store.commit({ author, message: "Block item", puts: [{ kind: "item", id: "c", expectRev: null, doc: { title: "卡住的条目", group: "Whitefoot", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } }] });
   await star.sync();
   assert.deepEqual(star.events(), []);
 });
@@ -235,7 +235,7 @@ test("active time alone (one hour) pushes one stalled event on the timer, and a 
   let clock = start + HOUR - 1;
   const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, prepare: ({ store }) => {
     const s = structuredClone(store.snapshot());
-    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", priority: "P1", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
+    s.items.w = Item.parse({ title: "没人推进的叶子", group: "Whitefoot", plan: [{ id: "work", text: "当前工作", state: "doing", since: new Date(start).toISOString() }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: new Date(start).toISOString(), log: [], rev: 1, head: "**完成条件**：某项检查通过" });
     s.activity = { writes: Array.from({ length: 2 }, (_, i) => new Date(start + i * 30 * 60 * 1000).toISOString()), items: {} };
     store.snapshot = () => structuredClone(s);
   } });
@@ -273,7 +273,7 @@ test("the timed wake lists what changed since the last one without the architect
   const { url, store, op, api } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half });
   // One item of the Architect project (the fixture board has it), one of the PM project with a step being worked on, and an item with a step being worked on.
   // Both are rated, so neither carries 缺难度 and the flags stay empty.
-  const doc = (title: string, group: string, plan: object[]) => ({ title, group, priority: "P1", difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
+  const doc = (title: string, group: string, plan: object[]) => ({ title, group, difficulty: 2, plan: [...plan, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" });
   await store.commit({ author, message: "Seed", puts: [
     { kind: "item", id: "arch", expectRev: null, doc: doc("架构师的条目", "Architect", [{ id: "step", text: "一步", state: "todo" }]) },
     { kind: "item", id: "pmwork", expectRev: null, doc: doc("PM 的条目", "PM", [{ id: "step", text: "当前工作", state: "doing", since: iso(T0) }]) },

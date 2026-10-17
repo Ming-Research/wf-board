@@ -81,7 +81,7 @@ changes to the page. A single process is the only writer, serializes all
 writes, and pushes every change to the page and to waiting sessions.
 
 **Why TypeScript.** The page's derived rules (an item's status from its
-plan, priority, the 需核对 flags, freshness) are JavaScript
+plan, the 需核对 flags, freshness) are JavaScript
 today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
@@ -681,11 +681,12 @@ log:
   the ownership chain always agree. The legacy `area` was folded into
   `parent` at the artifact migration and `parent` into owned plan rows at the
   plan conversion (section 10).
-- **Priority.** The former per-project migration switch (`migrated: true` and
-  the legacy priority of `src/legacy-priority.ts`) is retired by the plan
-  conversion, which migrates the remaining projects in the same commit
-  (section 10); every project follows the priority rule of
-  [Item plans](#item-plans).
+- **Priority.** Items store no priority and none is derived
+  ([Item plans](#item-plans), Priority). The former per-project migration
+  switch (`migrated: true` and the legacy priority of
+  `src/legacy-priority.ts`) went with the plan conversion (section 10), and
+  the stored field was cleared from the data by one migration (section 10,
+  Clearing the retired priority).
 - **Stalled work.** A work item in progress that has at least one `doing`
   step of its own is flagged after at least one hour of active time without
   a change to the clock's items: `进行中但 1 小时（活跃时间）没有动静`. The
@@ -915,7 +916,7 @@ log:
   marks the option; a changed question and the closing of a card mark the
   question and the 已裁定 tag. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
-  status and priority rows, and added or changed link rows, are not
+  status rows, and added or changed link rows, are not
   coloured either.
   New items and cards carry no per-block marks; added plan and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
@@ -976,7 +977,7 @@ parent's `deps` (174 children in the board of 2026-10-13 are missing from their
 parent's list), separate `steps`, and own-work sub-items invented only so a
 parent's status could be derived (58 of them). One ordered list holds all of
 it, so an item's page reads top to bottom as what remains to be done, and the
-tree, status, priority and blocking are all derived from it.
+tree, status and blocking are all derived from it.
 
 #### Rows
 
@@ -1185,16 +1186,12 @@ them as for every other author.
     first.
     Only a violation this move newly causes is refused; one that was already there (a top item of the new project that
     an open item of the new project already waits on) does not stop it.
-  - Priority. An item that lands as an open root keeps the `priority` it stores, and one with none needs it given. A
-    given `priority` replaces the stored one and the log says so when the value changes; it is refused when the item
-    does not land as a root, as in `move_item` without an owner. Work owned by a backlog record has no stored priority,
-    and a record is not open work, so it lands as a root and needs one.
   - Rejected: moving only the named item and leaving what it owns behind (the owned rows would become cross-project
     ownership), and an argument naming the new owner (above).
 - **Top items.** An item no row owns is a top item (what earlier sections
   call an area), drawn at the top level of its project. A top item is one of: a root (below); an item another
   project's shared row waits on, such as a collecting item (drawn under the
-  existing 被其他项目依赖 separator, its priority derived); or a closed item (done or
+  existing 被其他项目依赖 separator); or a closed item (done or
   cancelled), which needs nothing further. An open top item that an open work
   item of its own project waits on through a shared row shows
   同项目有条目在等它，却没有条目拥有它, and a write that introduces this is
@@ -1202,22 +1199,15 @@ them as for every other author.
   the others share it.
 - **Roots.** A root is an item that no open work item depends on through any
   item row, owned or shared, as before (paused work is still open for ownership
-  and rootness). Only a root stores `priority`; an open
-  root without one shows 没有未完成的条目依赖它，却没写优先级, unchanged. An
+  and rootness). An
   owned item under an open owner is never a root. An open item owned by a
   closed item shows 拥有它的条目已关闭 (it can only arise from data written
   before the cancellation refusal).
-  An open work item owned by a record is not a root, stores no priority,
-  and is exempt from the missing-root-priority check. It derives priority
-  from open, not-paused shared dependents, or none without them.
+  An open work item owned by a record is not a root.
 - **Backlog.** A project's backlog is a record whose plan owns the items it
-  holds. Records pass no priority (below), so backlog items without open,
-  not-paused shared dependents show no priority; moving an item out under an unpaused root's
-  plan gives it the root's priority. This replaces the present practice of a
-  P2 root named 待选工作, which gave every backlog item P2.
-  Setting priority on an open item owned by a record is refused with an
-  explanation that record-owned work cannot store priority and takes its
-  priority from open shared dependents. Record ownership supplies no seed.
+  holds. A record is not work, so backlog work is needed only through a
+  needed item other than its record (below); moving an item out under an
+  unpaused root's plan makes that root need it.
 - **Cycles.** Item rows, owned and shared together, may not form a cycle; a
   write that closes one is refused, and a stored cycle shows 依赖成环 as
   today. Owned rows alone therefore form a forest. `after` cannot form a cycle
@@ -1225,22 +1215,22 @@ them as for every other author.
 
 #### Priority
 
-Unchanged in substance from the migrated rule, now for every project: a
-root's priority is its stored one; every other item's is the highest among the
-open, not-paused work items whose plans hold an item row (owned or shared) for it, across
-projects and transitively. A closed item keeps the priority that reached it
-and passes none on; card rows carry none; a cycle that no open outside
-dependent reaches has none. One change: a record passes no priority, because
-a record is not work. Before, a record counted as an open dependent; three
-records exist (the 14900K queue among them). Open work owned by a record
-still takes the highest priority from open, not-paused shared dependents,
-and shows none without them; the record supplies none.
-A root stores `priority`; every write that makes an item a non-root, or
-writes a non-root, drops its stored priority in the same commit and logs
-`不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
-write's result lists the items. So no non-root holds a stored priority, and
-none returns when an item becomes a root again. A closed root shows its own
-stored priority.
+Items store no priority and the board derives none. The owner found that a
+large share of items showed P0 (a root's value reached everything it needs), so
+the value ranked nothing. What must come first is a dependency, and which ready
+work to start is the architect's call from the owner's principles, kept in the
+architect's context and not on the board. Siblings and the lists built from
+them sort ended items last, then by `order` (`compareSiblings`); the page's
+waiting panel lists the longest wait first. A write that still names
+`priority` (any tool that took it, or an operation) is refused with a message
+saying the field was removed, so a session working from old instructions
+learns it at once instead of seeing the argument ignored.
+
+Rejected: keeping the three levels as a coarse rank (it no longer separates
+anything, and agents would take it for the architect's choice); a sequence
+number the architect maintains on the board (a second ordering beside the
+dependencies that must be kept current by hand, for a choice the architect
+makes from context the board does not hold).
 
 An open work item is *needed* when an unpaused root needs it: it is an unpaused
 root, or an unpaused, open item holds an item row (owned or shared) for it and
@@ -1248,22 +1238,17 @@ is itself needed. A record is not work. So backlog work is needed
 only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
-started and has no stored priority is. The same walk
+started is. The same walk
 decides which items 缺难度 asks a difficulty for (with the state and next-step
 conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
-priority and checks stay the same.
-
-Effectively paused work keeps its own stored or derived displayed priority,
-but passes none through its item rows. Only open, not-paused dependents
-contribute priority to their targets. Pausing changes neither ownership nor
-rootness, so it does not discard a root's stored priority.
+checks stay the same.
 
 #### Records
 
 A record (`record: true`) may have a plan of steps, owned rows, shared rows
 and card rows, and no acceptance step; it has no status, appears in no status
-queue, is never waiting or blocking for anyone, and passes no priority. It may
+queue, is never waiting or blocking for anyone. It may
 own work items (the backlog, the 14900K queue's run items). A record can be
 owned, and an owned record row is always resolved and left out of the owner's
 counts. Setting `record: true` on a work item removes all its acceptance steps,
@@ -1348,7 +1333,7 @@ three manual-status checks listed under Status.
   like steps were.
 - **Provisional plans.** The conversion (section 10) marks every plan it
   produces `provisional: true`, a server-owned item field no caller can set.
-  A provisional plan works like any plan (status, priority and progress are
+  A provisional plan works like any plan (status and progress are
   derived from it, and single rows can be upserted to record progress), but
   it shows the check 计划待重写, whose label 待重写 appears beside the item's
   title in the tree and beside the 计划和进展 heading, and its owned rows
@@ -1396,7 +1381,7 @@ old model required are the common case.
 
 The detail column of a selected item reads, top to bottom:
 
-1. the head row: status, priority, title, ratio, chips (unchanged); the left
+1. the head row: status, title, ratio, chips; the left
    tree already shows the owner, so the detail has no ownership line;
    under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
@@ -1441,9 +1426,9 @@ follow the existing tokens with no new colours:
   doing step, `等 <waits>` when set, `10-12` (month-day) for a done step, the
   reason after a dropped step.
 - **Owned item row.** The glyph carries the child's status, then its
-  priority chip, its title as a link (click selects it, Back returns) and its
+  title as a link (click selects it, Back returns) and its
   own ratio `2/5`, on one line; there is no status chip and no second line.
-- **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
+- **Shared item row.** ⏸ or ✓, the target's title as a
   link, on one line; there is no owner or project line under it.
 - **Card row.** ⏸ or ✓ (a withdrawn card counts as ✓), the card tag (阻塞
   purple, 决策卡 red, 已裁定 or 已撤回) and the question's first line as a link.
@@ -1482,9 +1467,9 @@ progress with completed and dropped parts:
  ✗ 旧解析方案 · 已由新解析器替代
  ┌ 可同时进行
  │● 写解析器 · 3 天 · 等 CI
- │● [P0] Halo 的协程能挂起 2/5
+ │● Halo 的协程能挂起 2/5
  └○ 改写文档
- ⏸ [P0] Whitefoot 能读出对端地址
+ ⏸ Whitefoot 能读出对端地址
  ○ 发布说明
  ○ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
          CI 上连跑 3 次全部通过
@@ -1504,11 +1489,11 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
   <div class="plan-group" role="group" aria-label="可同时进行">
     <div class="plan-group-label">可同时进行</div>
     <div class="plan-row wip"><span class="g">●</span>写解析器 · 3 天 · 等 CI</div>
-    <div class="plan-row wip own"><span class="g">●</span><span class="prio p0">P0</span>
+    <div class="plan-row wip own"><span class="g">●</span>
       <a>Halo 的协程能挂起</a> <span class="steps-ratio">2/5</span></div>
     <div class="plan-row todo"><span class="g">○</span>改写文档</div>
   </div>
-  <div class="plan-row blocked shared"><span class="g">⏸</span><span class="prio p0">P0</span>
+  <div class="plan-row blocked shared"><span class="g">⏸</span>
     <a>Whitefoot 能读出对端地址</a></div>
   <div class="plan-row todo"><span class="g">○</span>发布说明</div>
   <div class="plan-row accept todo"><span class="g">○</span><span class="tag">验收</span>
@@ -1647,19 +1632,11 @@ overturn it.
    completing and is flagged, because a waited-for result that will never
    come is a problem for the waiting project to settle. Alternative: count it
    resolved like a cancelled owned item.
-2. **Records pass no priority, and a backlog is a record.** Proceeding on:
-   yes; record-owned work derives priority from open shared dependents,
-   or none without them. Alternative: keep backlogs as P2
-   roots; then every backlog item ranks P2, as now.
-3. **Retiring legacy priority.** Proceeding on: the plan conversion migrates
-   Whitefoot-kit, 总管 and 网站 and removes the legacy path, because plans make
-   every project's structure dependency-only. Alternative: keep the switch;
-   the plan model would then need the legacy rule for those three projects.
-4. **Order of same-level rows.** Proceeding on: rows display in stored order,
+2. **Order of same-level rows.** Proceeding on: rows display in stored order,
    and `context` warns when rows of one level are not adjacent. Alternative:
    the server keeps every plan sorted by level (stable), which always makes
    parallel rows adjacent but reorders what a session wrote.
-5. **Closed items after conversion.** Proceeding on: the mechanical
+3. **Closed items after conversion.** Proceeding on: the mechanical
    conversion keeps closed children as provisional rows of their owners'
    plans, fully visible; a rewrite keeps only the closed items its new plan attaches,
    and every other closed item becomes, or stays, a closed top item without a
@@ -1667,12 +1644,12 @@ overturn it.
    because an item that only holds finished items is a topic group, which the
    rules forbid. Alternative: a per-project record 已完成 owning loose closed
    items, which would tidy the tree but carries no meaning.
-6. **Own-work sub-items.** Proceeding on: the mechanical conversion keeps
+4. **Own-work sub-items.** Proceeding on: the mechanical conversion keeps
    the 58 own-work sub-items as provisional owned rows; the rewrite folds each
    back by the rule in "When a row becomes its own item". Alternative: the
    converter folds them automatically, which rewrites history the sessions
    did not review.
-7. **Cancelling with open parts.** Proceeding on: refused, naming the open
+5. **Cancelling with open parts.** Proceeding on: refused, naming the open
    owned items, so each gets its own reason. Alternative: a cascade that
    cancels all open owned descendants with the same reason.
 
@@ -1744,7 +1721,7 @@ instructions within the limit and free of rule text.
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
-| `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
+| `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
 | `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
@@ -1848,7 +1825,7 @@ author `总管` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the PM or the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the PM or the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the PM and the architect create items |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the PM or the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the PM or the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the PM and the architect create items |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
@@ -1863,11 +1840,11 @@ author `总管` is refused by every tool.
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the PM and the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
-| `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
-| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because the PM and the architect can resume it |
+| `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
+| `move_item_project(id, project)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); work leaving a paused chain is allowed, because the PM and the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
 | `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
@@ -1927,7 +1904,7 @@ names it (TODO, WIP, BLOCK, DONE, DROP, ◌ PAUSE, 记录). Every item status ch
 does this alike: tree rows, the detail header, dependency rows and search
 rows. An item not yet numbered shows the status word. A decision card's header
 shows its number before the question.
-Each item shows only its head row: fold toggle, status, priority, title, its
+Each item shows only its head row: fold toggle, status, title, its
 tags as small neutral grey chips (never a status colour; the tooltip is the tag's meaning),
 
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
@@ -1935,7 +1912,7 @@ highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 A tree row's right-hand counts show only open parts (todo, idle, in progress,
 blocked, paused); done and cancelled parts are not counted there, and a cancelled
-item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
+item shows no check tags. Each tree row stays on one line: caret, status, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work
 items counts, at the right of its row, its owned descendants that own no work
@@ -1973,8 +1950,7 @@ The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
 
 The 等你 panel sits under row 1 and shows only while a blocking wait exists:
 one row per blocking card or ask with a purple dot, the project, the `blocks`
-(or ask) text and the shortened card question, ordered by priority (P0 first)
-then by how long it has waited (card creation time; an ask's item update
+(or ask) text and the shortened card question, ordered by how long it has waited (card creation time; an ask's item update
 time). A click jumps like the `/` search and remembers the place for Back. A
 line 另有 M 张决策卡不挡工作 follows when M > 0.
 
@@ -3004,7 +2980,7 @@ start with the schema's own error, so nothing is read and silently discarded.
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items someone is working on (a doing step of their own or a live session),
-the next ten items rated 1–5 that `canStart` allows (status todo or idle), by priority,
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), in tree order,
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
@@ -3079,10 +3055,8 @@ the writer from it.
   project's glossary), `below` (a `subtree` without the items the credential names) or `own` (no item, only the writer's own message). `ops.run` takes the parts of every write as an argument, so a write
   cannot omit them, and refuses a part the role lacks before it reads anything; for a
   `subtree` or `below` part it then checks, once the write is complete, that every document it changes
-  is inside the subtree. The check counts the board's own effects on other items as well
-  as what the call names: a row that makes a root with a stored priority wait on another
-  item changes that root (the board drops its priority and logs it), so a subtree
-  credential cannot add such a row. It also counts what a plan row takes in: a row that owns
+  is inside the subtree. The check covers every document the write changes, the board's own effects on other
+  items (an owner's log line, say) as well as what the call names. It also counts what a plan row takes in: a row that owns
   an item puts it under the writer, so a subtree credential may own only items it already
   writes. A write with a `below` part that changes a named item is refused: the engineer was
   handed that item at its level, and the architect changes the level of what it hands out.
@@ -3217,7 +3191,7 @@ phases:
 
 1. **Data conversion**, mechanical and lossless, in one data commit. Its only
    job is to keep every item, log, card, note, target and ordinary step,
-   make the new shape valid, and report every status and priority difference
+   make the new shape valid, and report every status difference
    caused by the approved new derivation rules. Every plan it produces is provisional
    (section 5, Writing plans), and the board flags it 计划待重写.
 2. **Plan rewrite**, per project, by the project's session: each plan is
@@ -3328,22 +3302,13 @@ strict.
    and refuses a mismatch with the current rules' result.
 6. Stored `status` values other than `cancelled` are removed, as are
    `parent`, `deps` and `steps`.
-7. **Priority.** Whitefoot-kit, 总管 and 网站 are migrated in the same commit:
-   every non-root loses its stored priority with the log line
-   `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as
-   the former project migration did; the `migrated` field leaves `board.yaml`.
-   Roots seed their stored priority from their old displayed value, falling
-   back to their stored value when the display was empty; roots never get
-   the non-root priority-retirement log. Every
-   project's priority now propagates along all item rows under the approved
-   rule, including formerly unmigrated projects and closed children gaining
-   an owner. Records pass none; their owned work still receives priority
-   from open shared dependents. Every old-versus-new
-   displayed-priority difference is listed with id, project, title and cause
-   (for example, propagation from an owner, moving into backlog or losing
-   rootness); the difference alone is not an error. The independent oracle
-   computes expected priority from the converted plans independently of the
-   converter and compares it with the current rules' output.
+7. **Priority.** The converted items carry no priority: the board no longer
+   has the field (section 5, Priority), so the conversion neither seeds nor
+   compares one, and the report lists no priority differences. Whitefoot-kit,
+   总管 and 网站 are migrated in the same commit: every non-root gets the log
+   line `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as the
+   former project migration did; the `migrated` field leaves `board.yaml`.
+   Roots get no such line, and the value a root held is not carried over.
 8. **Removing archives.** The conversion drops the owner's entire retired
    `archived` field and reports `counts.droppedArchives`, the count of all its
    entries, not just effective archives. Read cursors and read-ahead marks
@@ -3355,12 +3320,12 @@ strict.
    the exact original owner sidefile.
 
 **Phase 1 report.** A short Chinese summary comes first: how many items were
-converted, how many status and priority differences there are, their causes,
+converted, how many status differences there are, their causes,
 the number of retired archive records dropped and whether all content
 survived verification. A separate line flags old wip items with no progress
 row for phase-two plan writing, giving the actual counts becoming todo and
 blocked instead of treating the whole cause group as todo.
-The detailed tables give every status/priority difference, including item
+The detailed tables give every status difference, including item
 id, project and title; cause groups include
 examples. Findings also identify ambiguous completion sections, duplicate
 or dangling targets and children not listed by their old parents. The
@@ -3375,7 +3340,7 @@ reported duplicate, with all whys in the one log entry; ordinary steps keep
 exact ids, text, states, dates and sequence; heads lose only the acceptance
 section; every converted work plan has its one generated acceptance row last, and
 all nonempty converted
-plan is provisional. It independently derives status and priority from the
+plan is provisional. It independently derives status from the
 converted plans and compares them with the current rules' output, checks
 that every difference appears in the report, and verifies every item, card,
 note, target and original log by id. Added logs have an exact whitelist;
@@ -3430,7 +3395,7 @@ left. The project's session follows this procedure:
 
 The old whys in each item's log are material for steps 2 and 3, not rows to
 restore. A provisional plan keeps working in the meantime: sessions record
-progress on it with single-row upserts, and its status and priority stay
+progress on it with single-row upserts, and its status stays
 derived from it, so the board stays correct while phase 2 runs.
 
 **Closed items.** Phase 1 converts done and cancelled items like any other:
@@ -3441,7 +3406,7 @@ parent stays top-level; a closed top item needs no owner and raises no check.
 Phase 2 keeps a closed item in a plan only when the new plan attaches it, for
 example a finished goal of an open release; every other closed item becomes,
 or stays, a closed top item. No history-only owner is created (section
-5, open question 5). Closed items stay reachable from plan rows, explicit
+5, open question 3). Closed items stay reachable from plan rows, explicit
 filters and unread navigation.
 
 **Report on structure for phase 2.** Alongside the phase 1 report, the dry
@@ -3476,6 +3441,27 @@ option are deleted after the run on the live board; what stays is the omission o
 the value from old versions in historical comparison, and unread's reading of
 the clearing as bookkeeping.
 
+### Clearing the retired priority
+
+The live board's files hold `priority` on every root (section 5, Priority).
+`Store.open(dir, { clearPriority: true })` reads those files without the field
+and writes one commit, `clear_priority N items`, in which each such item loses
+it and gains one log line, `优先级：<value> → 去掉，理由：迁移：…`; a board that
+holds the field and is opened without the option refuses to start and names the
+files. The daemon opens with the option, so the first start after the deploy
+clears the field by itself (a refusal there would only make the deploy job roll
+back) and prints the report to its log: the totals by value, then one line per
+item with its key, project and the value it held. The value survives nowhere
+else on the board, so the report is where the migration keeps it; history keeps
+it in the old versions. `npm run migrate:priority -- --data DIR` does the same
+offline on a copy of the data and prints the same report, which is how the run
+is rehearsed before the live one. The commit is bookkeeping for the owner:
+historical comparison omits the field from old versions, so unread shows
+nothing for it. A second start writes nothing. The command, its module, its
+test, the npm script, the start option and the daemon's use of it are deleted
+after the run on the live board; what stays is the omission of the field from
+old versions in historical comparison.
+
 ### Owner-wide rules to change
 
 Changes to the owner-wide rules that follow from this design are tracked on
@@ -3483,37 +3469,37 @@ the board.
 
 ### Open questions on the conversion
 
-8. **Order of converted dependency rows.** Proceeding on: every converted
+6. **Order of converted dependency rows.** Proceeding on: every converted
    item or card row is `after: []` (all parallel), because the old data never
    said otherwise, while converted steps keep their sequence; phase 2 sets the
    real order. Alternative: convert everything sequentially, which would
    invent an order.
-9. **Owner approval of the dry-run report** before the live conversion.
+7. **Owner approval of the dry-run report** before the live conversion.
    Proceeding on: yes, as a decision card with the report's counts.
-10. **Records and the "every item has a plan" rule.** Proceeding on: records
-    are exempt from the acceptance step, since nothing completes them; a
-    record without rows raises nothing.
-11. **What dropping the why loses.** A shared row into another project no
-    longer says, on the row, why the other project needs the item; the
-    receiving session reads it from the needed item's head and acceptance step
-    and from its first log line. `context` and `graph`
-    show titles only, and the old whys live only in logs, which `search`
-    still covers. The rule "every dependency carries a why" disappears from
-    the server instructions, the operations' checks and CLAUDE.md. Proceeding
-    on: accept this, as the owner decided; if a receiving session finds the
-    item unclear, it asks with a note or comment, not a row field.
-12. **What clears the provisional mark.** Proceeding on: any whole-plan write
+8. **Records and the "every item has a plan" rule.** Proceeding on: records
+   are exempt from the acceptance step, since nothing completes them; a
+   record without rows raises nothing.
+9. **What dropping the why loses.** A shared row into another project no
+   longer says, on the row, why the other project needs the item; the
+   receiving session reads it from the needed item's head and acceptance step
+   and from its first log line. `context` and `graph`
+   show titles only, and the old whys live only in logs, which `search`
+   still covers. The rule "every dependency carries a why" disappears from
+   the server instructions, the operations' checks and CLAUDE.md. Proceeding
+   on: accept this, as the owner decided; if a receiving session finds the
+   item unclear, it asks with a note or comment, not a row field.
+10. **What clears the provisional mark.** Proceeding on: any whole-plan write
     by the session clears it, so a session could clear it by rewriting the
     rows unchanged. The coordinator checks each project's phase 2 item log,
     which must say how each plan changed. Alternative: also require a
     `rewrite` reason argument, stored in the log, on the clearing call.
-13. **Cancelling a redundant item another project waits on.** Phase 2 may
+11. **Cancelling a redundant item another project waits on.** Phase 2 may
     find an item redundant while another project's shared row points at it;
     cancelling it raises 依赖的条目已取消 there. Proceeding on: the procedure
     moves such an item, or keeps it and points the redundant work at it,
     rather than cancelling it; when it must be cancelled, the session tells
     the waiting project's session first.
-14. **Unread volume during phase 2.** Each rewrite changes the item, the
+12. **Unread volume during phase 2.** Each rewrite changes the item, the
     items it moves or cancels and their owners, so the owner's 新 counts
     grow while a project rewrites. Proceeding on: accept it; the owner can
     read a project at a time with the 进展 filter. Alternative: author phase
@@ -3557,7 +3543,7 @@ on the live board.
   one line `[[q:key]]` per card, in the order the cards were written, so the
   converted cards show in the body without the reader having to ask for them.
   A card the head already places keeps its line and is not listed again.
-- The report lists every item whose status, priority or ready rows differ
+- The report lists every item whose status or ready rows differ
   between the board before and after, both read with the same current rules,
   and prints the text of one section it added. The expected differences are an
   item that waits on an open blocking card it never named (that card now has its

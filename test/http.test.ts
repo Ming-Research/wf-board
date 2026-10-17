@@ -235,7 +235,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
 });
 
 // A root with a missing shared row carries a (format) check in the plan model; its next step waits on that row, so it is blocked and carries no 缺难度.
-const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
+const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);

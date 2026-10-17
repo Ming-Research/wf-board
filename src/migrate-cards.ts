@@ -36,7 +36,7 @@ export interface CardMigrationReport {
   headSample?: string;
   ruledWithoutChoice: number;
   itemsChanged: number;
-  /** Items whose status, priority or ready rows differ between the board before and after (the same current rules on both). */
+  /** Items whose status or ready rows differ between the board before and after (the same current rules on both). */
   derivedChanges: string[];
   errors: string[];
 }
@@ -178,7 +178,7 @@ export function migrateCards(input: CardMigrationInput, at: string): CardMigrati
     if (!same(plan, next) || entries.length || extended) { items[id] = { ...item, plan: next, ...(extended ? { head: extended.head } : {}), log: [...log, ...entries] }; report.itemsChanged++; }
   }
 
-  // The same rules on the board before and after: a plan row that moved must not change what is ready, nor any status or priority.
+  // The same rules on the board before and after: a plan row that moved must not change what is ready, nor any status.
   if (!errors.length) {
     const snapshot = (i: Record<string, Raw>, d: Record<string, Raw>): Snapshot => ({ board: input.board, items: i, decisions: d, notes: input.notes, owner: {}, glossaries: {}, head: "" }) as unknown as Snapshot;
     const was = rules(snapshot(input.items, input.decisions)), now = rules(snapshot({ ...input.items, ...items }, decisions));
@@ -186,7 +186,6 @@ export function migrateCards(input: CardMigrationInput, at: string): CardMigrati
       const ready = (r: typeof was, known?: Set<string>): string => r.planRows(id).filter(row => row.ready && (!known || known.has(row.row.id))).map(row => row.row.id).join(",");
       const known = new Set(was.planRows(id).map(row => row.row.id));
       if (was.statusOf(id) !== now.statusOf(id)) report.derivedChanges.push(`${id}: status ${was.statusOf(id)} → ${now.statusOf(id)}`);
-      if (was.priorityOf(id) !== now.priorityOf(id)) report.derivedChanges.push(`${id}: priority ${String(was.priorityOf(id))} → ${String(now.priorityOf(id))}`);
       if (ready(was, known) !== ready(now, known)) report.derivedChanges.push(`${id}: ready rows ${ready(was, known)} → ${ready(now, known)}`);
     }
   }

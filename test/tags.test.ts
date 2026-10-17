@@ -125,7 +125,7 @@ test("item tags outside the vocabulary or not applicable to the project are refu
 test("creating an item (in any project) needs a valid tag once the vocabulary has one for the project, and accepts none before", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
   const create = { ...asArchitect, key: "n1", owner: "area", title: "New", accept: "Passes" };
-  const firnItem = { ...asArchitect, group: "Firn", key: "r1", title: "Req", head: "h", accept: "Passes", priority: "P1" as const };
+  const firnItem = { ...asArchitect, group: "Firn", key: "r1", title: "Req", head: "h", accept: "Passes" };
   // Before any tag exists: none is required, and naming one is refused.
   await op.createItem(create);
   assert.equal(store.snapshot().items.n1!.tags, undefined);
