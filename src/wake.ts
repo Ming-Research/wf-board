@@ -150,6 +150,8 @@ abstract class NumberedLog {
   }
   protected abstract loadState(record: Record<string, unknown>): void;
   protected abstract stateLines(): unknown[];
+  /** Lines a rewritten file starts with, before everything else. */
+  protected headLines(): unknown[] { return []; }
 
   protected append(record: unknown): void {
     if (!this.file) return;
@@ -167,7 +169,7 @@ abstract class NumberedLog {
   }
 
   private rewrite(file: string): void {
-    const lines: unknown[] = [{ latest: this.counter }, ...this.frames.map(f => f.frame), ...this.stateLines()];
+    const lines: unknown[] = [...this.headLines(), { latest: this.counter }, ...this.frames.map(f => f.frame), ...this.stateLines()];
     const temporary = file + ".tmp";
     try {
       writeFileSync(temporary, lines.map(l => JSON.stringify(l) + "\n").join(""));
@@ -237,7 +239,8 @@ export class AgentStream extends NumberedLog {
       if (typeof record.at === "string") this.touched = Math.max(this.touched, Date.parse(record.at));
     }
   }
-  protected stateLines(): unknown[] { return [{ name: this.name }, ...(this.delivered ? [{ delivered: this.delivered, at: new Date(this.touched).toISOString() }] : [])]; }
+  protected headLines(): unknown[] { return [{ name: this.name }]; }
+  protected stateLines(): unknown[] { return this.delivered ? [{ delivered: this.delivered, at: new Date(this.touched).toISOString() }] : []; }
 
   /** Number and keep a push to this agent. Its frame also carries `line`, the one line the agent is shown. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
@@ -274,17 +277,17 @@ export interface WakeOptions extends LogOptions {
 }
 
 /** The file of an agent's stream: a hash of the session name, so any name of up to 80 characters is a short file name and two
- * names that differ only in case (the same file on a case-insensitive disk) are two files. The name is a line of its own in the
- * file: first in a new file, after the events once the file is rewritten. */
+ * names that differ only in case (the same file on a case-insensitive disk) are two files. The name is the file's first line,
+ * `{"name": ...}` and nothing else, in a new file and in a rewritten one. */
 export const agentFileName = (name: string): string => createHash("sha256").update(name).digest("hex").slice(0, 32) + ".jsonl";
 /** The session name an agent's stream file holds, or none. */
 function nameIn(file: string): string | undefined {
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    let record: { name?: unknown; n?: unknown };
-    try { record = JSON.parse(line) as typeof record; } catch { continue; }
-    // An event is never the name line, whatever fields a kind may carry.
-    if (typeof record.n !== "number" && typeof record.name === "string") return record.name;
+    let record: Record<string, unknown>;
+    try { record = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+    // Only a record holding the name alone: an event, whatever fields its kind carries, is never taken for it.
+    if (record && typeof record === "object" && Object.keys(record).length === 1 && typeof record.name === "string") return record.name;
   }
   return undefined;
 }

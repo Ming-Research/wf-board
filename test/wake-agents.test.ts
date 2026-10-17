@@ -247,12 +247,15 @@ test("any session name up to 80 characters has a stream that survives a restart,
   const again = new Wake({ dir, now: () => T0 });
   assert.deepEqual([longest, "Eng", "eng"].map(name => [again.hasAgent(name), again.agent(name).latest(), again.agent(name).deliveredUpTo()]), [[true, 1, 0], [true, 1, 1], [true, 1, 0]]);
   assert.ok((await readdir(dir)).every(file => file.length < 64));
-  // Rewritten past its retention, a file has its name line after the events; an event's own fields are never taken for it.
+  // Rewritten past its retention, a file still starts with its name, and a restart finds the stream with its pushes.
   const small = new AgentStream("named", { file: join(dir, agentFileName("named")), now: () => T0, retain: 2 });
-  for (let i = 0; i < 3; i++) small.push("note", { note: "x", target: "it:a", kind: "comment", title: "t", project: "p" });
-  const file = await readFile(join(dir, agentFileName("named")), "utf8");
-  assert.ok(file.indexOf('{"name":"named"}') > file.indexOf('"event"'), "the name line follows the events after a rewrite");
-  assert.equal(new Wake({ dir, now: () => T0 }).hasAgent("named"), true);
+  for (let i = 0; i < 3; i++) small.push("note", { note: "x" + i, target: "it:a", kind: "comment", title: "t", project: "p" });
+  small.deliver(2);
+  const file = (await readFile(join(dir, agentFileName("named")), "utf8")).split("\n");
+  assert.equal(file[0], '{"name":"named"}', "the name is the first line after a rewrite");
+  const back = new Wake({ dir, now: () => T0 });
+  assert.equal(back.hasAgent("named"), true);
+  assert.deepEqual([back.agent("named").latest(), back.agent("named").deliveredUpTo(), back.agent("named").pending().frames.map(f => f.note)], [3, 2, ["x2"]]);
 });
 
 test("a stream whose wait script is connected is kept however long it goes unused, and its socket keeps getting its pushes", async t => {
