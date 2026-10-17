@@ -809,16 +809,41 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return groups;
   }
+  // Whether a plan row is resolved, reading only whether items are done or cancelled. The rows before an owned item in its
+  // owner's plan decide whether its turn has come, and that must not ask the items' full statuses, which ask it back.
+  function rowResolved(row: PlanRow, seen: Set<string>): boolean {
+    if ("text" in row) return row.state === "done" || row.state === "dropped";
+    if ("card" in row) { const card = s.decisions[row.card]; return !!card && card.status !== "open"; }
+    const target = item(row.item);
+    if (!target) return false;
+    if (target.record) return true;
+    const closed = closedWalk(row.item, seen);
+    return closed === "done" || (row.own && closed === "cancelled");
+  }
+  const closedMemo = new Map<string, "done" | "cancelled" | undefined>();
+  // Done or cancelled, by the same rules as the status; an item met again on the path is not done (a cycle never completes).
+  function closedWalk(id: string, seen: Set<string>): "done" | "cancelled" | undefined {
+    if (closedMemo.has(id)) return closedMemo.get(id);
+    const it = item(id);
+    if (!it || it.record) return undefined;
+    if (it.status === "cancelled") return "cancelled";
+    if (seen.has(id)) return undefined;
+    seen.add(id);
+    const closed = it.plan.length > 0 && it.plan.every(row => rowResolved(row, seen)) ? "done" : undefined;
+    seen.delete(id);
+    if (!cycles().has(id)) closedMemo.set(id, closed);
+    return closed;
+  }
   // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
   // rows are a list, not an order, so an item a record owns (a backlog item) is always ready.
-  function ownerRowReady(id: string, seen: Set<string>): boolean {
+  function ownerRowReady(id: string): boolean {
     const owner = parentOf(id), plan = owner ? item(owner) : undefined;
     if (!owner || !plan || plan.record) return true;
-    const resolved = new Map<string, boolean>();
+    const resolved = new Map<string, boolean>(), seen = new Set([id]);
     let previous = true;
     for (const row of plan.plan) {
       if ("item" in row && row.item === id) return (row.after === undefined ? [previous] : row.after.map(key => resolved.get(key) ?? false)).every(Boolean);
-      previous = rowState(row, seen).state === "resolved";
+      previous = rowResolved(row, seen);
       resolved.set(row.id, previous);
     }
     return true;
@@ -833,7 +858,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function anyBegun(rows: readonly DerivedPlanRow[]): boolean {
-    return rows.some(entry => !entry.excluded && (entry.state === "resolved" || ("item" in entry.row && entry.row.own && isOpenWork(entry.row.item) && begunOf(entry.row.item))));
+    return rows.some(entry => !entry.excluded && (entry.state === "resolved" || ("item" in entry.row && entry.row.own && begunOf(entry.row.item))));
   }
   const liveSessions = (id: string): string[] => cached("sessions", id, () => [...new Set(liveDispatches(s, id, now).map(d => d.agent))]);
   // Cycle members keep the path-sensitive guard; acyclic targets have the same
@@ -854,7 +879,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       : pausedBy(id) ? "paused"
       : !rows.length ? "todo"
       : rows.some(row => row.state === "progress") ? "wip"
-      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id, seen) ? "blocked"
+      : askPending(id) || (frontier.length > 0 && frontier.every(row => row.state === "waiting")) || !ownerRowReady(id) ? "blocked"
       : liveSessions(id).length ? "wip"
       : anyBegun(rows) ? "partial" : "todo";
     if (!cycles().has(id)) targetStatuses.set(id, status);
@@ -888,7 +913,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       done: ratio.done, total: ratio.total,
       ...(first ? { next: { id: first.row.id, text: text(first) } } : {}),
       waiting: rows.filter(entry => entry.ready && entry.state === "waiting").map(entry => "item" in entry.row ? { kind: "item" as const, id: entry.row.item } : { kind: "card" as const, id: (entry.row as { card: string }).card }),
-      ask: askPending(id), behind: !ownerRowReady(id, new Set()),
+      ask: askPending(id), behind: !ownerRowReady(id),
       doing: rows.filter(entry => entry.state === "progress").map(entry => ({ id: entry.row.id, text: text(entry) })),
       sessions: liveSessions(id).slice(),
     };

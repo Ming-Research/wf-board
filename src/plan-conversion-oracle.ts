@@ -38,14 +38,29 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
   function liveSession(id:string):boolean {
     return (snapshot.items[id]?.dispatches??[]).some(d=>!d.finish&&now-Math.max(Date.parse(d.started),Date.parse(snapshot.activity?.agents?.[d.agent]?.[0]?.at??"1970-01-01T00:00:00Z"))<=SIX_HOURS);
   }
+  // Whether an item is done or cancelled by its rows alone, with no sessions, pauses or order: the rows before an owned item in
+  // its owner's plan need only this, and asking the full status there would ask the owned item's turn back. An item met again
+  // on the path is not done, because a cycle never completes.
+  function closedOf(id:string,trail:Set<string>):"done"|"cancelled"|undefined {
+    const item=snapshot.items[id];if(!item||item.record)return undefined;if(item.status==="cancelled")return "cancelled";
+    if(trail.has(id))return undefined;
+    const next=new Set(trail).add(id);
+    return item.plan.length>0&&item.plan.every(row=>rowResolved(row,next))?"done":undefined;
+  }
+  function rowResolved(row:PlanRow,trail:Set<string>):boolean {
+    if("text"in row)return row.state==="done"||row.state==="dropped";
+    if("card"in row){const card=snapshot.decisions[row.card];return !!card&&card.status!=="open";}
+    const target=snapshot.items[row.item];if(!target)return false;if(target.record)return true;
+    const closed=closedOf(row.item,trail);return closed==="done"||row.own&&closed==="cancelled";
+  }
   // Whether every row before the row that owns `id` in its owner's plan is resolved; a record's rows are a list, so no order there.
-  function ownerReady(id:string,trail:Set<string>):boolean {
+  function ownerReady(id:string):boolean {
     const owner=(owners.get(id)??[])[0],plan=owner?snapshot.items[owner]:undefined;
     if(!owner||!plan||plan.record)return true;
-    const done=new Map<string,boolean>();let last=true;
+    const done=new Map<string,boolean>(),path=new Set([id]);let last=true;
     for(const row of plan.plan){
       if("item"in row&&row.item===id)return (row.after===undefined?[last]:row.after.map(key=>done.get(key)===true)).every(ok=>ok);
-      last=rowState(row,trail)==="resolved";done.set(row.id,last);
+      last=rowResolved(row,path);done.set(row.id,last);
     }
     return true;
   }
@@ -69,7 +84,7 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     const active=new Set(trail);active.add(id);const plan=item.plan,values=rowsOf(plan,active);
     const frontier=values.filter(row=>row.ready);
     const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":values.some(row=>row.state==="progress")?"wip"
-      :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")||!ownerReady(id,trail)?"blocked"
+      :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")||!ownerReady(id)?"blocked"
       :liveSession(id)?"wip":begun(id,values,plan,active)?"partial":"todo";
     if(cycleHits===before)targetStatuses.set(id,status);
     return status;

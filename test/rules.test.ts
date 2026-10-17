@@ -764,3 +764,17 @@ test("held and progress say who is on an item and how far it is, from rows and f
   assert.deepEqual([r.progress("kid").behind, r.progress("busy").behind, r.progress("idle").behind], [true, false, false], "an owned item whose row follows an open row of its owner is behind it");
   assert.deepEqual(r.progress("parent").doing, [{ id: "busy", text: "busy" }], "an owned item in progress is the row in progress");
 });
+
+test("two plans whose owned items each wait on the other's earlier row derive without looping, and both stay blocked", () => {
+  // y: [shared w, own c]  v: [shared c, own w]. c's turn needs w done and w's turn needs c done: neither can ever start.
+  const s = snapshot({
+    y: { plan: workPlan([shared("w"), own("c", ["w"])]) }, v: { plan: workPlan([shared("c"), own("w", ["c"])]) },
+    c: {}, w: {},
+  });
+  const r = rules(s);
+  assert.deepEqual([r.statusOf("c"), r.statusOf("w")], ["blocked", "blocked"]);
+  assert.deepEqual([rules(s).progress("w").behind, rules(s).progress("c").behind], [true, true]);
+  // A finished item on the way lets the turn come: w done frees c.
+  s.items.w!.plan = workPlan([], "done");
+  assert.equal(rules(s).statusOf("c"), "todo");
+});
