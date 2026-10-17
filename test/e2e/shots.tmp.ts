@@ -24,7 +24,7 @@ const SAMPLES: Array<[string, string]> = [
 ];
 
 /** A page directory serving the current page, with the compact settings taken out of web/mermaid.ts while it is bundled when `old`. */
-async function pageDir(old: boolean): Promise<string> {
+async function pageDir(replacement: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-shots-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, "dist"));
@@ -35,8 +35,8 @@ async function pageDir(old: boolean): Promise<string> {
     setup(b) {
       b.onLoad({ filter: /[\\/]web[\\/]mermaid\.ts$/ }, async args => {
         const text = await readFile(args.path, "utf8");
-        if (old && text.split("...COMPACT,").length !== 2) throw new Error("web/mermaid.ts no longer holds ...COMPACT, exactly once");
-        return { contents: old ? text.replace("...COMPACT,", "") : text, loader: "ts" };
+        if (text.split("...COMPACT,").length !== 2) throw new Error("web/mermaid.ts no longer holds ...COMPACT, exactly once");
+        return { contents: text.replace("...COMPACT,", () => replacement), loader: "ts" };
       });
     },
   };
@@ -49,9 +49,15 @@ async function main() {
   const browser = await launch(t);
   // A tall window, so that a block is photographed whole.
   const head = [fence(PIPELINE), ...SAMPLES.flatMap(([name, code]) => ["", `**${name}**`, "", fence(code)])].join("\n");
-  for (const old of [false, true]) {
-    const tag = old ? "old" : "new";
-    const board = await startBoard(t, { webDir: await pageDir(old) }), id = board.gen.witness.code;
+  // What is put where the page spreads its compact settings into the library's configuration.
+  const VARIANTS: Array<[string, string]> = [
+    ["old", ""],
+    ["elk", "...COMPACT,"],
+    ["dagre", '...COMPACT, layout: "dagre",'],
+    ["dagreclassic", '...COMPACT, layout: "dagre", look: "classic", flowchart: { ...COMPACT.flowchart, look: "classic" },'],
+  ];
+  for (const [tag, replacement] of VARIANTS) {
+    const board = await startBoard(t, { webDir: await pageDir(replacement) }), id = board.gen.witness.code;
     const it = board.store.snapshot().items[id]!;
     await ops(board.store).updateItem({ author: it.group, id, rev: it.rev, head, reason: "screenshots" });
     const bp = await BoardPage.open(browser, board);
@@ -77,7 +83,7 @@ async function main() {
       }
     }
     await bp.page.emulateMedia({ colorScheme: "light" });
-    if (!old) {
+    if (tag === "dagre") {
       // The default view in a window 700 px wide, and the enlarged view at 1500 px, as the owner sees them.
       await bp.page.setViewportSize({ width: 700, height: 1000 });
       await bp.settle();
