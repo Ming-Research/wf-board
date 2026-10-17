@@ -27,8 +27,9 @@ const COMPACT = {
   // each other when the edge is short (they do at a gap of 28 px).
   state: { nodeSpacing: 30 },
   er: { nodeSpacing: 70, rankSpacing: 50, diagramPadding: 8 },
-  // The boxes of the actors keep their width: a Chinese name does not wrap in them.
-  sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, boxMargin: 6, messageMargin: 28 },
+  // The boxes of the actors keep their width (a Chinese name does not wrap in them), and the margin around a note or a loop keeps the
+  // library's 10 px (at 6 px a note sits on the last message's line).
+  sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, messageMargin: 28 },
 };
 /** The zoom is a factor of the default size (1: the diagram at its own size, or shrunk to the width of the text when that is wider). */
 const MIN_ZOOM = 0.5, MAX_ZOOM = 6, STEP = 1.25;
