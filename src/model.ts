@@ -325,34 +325,51 @@ export const Project = z.object({
 }).strict();
 export type Project = z.infer<typeof Project>;
 
-/** The architect's author name, a configured project like any other. */
+/** The author name of the architect and of the PM: the project of the agents_config repository, a configured project like any other. */
 export const ARCHITECT = "Architect";
-/** The session name the architect writes from; the wake stream also takes any call carrying it as a receipt (docs/design.md, section 8). */
+/** The session name the architect writes from (docs/design.md, section 9). */
 export const ARCHITECT_SESSION = "架构师";
+/** The session name the PM writes from, as author `Architect` too: the PM runs in the agents_config repository. */
+export const PM_SESSION = "PM";
+type Writer = { author: string; session?: string; access?: { role: string } };
 /**
- * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may change any
- * project's items, cards and note replies, and do what the board reserves for the architect (ops `onlyArchitect`). An
- * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary
- * project author. A write over a credential is the architect's when the credential's role is, whatever names it carries
- * (src/credentials.ts); the names of a write without one are not authenticated: that stops misuse, not impersonation.
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may do what the board
+ * reserves for the architect alone (the journal, the tag vocabulary; ops `onlyArchitect`). An engineer who works in the Architect
+ * project writes as author `Architect` from another session and is then an ordinary project author. A write over a credential is
+ * the architect's when the credential's role is, whatever names it carries (src/credentials.ts); the names of a write without one
+ * are not authenticated: that stops misuse, not impersonation.
  */
-export const isArchitect = (who: { author: string; session?: string; access?: { role: string } }): boolean =>
+export const isArchitect = (who: Writer): boolean =>
   who.access ? who.access.role === "架构师" : who.author === ARCHITECT && isArchitectSession(who.session);
+/** Whether a write speaks for the PM: author `Architect` from the session 「PM」, or a credential of role `PM`, by the same rule. */
+export const isPM = (who: Writer): boolean =>
+  who.access ? who.access.role === "PM" : who.author === ARCHITECT && isPMSession(who.session);
+/**
+ * Whether a write may do the process: change any project's items, cards and note replies, create and cancel items, set their
+ * difficulty, pause, move and retitle them, place projects in the page order (ops `onlyProcess`). The PM does it, and the
+ * architect, which keeps every right it had.
+ */
+export const mayRunProcess = (who: Writer): boolean => isArchitect(who) || isPM(who);
 /** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** Whether a session name is the PM's, ignoring spaces around it. */
+export const isPMSession = (session: string | undefined): boolean => session?.trim() === PM_SESSION;
+/** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of either's role. */
+export const answersPushes = (call: { role: string } | { session?: string }): boolean =>
+  "role" in call ? call.role === "PM" || call.role === "架构师" : isPMSession(call.session) || isArchitectSession(call.session);
 /** The retired coordinator identity: every write under this author is refused; its historical authors stay as written. */
 export const RETIRED_COORDINATOR = "总管";
 
 /**
  * Who may write what (docs/design.md, section 9). A credential names a role; the role names, for each part of the board a write
  * can change, how far the writer may go. This table is the one place that is defined: `ops.run` asks it for every write.
- * The roles of the long-lived credentials are the architect, the observer and the resource agent; the roles of a dispatch
+ * The roles of the long-lived credentials are the architect, the PM, the observer and the resource agent; the roles of a dispatch
  * credential are the dispatch's own (an engineer or a review).
  */
-export const ROLES = ["架构师", "观察者", "资源管理", ...DISPATCH_ROLES] as const;
+export const ROLES = ["架构师", "PM", "观察者", "资源管理", ...DISPATCH_ROLES] as const;
 export type Role = (typeof ROLES)[number];
 /** The roles a long-lived credential (kept in a file outside the data directory) can name. */
-export const LONG_LIVED_ROLES = ["架构师", "观察者", "资源管理"] as const;
+export const LONG_LIVED_ROLES = ["架构师", "PM", "观察者", "资源管理"] as const;
 /** One part for each kind of write; a write names the parts it changes. */
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
@@ -363,11 +380,15 @@ export const PARTS = [
 export type Part = (typeof PARTS)[number];
 /** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. */
 export type Scope = "board" | "subtree";
-/** What only the architect does: the writes the board has reserved for it since it had an identity (ops `onlyArchitect`), and starting a dispatch. */
-const RESERVED: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.merge-row", "dispatch.start", "dispatch.finish"];
+/** What the board reserves for the PM and the architect (ops `onlyProcess`), and starting a dispatch: the process. */
+const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "dispatch.start", "dispatch.finish"];
+/** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating a project. No role has the merge row. */
+const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
+const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {
   "架构师": partsAt("board", PARTS.filter(p => p !== "item.merge-row")),
+  "PM": partsAt("board", PARTS.filter(p => !ARCHITECT_ONLY.includes(p))),
   "观察者": partsAt("board", PARTS.filter(p => !RESERVED.includes(p))),
   // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
   "资源管理": { "item.log": "board", "dispatch.finish": "board", ...partsAt("subtree", ["item.head", "item.plan"]) },

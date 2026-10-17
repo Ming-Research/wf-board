@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ARCHITECT, ARCHITECT_SESSION, Key, LONG_LIVED_ROLES } from "./model.ts";
+import { ARCHITECT, ARCHITECT_SESSION, Key, LONG_LIVED_ROLES, PM_SESSION } from "./model.ts";
 import type { Access, Item, Snapshot } from "./model.ts";
 
 /**
@@ -13,7 +13,7 @@ import type { Access, Item, Snapshot } from "./model.ts";
  *
  * Two kinds exist. A dispatch credential is issued with the dispatch record (ops dispatchStart) and valid until the dispatch
  * ends; it names the session, the role, the item whose subtree the session works on and the item's project. A long-lived
- * credential belongs to the architect, the observer or the resource agent; its hash is in a file outside the data directory,
+ * credential belongs to the architect, the PM, the observer or the resource agent; its hash is in a file outside the data directory,
  * which the service only reads (the script scripts/credential.ts writes it).
  */
 
@@ -40,7 +40,10 @@ export const LongLived = z.object({
 }).strict()
   .refine(c => c.role !== "架构师" || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`)
   // Author Architect from this session is what the board takes for the architect (model isArchitect); no other role writes under it.
-  .refine(c => c.role === "架构师" || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`);
+  .refine(c => c.role === "架构师" || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`)
+  // The PM writes as author Architect from the session PM (model isPM), on the same terms.
+  .refine(c => c.role !== "PM" || (c.project === ARCHITECT && c.session === PM_SESSION), `the PM's credential is project ${ARCHITECT}, session ${PM_SESSION}`)
+  .refine(c => c.role === "PM" || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`);
 export type LongLived = z.infer<typeof LongLived>;
 export const CredentialsFile = z.object({ credentials: z.array(LongLived) }).strict().superRefine((file, ctx) => {
   for (const key of ["session", "hash"] as const) if (new Set(file.credentials.map(c => c[key])).size !== file.credentials.length) ctx.addIssue(`two credentials have the same ${key}`);
@@ -82,7 +85,7 @@ export class CredentialFile {
 export interface Identified { author: string; session: string; access: Access }
 /** The outcome of reading a request's credential: a writer, or why the credential is refused. */
 export type Resolved = { ok: true; who: Identified } | { ok: false; problem: string };
-export const REFUSED = "this connection's credential is not valid (unknown, or revoked when its dispatch ended); ask the architect for a new one, or remove it from the connection's configuration to read the board";
+export const REFUSED = "this connection's credential is not valid (unknown, or revoked when its dispatch ended); ask the PM for a new one, or remove it from the connection's configuration to read the board";
 
 const dispatchIndexes = new WeakMap<object, Map<string, { id: string; item: Item; agent: string; role: Access["role"] }>>();
 /** The open dispatches by the hash of their credential, built once per state of the items. */

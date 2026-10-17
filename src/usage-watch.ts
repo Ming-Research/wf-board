@@ -8,7 +8,7 @@ import { advanceBooks, usageFigures, usageLine, usagePushes } from "./rules.ts";
 import type { OrgBooks, UsageFigures } from "./rules.ts";
 
 /** What the board does with the organization's Actions billing (docs/design.md, Watching Actions usage): it keeps its own account
- * of the month's included minutes used, says so in a line of the timed wake, and tells the architect when the month's use first
+ * of the month's included minutes used, says so in a line of the timed wake, and tells the PM when the month's use first
  * reaches a level, one day uses a lot, or the included minutes are all used with a budget of 0. How the account is kept and what
  * is told are pure functions in src/rules.ts. */
 
@@ -27,7 +27,7 @@ const State = z.object({ polledAt: z.string().optional(), books: z.record(z.stri
 
 type Result = { figures: UsageFigures } | { problem: string };
 
-/** Looks at the billing on a timer, keeps the account, and tells the architect. */
+/** Looks at the billing on a timer, keeps the account, and tells the PM. */
 export class UsageWatch {
   private readonly announced = new Set<string>();
   private readonly books = new Map<string, OrgBooks>();

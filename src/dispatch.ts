@@ -1,4 +1,4 @@
-// Dispatch records: the agent sessions the architect started on items. A dispatch lives on its item (`Item.dispatches`);
+// Dispatch records: the agent sessions the PM (or the architect) started on items. A dispatch lives on its item (`Item.dispatches`);
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 

@@ -1,4 +1,4 @@
-import { ARCHITECT, ARCHITECT_SESSION } from "./model.ts";
+import { ARCHITECT, answersPushes } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import type { Store } from "./store.ts";
@@ -33,8 +33,8 @@ function itemOf(s: Snapshot, file: string): string | undefined {
   return target?.startsWith("it:") ? target.slice(3) : target?.startsWith("q:") ? s.decisions[target.slice(2)]?.item : undefined;
 }
 
-/** What one timed wake carries: the items changed since the last one (not those only the architect itself wrote, which it
- * already knows), the items being worked on, and every open item of the Architect project, each with its status, and the Actions
+/** What one timed wake carries: the items changed since the last one (not those only the PM or the architect itself wrote,
+ * which it already knows), the items being worked on, and every open item of the Architect project, each with its status, and the Actions
  * usage line. `since` is the last timed wake's mark; without one, the daemon's start. */
 export async function timedWake(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, actions = ""): Promise<TimedFields> {
   const from = since?.at ?? started;
@@ -42,7 +42,7 @@ export async function timedWake(store: Store, s: Snapshot, r: Rules, since: Time
   const writers = new Map<string, Set<string>>();
   // The log is newest first, so items come out most recently changed first.
   for (const commit of commits) {
-    if (commit.session === ARCHITECT_SESSION) continue;
+    if (answersPushes({ session: commit.session })) continue;
     for (const file of commit.files) {
       const id = itemOf(s, file);
       if (id === undefined || !Object.hasOwn(s.items, id)) continue;

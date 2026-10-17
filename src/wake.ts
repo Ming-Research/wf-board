@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-/** Every kind of push the architect's channel carries, in one place: `label` names it in the no-receipt alert, `fields` are
+/** Every kind of push the PM's channel carries, in one place: `label` names it in the no-receipt alert, `fields` are
  * the frame's fields besides n, at and event, and `external` marks a kind another process may ask for through POST /api/wake
  * (the deploy job, which runs beside the daemon and cannot call push). push() refuses another kind or field set, and the
  * design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
@@ -48,7 +48,7 @@ export interface WakeOptions {
   receiptLimitMs?: number;
 }
 
-/** The numbered, kept stream of pushes to the architect, and the receipts that answer them. */
+/** The numbered, kept stream of pushes to the PM, and the receipts that answer them. */
 export class Wake {
   readonly receiptLimitMs: number;
   private readonly file?: string;
@@ -125,7 +125,7 @@ export class Wake {
   latest(): number { return this.counter; }
   /** The number of the oldest event still kept, or the next number when none is. */
   oldest(): number { return this.frames[0]?.frame.n ?? this.counter + 1; }
-  /** The number of the newest event the architect has answered, 0 before any. */
+  /** The number of the newest event the PM has answered, 0 before any. */
   receiptedUpTo(): number { return this.receipted; }
   get lastTimed(): TimedMark | undefined { return this.marked; }
 
@@ -164,7 +164,7 @@ export class Wake {
   /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
   markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
 
-  /** A call from the architect's session: everything pushed before it is answered. Writes only when that changes something. */
+  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed before it is answered. Writes only when that changes something. */
   receipt(): void {
     if (this.counter === this.receipted && !this.alerted) return;
     this.receipted = this.counter; this.alerted = false;
@@ -179,7 +179,7 @@ export class Wake {
     this.alerted = true;
     this.append({ alert: true, at: this.iso() });
     const minutes = Math.round(this.receiptLimitMs / 60_000), span = minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    this.tell(`架构师 ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
+    this.tell(`PM ${span}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */

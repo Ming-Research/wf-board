@@ -2096,7 +2096,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The line under the detail's title: the difficulty first, then the tags; an item with only a difficulty has it too.
     if (detail && (it.tags?.length || it.difficulty !== undefined)) {
       const chips = el("div", "tagchips item-tags");
-      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有架构师能改";
+      if (it.difficulty !== undefined) chips.appendChild(el("span", "tagchip diffchip", difficultyText(it.difficulty))).title = "难度等级，只有 PM 或架构师能改";
       for (const name of it.tags ?? []) chips.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? "";
       box.appendChild(chips);
     }
