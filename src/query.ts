@@ -257,7 +257,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     cards: Object.keys(s.decisions).filter(id => r.projectOf(s.decisions[id]!.item) === project && r.cardWaiting(id)).map(id => ({id,...numOf(s.decisions[id]!),item:s.decisions[id]!.item,question:s.decisions[id]!.question,...(s.decisions[id]!.blocks ? {blocks:s.decisions[id]!.blocks} : {})})),
     paused: eligible.filter(id => r.statusOf(id) === "paused").sort(r.compareSiblings).map(workRow),
     wip: eligible.filter(id => r.statusOf(id) === "wip" && r.workedOn(id)).sort(r.compareSiblings).map(wipRow),
-    todo: eligible.filter(id => r.startable(id)).sort(r.compareSiblings).slice(0,10).map(workRow),
+    todo: eligible.filter(id => r.startable(id)).sort(r.compareCandidates).slice(0,10).map(workRow),
     outgoing: [...outgoing].map(workRow),
     glossary: (s.glossaries[project]?.terms ?? []).map(t => t.term),
     tags: tagVocabulary(s, project),
