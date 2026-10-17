@@ -15,6 +15,9 @@ import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
+import { PREAMBLE, selectSections, splitHead, summarizeHead } from "./head-sections.ts";
+import { isRecord, jsonSchemaOf, readNames, refusal } from "./tool-errors.ts";
+import { checkLabel } from "./rules.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", idle: "IDLE", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
@@ -22,12 +25,29 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 export function formatRow(it: Pick<q.Row, "id" | "status" | "title"> & Partial<q.Row>): string {
   return `${it.id} · ${label(it.status)}${it.priority ? ` ${it.priority}` : ""} · ${oneLine(it.title)}${it.tags?.length ? ` · [${it.tags.join(" ")}]` : ""}${it.difficulty === undefined ? "" : ` · ${difficultyText(it.difficulty)}`}${it.group || it.areaId ? ` · ${[it.group, it.areaId].filter(Boolean).join(" › ")}` : ""}${it.num === undefined ? "" : ` · #${it.num}`}`;
 }
-function formatNote(n: Note & { id: string; title?: string }): string {
-  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${n.text}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined ? `\n  original action: ${n.answerText}` : ""}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${n.reply}` : ""}`;
+/** At most `limit` characters of a text, then how long it is in all. */
+const cut = (text: string, limit: number): string => {
+  const chars = [...text];
+  return chars.length <= limit ? text : `${chars.slice(0, limit).join("")} … (${chars.length} characters in all)`;
+};
+/** What the default answer of `context` cuts to (docs/design.md, section 6, Lean replies). */
+const LOG_CUT = 240, NOTE_CUT = 160, REASON_CUT = 160, PR_REFS = 5;
+/** `limit` cuts the text and the reply and leaves out the original action: a note that is handled, in a list that is not about it. */
+function formatNote(n: Note & { id: string; title?: string }, limit?: number): string {
+  const part = (text: string) => limit === undefined ? text : cut(text, limit);
+  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${part(n.text)}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined && limit === undefined ? `\n  original action: ${n.answerText}` : ""}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${part(n.reply)}` : ""}`;
 }
-function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "question" | "status"> & { choiceText?: string }): string {
+function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "question" | "status"> & { choiceText?: string }, lean = false): string {
   const lines = [`${key} · ${label(card.status)} · ${card.question}${card.rev ? ` · rev ${card.rev}` : ""}${card.num === undefined ? "" : ` · #${card.num}`}`];
   if (card.blocks) lines.push(`blocks: ${card.blocks}`);
+  if (lean && card.status === "open") {
+    // An open card in a list: the question, the option names and the recommendation; the grounds are read from the card itself.
+    for (const o of card.options ?? []) lines.push(`  ${o.key}${o.recommended ? " (recommended)" : ""}: ${q.optionName(o) ?? ""}`);
+    const left = [...(card.options ?? []).some(o => o.detail) ? ["grounds"] : [], ...card.legacy?.background !== undefined ? ["legacy background"] : []];
+    if (left.length) lines.push(`  (${left.join(" and ")} left out; context ${key} has them)`);
+    if (card.confidence) lines.push(`confidence ${card.confidence.score === undefined ? "" : card.confidence.score + "/5："}${cut(card.confidence.reason, REASON_CUT)}`);
+    return lines.join("\n");
+  }
   for (const o of card.options ?? []) lines.push(`  ${o.key}${o.recommended ? " (recommended)" : ""}${o.text ? `: ${o.text}` : ""}${o.detail ? `${o.text ? " — " : ": "}${o.detail}` : ""}`);
   if (card.confidence) lines.push(`confidence ${card.confidence.score === undefined ? "" : card.confidence.score + "/5："}${card.confidence.reason}`);
   const chosen = card.choiceText ?? q.optionName(card.options?.find(o => o.key === card.choice));
@@ -38,18 +58,41 @@ function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "quest
   if (card.legacy?.background !== undefined) lines.push(`legacy background: ${card.legacy.background}`);
   return lines.join("\n");
 }
-export function formatContext(result: ReturnType<typeof q.context>): string {
-  if (result.kind === "card") return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(formatNote)].join("\n");
+/**
+ * What a `context` answer leaves out. With no view it is whole. `lean`: each head section's first paragraph, open cards without
+ * their options' grounds, handled notes cut to a line; `cutLog`: log entries cut; `section`: only the head, or the one section
+ * of it (docs/design.md, section 6, Lean replies).
+ */
+export interface ContextView { lean?: boolean; cutLog?: boolean; section?: string }
+export function formatContext(result: ReturnType<typeof q.context>, view: ContextView = {}): string {
+  const noteLine = (n: Parameters<typeof formatNote>[0]) => formatNote(n, view.lean && n.state === "done" ? NOTE_CUT : undefined);
+  if (result.kind === "card") {
+    if (view.section !== undefined) throw new Error(`section ${view.section}: only an item has sections; a card is read whole`);
+    // A card read on its own is the detail view: its notes are whole.
+    return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(n => formatNote(n))].join("\n");
+  }
   if (!("ancestors" in result)) throw new Error("Invalid item context");
   const it = result.item as Snapshot["items"][string];
   const lines = [formatRow(result as q.Row), `rev ${it.rev} · updated ${it.updated}${it.created ? ` · created ${it.created}` : ""}`];
+  if (view.section !== undefined) {
+    const head = it.head ?? "";
+    if (view.section === "all") return [...lines, `head: ${head}`].join("\n");
+    const chosen = selectSections(head, view.section);
+    if (!chosen) throw new Error(`section ${view.section}: this head has ${splitHead(head).map(s => `"${s.title || PREAMBLE}"`).join(", ") || "no text"}; "all" is the whole head`);
+    return [...lines, ...chosen.map(s => `section: ${s.text.trimEnd()}`)].join("\n");
+  }
   lines.push("status derived from plan and owner pause");
   if (result.lastPush) lines.push(`last push: ${q.pushLine(result.lastPush)}`);
   const pausedBy = result.pausedBy;
   if (pausedBy) lines.push(`pause: ${pausedBy.title} · ${pausedBy.reason} · ${pausedBy.at}`);
   if (it.order !== undefined) lines.push(`order: ${it.order}`);
-  if (it.head !== undefined) lines.push(`head: ${it.head}`);
+  if (it.head !== undefined) {
+    const summary = view.lean ? summarizeHead(it.head) : undefined;
+    if (summary?.omitted) lines.push(`head (cut: ${summary.omitted} characters left out; sections: ${summary.titles.join(" · ")}; section: "<title>" or "all" gets them whole):`, summary.text);
+    else lines.push(`head: ${it.head}`);
+  }
   if (result.plan.length) lines.push("plan:", ...result.plan.map(line => `  ${line}`));
+  if (view.lean && result.plan.some(line => /^[✓✗] \d+ 项/.test(line))) lines.push("  (finished rows are folded into a count; full: true lists them)");
   for (const warning of result.planWarnings) lines.push(`plan warning: ${warning}`);
   if (result.targets.length) lines.push("targets:", ...result.targets.map(line => `  ${line}`));
   if (it.data) lines.push(`data: ${it.data}`);
@@ -58,13 +101,15 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
     const rows = result[name];
     if (rows.length) lines.push(`${name}:`, ...rows.map(v => `  ${formatRow(v)}${"own" in v && v.own ? " · 拥有" : ""}`));
   }
-  for (const card of result.cards) lines.push(formatCard(card.key, card));
-  for (const note of result.notes) lines.push(formatNote(note));
+  for (const card of result.cards) lines.push(formatCard(card.key, card, view.lean));
+  for (const note of result.notes) lines.push(noteLine(note));
+  if (view.lean && result.notes.some(n => noteLine(n) !== formatNote(n))) lines.push(`  (handled notes are cut to ${NOTE_CUT} characters; full: true or the notes tool has them whole)`);
   for (const check of result.checks) lines.push(`check: ${check.text}${check.target ? ` ${check.target.kind}:${check.target.id}` : ""}`);
   for (const link of result.links) lines.push(`link: ${link.label} · ${link.url}`);
   const refs = [...result.prs.qualified.map(p => `${p.repo}#${p.number}`), ...result.prs.unknown.map(n => `#${n} (repository unknown)`)];
-  if (refs.length) lines.push(`PRs: ${refs.join(", ")}`);
-  lines.push(`log (${it.log.length} shown; ${result.earlierLogs} earlier):`, ...it.log.map(l => `  ${l.at} ${l.by ?? ""}: ${l.text}`));
+  if (refs.length) lines.push(`PRs: ${(view.lean ? refs.slice(0, PR_REFS) : refs).join(", ")}${view.lean && refs.length > PR_REFS ? `, … ${refs.length - PR_REFS} more (prs tool)` : ""}`);
+  lines.push(`log (${it.log.length} shown; ${result.earlierLogs} earlier):`, ...it.log.map(l => `  ${l.at} ${l.by ?? ""}: ${view.cutLog ? cut(l.text, LOG_CUT) : l.text}`));
+  if (view.cutLog && it.log.some(l => [...l.text].length > LOG_CUT)) lines.push(`  (entries over ${LOG_CUT} characters are cut; log: N gets the last N whole)`);
   return lines.join("\n");
 }
 export function formatSearch(hits: q.Hit[]): string {
@@ -118,6 +163,37 @@ export function formatReport(report: q.ChangesReport, o: { limit?: number; detai
   }
   return out.join("\n");
 }
+/** The most owner and check rows listed under one area in the default overview. */
+const OVERVIEW_ROWS = 5;
+/**
+ * The board at a glance. By default one line of counts for each project and, under it, only the areas with something to handle
+ * (the owner waiting, a check flagged), each with at most OVERVIEW_ROWS rows of each, a row being the item's key, status and
+ * title and, for a check, the check's short label; the blocked items are counted, not listed. `detail` lists every area with
+ * all its rows (docs/design.md, section 6, Lean replies).
+ */
+export function formatOverview(projects: ReturnType<typeof q.overview>, detail = false): string {
+  if (detail) return projects.map(project => [`${project.project}`, ...project.areas.map(area => [formatRow(area), Object.entries(area.counts).map(([st, n]) => `${label(st)} ${n}`).join(" · "), ...area.ownerActions.map(it => `  owner: ${formatRow(it)}`), ...area.blocked.map(it => `  blocked: ${formatRow(it)}`), ...area.checks.map(it => `  check: ${formatRow(it)} · ${it.checks.map(c => c.text).join("; ")}`)].join("\n"))].join("\n")).join("\n") || "No projects.";
+  const counts = (by: Record<string, number>) => Object.entries(by).filter(([, n]) => n).map(([st, n]) => `${label(st)} ${n}`);
+  const handle = (area: { ownerActions: unknown[]; blocked: unknown[]; checks: unknown[] }) => [`owner waiting ${area.ownerActions.length}`, `blocked ${area.blocked.length}`, `checks ${area.checks.length}`];
+  const short = (it: Pick<q.Row, "id" | "status" | "title">) => `${it.id} · ${label(it.status)} · ${cut(oneLine(it.title), 36)}`;
+  const out: string[] = [];
+  for (const project of projects) {
+    const total: Record<string, number> = {};
+    for (const area of project.areas) for (const [st, n] of Object.entries(area.counts)) total[st] = (total[st] ?? 0) + n;
+    const sum = (key: "ownerActions" | "blocked" | "checks") => project.areas.reduce((n, area) => n + area[key].length, 0);
+    out.push([project.project, `${project.areas.length} areas`, ...counts(total), `owner waiting ${sum("ownerActions")}`, `blocked ${sum("blocked")}`, `checks ${sum("checks")}`].join(" · "));
+    const needing = project.areas.filter(area => area.ownerActions.length || area.checks.length);
+    for (const area of needing) {
+      out.push(`  ${formatRow(area)}`, `    ${[...counts(area.counts), ...handle(area)].join(" · ")}`);
+      out.push(...area.ownerActions.slice(0, OVERVIEW_ROWS).map(it => `    owner: ${short(it)}`));
+      if (area.ownerActions.length > OVERVIEW_ROWS) out.push(`    … ${area.ownerActions.length - OVERVIEW_ROWS} more owner rows (detail: true)`);
+      out.push(...area.checks.slice(0, OVERVIEW_ROWS).map(it => `    check: ${short(it)} · ${[...new Set(it.checks.map(checkLabel))].join("、")}`));
+      if (area.checks.length > OVERVIEW_ROWS) out.push(`    … ${area.checks.length - OVERVIEW_ROWS} more check rows (detail: true)`);
+    }
+    if (project.areas.length > needing.length) out.push(`  ${project.areas.length - needing.length} other areas have no owner waiting and no checks`);
+  }
+  return out.length ? `${out.join("\n")}\n(detail: true lists every area with all its rows)` : "No projects.";
+}
 function formatGraph(graph: ReturnType<typeof q.graph>): string {
   const lines: string[] = [];
   function walk(n: q.GraphNode, depth: number) {
@@ -158,6 +234,12 @@ const links = z.array(Link).describe("Relevant links as {label, url}; use qualif
  */
 export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  // The SDK checks a call's arguments before the handler runs and answers a mistake with the bare check text, which names no
+  // parameter that would have worked. Each tool's handler checks them itself (`register`) and answers with the tool's parameters,
+  // so the SDK's check passes the arguments on as they came. The method is private in the SDK's types; the SDK is pinned, and
+  // test/lean.test.ts fails if its text ever comes back. A looser schema given to the SDK would not do: it would drop the
+  // `required` list the client is shown, and the SDK would still check what is nested in it (docs/design.md, section 6, Lean replies).
+  (server as unknown as { validateToolInput: (tool: unknown, args: unknown) => Promise<unknown> }).validateToolInput = async (_tool, args) => args ?? {};
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
     const snapshot = store.snapshot();
@@ -180,22 +262,28 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
     const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
+    const json = jsonSchemaOf(schema);
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
       let outcome = "ok";
       try {
         if (credential && !credential.ok) throw new Error(credential.problem);
-        const parsed = schema.parse(a);
+        // Wrong names the tool can place are read as the right ones, then the arguments are checked; a mistake is answered with the tool's parameters.
+        const fixed = readNames(name, json, isRecord(a) ? a : {});
+        const checked = schema.safeParse(fixed.args);
+        if (!checked.success) throw new Error(refusal(name, json, fixed.args, checked.error.issues));
+        const parsed = checked.data;
         // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
+        const notes = [...fixed.notes, ...(note ? [note] : [])];
         // The PM's or the architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? answersPushes({ role: credential.who.access.role }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
         // Another agent's call is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
         const caller = credential?.ok ? (answersPushes({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !answersPushes({ session: args.session }) ? args.session.trim() : undefined;
         if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (notes.length ? `\nnote: ${notes.join("; ")}` : "");
         const pushed = caller && wake ? wake.footer(caller) : "";
         return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
@@ -210,15 +298,17 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("search", "Where is this text mentioned? Search Chinese or other substrings across titles, heads, plan text, target goals, target values, current values, comparison baselines, logs, decisions and owner notes. Read context for a hit before editing it.", {
     query: text("Case-insensitive substring to find, including Chinese text."), filters: z.object({ ...scope, status: statuses, kind: z.array(z.enum(["item", "card", "note"])).describe("Search only these document kinds.").optional(), since: Time.describe("Only fields with timestamps at or after this ISO time; logs and notes use their own times.").optional(), limit: limit(20) }).strict().describe("Narrow the matches to relevant board context.").optional(),
   }, a => { const x = read(); return formatSearch(q.search(x.snapshot, x.rules, a.query, a.filters)); });
-  register("context", "What is this item or decision, what does it wait on, and what happened recently? Accepts a key or a short number (#812). Returns compact plan rows, target numbers with comparison baselines and measurement dates, and the latest five log entries; logs are historical detail and never owner unread content. Request all only when needed.", {
-    id: ref, log: z.union([z.number().int().min(0), z.literal("all")]).describe("Recent item log entries to include; default 5, 0 omits them, all returns the full log.").optional(),
-  }, a => { const x = read(); return formatContext(q.context(x.snapshot, x.rules, a.id, { log: a.log })); });
+  register("context", "What is this item or decision, what does it wait on, and what happened recently? Accepts a key or a short number (#812). By default returns the head as the first paragraph of each section, the plan with finished rows folded into a count, target numbers with comparison baselines and measurement dates, open cards without their options' grounds, handled notes cut to a line, five pull request references and the latest five log entries cut to 240 characters; a cut says the full length. section answers with one section of the head whole (all: the whole head) and nothing else, full answers with nothing cut or folded, log gives that many entries whole (all returns the full log), and the key of a card gives the card whole. Logs are historical detail and never owner unread content.", {
+    id: ref, log: z.union([z.number().int().min(0), z.literal("all")]).describe("Recent item log entries to include, whole; default the latest 5 cut to 240 characters, 0 omits them, all returns the full log.").optional(),
+    section: text("Answer with the head alone: this section of it, by the title the default answer lists (a prefix such as 参考 matches every section that starts so), or all for the whole head. Items only.").optional(),
+    full: z.boolean().describe("Answer whole, with nothing cut or folded: the whole head, the whole plan, every card option's grounds, handled notes and log entries in full.").optional(),
+  }, a => { const x = read(); return formatContext(q.context(x.snapshot, x.rules, a.id, { log: a.log, foldPlan: !a.full }), a.full ? { section: a.section } : { lean: true, cutLog: a.log === undefined, section: a.section }); });
   register("graph", "What does this wait on, and what waits on it? Accepts a key or a short number (#812). Follow plan dependencies with titles and ownership, marking open blocked chains and cycles; owned and shared item rows are included.", {
     id: ref, direction: z.enum(["up", "down", "both"]).describe("up follows blockers; down follows dependents; both shows each separately."), depth: z.number().int().min(0).max(20).describe("Maximum dependency edges from the root; default 3.").optional(),
   }, a => { const x = read(); return formatGraph(q.graph(x.snapshot, x.rules, a.id, a)); });
-  register("overview", "Which areas need attention? Shows leaf status counts, owner actions, blocked leaves and checks, optionally in one project group. status narrows leaf counts, owner actions and checks, including paused work.", {
-    group: scope.group, status: statuses,
-  }, a => { const x = read(); return q.overview(x.snapshot, x.rules, a).map(project => [ `${project.project}`, ...project.areas.map(area => [formatRow(area), Object.entries(area.counts).map(([st, n]) => `${label(st)} ${n}`).join(" · "), ...area.ownerActions.map(it => `  owner: ${formatRow(it)}`), ...area.blocked.map(it => `  blocked: ${formatRow(it)}`), ...area.checks.map(it => `  check: ${formatRow(it)} · ${it.checks.map(c => c.text).join("; ")}`)].join("\n"))].join("\n")).join("\n") || "No projects."; });
+  register("overview", "Which areas need attention? By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged, each with its first five such rows; blocked items are only counted. detail lists every area with all its rows. Optionally in one project group. status narrows leaf counts, owner actions and checks, including paused work.", {
+    group: scope.group, status: statuses, detail: z.boolean().describe("List every area with all its owner, blocked and check rows, as the answer once did.").optional(),
+  }, a => { const x = read(); return formatOverview(q.overview(x.snapshot, x.rules, a), a.detail); });
   register("list", "Which items match structured filters? Browse compact rows in page sibling order, then use context on the relevant ids. Done and cancelled items require an explicit status filter.", {
     filters: z.object({ ...scope, status: statuses, priority: z.array(Priority).describe("Match displayed priority: a root stores it; other work inherits it from open dependents. Record-owned work inherits shared dependents' priority, or none without them.").optional(), needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
   }, a => { const x = read(); return q.list(x.snapshot, x.rules, a.filters).map(it => `${formatRow(it)}${it.needsOwner ? " · owner waiting" : ""}${it.checks.length ? ` · ${it.checks.length} checks` : ""}`).join("\n") || "No items."; });
@@ -235,7 +325,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   });
   register("notes", "What did the owner say? Find notes by state, kind, subtree or time, with project replies, before handling or replying to them.", {
     filters: z.object({ under: scope.under, state: z.array(z.enum(["draft", "sent", "done"])).describe("Include these note states; sent finds unhandled owner messages.").optional(), kind: z.array(z.enum(NOTE_KINDS)).describe("Include these kinds of owner note.").optional(), since: Time.describe("Notes sent, created or replied to at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Narrow owner notes to relevant messages.").optional(),
-  }, a => q.notes(read().snapshot, a.filters).map(formatNote).join("\n") || "No notes.");
+  }, a => q.notes(read().snapshot, a.filters).map(n => formatNote(n)).join("\n") || "No notes.");
   register("messages", "Who told whom what? Lists the messages agents sent each other through the board, newest first, one per line: time, sender (its project) → recipient, the item, the text. A message only says which item to read and what is awaited; the content is on the item. since is inclusive, until exclusive.", {
     filters: z.object({ to: text("Only messages to this session.").optional(), from: text("Only messages from this session.").optional(), item: Key.describe("Only messages about this item.").optional(), since: dispatchTime("Only messages sent at or after this UTC time.").optional(), until: dispatchTime("Only messages sent before this UTC time.").optional(), limit: limit(50) }).strict().describe("Narrow the messages listed.").optional(),
   }, a => {
