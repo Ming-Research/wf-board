@@ -310,6 +310,35 @@ test("an untracked file in the checkout does not stop a deploy", async t => {
   assert.equal(w.restarts, 1);
 });
 
+test("a submodule checked out in the checkout does not make it look edited by hand when a merge moves its pointer", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  // A submodule repository with two commits; the main line holds it at the first and later moves the pointer to the second.
+  const sub = join(r.dir, "skill");
+  sh(r.dir, "init", "-q", "-b", BRANCH, sub);
+  writeFileSync(join(sub, "f"), "1"); sh(sub, "add", "f"); sh(sub, "commit", "-q", "-m", "one");
+  const one = sh(sub, "rev-parse", "HEAD");
+  writeFileSync(join(sub, "f"), "2"); sh(sub, "commit", "-q", "-am", "two");
+  const two = sh(sub, "rev-parse", "HEAD");
+  const allow = ["-c", "protocol.file.allow=always"];
+  sh(r.seed, ...allow, "submodule", "add", "-q", sub, "design/skill");
+  sh(join(r.seed, "design/skill"), "checkout", "-q", one);
+  r.publish("Add the submodule");
+  assert.equal(await deploy(), "deployed");
+  // Whoever initializes the submodule in the checkout (a check that needs it) leaves the checkout clean.
+  sh(r.checkout, ...allow, "submodule", "update", "--init", "-q");
+  assert.equal(sh(r.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  sh(join(r.seed, "design/skill"), "fetch", "-q", "origin");
+  sh(join(r.seed, "design/skill"), "checkout", "-q", two);
+  r.publish("Move the submodule pointer (#2)");
+  assert.equal(await deploy(), "deployed");
+  // The merge moved the pointer and left the submodule's own files behind: git status calls that a change, and the job must not.
+  assert.match(sh(r.checkout, "status", "--porcelain", "--untracked-files=no"), /design\/skill/);
+  const later = r.land({ "src/a.ts": "a" }, "A (#3)");
+  assert.equal(await deploy(), "deployed", "a pointer left behind by a merge is not an edit by hand");
+  assert.equal(r.head(), later);
+  assert.equal(w.posts.at(-1)!.event, "deployed");
+});
+
 test("a checkout with a commit the main line lacks, or on another branch, is not moved", async t => {
   const r = await repos(t), { w, deploy } = world(r);
   writeFileSync(join(r.checkout, "local.txt"), "mine");
