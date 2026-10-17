@@ -248,6 +248,17 @@ test("a head that is context's summary is refused when it is written back, and t
   assert.equal(ok.isError, undefined, text(ok)); assert.ok(store.snapshot().items.a!.head!.endsWith("追加一行"));
 });
 
+test("a summary whose cut section has a quoted title is refused too", async t => {
+  const { client, text, store } = await richItem(t);
+  const head = `**问题**：短\n\n## 为什么用 "section"\n\n${"这一节很长，需要被截掉一部分才行。".repeat(20)}\n\n第二段，也很长。${"再写一些字。".repeat(30)}\n`;
+  const summary = summarizeHead(head).text;
+  assert.match(summary, /more characters \(section "为什么用 "section""\)/, "the mark carries the quoted title");
+  const before = store.snapshot();
+  const refused = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: before.items.a!.rev, head: summary, reason: "edited the summary" } });
+  assert.equal(refused.isError, true); assert.match(text(refused), /context section: "all"/);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test("acceptance rows stay in the plan, done or not, and every fold says how to get the rest", async t => {
   const { client, text, store } = await richItem(t);
   const a = store.snapshot().items.a!;

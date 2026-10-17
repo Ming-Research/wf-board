@@ -1824,8 +1824,7 @@ transcripts) made 433 `context` calls that returned 1.59 million characters (3.7
 32k at most), and `overview` returned 24k characters a call. The same sessions' calls were
 refused again and again for a parameter name the tool lacked (18 of 88 `create_item`, 10 of
 290 `set_plan`, 8 of 263 `update_item`), and the refusal named no name that would have worked.
-This is a temporary trim (item `mcp-lean`); the redesign of the tools (item `mcp-redesign`) may
-replace it.
+This is a temporary trim; the redesign of the tools, which is planned separately, may replace it.
 
 **`context` by default** answers with:
 
@@ -1901,17 +1900,17 @@ answer now):
 
 | Calls | Whole | Default | Default as share of whole |
 |---|---|---|---|
-| `context` of `pm-flow`, `push-kinds`, `architect-notes`, `tpm-role`, `quick-ci` (the architect's five) | 53,448 | 18,250 | 34% |
-| `context` of `push-kinds` (an engineer's own item) | 7,405 | 4,518 | 61% |
-| the five and the engineer's item together | 60,853 | 22,768 | 37% |
+| `context` of five items the architect read often (a project's parent item, a push-notification item, a notes item, a role-rules item, a CI item) | 53,448 | 18,250 | 34% |
+| `context` of one of those, read as an engineer's own item | 7,405 | 4,518 | 61% |
+| those six calls together (the acceptance set; `brief` is not part of it) | 60,853 | 22,768 | 37% |
 | `brief` of `wf-board` | 21,290 | 21,290 | 100% (unchanged) |
 | `context` of the 19 items the architect named most often in its calls | 130,157 | 62,843 | 48% |
-| the same 19 without the largest (`item-rules`, 31,068 → 3,438) | 99,089 | 59,316 | 60% |
+| the same 19 without the largest (a rules item with a 29k head, 31,068 → 3,527) | 99,089 | 59,316 | 60% |
 | `overview` of the whole board | 170,878 | 25,201 | 15% |
 | `overview` of the project `wf-board` | 3,753 | 1,789 | 48% |
 
-An item whose size is mostly its plan, relations and notes shrinks little (`pm-flow` 95%);
-one with a long head or log shrinks most (`tpm-role` 19%).
+An item whose size is mostly its plan, relations and notes shrinks little (the first, 95%);
+one with a long head or log shrinks most (a role-rules item, 19%).
 
 ### Changing things
 

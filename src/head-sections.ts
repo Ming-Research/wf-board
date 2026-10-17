@@ -42,7 +42,7 @@ export function splitHead(head: string): HeadSection[] {
 }
 
 // The line the summary writes where it cut a section short.
-const CUT_LINE = /^ {2}… \d+ more characters \(section "[^"\n]*"\)[ \t]*$/m;
+const CUT_LINE = /^ {2}… \d+ more characters \(section ".*"\)[ \t]*$/m;
 /** The mark of a summary in a text, if the text holds one: a head that carries it was copied from a cut answer, and is not a head. */
 export function summaryMark(text: string): string | undefined { return CUT_LINE.exec(text)?.[0].trim(); }
 
