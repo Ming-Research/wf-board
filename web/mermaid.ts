@@ -13,12 +13,15 @@ const BLOCK = ".mermaid-block";
 /** The path the server gives the library at (src/http.ts). Held in a variable so the bundler leaves the import alone. */
 const LIBRARY: string = "/mermaid.js";
 
-/** The settings that make a diagram compact: tighter gaps between nodes and layers and less padding inside a node than the library's
- * own, with the font size left as it is, so the same text takes less room. One entry per diagram type that has such settings. */
+/** The settings that make a diagram compact: tighter gaps between nodes and layers and less padding inside a node than the library's own,
+ * with the font size left as it is, so the same text takes less room. The library's default layout (ELK) and its default look (neo)
+ * keep fixed gaps and paddings and ignore these settings, so the page asks for the layout dagre and the classic look. One entry per
+ * diagram type that has such settings. */
 const COMPACT = {
-  flowchart: { nodeSpacing: 30, rankSpacing: 30, padding: 8, diagramPadding: 4, minNodeWidth: 80 },
-  state: { nodeSpacing: 30, rankSpacing: 30 },
-  class: { nodeSpacing: 30, rankSpacing: 30 },
+  layout: "dagre",
+  flowchart: { look: "classic", nodeSpacing: 20, rankSpacing: 28, padding: 8, diagramPadding: 4, minNodeWidth: 60 },
+  state: { nodeSpacing: 20, rankSpacing: 28 },
+  class: { nodeSpacing: 20, rankSpacing: 28 },
   er: { nodeSpacing: 70, rankSpacing: 50, diagramPadding: 8 },
   // The boxes of the actors keep their width: a Chinese name does not wrap in them.
   sequence: { diagramMarginX: 10, diagramMarginY: 10, actorMargin: 30, boxMargin: 6, messageMargin: 28 },
@@ -72,8 +75,12 @@ function button(text: string, title: string, click: () => void): HTMLButtonEleme
 function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLElement {
   const svg = fig.querySelector("svg")!;
   let zoom = 1;
-  /** Whether the box has more to show sideways: then it can be dragged, and says so. */
-  const refresh = () => { block.dataset.pan = fig.scrollWidth > fig.clientWidth + 1 ? "yes" : "no"; };
+  /** Whether the box has more to show sideways: then it can be dragged, and says so; and on which sides there is more. */
+  const refresh = () => {
+    const room = fig.scrollWidth - fig.clientWidth;
+    block.dataset.pan = room > 1 ? "yes" : "no";
+    block.dataset.more = [fig.scrollLeft > 1 ? "left" : "", fig.scrollLeft < room - 1 ? "right" : ""].join(" ").trim();
+  };
   const remember = () => { if (zoom === 1 && fig.scrollLeft === 0) views.delete(source); else views.set(source, { zoom, left: fig.scrollLeft }); };
   /** Sets the zoom; the point of the diagram that is at `at` on the screen stays there. */
   const set = (next: number, at: { x: number; y: number }) => {
@@ -94,9 +101,9 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     return { x: box.left + box.width / 2, y: top < bottom ? (top + bottom) / 2 : box.top };
   };
 
-  const view = views.get(source);
-  if (view) { zoom = view.zoom; fig.style.setProperty("--zoom", String(zoom)); fig.scrollLeft = view.left; }
-  fig.addEventListener("scroll", remember);
+  const saved = views.get(source);
+  if (saved) { zoom = saved.zoom; fig.style.setProperty("--zoom", String(zoom)); fig.scrollLeft = saved.left; }
+  fig.addEventListener("scroll", () => { remember(); refresh(); });
   // Ctrl and the wheel zoom (a pinch on a trackpad arrives so too); the cursor's point stays put.
   fig.addEventListener("wheel", event => {
     if (!event.ctrlKey) return;
@@ -138,7 +145,7 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
 }
 
 function clear(block: HTMLElement) {
-  for (const old of block.querySelectorAll(".mermaid-fig, .mermaid-tools, .mermaid-err")) old.remove();
+  for (const old of block.querySelectorAll(".mermaid-view, .mermaid-tools, .mermaid-err")) old.remove();
 }
 
 function show(block: HTMLElement, svg: string, source: string) {
@@ -150,7 +157,11 @@ function show(block: HTMLElement, svg: string, source: string) {
   // shrunk to the width of the text when the text is narrower, times the zoom.
   const width = fig.querySelector("svg")?.viewBox.baseVal.width;
   if (width) fig.style.setProperty("--natural", width + "px");
-  block.prepend(fig);
+  // The box is inside a view, which carries the marks at its edges that show there is more to see sideways.
+  const view = document.createElement("div");
+  view.className = "mermaid-view";
+  view.append(fig);
+  block.prepend(view);
   block.prepend(viewer(block, fig, source));
   block.dataset.state = "done";
 }

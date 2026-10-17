@@ -259,16 +259,14 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .rich pre.code .l { counter-increment: ln; }
 .rich pre.code .l::before { content: counter(ln); display: inline-block; min-width: 2.5ch; margin-right: 1.2ch; text-align: right; color: var(--gutter); user-select: none; -webkit-user-select: none; }
 /* A mermaid block: the diagram stands in for its code once drawn; the code shows while the diagram is not drawn and when drawing fails, with the error under it. */
-.mermaid-block { position: relative; }
 .mermaid-block[data-state="done"] > pre.code { display: none; }
 .mermaid-fig { overflow-x: auto; overscroll-behavior-x: contain; padding: 6px 0; }
 /* The diagram is as wide as itself (--natural, set from its view box in web/mermaid.ts) or, when the text is narrower, as wide as the text,
  * times the zoom (--zoom). So it is never enlarged by fitting, a zoomed one is wider than the box and the box scrolls sideways, and the
  * page never does. Its height follows its width, and the page scrolls for a tall one. */
 .mermaid-fig svg { display: block; margin-inline: auto; width: calc(min(var(--natural), 100%) * var(--zoom, 1)); max-width: none !important; height: auto; background: transparent !important; }
-/* The bar is drawn over the box's top right corner. */
-.mermaid-tools { position: absolute; top: 4px; right: 4px; z-index: 1; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; opacity: 0.8; }
-.mermaid-tools:hover, .mermaid-tools:focus-within { opacity: 1; }
+/* The tool strip is a row of its own above the diagram, at the right, so it never covers the diagram. */
+.mermaid-tools { display: flex; align-items: center; gap: 2px; width: fit-content; margin: 0 0 2px auto; padding: 2px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; }
 .mermaid-tools button { font: inherit; min-width: 24px; height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .mermaid-tools button:hover { background: var(--accent-soft); }
 .mermaid-hint { display: none; padding: 0 6px; color: var(--muted); }
@@ -276,6 +274,11 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .mermaid-block[data-pan="yes"] .mermaid-hint { display: inline; }
 .mermaid-block[data-pan="yes"] .mermaid-fig { cursor: grab; user-select: none; -webkit-user-select: none; }
 .mermaid-fig.grabbing { cursor: grabbing; }
+/* A shade along the side of the view that has more to show, at the height of the whole diagram, so a tall diagram whose scroll bar is far below still says so. */
+.mermaid-view { position: relative; }
+.mermaid-block[data-more~="left"] > .mermaid-view::before, .mermaid-block[data-more~="right"] > .mermaid-view::after { content: ""; position: absolute; top: 0; bottom: 0; width: 18px; pointer-events: none; }
+.mermaid-block[data-more~="left"] > .mermaid-view::before { left: 0; background: linear-gradient(to right, color-mix(in srgb, var(--ink) 25%, transparent), transparent); }
+.mermaid-block[data-more~="right"] > .mermaid-view::after { right: 0; background: linear-gradient(to left, color-mix(in srgb, var(--ink) 25%, transparent), transparent); }
 .mermaid-fig::-webkit-scrollbar { height: 10px; }
 .mermaid-fig::-webkit-scrollbar-track { background: var(--todo-soft); border-radius: 5px; }
 .mermaid-fig::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 5px; }

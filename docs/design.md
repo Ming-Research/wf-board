@@ -1949,12 +1949,14 @@ width of the drawing: a diagram is shrunk to the text and never enlarged by fitt
 measured by script, and the page never scrolls sideways. The height follows the width; a tall
 diagram makes the page scroll instead of being squeezed into the window, where its text would
 shrink until it could not be read. A narrow one is centered. Each diagram has a small tool strip
-at its top right (smaller, larger, reset), and zooms with Ctrl and the wheel too (a pinch on a
-trackpad arrives so), about the cursor. The plain wheel is left alone and scrolls the page.
+(smaller, larger, reset), in a row of its own above the diagram at the right so it never covers
+the diagram, and zooms with Ctrl and the wheel too (a pinch on a trackpad arrives so), about the
+cursor. The plain wheel is left alone and scrolls the page.
 An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll
 bar of its own (the system's hides itself when idle, so a diagram that went past its box looked
-cut off), shows a grabbing hand and says so in the strip; a mouse drags it sideways in the box and
-up or down along the page. The box never scrolls vertically, so the wheel is never taken by it.
+cut off), shows a grabbing hand, says so in the strip and shades the side that has more to show,
+along the whole height of the diagram (the scroll bar of a tall diagram is far below the part on
+the screen); a mouse drags it sideways in the box and up or down along the page. The box never scrolls vertically, so the wheel is never taken by it.
 Zoom and sideways scroll are kept per source: a diagram drawn again with the same source (a live
 update repaints its item, the page changes theme) keeps its view, and one whose source changed
 starts at the default size. The detail pane draws the diagrams it already has as soon as it is
@@ -3093,7 +3095,8 @@ compact settings draw a chart shaped like a role's flow chart in less area than 
 settings, with its node text at least 12 px high on the screen; the buttons, and Ctrl with the wheel,
 zoom, the plain wheel scrolls the page and nothing else, an enlarged diagram can be scrolled to both
 its ends and dragged, and Reset restores the default size; an enlarged diagram says it can be moved
-(scroll bar, hand, word) and the strip and the bar read in both color schemes; a live update that
+(scroll bar, hand, word, a shade at the edge with more) and the strip and the bar read in both
+color schemes; a live update that
 leaves a diagram's source alone leaves its zoom, its sideways scroll and the page's scroll alone, and one
 that changes the source starts it at the default size; the same diagram drawn twice in one page, the
 first copy in a folded section, has no id twice and the visible copy's line markers are its own;

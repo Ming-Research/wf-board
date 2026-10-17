@@ -430,6 +430,21 @@ async function checkPan(bp: BoardPage, wait: number): Promise<string[]> {
   if (got.cursor !== "grab") v.push(`mermaid-pan: a diagram that can be dragged shows the cursor ${got.cursor}, not grab`);
   if (!(got.bar >= 8)) v.push(`mermaid-pan: the box of a diagram that can be dragged has no scroll bar of its own, and the system's hides itself when idle (the bar is ${got.bar} px high)`);
   if (got.hint === "none" || !got.hintText) v.push("mermaid-pan: the tool strip of a diagram that can be dragged does not say so");
+  // A shade at the edge that has more: along the whole diagram, so it shows however far down the scroll bar is.
+  const shades = () => bp.page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>("#item-detail .mermaid-block")!, view = block.querySelector(".mermaid-view")!;
+    const shade = (pseudo: string) => { const cs = getComputedStyle(view, pseudo); return cs.content !== "none" && cs.content !== "normal" && parseFloat(cs.width) >= 8; };
+    return { more: block.dataset.more ?? "", left: shade("::before"), right: shade("::after") };
+  });
+  await bp.page.evaluate(() => { document.querySelector<HTMLElement>("#item-detail .mermaid-fig")!.scrollLeft = 0; });
+  await bp.page.waitForFunction(() => document.querySelector<HTMLElement>("#item-detail .mermaid-block")!.dataset.more === "right", null, { timeout: 3_000 }).catch(() => {});
+  const atStart = await shades();
+  if (!atStart.more.includes("right") || !atStart.right || atStart.left) v.push(`mermaid-pan: an enlarged diagram at its left edge does not show a shade on its right alone (more: "${atStart.more}", shade left ${atStart.left}, right ${atStart.right})`);
+  await bp.page.evaluate(() => { const f = document.querySelector<HTMLElement>("#item-detail .mermaid-fig")!; f.scrollLeft = f.scrollWidth; });
+  await bp.page.waitForFunction(() => document.querySelector<HTMLElement>("#item-detail .mermaid-block")!.dataset.more === "left", null, { timeout: 3_000 }).catch(() => {});
+  const atEnd = await shades();
+  if (atEnd.more !== "left" || !atEnd.left || atEnd.right) v.push(`mermaid-pan: an enlarged diagram at its right edge does not show a shade on its left alone (more: "${atEnd.more}", shade left ${atEnd.left}, right ${atEnd.right})`);
+  await bp.page.evaluate(() => { document.querySelector<HTMLElement>("#item-detail .mermaid-fig")!.scrollLeft = 0; });
   for (const scheme of ["light", "dark"] as const) {
     await bp.page.emulateMedia({ colorScheme: scheme });
     const what = `mermaid-pan (${scheme})`;
@@ -599,6 +614,7 @@ const WHEEL_ZOOMS_ALL: Edit = { file: "mermaid.ts", find: "if (!event.ctrlKey) r
 const NO_DRAG: Edit = { file: "mermaid.ts", find: 'if (down.button !== 0 || down.pointerType !== "mouse" || block.dataset.pan !== "yes") return;', replace: "return;" };
 const NO_SCROLLBAR: Edit = { file: "index.html", find: ".mermaid-fig::-webkit-scrollbar { height: 10px; }", replace: "" };
 const NO_HINT: Edit = { file: "index.html", find: '.mermaid-block[data-pan="yes"] .mermaid-hint { display: inline; }', replace: "" };
+const NO_SHADE: Edit = { file: "index.html", find: 'content: ""; position: absolute; top: 0; bottom: 0; width: 18px; pointer-events: none;', replace: "" };
 const NO_GRAB: Edit = { file: "index.html", find: "cursor: grab; ", replace: "" };
 // Colors that do not follow the page's color scheme.
 const FIXED_INK: Edit = { file: "index.html", find: "background: var(--surface); color: var(--ink); font-size: 13px;", replace: "background: var(--surface); color: #18201e; font-size: 13px;" };
@@ -755,6 +771,10 @@ test("the same check on a page without the hint reports the hint", LONG, async t
 test("the same check on a page without the grabbing hand reports the cursor", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [NO_GRAB]);
   caught(await checkPan(bp, GIVE_UP), /^mermaid-pan: a diagram that can be dragged shows the cursor/);
+});
+test("the same check on a page without the shades at the edges reports the edge", LONG, async t => {
+  const { bp } = await open(t, seedPipeline, [NO_SHADE]);
+  caught(await checkPan(bp, GIVE_UP), /^mermaid-pan: an enlarged diagram at its left edge does not show a shade on its right alone/);
 });
 test("the same check on a page whose buttons keep their light-scheme ink reports the buttons in the dark scheme", LONG, async t => {
   const { bp } = await open(t, seedPipeline, [FIXED_INK]);
