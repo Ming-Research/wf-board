@@ -25,7 +25,7 @@ export function numRef(text: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export const STATUSES = ["todo", "wip", "blocked", "paused", "done", "cancelled"] as const;
+export const STATUSES = ["todo", "partial", "wip", "blocked", "paused", "done", "cancelled"] as const;
 export const Status = z.enum(STATUSES);
 export type Status = z.infer<typeof Status>;
 

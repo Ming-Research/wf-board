@@ -127,3 +127,20 @@ export function finishLogLine(d: Dispatch, corrected: boolean): string {
   const f = d.finish!;
   return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${f.result}，${countsText(d)}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
 }
+
+/** The dispatches on an item that have not ended, newest start first. The one reading of "who is on an item": holderOf reads
+ * it for the pushes, and the status of an item reads it for whether someone works on it (docs/design.md, The wake streams). */
+export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
+  return (s.items[item]?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+}
+/** The session holding an item: the agent of the newest open engineer dispatch on it, or none. A takeover's dispatch is newer
+ * than the one it replaces, so it holds the item from its start; a review holds nothing. */
+export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
+  return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
+}
+/** Every session holding an item. */
+export function holders(s: Pick<Snapshot, "items">): Set<string> {
+  const out = new Set<string>();
+  for (const id of Object.keys(s.items)) { const h = holderOf(s, id); if (h !== undefined) out.add(h); }
+  return out;
+}

@@ -77,7 +77,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   const itemCommit = (call: () => Promise<Result>, message: string, files=["items/new.yaml"], by = author) => committed(call,message,files,"item","new",by);
   await itemCommit(() => op.createItem({ ...asArchitect, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml","numbers.yaml"],architect);
   assert.deepEqual(store.snapshot().items.area!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
-  const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"todo");
+  const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"blocked","its row follows the area's earlier row, which is still open");
   assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"accept",accept:true,text:"New result passes",state:"todo"}]);
   await itemCommit(() => op.appendLog({ author, id: "new", text: "Evidence" }),"append_log new");
   assert.deepEqual(store.snapshot().items.new!.log[0],{at:later,by:author,text:"Evidence"});
@@ -521,7 +521,7 @@ test("acceptance may precede merge and an item finishes only after every row res
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "the fixture's unanswered owner ask still blocks its merge work");
   await op.clearAsk({ author, id: "a", log: "Owner approved; merge can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "partial");
   await op.setPlan({ author, id: "a", row: { id: "merge", text: "Merge into main", state: "done" } });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
 });
@@ -557,7 +557,7 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
   assert.equal(rules(store.snapshot()).statusOf("a"), "blocked", "writing acceptance done does not bypass the fixture's owner ask");
   await op.clearAsk({ author, id: "a", log: "Owner approved; independent work can proceed" });
   assert.equal(rules(store.snapshot()).askPending("a"), false);
-  assert.equal(rules(store.snapshot()).statusOf("a"), "todo");
+  assert.equal(rules(store.snapshot()).statusOf("a"), "partial");
   const work = store.snapshot().items.a!.plan.find(row => row.id === "work")!;
   assert.ok("state" in work); assert.equal(work.state, "todo");
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "done", after: [] } });

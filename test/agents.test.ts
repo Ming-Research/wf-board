@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Store } from "../src/store.ts";
 import type { Change } from "../src/store.ts";
-import { agentRows, touchAgent } from "../src/agents.ts";
+import { agentRows, touchAgent, liveDispatches } from "../src/agents.ts";
 import { applyActivityDelta } from "../src/rules.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "../src/model.ts";
 import { board, author } from "./helpers.ts";
@@ -152,4 +152,13 @@ test("a session whose newest dispatch has ended is out until it writes again; a 
   assert.equal(row(s, "again")!.lastKind, "wrote", "wrote after it ended: listed as usual");
   assert.equal(row(s, "done"), undefined, "its own last write was before the end");
   assert.equal(row(s, "grace"), undefined, "a write within a minute of the recorded end is still the session's last: the end may be recorded to the minute");
+});
+
+test("a dispatch is live while its session started or wrote within the window, and only until it ends", () => {
+  const ended = (agent: string, startedAgo: number) => dispatch(agent, minutesAgo(startedAgo), { finish: { ended: minutesAgo(startedAgo - 10), result: "一次通过" } } as unknown as Partial<Dispatch>);
+  const s = snap({
+    a: item([], { dispatches: [dispatch("recent", minutesAgo(60)), dispatch("stale", minutesAgo(7 * 60)), dispatch("quiet-then-wrote", minutesAgo(9 * 60)), ended("over", 60)] } as Partial<Item>),
+  }, { "quiet-then-wrote": wrote(["elsewhere", 30]), stale: wrote(["a", 6.5 * 60]) });
+  assert.deepEqual(liveDispatches(s, "a", NOW).map(d => d.agent).sort(), ["quiet-then-wrote", "recent"], "started or wrote within six hours; the ended one and the long quiet one are out");
+  assert.deepEqual(liveDispatches(s, "missing", NOW), []);
 });

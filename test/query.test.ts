@@ -99,7 +99,7 @@ test("overview/list/notes filter derived plan status, inherited priority, subtre
   await op.clearAsk({author,id:"a",log:"Handled"});
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Own work", state: "doing" } });
   const s = store.snapshot(), r = rules(s), areas = q.overview(s, r, { group: "Whitefoot" })[0]!.areas;
-  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
+  assert.equal(areas.length, 1); assert.deepEqual(areas[0]!.counts, { todo: 0, partial: 0, wip: 1, blocked: 1, paused: 0, done: 0, cancelled: 0 });
   assert.deepEqual(areas[0]!.ownerActions.map(it => it.id), ["a"]); assert.deepEqual(areas[0]!.blocked.map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { under: "area", status: ["blocked"], priority: ["P1"], group: "Whitefoot" }).map(it => it.id), ["b"]);
   assert.deepEqual(q.list(s, r, { priority: ["P0"] }), []);
@@ -284,7 +284,7 @@ test("brief queues own work and frontier steps, folds resolved rows and projects
   assert.throws(()=>q.brief(s,r,"Missing"),/project/);
 });
 
-test("brief excludes an ask-blocked frontier but retains ready parallel work beside a doing step", async t => {
+test("brief excludes an ask-blocked frontier and an item somebody holds, and offers ready parallel work once nobody does", async t => {
   const {store,op}=await board(t);
   const blocked=store.snapshot();
   assert.equal(rules(blocked).statusOf("a"),"blocked");
@@ -293,8 +293,14 @@ test("brief excludes an ask-blocked frontier but retains ready parallel work bes
   await op.setPlan({author,id:"a",rows:[{id:"doing",text:"Current work",state:"doing",after:[]},{id:"ready",text:"Independent next work",state:"todo",after:[]},acceptance()]});
   const running=store.snapshot(),r=rules(running);
   assert.equal(r.statusOf("a"),"wip");
-  assert.ok(q.brief(running,r,author).todo.some(row=>row.id === "a"));
+  assert.ok(!q.brief(running,r,author).todo.some(row=>row.id === "a"));
   assert.ok(q.brief(running,r,author).wip.some(row=>row.id === "a"));
+  // The step in progress is done: part way, nobody on it, and the ready step is offered.
+  await op.setPlan({author,id:"a",row:{id:"doing",text:"Current work",state:"done",after:[]}});
+  const parked=store.snapshot(),pr=rules(parked);
+  assert.equal(pr.statusOf("a"),"partial");
+  assert.ok(q.brief(parked,pr,author).todo.some(row=>row.id === "a"));
+  assert.ok(!q.brief(parked,pr,author).wip.some(row=>row.id === "a"));
 });
 
 test("project followups use strict age boundary and omit drafts, replies and closures", async t => {
@@ -325,7 +331,7 @@ test("project identity read shapes omit agents", async t => {
       for (const result of rows) assert.equal(Object.hasOwn(result, "agents"), false);
     });
   }
-  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, wip: 0, blocked: 3, paused: 0 } }));
+  await t.test("projects output", () => assert.deepEqual(q.projects(s, r)[0], { name: "Whitefoot", repo: "Ming-Research/Whitefoot", areas: 1, openItems: { todo: 0, partial: 0, wip: 0, blocked: 3, paused: 0 } }));
 });
 
 test("records are labeled separately in query rows and absent from status queues; stalled leaves appear in hasChecks", async t => {

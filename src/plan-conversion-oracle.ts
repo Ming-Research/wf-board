@@ -1,7 +1,7 @@
 /** Independent plan derivation used only by the preservation oracle. */
 import type { Snapshot, Priority, Status, PlanRow } from "./model.ts";
 export type OracleRowState = "resolved" | "progress" | "waiting" | "open";
-export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priority|"") {
+export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priority|"", now=Date.now()) {
   const owners = new Map<string,string[]>(), waiters = new Map<string,string[]>();
   for(const [id,item] of Object.entries(snapshot.items))for(const row of item.plan){
     if(!("item"in row))continue;
@@ -21,15 +21,41 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     if(!row.own||status==="blocked")return "waiting";
     return status==="wip"?"progress":"open";
   }
-  function rows(id:string,trail:Set<string>) {
-    const preceding = new Map<string,OracleRowState>(), result:Array<{id:string;state:OracleRowState;ready:boolean}>=[];
-    for(const row of snapshot.items[id]?.plan??[]){
+  const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":"item"in row&&row.own&&(snapshot.items[row.item]?.record===true||snapshot.items[row.item]?.status==="cancelled");
+  function rowsOf(plan:readonly PlanRow[],trail:Set<string>) {
+    const preceding = new Map<string,OracleRowState>(), result:Array<{id:string;state:OracleRowState;ready:boolean;excluded:boolean}>=[];
+    for(const row of plan){
       const state=rowState(row,trail);
       const needs=row.after??result.slice(-1).map(value=>value.id);
-      result.push({id:row.id,state,ready:state!=="resolved"&&needs.every(key=>preceding.get(key)==="resolved")});
+      result.push({id:row.id,state,ready:state!=="resolved"&&needs.every(key=>preceding.get(key)==="resolved"),excluded:excludedRow(row)});
       preceding.set(row.id,state);
     }
     return result;
+  }
+  function rows(id:string,trail:Set<string>) { return rowsOf(snapshot.items[id]?.plan??[],trail); }
+  // The session of a live dispatch wrote or was started within six hours of `now`, as the agent list reads it.
+  const SIX_HOURS=6*3600*1000;
+  function liveSession(id:string):boolean {
+    return (snapshot.items[id]?.dispatches??[]).some(d=>!d.finish&&now-Math.max(Date.parse(d.started),Date.parse(snapshot.activity?.agents?.[d.agent]?.[0]?.at??"1970-01-01T00:00:00Z"))<=SIX_HOURS);
+  }
+  // Whether every row before the row that owns `id` in its owner's plan is resolved; a record's rows are a list, so no order there.
+  function ownerReady(id:string,trail:Set<string>):boolean {
+    const owner=(owners.get(id)??[])[0],plan=owner?snapshot.items[owner]:undefined;
+    if(!owner||!plan||plan.record)return true;
+    const done=new Map<string,boolean>();let last=true;
+    for(const row of plan.plan){
+      if("item"in row&&row.item===id)return (row.after===undefined?[last]:row.after.map(key=>done.get(key)===true)).every(ok=>ok);
+      last=rowState(row,trail)==="resolved";done.set(row.id,last);
+    }
+    return true;
+  }
+  // Something is done here, or in an open item this one owns that has begun.
+  function begun(id:string,values:Array<{state:OracleRowState;excluded:boolean}>,plan:readonly PlanRow[],trail:Set<string>):boolean {
+    if(values.some(value=>value.state==="resolved"&&!value.excluded))return true;
+    return plan.some(row=>"item"in row&&row.own&&open(row.item)&&!trail.has(row.item)&&begunItem(row.item,new Set(trail).add(row.item)));
+  }
+  function begunItem(id:string,trail:Set<string>):boolean {
+    const plan=snapshot.items[id]?.plan??[];return begun(id,rowsOf(plan,trail),plan,trail);
   }
   // This independent oracle discovers cycles through its active walk, rather
   // than importing the production graph analysis. A result touched by a cycle
@@ -40,10 +66,11 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     if(trail.has(id)){cycleHits++;return "blocked";}
     if(targetStatuses.has(id))return targetStatuses.get(id);
     const before=cycleHits;
-    const active=new Set(trail);active.add(id);const values=rows(id,active);
+    const active=new Set(trail);active.add(id);const plan=item.plan,values=rowsOf(plan,active);
     const frontier=values.filter(row=>row.ready);
     const status=!values.length?"todo":values.every(row=>row.state==="resolved")?"done":values.some(row=>row.state==="progress")?"wip"
-      :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")?"blocked":"todo";
+      :askPending(id)||frontier.length>0&&frontier.every(row=>row.state==="waiting")||!ownerReady(id,trail)?"blocked"
+      :liveSession(id)?"wip":begun(id,values,plan,active)?"partial":"todo";
     if(cycleHits===before)targetStatuses.set(id,status);
     return status;
   }
@@ -59,5 +86,5 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
     for(const dependent of waiters.get(id)??[])if(open(dependent))value=Math.min(value,ranks.get(dependent)??3);
     if(value<old){ranks.set(id,value);changed=true;}
   }}
-  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,priorityOf:(id:string):Priority|""=>(["P0","P1","P2"] as const)[ranks.get(id)??3]??"",rows:(id:string)=>rows(id,new Set([id]))};
+  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,priorityOf:(id:string):Priority|""=>(["P0","P1","P2"] as const)[ranks.get(id)??3]??"",rows:(id:string)=>rows(id,new Set([id])).map(({id,state,ready})=>({id,state,ready}))};
 }
