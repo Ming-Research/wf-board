@@ -18,7 +18,7 @@ jobs:
       - name: each mutation makes the wake tests fail
         shell: bash
         run: |
-          set -u
+          set +e
           mutate() { python3 - "$@" <<'PY'
           import sys
           path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -35,7 +35,7 @@ jobs:
             if node --test test/wake-agents.test.ts test/wake.test.ts > "/tmp/$name.log" 2>&1; then
               echo "::error::$name: the tests still pass"; failed=1
             else
-              echo "$name: caught"; grep -E "^not ok|^# (pass|fail)" "/tmp/$name.log" | head -8
+              echo "$name: caught"; grep -E "^✖|^ℹ (pass|fail)" "/tmp/$name.log" | head -6 || true
             fi
           }
           check footer-not-delivered src/wake.ts 'stream.deliver(shown.at(-1)!.n);' ''
