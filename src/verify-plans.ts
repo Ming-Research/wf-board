@@ -9,7 +9,7 @@ import { derivePlanOracle } from "./plan-conversion-oracle.ts";
 import type { PlanConversion } from "./convert-plans.ts";
 
 export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string[] {
-  const errors: string[] = [], next=result.snapshot, before=oldRules(old), actual=newRules(next), after=derivePlanOracle(next,id=>before.priorityOf(id)||old.items[id]?.priority||"");
+  const errors: string[] = [], next=result.snapshot, before=oldRules(old), actual=newRules(next), after=derivePlanOracle(next);
   const check=(ok:boolean,path:string)=>{if(!ok)errors.push(path);};
   const keys=(value:object)=>Object.keys(value).sort();
   const survey: Record<string,number>={parents:0,topItems:0,closed:0,closedTop:0,archived:0,stepsItems:0,sharedItemDeps:0,crossProjectDeps:0,sameProjectDeps:0,cardDeps:0,unlistedChildren:0,ownWorkSubitems:0,openMissingAcceptance:0,closedMissingAcceptance:0,wipWithoutDoing:0,ruleChanges:0};
@@ -24,12 +24,12 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
   check(equal(oldOwner,next.owner),"owner state changed beyond archive removal");
   check(OwnerState.safeParse(next.owner).success,"new owner schema invalid");
   check(result.report.counts.droppedArchives===Object.keys(old.owner.archived).length,"dropped archive count changed");
-  const expectedStatusChanges: typeof result.report.statusChanges=[], expectedPriorityChanges: typeof result.report.priorityChanges=[];
+  const expectedStatusChanges: typeof result.report.statusChanges=[];
   for(const [id,source] of Object.entries(old.items)) {
     const target=next.items[id];if(!target)continue;
     check(Item.safeParse(target).success,`${id}: new item schema invalid`);
     const sourceFields=Object.fromEntries(Object.entries(source).filter(([key])=>!["parent","deps","steps","status","priority","request","head","group","log"].includes(key)));
-    const targetFields=Object.fromEntries(Object.entries(target).filter(([key])=>!["plan","status","priority","head","group","log","provisional"].includes(key)));
+    const targetFields=Object.fromEntries(Object.entries(target).filter(([key])=>!["plan","status","head","group","log","provisional"].includes(key)));
     check(equal(sourceFields,targetFields),`${id}: preserved item fields changed`);
     check(target.group===before.groupOf(id),`${id}: project changed`);
     check(equal(source.log,target.log.slice(0,source.log.length)),`${id}: original logs changed`);
@@ -76,10 +76,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     inc("unlistedChildren",children.filter(child=>!source.deps.some(dep=>"id"in dep&&dep.id===child)).length);
     check(actual.statusOf(id)===newStatus,`${id}: plan status rule disagreement`);
     check(actual.isRoot(id)===after.isRoot(id)&&actual.isBacklog(id)===after.isBacklog(id),`${id}: root/backlog rule disagreement`);
-    check(actual.priorityOf(id)===after.priorityOf(id),`${id}: plan priority rule disagreement`);
     check(equal(actual.planRows(id).map(row=>({id:row.row.id,state:row.state,ready:row.ready})),after.rows(id)),`${id}: plan frontier rule disagreement`);
-    const expectedSeed=after.isRoot(id)?before.priorityOf(id)||source.priority:undefined;
-    check(target.priority===expectedSeed,`${id}: stored root seed changed`);
     const identity={item:id,project:before.groupOf(id),title:source.title};
     if(oldStatus!==newStatus){
       const cause=newStatus==="blocked"&&after.askPending(id)?"pending ask":newStatus==="wip"?"doing rows count":oldStatus==="done"?"unfinished plan rows":oldStatus==="wip"?"manual progress removed":newStatus==="blocked"?"waiting frontier":"ready frontier";
@@ -90,27 +87,19 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
       if(cause==="pending ask")check(!!reported&&reported.detail.includes(source.ask!.text),`${id}: pending ask cause missing`);
       if(cause==="ready frontier"&&!before.isStatusLeaf(id))inc("ruleChanges");
     }
-    const op=before.priorityOf(id),np=after.priorityOf(id);
-    if(op!==np){const unlisted=!!source.parent&&!old.items[source.parent]?.deps.some(dep=>"id"in dep&&dep.id===id);const cause=after.isRoot(id)?"root priority retained":after.isBacklog(id)?np?"shared plan dependents":"moved into backlog":!before.migrated(id)?"legacy priority retired":unlisted?"owned row added":"open plan dependents";expectedPriorityChanges.push({...identity,old:op,new:np,cause,detail:""});
-      const reported=result.report.priorityChanges.find(change=>change.item===id);
-      const dependents=Object.entries(next.items).filter(([dependent,item])=>after.isOpenWork(dependent)&&item.plan.some(row=>"item"in row&&row.item===id)&&(!np||after.priorityOf(dependent)===np)).map(([dependent])=>dependent).slice(0,3);
-      const evidence=after.isBacklog(id)&&!np&&source.parent?[source.parent]:dependents;
-      check(!!reported&&evidence.every(dependent=>reported.detail.includes(dependent)),`${id}: priority cause sources missing`);
-    }
     check(target.status===(oldStatus==="cancelled"?"cancelled":undefined),`${id}: stored status changed`);
   }
   const withoutDetail=(values: typeof result.report.statusChanges)=>values.map(({detail:_detail,...value})=>value);
   check(equal(withoutDetail(expectedStatusChanges),withoutDetail(result.report.statusChanges)),"status difference report changed");
-  check(equal(withoutDetail(expectedPriorityChanges),withoutDetail(result.report.priorityChanges)),"priority difference report changed");
-  check(result.report.statusChanges.every(change=>!!change.detail.trim())&&result.report.priorityChanges.every(change=>!!change.detail.trim()),"difference cause detail missing");
-  const causes: typeof result.report.byCause={status:{},priority:{}};
-  for(const [key,changes]of [["status",expectedStatusChanges],["priority",expectedPriorityChanges]]as const)for(const change of changes)causes[key][change.cause]=(causes[key][change.cause]??0)+1;
+  check(result.report.statusChanges.every(change=>!!change.detail.trim()),"difference cause detail missing");
+  const causes: typeof result.report.byCause={status:{}};
+  for(const change of expectedStatusChanges)causes.status[change.cause]=(causes.status[change.cause]??0)+1;
   check(equal(causes,result.report.byCause),"cause counts changed");
   check(equal(survey,result.report.survey),"survey counts changed");
   const projects: typeof result.report.byProject = {};
-  for(const id of Object.keys(old.items))projects[before.groupOf(id)]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
+  for(const id of Object.keys(old.items))projects[before.groupOf(id)]??={findings:0,rewritePointers:0,statusChanges:0};
   for(const [field,key]of [["findings","findings"],["rewritePointers","rewritePointers"]]as const)for(const finding of result.report[field]){check(!!old.items[finding.item]&&finding.project===before.groupOf(finding.item),`${field}: unknown item/project`);if(projects[finding.project])projects[finding.project]![key]++;}
-  for(const field of ["statusChanges","priorityChanges"]as const)for(const change of result.report[field])if(projects[before.groupOf(change.item)])projects[before.groupOf(change.item)]![field]++;
+  for(const change of result.report.statusChanges)if(projects[before.groupOf(change.item)])projects[before.groupOf(change.item)]!.statusChanges++;
   check(equal(projects,result.report.byProject),"project report counts changed");
   check(result.report.counts.items===Object.keys(old.items).length,"report item count");
   check(result.report.counts.records===Object.values(old.items).filter(it=>it.record).length,"report record count");
@@ -139,10 +128,10 @@ export function verifyArchiveRemoval(source: Snapshot, result: PlanConversion, p
   const logs=Object.values(source.items).reduce((n,item)=>n+item.log.length,0);
   check(c.oldLogs===logs&&c.newLogs===logs&&c.targets===Object.values(source.items).reduce((n,item)=>n+(item.targets?.length??0),0),"archive-only log/target counts changed");
   check(c.provisional===Object.values(source.items).filter(item=>item.provisional).length,"archive-only provisional count changed");
-  check(!result.report.statusChanges.length&&!result.report.priorityChanges.length&&!result.report.findings.length&&!result.report.rewritePointers.length,"archive-only conversion invented differences");
-  check(equal(result.report.byCause,{status:{},priority:{}})&&equal(result.report.survey,{}),"archive-only cause/survey counts changed");
+  check(!result.report.statusChanges.length&&!result.report.findings.length&&!result.report.rewritePointers.length,"archive-only conversion invented differences");
+  check(equal(result.report.byCause,{status:{}})&&equal(result.report.survey,{}),"archive-only cause/survey counts changed");
   const projects:typeof result.report.byProject={};
-  for(const item of Object.values(source.items))projects[item.group]??={findings:0,rewritePointers:0,statusChanges:0,priorityChanges:0};
+  for(const item of Object.values(source.items))projects[item.group]??={findings:0,rewritePointers:0,statusChanges:0};
   check(equal(projects,result.report.byProject),"archive-only project counts changed");
   return errors;
 }

@@ -269,7 +269,7 @@ test("a mixed head and log write reports only the head as owner news", async t =
 test("a record-only change is unread even when both versions have no stored status", async t => {
   const { store } = await board(t);
   await store.commit({ author, message: "Create synthetic record", puts: [{ kind: "item", id: "record", expectRev: null,
-    doc: { title: "队列记录", group: author, record: true, priority: "P1", head: "## 完成条件\n保留队列记录。", updated: later } }] });
+    doc: { title: "队列记录", group: author, record: true, head: "## 完成条件\n保留队列记录。", updated: later } }] });
   const cursor = store.snapshot().head, before = store.snapshot().items.record!;
   await store.commit({ author, message: "Change record to work", puts: [{ kind: "item", id: "record", expectRev: before.rev,
     doc: { ...before, record: false, plan: [{ id: "accept", accept: true, text: "Pass", state: "todo" }] } }] });
@@ -648,9 +648,9 @@ test("historical comparison omits retired fields from an old version already in 
   };
   // A version in the current shape (items with plans, no `migrated` on a project) that still holds the retired fields.
   const current = parse(await readFile(join(dir, "board.yaml"), "utf8")) as { projects: Array<Record<string, unknown>> };
-  const work = { title: "Work", group: "Firn", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
+  const work = { title: "Work", group: "Firn", difficulty: 2, plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
   await writeFile(join(dir, "board.yaml"), stringify({ ...current, projects: current.projects.map(p => p.name === "Firn" ? { ...p, agents: ["p-session"] } : p) }));
-  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, short: "W", agent: "p-session" }));
+  await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, priority: "P1", short: "W", agent: "p-session" }));
   const held = await commit("Hold retired fields");
   await writeFile(join(dir, "board.yaml"), stringify(current));
   await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, rev: 2 }));
@@ -659,9 +659,13 @@ test("historical comparison omits retired fields from an old version already in 
   const past = await reopened.comparisonSnapshot(held);
   assert.deepEqual(past.board, reopened.snapshot().board, "the version's board is the current one without the project's agents");
   assert.equal(past.items.work!.title, "Work");
-  for (const key of ["short", "agent"]) assert.ok(!Object.hasOwn(past.items.work!, key));
+  for (const key of ["short", "agent", "priority"]) assert.ok(!Object.hasOwn(past.items.work!, key));
   // Raw history still holds them as written.
-  assert.deepEqual(await reopened.show("item", "work", held), { ...work, short: "W", agent: "p-session" });
+  assert.deepEqual(await reopened.show("item", "work", held), { ...work, priority: "P1", short: "W", agent: "p-session" });
+  // The owner's comparison omits them too, so the version that held them and the commit that dropped them differ in nothing it reads.
+  const pair = await reopened.comparisonDocuments("item", "work", held, reopened.snapshot().head);
+  assert.equal((pair.before as { title: string }).title, "Work");
+  for (const key of ["short", "agent", "priority"]) assert.ok(!Object.hasOwn(pair.before as object, key), `the compared old version holds no ${key}`);
 });
 
 test("a history that holds the removed inbox's request marker still opens, compares, diffs and answers changes", async t => {
@@ -675,7 +679,7 @@ test("a history that holds the removed inbox's request marker still opens, compa
   };
   // Written by hand, as create_request wrote it: the schema no longer has the marker, so no operation can.
   const filed = (id: string, marker: boolean) => stringify({
-    title: id, group: "Firn", priority: "P1", difficulty: 2, ...(marker ? { request: { by: "Whitefoot", at: later } } : {}),
+    title: id, group: "Firn", difficulty: 2, ...(marker ? { request: { by: "Whitefoot", at: later } } : {}),
     plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], log: [{ at: later, by: "Whitefoot", text: "Whitefoot 提出：Need" }],
     updated: later, rev: 1,
   });
@@ -756,8 +760,8 @@ test("legacy record-to-work history stays raw, while omitted-plan native records
     const record = legacy ? LegacyItem.parse({ ...common, record: true }) : { ...common, record: true };
     await writeFile(join(dir, "items/work.yaml"), stringify(record));
     const cursor = await commit("Record before work");
-    const work = legacy ? LegacyItem.parse({ ...common, status: "todo", priority: "P1", rev: 2 })
-      : { ...common, priority: "P1", rev: 2, plan: [{ id: "accept", text: "Checks pass", accept: true, state: "todo" }] };
+    const work = legacy ? LegacyItem.parse({ ...common, status: "todo", rev: 2 })
+      : { ...common, rev: 2, plan: [{ id: "accept", text: "Checks pass", accept: true, state: "todo" }] };
     await writeFile(join(dir, "items/work.yaml"), stringify(work));
     const changed = await commit("Record becomes work");
     const store = await Store.open(dir, legacy ? { planConversionHead: changed } : {});
@@ -784,7 +788,7 @@ test("historical comparison omits the retired level 「架构师做」 from an o
     await run("-c", "user.name=Whitefoot", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", message);
     return run("rev-parse", "HEAD");
   };
-  const work = { title: "Work", group: "Firn", priority: "P1", plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
+  const work = { title: "Work", group: "Firn", plan: [{ id: "accept", accept: true, text: "Passes", state: "todo" }], updated: later, rev: 1 };
   // The level the board once had, as an old version holds it; then the version after the migration that cleared it.
   await writeFile(join(dir, "items/work.yaml"), stringify({ ...work, difficulty: "architect" }));
   const held = await commit("Rate the item 架构师做");

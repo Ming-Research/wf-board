@@ -64,32 +64,28 @@ test("manual wip does not promote old steps or fabricate new work",()=>{
  source.items.root=item({status:"wip"});const added=checked(source);assert.equal(added.snapshot.items.root!.plan.length,1);assert.ok(added.report.statusChanges.some(change=>change.old==="wip"&&change.new==="todo"&&change.cause==="manual progress removed"));
 });
 
-test("record-owned work receives shared open priority, but no priority from its record owner",()=>{
+test("record-owned work stays backlog after conversion, whatever the legacy priorities were",()=>{
  const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"backlog"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.closed=item({parent:"root",group:undefined,status:"done",priority:"P2"});source.items.waiter=item({group:"Q",priority:"P0",steps:[{id:"prepare",text:"Prepare",state:"todo"}],deps:[{id:"work",why:"result"}]});
- assert.equal(legacyRules(source).priorityOf("work"),"P0","the open legacy waiter already raises its dependency");
- const result=checked(source),r=rules(result.snapshot);assert.equal(r.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(r.isRoot("work"),false);assert.equal(r.priorityOf("closed"),"P2");
- assert.ok(!result.report.priorityChanges.some(change=>change.item==="work"),"unchanged P0 must not be reported as a priority change");assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
+ const result=checked(source),r=rules(result.snapshot);assert.ok(!("priority" in result.snapshot.items.work!),"no converted item stores a priority");assert.equal(r.isRoot("work"),false);assert.equal(r.isRoot("closed"),true);
+ assert.equal(result.snapshot.items.root!.provisional,true);assert.ok(!result.snapshot.items.root!.plan.some(row=>"text"in row&&row.accept));
  source.items.waiter=item({group:"Q",priority:"P0",status:"cancelled",deps:[{id:"work",why:"Result no longer needed"}]});
- const idle=checked(source);assert.equal(rules(idle.snapshot).priorityOf("work"),"");assert.equal(rules(idle.snapshot).isRoot("work"),false);assert.ok(idle.report.priorityChanges.some(change=>change.item==="work"&&change.cause==="moved into backlog"));
+ const idle=checked(source);assert.equal(rules(idle.snapshot).isRoot("work"),false);
 });
 
-test("verifier checks record-owned priority when an unfinished legacy done waiter becomes open",()=>{
+test("verifier checks the status change when an unfinished legacy done waiter becomes open",()=>{
  const source=snapshot();source.items.root=item({record:true,status:undefined,deps:[{id:"work",why:"Queue entry"}]});source.items.work=item({parent:"root",group:undefined,priority:"P1"});source.items.waiter=item({group:"Q",priority:"P0",status:"done",steps:[{id:"prepare",text:"Unfinished preparation",state:"todo"}],deps:[{id:"work",why:"Result"}]});
- const before=legacyRules(source);assert.equal(before.statusOf("waiter"),"done");assert.equal(before.priorityOf("work"),"P1","the legacy closed waiter passes no priority; its record owner passes P1");
- const result=checked(source),after=rules(result.snapshot);assert.equal(after.statusOf("waiter"),"idle");assert.equal(after.priorityOf("work"),"P0");assert.equal(result.snapshot.items.work!.priority,undefined);assert.equal(after.isRoot("work"),false);
- const change=result.report.priorityChanges.find(change=>change.item==="work");assert.ok(change);assert.equal(change.old,"P1");assert.equal(change.new,"P0");assert.equal(change.cause,"shared plan dependents");assert.match(change.detail,/共用.*waiter.*P0/);
- const wronglySuppressed=structuredClone(result);wronglySuppressed.report.priorityChanges.find(change=>change.item==="work")!.new="";assert.ok(verifyPlans(source,wronglySuppressed).some(error=>error.includes("priority difference report")),"the independent oracle rejects suppressed shared priority on record-owned work");
+ const before=legacyRules(source);assert.equal(before.statusOf("waiter"),"done");
+ const result=checked(source),after=rules(result.snapshot);assert.equal(after.statusOf("waiter"),"idle");assert.equal(after.isRoot("work"),false);
+ const change=result.report.statusChanges.find(change=>change.item==="waiter");assert.ok(change);assert.equal(change.old,"done");assert.equal(change.new,"idle");assert.equal(change.cause,"unfinished plan rows");
+ const wronglyReported=structuredClone(result);wronglyReported.report.statusChanges.find(change=>change.item==="waiter")!.new="todo";assert.ok(verifyPlans(source,wronglyReported).some(error=>error.includes("status difference report")),"the independent oracle rejects a status difference reported wrongly");
 });
 
-test("conversion retains a root's stored seed when its old displayed priority was empty",()=>{
+test("conversion keeps no priority: a root's legacy one is dropped silently, a non-root's is logged as not used",()=>{
  const source=snapshot();source.board=LegacyBoard.parse({title:"Unmigrated",projects:[{name:"P",migrated:false}]});
- source.items.root=item({priority:"P0",deps:[{id:"child",why:"Needed work"}]});source.items.child=item({parent:"root",priority:undefined});
- assert.equal(legacyRules(source).priorityOf("root"),"");
- const result=checked(source);assert.equal(rules(result.snapshot).isRoot("root"),true);assert.equal(result.snapshot.items.root!.priority,"P0");assert.equal(rules(result.snapshot).priorityOf("root"),"P0");assert.equal(rules(result.snapshot).priorityOf("child"),"P0");
- assert.ok(!result.snapshot.items.root!.log.some(entry=>entry.text.includes("优先级改由依赖它的条目决定")));
- assert.ok(result.report.priorityChanges.some(change=>change.item==="root"&&change.old===""&&change.new==="P0"&&change.cause==="root priority retained"&&change.detail.includes("原来写的 P0")));
- assert.equal(result.report.byCause.priority["root priority retained"],1);assert.match(result.report.summary,/根保留旧显示未体现的存储优先级 1 处/);
- const lostSeed=structuredClone(result);delete lostSeed.snapshot.items.root!.priority;assert.ok(verifyPlans(source,lostSeed).some(error=>error.includes("root seed")));
+ source.items.root=item({priority:"P0",deps:[{id:"child",why:"Needed work"}]});source.items.child=item({parent:"root",priority:"P2"});
+ const result=checked(source);assert.equal(rules(result.snapshot).isRoot("root"),true);assert.ok(!("priority" in result.snapshot.items.root!),"no converted item stores a priority");
+ assert.ok(!result.snapshot.items.root!.log.some(entry=>entry.text.includes("优先级改由依赖它的条目决定")),"a root's legacy priority is not logged");
+ assert.ok(result.snapshot.items.child!.log.some(entry=>entry.text==="迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 P2 不再使用"),"a non-root's is logged as not used");
  const inventedRetirement=structuredClone(result);inventedRetirement.snapshot.items.root!.log.push({at,by:"总管",text:"迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 P0 不再使用"});inventedRetirement.report.counts.newLogs++;assert.ok(verifyPlans(source,inventedRetirement).some(error=>error.includes("unprescribed conversion logs")));
 });
 
@@ -127,17 +123,15 @@ test("acceptance extraction rejects ambiguous/inline matches, keeps fenced text 
  const fenced="```md\n## 完成条件\nNot the condition\n```\n\n## 完成条件\nThe check";assert.equal(extractAcceptance(fenced).text,"The check");
 });
 
-test("independent oracle rejects corruption while reporting honest status and priority differences",()=>{
+test("independent oracle rejects corruption while reporting honest status differences",()=>{
  const source=snapshot(),result=checked(source);
- const corruptions: Array<(copy:typeof result)=>void>=[copy=>{copy.snapshot.items.root!.title="lost";},copy=>{copy.snapshot.items.root!.head="lost";},copy=>{copy.snapshot.items.root!.log[0]!.text="lost";},copy=>{copy.snapshot.items.root!.priority="P0";},copy=>{copy.snapshot.items.root!.plan=[];},copy=>{copy.snapshot.items.root!.provisional=undefined;},copy=>{copy.report.counts.items++;},copy=>{delete copy.snapshot.items.root;}];
+ const corruptions: Array<(copy:typeof result)=>void>=[copy=>{copy.snapshot.items.root!.title="lost";},copy=>{copy.snapshot.items.root!.head="lost";},copy=>{copy.snapshot.items.root!.log[0]!.text="lost";},copy=>{copy.snapshot.items.root!.difficulty=3;},copy=>{copy.snapshot.items.root!.plan=[];},copy=>{copy.snapshot.items.root!.provisional=undefined;},copy=>{copy.report.counts.items++;},copy=>{delete copy.snapshot.items.root;}];
  for(const mutate of corruptions){const broken=structuredClone(result);mutate(broken);assert.ok(verifyPlans(source,broken).length);}
- const priority=snapshot();priority.items.root=item({priority:"P0",deps:[{id:"open",why:"work"}]});priority.items.open=item({parent:"root",group:undefined,priority:"P0"});priority.items.closed=item({parent:"root",group:undefined,status:"done",priority:"P2"});const propagated=checked(priority);assert.ok(propagated.report.priorityChanges.some(change=>change.item==="closed"&&change.old==="P2"&&change.new==="P0"&&change.cause==="owned row added"&&change.detail.includes("root")));
  const cancelledShared=snapshot();cancelledShared.items.root=item({status:"done",deps:[{id:"cancelled",why:"Old completed item still lists it"}]});cancelledShared.items.cancelled=item({status:"cancelled"});const kept=checked(cancelledShared);assert.ok(kept.snapshot.items.root!.plan.some(row=>"item"in row&&row.item==="cancelled"));assert.ok(kept.report.statusChanges.some(change=>change.old==="done"&&change.new==="blocked"&&change.cause==="unfinished plan rows"));
  const bad=snapshot();bad.items.root=item({status:"blocked"});assert.ok(checked(bad).report.statusChanges.some(change=>change.old==="blocked"&&change.new==="todo"));
  const pending=snapshot();pending.items.root=item({deps:[{id:"needed",why:"Needed"}]});pending.items.needed=item({group:"Q"});const waiting=checked(pending);assert.ok(waiting.report.statusChanges.some(change=>change.old==="todo"&&change.new==="blocked"&&change.cause==="waiting frontier"&&change.detail.includes("needed")));
  const ask=snapshot();ask.items.root=item({ask:{text:"Owner must approve this"}});const awaiting=checked(ask);assert.ok(awaiting.report.statusChanges.some(change=>change.old==="todo"&&change.new==="blocked"&&change.cause==="pending ask"&&change.detail.includes("Owner must approve this")));
  const altered=structuredClone(waiting);altered.report.statusChanges[0]!.new="todo";assert.ok(verifyPlans(pending,altered).some(error=>error.includes("difference report")));
- const missingSeed=structuredClone(result);delete missingSeed.snapshot.items.root!.priority;assert.ok(verifyPlans(source,missingSeed).some(error=>error.includes("root seed")));
 });
 
 test("conversion drops every archive record, including ineffective and orphan records, while preserving reading state",()=>{
@@ -263,8 +257,8 @@ test("native plans with old archives migrate owner state only, preserving plans,
  const dir=await mkdtemp(join(tmpdir(),"wf-board-native-archives-"));t.after(()=>rm(dir,{recursive:true,force:true}));const git=promisify(execFile);
  const initial=await Store.open(dir,{init:true,board:{title:"Native plans",projects:[{name:"P"}]}});
  await initial.commit({author:"P",message:"Native plan witnesses",puts:[
-  {kind:"item",id:"work",expectRev:null,doc:{title:"Work",group:"P",priority:"P0",plan:[{id:"working",text:"Actual current work",state:"doing",since},{id:"accept",text:"Pass",state:"todo",accept:true}],targets:[{id:"rate",goal:"Rate",target:"3",current:"2",baseline:"main",date:since}],log:[{at:since,by:"P",text:"Native log"}],updated:at}},
-  {kind:"item",id:"done",expectRev:null,doc:{title:"Done",group:"P",priority:"P1",plan:[{id:"accept",text:"Pass",state:"done",doneAt:at,accept:true}],updated:at}},
+  {kind:"item",id:"work",expectRev:null,doc:{title:"Work",group:"P",plan:[{id:"working",text:"Actual current work",state:"doing",since},{id:"accept",text:"Pass",state:"todo",accept:true}],targets:[{id:"rate",goal:"Rate",target:"3",current:"2",baseline:"main",date:since}],log:[{at:since,by:"P",text:"Native log"}],updated:at}},
+  {kind:"item",id:"done",expectRev:null,doc:{title:"Done",group:"P",plan:[{id:"accept",text:"Pass",state:"done",doneAt:at,accept:true}],updated:at}},
  ]});
  const before=initial.snapshot(),oldOwner={cursor:before.head,readMarks:{"item:work":before.head},archived:{done:at,orphan:since}};
  await mkdir(join(dir,"state"),{recursive:true});await writeFile(join(dir,"state/owner.yaml"),stringify(oldOwner));
@@ -279,7 +273,7 @@ test("native plans with old archives migrate owner state only, preserving plans,
  const inventedPointer=structuredClone(result);inventedPointer.report.rewritePointers.push({item:"work",project:"P",kind:"invented",detail:"Not archive removal"});assert.ok(verifyArchiveRemoval(source,inventedPointer).some(error=>error.includes("invented differences")));
  const reportDir=await mkdtemp(join(tmpdir(),"wf-board-native-archive-report-"));t.after(()=>rm(reportDir,{recursive:true,force:true}));const reportFile=join(reportDir,"report.yaml");
  const dry=await git(process.execPath,["src/convert-plans-cli.ts","--data",dir,"--dry-run","--report",reportFile]);assert.match(dry.stdout,/"errors":0/);
- const dryReport=parse(await readFile(reportFile,"utf8"));assert.equal(dryReport.counts.droppedArchives,2);assert.deepEqual(dryReport.statusChanges,[]);assert.deepEqual(dryReport.priorityChanges,[]);assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);
+ const dryReport=parse(await readFile(reportFile,"utf8"));assert.equal(dryReport.counts.droppedArchives,2);assert.deepEqual(dryReport.statusChanges,[]);assert.equal((await git("git",["rev-parse","HEAD"],{cwd:dir})).stdout.trim(),head);
  await assert.rejects(Store.open(dir),/owner-approved/);
  const migrated=await Store.open(dir,{planConversionHead:head}),next=migrated.snapshot();assert.deepEqual(next.items,before.items);assert.deepEqual(next.owner,{cursor:before.head,readMarks:{"item:work":before.head}});assert.deepEqual(await readFile(join(dir,"items/work.yaml")),itemBytes);
  const commits=await migrated.log({since:head});assert.equal(commits.length,1);assert.ok(commits[0]!.files.includes("state/owner.yaml"));assert.ok(commits[0]!.files.includes("import/plan-conversion.yaml"));assert.ok(!commits[0]!.files.some(file=>file.startsWith("items/")));

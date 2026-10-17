@@ -4,6 +4,7 @@ import type { Snapshot } from "./model.ts";
 import type { Offer } from "./offers.ts";
 import { reviewRequested } from "./rules.ts";
 import type { Rules } from "./rules.ts";
+import { isPriorityClearing } from "./migrate-priority.ts";
 import { itemOfFile, writersByItem } from "./query.ts";
 import type { Store } from "./store.ts";
 import type { TimedMark } from "./wake.ts";
@@ -34,12 +35,13 @@ function capped<T>(rows: T[]): Array<T | { more: number }> {
 }
 
 /** The items changed since the last timed wake, newest first, capped, and the time the count started from. A commit that `own`
- * says is the reader's own is left out, so an item only the reader wrote is not listed. */
+ * says is the reader's own is left out, so an item only the reader wrote is not listed; so is the commit that cleared the retired
+ * priority, which is bookkeeping. */
 async function changedSince(store: Store, s: Snapshot, r: Rules, since: TimedMark | undefined, started: string, own: (session: string | undefined) => boolean): Promise<{ from: string; changed: Array<ChangedItem | { more: number }> }> {
   const from = since?.at ?? started;
   const commits = await store.log({ since: since?.head ?? from, at: s.head }).catch(() => store.log({ since: from, at: s.head }));
   // The log is newest first, so items come out most recently changed first.
-  const writers = writersByItem(commits, file => { const id = itemOfFile(s, file); return id !== undefined && Object.hasOwn(s.items, id) ? id : undefined; }, commit => own(commit.session));
+  const writers = writersByItem(commits, file => { const id = itemOfFile(s, file); return id !== undefined && Object.hasOwn(s.items, id) ? id : undefined; }, commit => own(commit.session) || isPriorityClearing(commit.message));
   const status = (id: string) => r.statusOf(id) ?? "record";
   return { from, changed: capped([...writers].map(([item, by]): ChangedItem => ({ item, project: r.projectOf(item), title: s.items[item]!.title, status: status(item), by: [...by] }))) };
 }

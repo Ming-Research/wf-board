@@ -35,7 +35,7 @@ matches what the artifact board offered.
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line and the start-up step timings.
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
-  priority from open work plans, parallel groups, checks and freshness).
+  parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
   see the same results.
 - `src/ops.ts`: write operations with their checks, used by MCP tools and the

@@ -17,7 +17,7 @@ const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call
 async function withArchitect(t: Parameters<typeof board>[0]) {
   const b = await board(t);
   /** A new unrated work item of Whitefoot: only the architect creates items, and this one gives no difficulty. */
-  const unrated = (key: string, extra: object = {}) => b.op.createItem({ ...asArchitect, key, group: author, priority: "P2", title: `未评级 ${key}`, accept: "通过", ...extra });
+  const unrated = (key: string, extra: object = {}) => b.op.createItem({ ...asArchitect, key, group: author, title: `未评级 ${key}`, accept: "通过", ...extra });
   return { ...b, unrated };
 }
 const missing = (b: { store: { snapshot(): Parameters<typeof rules>[0] } }, id: string) => rules(b.store.snapshot()).checks(id).filter(c => c.label === "缺难度");
@@ -130,11 +130,11 @@ test("缺难度 is raised for open unrated work and clears when it is rated 1–
 test("缺难度 is raised only for work an unpaused root needs, and not for a record or a closed item", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
-  await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
-  await unrated("under", { owner: "backlog", group: undefined, priority: undefined });
+  await unrated("backlog", { owner: "rec", group: undefined });
+  await unrated("under", { owner: "backlog", group: undefined });
   await unrated("done"); await op.setPlan({ author, id: "done", row: { id: "accept", accept: true, text: "通过", state: "done" } });
   await unrated("gone"); await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "不要了" });
-  await unrated("own"); await unrated("child", { owner: "own", group: undefined, priority: undefined });
+  await unrated("own"); await unrated("child", { owner: "own", group: undefined });
   await op.setPause({ ...asArchitect, id: "own", paused: true, reason: "先放一放" });
   assert.equal(rules(store.snapshot()).statusOf("child"), "paused", "the child is paused by inheritance");
   for (const id of ["rec", "backlog", "under", "done", "gone", "own", "child"]) assert.equal(missing(b, id).length, 0, id);
@@ -148,7 +148,7 @@ test("缺难度 is raised only for work an unpaused root needs, and not for a re
 test("work that only a paused root needs raises no 缺难度, and work a second, unpaused root needs does", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   // The dependency is another project's, so a shared row to it needs no owner.
-  await op.createItem({ ...asArchitect, key: "dep", group: "Firn", priority: "P2", title: "别的项目的依赖", accept: "通过" });
+  await op.createItem({ ...asArchitect, key: "dep", group: "Firn", title: "别的项目的依赖", accept: "通过" });
   await unrated("paused-root"); await unrated("live-root");
   await op.setPlan({ author, id: "paused-root", row: { item: "dep", own: false, after: [] } });
   assert.equal(missing(b, "dep").length, 1, "an unpaused root waits on it");
@@ -166,7 +166,7 @@ test("缺难度 follows the whole chain from an unpaused root, two levels down, 
   const pause = (id: string, paused: boolean) => op.setPause({ ...asArchitect, id, paused, ...(paused ? { reason: "先放一放" } : {}) });
   // Every item is made as a root, leaf first, and the chain is joined afterwards: the keys and the creation order both run
   // against the chain, so a walk that visits items once in that order would stop after one level.
-  const root = (key: string, group = author) => op.createItem({ ...asArchitect, key, group, priority: "P2", title: `链上的 ${key}`, accept: "通过" });
+  const root = (key: string, group = author) => op.createItem({ ...asArchitect, key, group, title: `链上的 ${key}`, accept: "通过" });
   for (const key of ["x-own-leaf", "y-own-mid", "z-own-root", "x-leaf", "y-mid", "z-top"]) await root(key, key === "y-mid" ? "Firn" : author);
   for (const key of ["z-own-root", "y-own-mid", "z-top", "y-mid"]) await rate(key);
   // Owned chain: root → mid (rated) → leaf (not rated).
@@ -190,13 +190,12 @@ test("缺难度 follows the whole chain from an unpaused root, two levels down, 
   }
 });
 
-test("a root with no stored priority is still a root: it and the work under it raise 缺难度, and pausing it stops that", async t => {
+test("a root and the work under it raise 缺难度, and pausing the root stops that", async t => {
   const b = await withArchitect(t); const { store, op } = b;
-  // create_item refuses a root without a priority; a root loses its priority by gaining and losing a dependent, so write the document as that leaves it.
-  await store.commit({ author: "Fixture", message: "Seed a root without priority", puts: [{ kind: "item", id: "bare", expectRev: null, doc: { title: "没写优先级的根", group: author, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: at } }] });
+  await op.createItem({ ...asArchitect, key: "bare", group: author, title: "根", accept: "通过" });
   await op.createItem({ ...asArchitect, key: "bare-kid", owner: "bare", title: "底下", accept: "通过" });
   const r = rules(store.snapshot());
-  assert.equal(r.isRoot("bare"), true); assert.equal(r.priorityOf("bare"), "", "it has no priority");
+  assert.equal(r.isRoot("bare"), true);
   assert.deepEqual([r.isNeeded("bare"), r.isNeeded("bare-kid")], [true, true]);
   assert.deepEqual([missing(b, "bare").length, missing(b, "bare-kid").length], [0, 1], "bare's next step is bare-kid, so only bare-kid asks");
   await op.setPause({ ...asArchitect, id: "bare", paused: true, reason: "先放一放" });
@@ -206,7 +205,7 @@ test("a root with no stored priority is still a root: it and the work under it r
 test("缺难度 waits while the next step is an unfinished sub-item, and comes back when that sub-item is done", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   // A study: the root's next step is the owned sub-item, which the study agent does before any rating is due.
-  await unrated("study-root"); await unrated("study", { owner: "study-root", group: undefined, priority: undefined });
+  await unrated("study-root"); await unrated("study", { owner: "study-root", group: undefined });
   assert.equal(missing(b, "study-root").length, 0, "the next step is the sub-item, not an own step");
   assert.equal(missing(b, "study").length, 1, "the sub-item itself asks for its rating");
   // The study is under way: the root is in progress, and neither asks for a rating.
@@ -235,7 +234,7 @@ test("缺难度 waits while the next step waits on another item, and while the n
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await unrated("dep"); await unrated("waiter");
   // Put the shared row to dep first, so the acceptance step after it is not ready and the item is blocked.
-  await store.commit({ author, message: "Seed a waiter", puts: [{ kind: "item", id: "waiter", expectRev: store.snapshot().items.waiter!.rev, doc: { title: "等别的条目的", group: author, priority: "P2", plan: [{ id: "dep", item: "dep", own: false, after: [] }, { id: "accept", accept: true, text: "通过", state: "todo" }], updated: at, head: "**完成条件**：通过" } }] });
+  await store.commit({ author, message: "Seed a waiter", puts: [{ kind: "item", id: "waiter", expectRev: store.snapshot().items.waiter!.rev, doc: { title: "等别的条目的", group: author, plan: [{ id: "dep", item: "dep", own: false, after: [] }, { id: "accept", accept: true, text: "通过", state: "todo" }], updated: at, head: "**完成条件**：通过" } }] });
   assert.equal(rules(store.snapshot()).statusOf("waiter"), "blocked");
   assert.equal(missing(b, "waiter").length, 0, "the next step waits on dep, so the rating is not what holds it");
   assert.equal(missing(b, "dep").length, 1, "dep itself asks, as an unpaused root needs it");
@@ -248,7 +247,7 @@ test("缺难度 waits while the next step waits on another item, and while the n
 test("backlog work is needed once a needed item other than its record holds a row for it, and what hangs under it with it", async t => {
   const b = await withArchitect(t); const { store, op, unrated } = b;
   await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
-  await unrated("backlog", { owner: "rec", group: undefined, priority: undefined });
+  await unrated("backlog", { owner: "rec", group: undefined });
   await op.createItem({ ...asArchitect, key: "under", owner: "backlog", title: "待选下面的", accept: "通过" });
   await unrated("root");
   const needed = () => ["backlog", "under"].map(id => rules(store.snapshot()).isNeeded(id));
@@ -283,7 +282,7 @@ test("every section of brief carries the difficulty, and only an item a root nee
   await unrated("waits", { head: "选哪个在这里问。\n\n[[q:wait-card]]" }); await op.writeCard({ author, key: "wait-card", item: "waits", question: "选哪个？", confidence: { reason: "判断" }, options: [{ text: "甲", detail: "做甲" }, { text: "乙", detail: "做乙" }, { text: "丙", detail: "做丙" }], blocks: "停着" });
   await op.setPlan({ author, id: "waits", row: { card: "wait-card", after: [] } });
   await unrated("todo-one"); await unrated("paused-need"); await unrated("live-need");
-  for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ ...asArchitect, key, group: "Firn", priority: "P2", title: key, accept: "通过" });
+  for (const key of ["only-paused-needs", "needed-by-live"]) await op.createItem({ ...asArchitect, key, group: "Firn", title: key, accept: "通过" });
   await op.setPlan({ author, id: "paused-need", row: { item: "only-paused-needs", own: false, after: [] } });
   await op.setPlan({ author, id: "live-need", row: { item: "needed-by-live", own: false, after: [] } });
   await op.setPause({ ...asArchitect, id: "paused-need", paused: true, reason: "先放一放" });
@@ -336,7 +335,7 @@ test("MCP: the tools answer with the row, refuse other authors, and the texts sh
   assert.equal(refused.error, true); assert.match(refused.text, rx`only ${PROCESS_WRITERS}`);
   assert.equal((await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 7, reason: "r" })).error, true, "the schema refuses 7");
   const set = await call("set_difficulty", { ...asArchitect, id: "u", difficulty: 3, reason: "要查并发" });
-  assert.equal(set.error, false); assert.match(set.text, /^set_difficulty u · rev \d+ · commit [0-9a-f]{40}\nu · TODO P2 · 未评级 u · 难度 3 · Whitefoot › u/);
+  assert.equal(set.error, false); assert.match(set.text, /^set_difficulty u · rev \d+ · commit [0-9a-f]{40}\nu · TODO · 未评级 u · 难度 3 · Whitefoot › u/);
   assert.doesNotMatch((await call("context", { id: "u" })).text, /check: 缺难度/);
   assert.match((await call("context", { id: "u" })).text.split("\n")[0]!, / · 难度 3 · Whitefoot/);
   assert.match((await call("list", { filters: { group: author } })).text, /未评级 u · 难度 3 · Whitefoot/);
@@ -397,7 +396,7 @@ test("piecesOf leaves a first rating and the cleared retired level out and keeps
 test("create_item rates the new item, logs it as the first rating, and refuses a bad value, a record and any other writer", async t => {
   const { store, op } = await withArchitect(t);
   // Only the architect creates items, in any project, so the same call rates an item of any project.
-  const create = { key: "n1", group: author, priority: "P2" as const, title: "新条目", accept: "通过" };
+  const create = { key: "n1", group: author, title: "新条目", accept: "通过" };
   await op.createItem({ ...asArchitect, ...create, difficulty: 3 });
   const n1 = store.snapshot().items.n1!;
   assert.equal(n1.difficulty, 3); assert.deepEqual(n1.log.map(l => l.text), ["难度：未评 → 3，理由：建条目时评"]);
@@ -405,7 +404,7 @@ test("create_item rates the new item, logs it as the first rating, and refuses a
   await op.createItem({ ...asArchitect, ...create, key: "n3" });
   assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored");
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.createItem({ author, key: "x1", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 }), rx`only ${PROCESS_WRITERS} may create items`);
+  await refuses(op.createItem({ author, key: "x1", group: author, title: "别人建的", accept: "通过", difficulty: 2 }), rx`only ${PROCESS_WRITERS} may create items`);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x4", difficulty: "architect" as never }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
@@ -425,8 +424,8 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   assert.match(tools.find(x => x.name === "set_difficulty")!.description!, /never that item itself/, "set_difficulty says the root is not the engineer's to rate");
   assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, rx`Only author ${PROCESS_WRITERS} replace a reply they did not write; everyone else replaces only their own`, "reply_note says whose reply replace may overwrite");
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
-  const made = await call("create_item", { ...asArchitect, key: "m1", group: author, priority: "P2", title: "经工具建的", accept: "通过", difficulty: 2 });
+  const made = await call("create_item", { ...asArchitect, key: "m1", group: author, title: "经工具建的", accept: "通过", difficulty: 2 });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);
-  const refused = await call("create_item", { author, key: "m2", group: author, priority: "P2", title: "别人建的", accept: "通过", difficulty: 2 });
+  const refused = await call("create_item", { author, key: "m2", group: author, title: "别人建的", accept: "通过", difficulty: 2 });
   assert.equal(refused.error, true); assert.match(refused.text, rx`only ${PROCESS_WRITERS} may create items`);
 });

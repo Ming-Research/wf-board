@@ -6,7 +6,7 @@ import { Store } from "../src/store.ts";
 import { PROCESS_WRITERS } from "../src/model.ts";
 import { board, later, author, asArchitect, retiredExactly, rx } from "./helpers.ts";
 
-// The fixture: Whitefoot's `area` (root, P1) owns `a` and `b`; `b` also waits on `a` and on a's card; `other` is Firn's.
+// The fixture: Whitefoot's `area` (root) owns `a` and `b`; `b` also waits on `a` and on a's card; `other` is Firn's.
 const structural = /^(跨项目拥有|同项目有条目在等它|被多个条目拥有)/;
 
 test("an item moves with everything it owns; number, history, notes and cards stay with it", async t => {
@@ -35,7 +35,6 @@ test("an item moves with everything it owns; number, history, notes and cards st
   const r = rules(after);
   assert.deepEqual(r.cardsOf("a"), rules(before).cardsOf("a"));
   assert.equal(r.parentOf("a"), "area", "ownership inside the moved part is untouched");
-  assert.equal(r.priorityOf("area"), "P1", "a root keeps its priority");
   for (const id of ["area", "a", "b"]) assert.deepEqual(r.checks(id), rules(before).checks(id), "the move adds no check");
   const history = await store.log({ kind: "item", id: "a" });
   assert.ok(history.length >= 2 && history[0]!.commit === result.commit, "the item's history continues in the same file");
@@ -46,8 +45,6 @@ test("an item moves with everything it owns; number, history, notes and cards st
 test("an owner left behind keeps a shared row in the same place", async t => {
   const { store, op } = await board(t);
   const before = store.snapshot();
-  await assert.rejects(op.moveItemProject({ ...asArchitect, id: "a", project: "Firn", priority: "P0" }), /priority: a 有未完成的条目依赖它/);
-  assert.deepEqual(store.snapshot(), before, "a refusal changes nothing");
   await op.moveItemProject({ ...asArchitect, id: "a", project: "Firn" });
   const after = store.snapshot(), r = rules(after);
   assert.equal(after.items.a!.group, "Firn");
@@ -57,13 +54,12 @@ test("an owner left behind keeps a shared row in the same place", async t => {
   assert.equal(after.items.area!.log.at(-1)!.text, "「中文检查」换到了项目 Firn；计划不再拥有，改成依赖");
   assert.equal(r.parentOf("a"), undefined);
   assert.equal(r.isRoot("a"), false);
-  assert.equal(r.priorityOf("a"), "P1", "its priority now comes from the items waiting on it");
   for (const id of ["a", "area", "b"]) assert.deepEqual(r.checks(id).filter(c => structural.test(c.text)), [], "no cross-project ownership is left");
 });
 
 test("a descendant at any depth and in any state moves along", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ ...asArchitect, key: "p", group: author, title: "Release", priority: "P0", accept: "Release passes" });
+  await op.createItem({ ...asArchitect, key: "p", group: author, title: "Release", accept: "Release passes" });
   await op.createItem({ ...asArchitect, key: "c", owner: "p", title: "Part", accept: "Part passes" });
   await op.createItem({ ...asArchitect, key: "g", owner: "c", title: "Grandpart", accept: "Grandpart passes" });
   await op.setStatus({ ...asArchitect, id: "g", status: "cancelled", log: "Not needed" });
@@ -74,29 +70,23 @@ test("a descendant at any depth and in any state moves along", async t => {
   assert.match(s.items.g!.log.at(-1)!.text, /随「Release」/);
 });
 
-test("a root without a stored priority must be given one; a non-root refuses it", async t => {
+test("backlog work that moves to another project becomes a root of it", async t => {
   const { store, op } = await board(t);
   await op.createItem({ ...asArchitect, key: "backlog", title: "Backlog", group: author, record: true });
   await op.createItem({ ...asArchitect, key: "idea", owner: "backlog", title: "Idea", accept: "Idea passes" });
   assert.equal(rules(store.snapshot()).isBacklog("idea"), true);
-  const before = store.snapshot();
-  await assert.rejects(op.moveItemProject({ ...asArchitect, id: "idea", project: "Firn" }), /priority: idea becomes a root of Firn with no stored priority; give priority/);
-  assert.deepEqual(store.snapshot(), before);
-  await op.moveItemProject({ ...asArchitect, id: "idea", project: "Firn", priority: "P2" });
+  await op.moveItemProject({ ...asArchitect, id: "idea", project: "Firn" });
   const s = store.snapshot(), r = rules(s);
-  assert.equal(s.items.idea!.priority, "P2");
   assert.equal(r.isRoot("idea"), true);
-  assert.equal(r.priorityOf("idea"), "P2");
   assert.deepEqual(s.items.backlog!.plan.find(row => row.id === "idea"), { id: "idea", item: "idea", own: false });
 });
 
-test("a closed item moves without a priority", async t => {
+test("a closed item moves", async t => {
   const { store, op } = await board(t);
   await op.setPlan({ author, id: "a", rows: [{ id: "accept", accept: true, text: "独立验收通过", state: "done" }] });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
   await op.moveItemProject({ ...asArchitect, id: "a", project: "Firn" });
   assert.equal(store.snapshot().items.a!.group, "Firn");
-  assert.equal(store.snapshot().items.a!.priority, undefined);
 });
 
 test("refusals name the fix and leave the board and the log untouched", async t => {
@@ -180,7 +170,7 @@ test("a moved item that waits on an unowned top item of the new project is refus
     assert.deepEqual(store.snapshot(), before);
     assert.equal((await store.log()).length, count, "a refusal makes no commit");
     if (way === "own") {
-      await op.createItem({ ...asArchitect, key: "holder", group: "Firn", title: "Holder", priority: "P2", accept: "Holder passes" });
+      await op.createItem({ ...asArchitect, key: "holder", group: "Firn", title: "Holder", accept: "Holder passes" });
       await op.moveItem({ author: "Firn", id: "other", owner: "holder" });
     } else await op.setPlan({ author, id: "a", remove: "other" });
     await op.moveItemProject({ ...asArchitect, id: "a", project: "Firn" });
@@ -202,7 +192,7 @@ test("a closed item moves although an open item of the new project waits on it",
 
 test("an item left behind may keep waiting on a part that moved away", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ ...asArchitect, key: "x", group: author, title: "Waiter", priority: "P2", accept: "Waiter passes", plan: [{ item: "a", own: false }] });
+  await op.createItem({ ...asArchitect, key: "x", group: author, title: "Waiter", accept: "Waiter passes", plan: [{ item: "a", own: false }] });
   const before = store.snapshot();
   await op.moveItemProject({ ...asArchitect, id: "area", project: "Firn" });
   const after = store.snapshot(), r = rules(after);
@@ -212,20 +202,6 @@ test("an item left behind may keep waiting on a part that moved away", async t =
   assert.equal(r.parentOf("a"), "area", "a is not a collecting item, and nothing asks for one");
   assert.deepEqual(r.checks("x").filter(c => structural.test(c.text)), []);
   assert.deepEqual(r.checks("a").filter(c => structural.test(c.text)), []);
-});
-
-test("a given priority replaces the stored one and the log says so; the same one adds nothing", async t => {
-  const { store, op } = await board(t);
-  await op.moveItemProject({ ...asArchitect, id: "area", project: "Firn", priority: "P1" });
-  assert.equal(store.snapshot().items.area!.priority, "P1");
-  assert.deepEqual(store.snapshot().items.area!.log.map(l => l.text).filter(text => text.startsWith("优先级")), [], "an unchanged priority writes no priority line");
-  await op.moveItemProject({ ...asArchitect, id: "area", project: "Whitefoot", priority: "P0" });
-  const area = store.snapshot().items.area!;
-  assert.equal(area.priority, "P0");
-  assert.equal(area.log.at(-1)!.text, "优先级：P1 改为 P0");
-  assert.equal(area.log.at(-2)!.text, "换项目：从 Firn 换到 Whitefoot");
-  await op.moveItemProject({ ...asArchitect, id: "area", project: "Firn" });
-  assert.equal(store.snapshot().items.area!.priority, "P0", "without priority the stored one stays");
 });
 
 test("Architect moves open work out of a paused chain, and an explicit pause travels with the item", async t => {

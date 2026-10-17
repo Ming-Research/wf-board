@@ -72,7 +72,7 @@ function board() {
   const versions = new Map<string, number>();
   const item = (id: string, version: number): string => {
     const n = ids.indexOf(id), log = Array.from({ length: version }, (_, v) => ({ at: iso(start + v * MINUTE), by: group.get(id), text: `Progress ${v} on ${id}` }));
-    return yaml({ num: n + 1, title: `Item ${id}`, group: group.get(id), ...(roots.includes(id) ? { priority: "P1" } : {}),
+    return yaml({ num: n + 1, title: `Item ${id}`, group: group.get(id),
       head: pad(7600), log, plan: [...rows.get(id)!, { id: "accept", text: "passes", state: "todo", accept: true }], created: at, updated: at, rev: version + 1 });
   };
   const write = (id: string) => { const v = (versions.get(id) ?? 0) + 1; versions.set(id, v); return item(id, v); };

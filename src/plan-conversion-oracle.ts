@@ -1,7 +1,7 @@
 /** Independent plan derivation used only by the preservation oracle. */
-import type { Snapshot, Priority, Status, PlanRow } from "./model.ts";
+import type { Snapshot, Status, PlanRow } from "./model.ts";
 export type OracleRowState = "resolved" | "progress" | "waiting" | "open";
-export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priority|"", now=Date.now()) {
+export function derivePlanOracle(snapshot: Snapshot, now=Date.now()) {
   const owners = new Map<string,string[]>(), waiters = new Map<string,string[]>();
   for(const [id,item] of Object.entries(snapshot.items))for(const row of item.plan){
     if(!("item"in row))continue;
@@ -106,12 +106,5 @@ export function derivePlanOracle(snapshot: Snapshot, seed?: (id:string)=>Priorit
   function open(id:string){const status=statusOf(id);return !!snapshot.items[id]&&status!==undefined&&status!=="done"&&status!=="cancelled";}
   function backlog(id:string){return open(id)&&(owners.get(id)??[]).some(owner=>snapshot.items[owner]?.record);}
   function root(id:string){return !!snapshot.items[id]&&!backlog(id)&&!(waiters.get(id)??[]).some(open);}
-  const ranks=new Map<string,number>(), priorityRank=(priority:Priority|undefined)=>priority==="P0"?0:priority==="P1"?1:priority==="P2"?2:3;
-  for(const [id,item] of Object.entries(snapshot.items))if(root(id))ranks.set(id,priorityRank(seed ? seed(id) || undefined : item.priority));
-  for(let changed=true;changed;){changed=false;for(const id of Object.keys(snapshot.items)){
-    const old=ranks.get(id)??3;let value=old;
-    for(const dependent of waiters.get(id)??[])if(open(dependent))value=Math.min(value,ranks.get(dependent)??3);
-    if(value<old){ranks.set(id,value);changed=true;}
-  }}
-  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,priorityOf:(id:string):Priority|""=>(["P0","P1","P2"] as const)[ranks.get(id)??3]??"",rows:(id:string)=>rows(id,new Set([id])).map(({id,state,ready})=>({id,state,ready}))};
+  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,rows:(id:string)=>rows(id,new Set([id])).map(({id,state,ready})=>({id,state,ready}))};
 }
