@@ -163,7 +163,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .notes-toggle { font: inherit; font-size: 12.5px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; align-self: flex-start; }
 .notes-toggle:hover { color: var(--accent); }
 .notes-toggle .pend { color: var(--fresh-soft-ink); background: var(--fresh-soft); padding: 0 5px; border-radius: 3px; margin-left: 4px; }
-.note { font-size: 14px; border-radius: 6px; padding: 6px 10px; background: var(--note-bg); display: flex; flex-direction: column; gap: 2px; max-width: 78ch; }
+.note { font-size: 14px; border-radius: 6px; padding: 6px 10px; background: var(--note-bg); display: flex; flex-direction: column; gap: 2px; }
 .note .who { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .note .txt { overflow-wrap: anywhere; }
 .note.draft { background: var(--fresh-soft); color: var(--fresh-soft-ink); }
@@ -173,7 +173,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .note .reply.newbar, .refs .fresh { padding-left: 6px; }
 .notes-toggle.newbar { padding-left: 6px; }
 .note .reply { border-top: 1px solid var(--rule); padding-top: 4px; margin-top: 2px; }
-.log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; max-width: 78ch; }
+.log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .steps-ratio { font-size: 12px; color: var(--muted); }
 .plan { margin-top: 8px; }
 .plan > .log-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
@@ -242,7 +242,7 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .note.newbar::before { top: 6px; bottom: 6px; }
 .plan-row.newbar::before { left: -6px; top: 0; bottom: 0; }
 .log-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
-.rich { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; font-size: 14px; min-width: 0; }
+.rich { display: flex; flex-direction: column; gap: 6px; font-size: 14px; min-width: 0; }
 .rich > .chg-add { position: relative; display: flex; flex-direction: column; gap: 6px; }
 /* A changed block gets a blue line on its left, like the one beside an item's headline, and no colour of its own. A changed
    card question is a flex item of the card's heading, and gets the same line. */
@@ -270,7 +270,7 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .tk-n { color: var(--tk-number); }
 .tk-t { color: var(--tk-type); }
 .linkbtn { font: inherit; font-size: 11.5px; background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; }
-.editor { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; }
+.editor { display: flex; flex-direction: column; gap: 6px; }
 .editor textarea { font: inherit; font-size: 14px; min-height: 5em; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--surface); color: var(--ink); resize: vertical; width: 100%; }
 .editor .row { display: flex; gap: 8px; }
 .editor button { font: inherit; font-size: 13px; padding: 2px 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--accent); }
@@ -345,9 +345,9 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 /* Each part of an open item (被依赖, 正文, 依赖, 进展, cards, checks, links) sits under a rule; the numbers line belongs to the head. */
 .body > * + * { border-top: 1px solid var(--rule); padding-top: 8px; margin-top: 4px; }
 .body > .rich + .data { border-top: 0; padding-top: 0; margin-top: 0; }
-.body p { margin: 0; max-width: 78ch; font-size: 14px; }
+.body p { margin: 0; font-size: 14px; }
 .body .data { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.ask { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 14.5px; font-weight: 500; max-width: 78ch; }
+.ask { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 14.5px; font-weight: 500; }
 .ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .okbtn { font: inherit; font-size: 13px; font-weight: 700; padding: 2px 14px; border-radius: 6px; border: 2px solid var(--ask); background: var(--ask); color: var(--surface); cursor: pointer; }
 .okbtn.on { background: var(--fresh); color: var(--fresh-ink); border-color: var(--fresh); }
@@ -369,7 +369,7 @@ section.decisions { display: flex; flex-direction: column; gap: 12px; }
 .qid { font-family: var(--font-mono); color: var(--accent); }
 .card .qid { color: var(--ask); }
 .card .lbl { font-weight: 600; }
-.card p { margin: 0; max-width: 76ch; font-size: 14px; }
+.card p { margin: 0; font-size: 14px; }
 .opts { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 .optbtn { font: inherit; font-size: 14px; text-align: left; width: 100%; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; display: block; }
 .optbtn:hover { border-color: var(--accent); }
@@ -397,8 +397,8 @@ details.refsec > .refbody { display: flex; flex-direction: column; gap: 6px; mar
 details.refsec > .refbody p { margin: 0; }
 .empty { color: var(--muted); font-size: 14px; margin: 0; }
 .checktag { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 4px; border: 1px dashed var(--wip); color: var(--wip); white-space: nowrap; }
-.checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px; max-width: 78ch; }
-.deplists { display: flex; flex-direction: column; gap: 1px; max-width: 78ch; }
+.checks { font-size: 13.5px; color: var(--wip); background: var(--wip-soft); border-radius: 6px; padding: 4px 10px; display: flex; flex-direction: column; gap: 2px; }
+.deplists { display: flex; flex-direction: column; gap: 1px; }
 .deplists .k { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 .deprow { font: inherit; font-size: 13.5px; display: flex; align-items: baseline; gap: 7px; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 6px; color: var(--ink); cursor: pointer; min-width: 0; }
 .deprow:hover { background: var(--accent-soft); }
@@ -471,7 +471,7 @@ details.refsec > .refbody p { margin: 0; }
 /* A [[it:key]] or [[q:key]] reference in text links to its item or card; one whose target is gone shows its key, struck through. */
 .itemref.missing { color: var(--muted); text-decoration: line-through; }
 /* The "#" popup under a comment field and the "/" search box list found items and cards as dependency-style rows. */
-.refpop { display: flex; flex-direction: column; max-width: 78ch; padding: 4px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12); }
+.refpop { display: flex; flex-direction: column; padding: 4px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12); }
 .searchbox { position: fixed; z-index: 60; top: 12vh; left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .18); }
 .searchbox input { font: inherit; font-size: 14px; width: 100%; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--surface); color: var(--ink); }
 .search-list { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
