@@ -30,8 +30,8 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context=full-ci \
             -f description="full CI running" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-  # A temporary workflow must not reach the main line. The last full CI before a merge fails while one is still in the
-  # branch, within seconds because the test jobs wait for this one; the main line's own run catches one that got in anyway.
+  # A temporary workflow must not reach the main line. The last full CI before a merge fails while one is still in the branch,
+  # and the main line's own run catches one that got in anyway. It runs beside the other jobs: the run's result lists it.
   no-tmp-workflow:
     runs-on: ubuntu-latest
     steps:
@@ -45,8 +45,7 @@ jobs:
             echo "$found"
             exit 1
           fi
-  test:
-    needs: no-tmp-workflow
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -56,13 +55,36 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+  # The script tests in 8 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
+  # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 45 seconds
+  # and a test at 40, so that a slow shard or test is named in the log of a red run; the time gate reads the step `tests`.
+  test:
+    name: test shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: npm test
+      - name: tests
+        run: |
+          timeout 45 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then cat test-times.md >> "$GITHUB_STEP_SUMMARY"; fi
   # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
   # commits, so the checkout carries history; the browser is cached by Playwright version.
   e2e:
-    needs: no-tmp-workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -80,28 +102,54 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      # Playwright's own headless shell starts on the runner image without the system packages `--with-deps` would install.
       - if: steps.browsers.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps --only-shell chromium
-      - if: steps.browsers.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
+        run: npx playwright install --only-shell chromium
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run test:e2e
   # Writes the result of a run started by hand to the commit it ran on. A cancelled run's result job writes nothing: the
   # pending its start wrote stands until the next run of the commit. A push to the main line writes nothing; its checks
   # are listed on the commit. `needs` lists every job whose result counts: a project adds each of its test jobs here.
+  # It also reads how long the run took (scripts/ci-time-gate.ts) and puts the time of each job into the run's summary.
   result:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-    needs: [start, no-tmp-workflow, test, e2e]
+    needs: [start, no-tmp-workflow, check, test, e2e]
     runs-on: ubuntu-latest
     permissions:
       statuses: write
+      actions: read
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/ci-time-gate.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # report: the gate writes its summary and never fails the run. The browser tests take minutes on every pull request, so
+      # the total is over the line every time; the item that moves them off the pull request's path sets this to enforce, and a
+      # total over 60 seconds then fails the run.
+      - id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIME_GATE: report
+        run: node scripts/ci-time-gate.ts
       - env:
           GH_TOKEN: ${{ github.token }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          GATE: ${{ steps.gate.outcome }}
+          GATE_TOTAL: ${{ steps.gate.outputs.total }}
         run: |
           state=success
           for r in $RESULTS; do [ "$r" = success ] || state=failure; done
+          description="full CI $state ($RESULTS)"
+          if [ "$state" = success ] && [ "$GATE" != success ]; then
+            state=failure
+            description="full CI failure (time gate: ${GATE_TOTAL:-no result} s)"
+          fi
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$state" -f context=full-ci \
-            -f description="full CI $state ($RESULTS)" \
+            -f description="$description" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - if: ${{ steps.gate.outcome != 'success' }}
+        run: exit 1

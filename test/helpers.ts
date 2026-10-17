@@ -28,6 +28,13 @@ export const retiredExactly = new RegExp(`^${retired.source}$`);
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
+
+/** The confidence a card carries in the write tests of test/ops.test.ts and test/ops-roles.test.ts. */
+export const conf = { score: 4, reason: "Measured on the old run; a slower machine would overturn it" };
+/** An option as write_card takes it: a short name and the detail that carries the grounds. */
+export const opt = (text: string, recommended = false) => ({ text, detail: `What ${text} does, what it costs and risks, and why`, ...(recommended ? { recommended: true } : {}) });
+/** The target numbers of a goal, as set_targets takes them. */
+export const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 export const author = "Whitefoot";
 /** The architect's author name and session: together the writer that does what the board reserves for the architect (the journal, the tag vocabulary) and everything the PM does. */
 export const architect = "Architect";
