@@ -17,18 +17,31 @@ import type { GithubWatch } from "../src/watch.ts";
 import type { UsageWatch } from "../src/usage-watch.ts";
 import type { Credentials } from "../src/credentials.ts";
 
+/** A RegExp from a template whose interpolated values match literally: an expected error text built from the same definition the code builds it from. */
+export const rx = (strings: TemplateStringsArray, ...values: string[]): RegExp =>
+  new RegExp(strings.raw.map((part, i) => part + (i < values.length ? values[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "")).join(""));
+
+/** What a write under the retired author 总管 is told, written out: the process is written as the PM, the rules and the architect's own entries as Architect. */
+export const retiredText = "author 总管: this identity is retired; write the process as PM (session PM), and the rules and the architect's own entries as Architect";
+export const retired = rx`${retiredText}`;
+export const retiredExactly = new RegExp(`^${retired.source}$`);
+
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
 export const author = "Whitefoot";
-/** The architect's author name and session: together the only writer that creates, cancels or retitles items and does what the board reserves for the architect. */
+/** The architect's author name and session: together the writer that does what the board reserves for the architect (the journal, the tag vocabulary) and everything the PM does. */
 export const architect = "Architect";
 export const architectSession = "架构师";
 export const asArchitect = { author: architect, session: architectSession };
+/** The PM writes as author PM (a project of its own) from the session PM: it creates, cancels and retitles items, but writes no journal and changes no tag vocabulary. */
+export const pmAuthor = "PM";
+export const pmSession = "PM";
+export const asPM = { author: pmAuthor, session: pmSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }] } });
+  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: pmAuthor }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
   const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
@@ -37,9 +50,9 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
     { kind: "item", id: "other", expectRev: null, doc: item("其他项目", { group: options.sharedProjects ? "Whitefoot" : "Firn" }) },
     { kind: "item", id: "a", expectRev: null, doc: nonRoot(item("中文检查", { head: "稳定中文背景 Whitefoot#341", data: "中文数据", ask: { text: "批准中文检查" }, links: [{ label: "Pull request", url: "https://github.com/Ming-Research/Whitefoot/pull/341" }],
       log: Array.from({ length: 7 }, (_, i) => ({ at: `2026-10-11T01:02:0${i}Z`, by: i === 0 ? "中文作者" : author, text: i === 0 ? "早期中文记录" : i === 6 ? "最新中文记录" : `Progress ${i}` })) })) },
-    { kind: "item", id: "b", expectRev: null, doc: nonRoot(item("阻塞证据", { priority: "P0", head: "未注明仓库 #341; Other#341", plan: [{ id: "a", item: "a", own: false, after: [] }, { id: "choice", card: "choice", after: [] }, { id: "accept", accept: true, text: "阻塞证据验收通过", state: "todo" }] })) },
-    { kind: "decision", id: "choice", expectRev: null, doc: { item: "a", question: "中文方案？", background: "中文背景 Whitefoot PR #341", options: [{ key: "A", text: "中文选项", recommended: true }, { key: "B", text: "另一选项" }], confidence: { score: 4, reason: "Evidence" }, status: "open", at, updated: at } },
-    { kind: "decision", id: "ruled", expectRev: null, doc: { item: "a", question: "旧方案？", background: "Old", options: [{ key: "A", text: "Old" }], status: "ruled", ruling: "中文裁决", ruledAt: later, updated: later } },
+    { kind: "item", id: "b", expectRev: null, doc: nonRoot(item("阻塞证据", { priority: "P0", head: "未注明仓库 #341; Other#341\n\n[[q:choice]]", plan: [{ id: "a", item: "a", own: false, after: [] }, { id: "ruled", card: "ruled", after: [] }, { id: "choice", card: "choice", after: [] }, { id: "accept", accept: true, text: "阻塞证据验收通过", state: "todo" }] })) },
+    { kind: "decision", id: "choice", expectRev: null, doc: { item: "b", question: "中文方案？", options: [{ key: "A", text: "中文选项", recommended: true }, { key: "B", text: "另一选项" }], status: "open", blocks: "阻塞证据的验收等它", at, updated: at } },
+    { kind: "decision", id: "ruled", expectRev: null, doc: { item: "b", question: "旧方案？", options: [{ key: "A", text: "Old" }], status: "ruled", choice: "A", ruledAt: later, ruling: "中文裁决", legacy: { background: "Old Whitefoot PR #341" }, updated: later } },
     { kind: "note", id: "note-1", expectRev: null, doc: { target: "it:a", kind: "comment", text: "中文意见 Whitefoot #341", at, sentAt: at, state: "sent" } },
     { kind: "note", id: "note-2", expectRev: null, doc: { target: "q:choice", kind: "explain", text: "解释 #341", at, state: "done", reply: "中文回复", repliedAt: later, repliedBy: author } },
   ] });

@@ -23,7 +23,7 @@ test("the index keeps a session's last two distinct items, newest first, and cou
   assert.deepEqual(touched(), ["other", "a"], "only two are kept");
   await op.appendLog({ author, id: "b", text: "no session" });
   assert.deepEqual(touched(), ["other", "a"], "a write without a session is nobody's");
-  await op.writeCard({ author, session: "S", key: "k1", item: "area", question: "Which?", background: "b", options: [{ key: "A", text: "a", recommended: true }, { key: "B", text: "b" }] });
+  await op.writeCard({ author, session: "S", key: "k1", item: "area", question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }] });
   assert.deepEqual(touched(), ["area", "other"], "a card counts for its item");
   await op.appendLog({ author, session: "S", id: "area", text: "twice in a row" });
   assert.deepEqual(touched(), ["area", "other"], "the item at the front is not listed twice");
@@ -71,10 +71,10 @@ const snap = (items: Record<string, Item>, agents: Record<string, AgentTouch[]> 
 const wrote = (...touches: Array<[string, number]>) => touches.map(([item, m]) => ({ item, at: minutesAgo(m) }));
 const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find(r => r.name === name);
 
-test("a session is listed for six hours after its last write, and the architect's own never is", () => {
+test("a session is listed for six hours after its last write, and the architect's and the PM's own never are", () => {
   const items = { a: item() };
-  const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's session are out");
+  const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]), PM: wrote(["a", 2]) });
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's and the PM's sessions are out");
 });
 
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {
@@ -161,4 +161,56 @@ test("a dispatch is live while its session started or wrote within the window, a
   }, { "quiet-then-wrote": wrote(["elsewhere", 30]), stale: wrote(["a", 6.5 * 60]) });
   assert.deepEqual(liveDispatches(s, "a", NOW).map(d => d.agent).sort(), ["quiet-then-wrote", "recent"], "started or wrote within six hours; the ended one and the long quiet one are out");
   assert.deepEqual(liveDispatches(s, "missing", NOW), []);
+});
+
+// --- which rows are running ------------------------------------------------------------------------------------------
+
+// The oracle is this table, written from the rule in docs/design.md ("Who is expanded"), not computed by the code under test.
+// A finish ten minutes after the dispatch started `startedAgo` minutes ago.
+const endedAfter = (startedAgo: number) => ({ finish: { ended: minutesAgo(startedAgo - 10), result: "一次通过" } }) as unknown as Partial<Dispatch>;
+const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }]);
+
+test("a step in progress on an item a session touched does not make it running; an unfinished live dispatch does, whatever the state word", () => {
+  const names = ["working", "stopped", "waiting", "longWait", "nothing"];
+  // Finished records: each name wrote later on an item, but works on nothing alive. Open records: the same names, alive.
+  const finished = item([], { dispatches: names.map(name => dispatch(`done-${name}`, minutesAgo(400), endedAfter(400))) } as Partial<Item>);
+  const open = item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
+  // Each name wrote this many minutes ago on this item.
+  const touches: Array<[string, string, number]> = [["working", "run", 5], ["stopped", "run", 31], ["waiting", "wait", 5], ["longWait", "wait", 61], ["nothing", "idle", 3]];
+  const writes = (prefix: string) => Object.fromEntries(touches.map(([name, id, minutes]) => [prefix + name, wrote([id, minutes])]));
+  const s = snap({ finished, open, run: doing(), wait: doing("PR 草稿 CI"), idle: item([{ id: "w", text: "work", state: "done" }]) }, { ...writes("done-"), ...writes("") });
+  const state = (name: string) => [row(s, name)!.state, row(s, name)!.running];
+  assert.deepEqual(names.map(name => state(`done-${name}`)), [["working", false], ["maybe-stopped", false], ["waiting", false], ["waiting", false], ["none", false]],
+    "its dispatch ended: the steps on the items it wrote to are other sessions', so it is folded although the state word is read from them");
+  assert.deepEqual(names.map(name => state(name)), [["working", true], ["maybe-stopped", true], ["waiting", true], ["waiting", true], ["none", true]],
+    "alive: running with every state word, 「可能停了」 and a wait over an hour (amber) included, and with none");
+});
+
+test("a session with no dispatch record is never running, whatever stands on the items it touched", () => {
+  const s = snap({ run: doing(), wait: doing("PR 草稿 CI") }, { observer: wrote(["run", 5]), waiter: wrote(["wait", 5]), stopped: wrote(["run", 45]) });
+  assert.deepEqual(["observer", "waiter", "stopped"].map(name => [row(s, name)!.state, row(s, name)!.running]), [["working", false], ["waiting", false], ["maybe-stopped", false]],
+    "the state word is still read from the steps, but those steps are other sessions': it is folded");
+});
+
+test("a session with an unfinished dispatch that is alive is running, an engineer or a review, with no step in progress", () => {
+  const done = [{ id: "w", text: "work", state: "done" }];
+  const review = (agent: string, startedAgo: number) => item(done, { dispatches: [dispatch(agent, minutesAgo(startedAgo), { role: "审查", level: 3 })] } as Partial<Item>);
+  const s = snap({
+    fresh: item([], { dispatches: [dispatch("fresh", minutesAgo(3))] } as Partial<Item>),
+    rowsDone: item(done, { dispatches: [dispatch("rowsDone", minutesAgo(300))] } as Partial<Item>),
+    over: item(done, { dispatches: [dispatch("over", minutesAgo(120), endedAfter(120))] } as Partial<Item>),
+    moved: item(done, { dispatches: [dispatch("moved", minutesAgo(200), endedAfter(200)), dispatch("moved", minutesAgo(100))] } as Partial<Item>),
+    r10: review("r10", 10), r40: review("r40", 40), r300: review("r300", 300),
+    // One name: an engineer dispatch that ended, and an older review dispatch still unfinished on another item.
+    mixedA: item(done, { dispatches: [dispatch("mixed", minutesAgo(100), endedAfter(100))] } as Partial<Item>),
+    mixedB: item(done, { dispatches: [dispatch("mixed", minutesAgo(300), { role: "审查" })] } as Partial<Item>),
+  }, { over: wrote(["over", 5]), rowsDone: wrote(["rowsDone", 250]), mixed: wrote(["mixedA", 5]), r300: wrote(["r300", 200]) });
+  const running = (name: string) => row(s, name)!.running;
+  assert.deepEqual([row(s, "fresh")!.state, running("fresh")], ["none", true], "just started, no row marked yet: it works on the item");
+  assert.deepEqual([row(s, "rowsDone")!.state, running("rowsDone")], ["none", true], "every row done and waiting for the merge: still works on it, 5 hours after the start");
+  assert.deepEqual([row(s, "over")!.state, running("over")], ["none", false], "its dispatch ended: it works on nothing, though it wrote again afterwards");
+  assert.equal(running("moved"), true, "a new dispatch under the name of an ended one works on the item");
+  assert.equal([running("r10"), running("r40"), running("r300")].join(), "true,true,true", "an unfinished review is running at 10 minutes, at 40 and at 5 hours: no shorter bound than the window");
+  assert.equal(row(s, "r10")!.state, "none", "and it gets no state word");
+  assert.equal(running("mixed"), true, "an unfinished review record under the name is alive for status too");
 });

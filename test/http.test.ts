@@ -198,7 +198,7 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
   await api("/api/read", {through: store.snapshot().head});
   const a = await op.setPlan({ author, id: "a", row: { id: "progress", state: "todo", text: "earlier unread" } });
   const card = store.snapshot().decisions.choice!;
-  const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, background: "new background"}}]});
+  const b = await store.commit({author, message: "update card", puts: [{kind: "decision", id: "choice", expectRev: card.rev, doc: {...card, question: "new question"}}]});
   assert.equal((await api("/api/read", {doc: "decision:choice", through: b.commit})).status, 200);
   assert.deepEqual((await api("/api/unread")).data.steps!.map(s => s.id), [a.commit]);
   assert.equal((await api(`/api/step?id=${b.commit}&kind=decision&doc=choice`)).status, 404);
@@ -272,8 +272,8 @@ test("an owner notice reaches each open page as an owner event, and a page that 
   const controller = new AbortController(); t.after(() => controller.abort());
   const response = await fetch(url + "/api/events", { signal: controller.signal });
   const reader = response.body!.getReader(); await reader.read();
-  wake.tell("架构师一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  wake.tell("PM 一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
   const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
   assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
-  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "PM 一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
 });

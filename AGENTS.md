@@ -24,7 +24,7 @@ matches what the artifact board offered.
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
   remote, their log lines, ending the push on shutdown, and the push to the
-  architect when the remote copy stays behind for an hour.
+  PM when the remote copy stays behind for an hour.
 - `src/budget.ts`: the budget of one request's reads of the board's history (bytes
   read, whole old boards rebuilt, the process heap), held in the request's async
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
@@ -46,22 +46,25 @@ matches what the artifact board offered.
   `src/model.ts`; design section 9.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
   index of the last two items written is advanced, and the rows (who is listed,
-  the state word, the level) derived from it, the steps in progress and the
-  dispatch records. Imported by the server and bundled into the page.
-- `src/dispatch.ts`: dispatch records (the agent sessions the architect
+  who is running, the state word, the level) derived from it, the steps in
+  progress and the dispatch records. Imported by the server and bundled into
+  the page.
+- `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
 - `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
   time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
-  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
+  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the PM.
 - `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
   a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
-- `src/wake.ts`: the architect's push channel (the table of kinds, numbered
+- `src/wake.ts`: the PM's push channel (the table of kinds, numbered
   events kept in a local file, receipts, the no-receipt alert);
+  `src/liveness.ts`: whether the sessions holding items are still there (the
+  ask and the "no answer" push, its silences kept in `state/liveness.json`);
   `src/timed-wake.ts`: what the half-hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
@@ -81,7 +84,8 @@ matches what the artifact board offered.
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
-  headless Chromium) and the click invariants.
+  headless Chromium) and the click invariants; `live-board.ts` makes a board of the live board's weight, and
+  `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand
@@ -144,9 +148,9 @@ daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
 `~/Library/Logs/wf-board-deploy.log`.
 
-The architect does not deploy by hand. It gets one push per deploy:
-`deployed` names the version now served and the changes, and the architect
-checks the change on the live page; `deployFailed` says why nothing was
+The PM does not deploy by hand. It gets one push per deploy:
+`deployed` names the version now served and the changes, and the change is
+checked on the live page; `deployFailed` says why nothing was
 deployed (a null version means the job itself could not run, as when its fetch
 fails; the log has the detail). The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes

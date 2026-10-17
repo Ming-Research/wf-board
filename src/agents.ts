@@ -3,7 +3,7 @@
 // never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
 import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, ARCHITECT_SESSION } from "./model.ts";
+import { AGENT_TOUCHES, answersPushes } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -43,6 +43,10 @@ export interface AgentRow {
   waits?: string;
   /** Waiting for longer than AGENT_WAIT_LONG_MS. */
   amber: boolean;
+  /** Running now, which is what the page unfolds: the session has an unfinished dispatch and is alive (`liveDispatches`,
+   * either role), whatever the state word says. The steps on the items it touched do not decide: they may be another
+   * session's. A session with no dispatch record, or whose dispatch has ended, is not running. The rest are folded into one line. */
+  running: boolean;
   /** At most AGENT_TOUCHES items, newest first. */
   touched: AgentTouch[];
 }
@@ -66,25 +70,31 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
 
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when it wrote to the board or was
- * started by a dispatch record within AGENT_WINDOW_MS, except the architect's own, and except one whose newest
+ * started by a dispatch record within AGENT_WINDOW_MS, except the PM's and the architect's own, and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item).
  */
 export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number): AgentRow[] {
   const started = new Map<string, Started[]>();
-  for (const [item, it] of Object.entries(s.items)) for (const dispatch of it.dispatches ?? []) {
-    const list = started.get(dispatch.agent);
-    if (list) list.push({ item, dispatch }); else started.set(dispatch.agent, [{ item, dispatch }]);
+  // The sessions with an unfinished dispatch that is alive, read from the same live dispatches item status reads.
+  const alive = new Set<string>();
+  for (const [item, it] of Object.entries(s.items)) {
+    for (const dispatch of it.dispatches ?? []) {
+      const list = started.get(dispatch.agent);
+      if (list) list.push({ item, dispatch }); else started.set(dispatch.agent, [{ item, dispatch }]);
+    }
+    if (it.dispatches?.length) for (const d of liveDispatches(s, item, now)) alive.add(d.agent);
   }
   const names = new Set([...Object.keys(s.activity?.agents ?? {}), ...started.keys()]);
   const rows: AgentRow[] = [];
   for (const name of names) {
-    if (name === ARCHITECT_SESSION) continue;
+    if (answersPushes({ session: name })) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const dispatches = started.get(name) ?? [];
     const newest = dispatches.reduce<Started | undefined>((a, b) => !a || Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a, undefined);
     const lastWrite = wrote[0] ? Date.parse(wrote[0].at) : -Infinity;
     const lastStart = newest ? Date.parse(newest.dispatch.started) : -Infinity;
     const finish = newest?.dispatch.finish;
+    const review = newest?.dispatch.role === "审查";
     if (finish && !(lastWrite > Date.parse(finish.ended) + FINISH_GRACE_MS)) continue;
     const last = Math.max(lastWrite, lastStart);
     if (!(now - last <= AGENT_WINDOW_MS)) continue;
@@ -95,11 +105,12 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
     for (const d of dispatches) see(d.item, d.dispatch.started);
     const touched = [...byItem].map(([item, at]) => ({ item, at })).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.item < b.item ? -1 : a.item > b.item ? 1 : 0)).slice(0, AGENT_TOUCHES);
     // A reviewer holds no step: the steps on the item it reviews are the engineer's, so it gets no state word.
-    const steps = newest?.dispatch.role === "审查" ? [] : touched.flatMap(t => doingSteps(s.items[t.item]).map(step => ({ step, item: t.item })));
+    const steps = review ? [] : touched.flatMap(t => doingSteps(s.items[t.item]).map(step => ({ step, item: t.item })));
     const waiting = steps.find(x => x.step.waits !== undefined);
-    const row: AgentRow = { name, lastAt: new Date(last).toISOString(), lastKind: lastStart > lastWrite ? "started" : "wrote", state: "none", amber: false, touched };
+    const row: AgentRow = { name, lastAt: new Date(last).toISOString(), lastKind: lastStart > lastWrite ? "started" : "wrote", state: "none", amber: false, running: false, touched };
     if (waiting) { row.state = "waiting"; row.waits = waiting.step.waits!; row.amber = now - last > AGENT_WAIT_LONG_MS; }
     else if (steps.length) row.state = now - last > AGENT_STALE_MS ? "maybe-stopped" : "working";
+    row.running = alive.has(name);
     if (newest) { row.level = newest.dispatch.level; row.role = newest.dispatch.role; }
     else {
       const rated = steps.map(x => s.items[x.item]?.difficulty).find(d => d !== undefined);

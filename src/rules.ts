@@ -2,11 +2,11 @@
 // The plan is the single source for ownership, status, priority and progress.
 import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
-import { ARCHITECT, ARCHITECT_SESSION, RETIRED_LEVEL, isArchitect, planRowId, tagsRequired } from "./model.ts";
+import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the architect may place a project after another. */
+/** Project list order is page order; only the PM and the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
-  if (!isArchitect(who)) throw new Error(`after: only ${ARCHITECT} with session ${ARCHITECT_SESSION} may reorder projects`);
+  if (!mayRunProcess(who)) throw new Error(`after: only ${PROCESS_WRITERS} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
   const project = projects.find(p => p.name === name);
   if (!project) throw new Error(`project ${name}: choose a configured project with projects`);
@@ -162,7 +162,7 @@ export function usageKey(f: Pick<UsagePushFields, "org" | "reason" | "level" | "
   return f.reason === "month" ? `actions-usage ${f.org} month ${f.month} ${f.level}` : f.reason === "day" ? `actions-usage ${f.org} day ${f.day}` : `actions-usage ${f.org} cap ${f.month}`;
 }
 
-/** What to tell the architect now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
+/** What to tell the PM now. Month: the highest level crossed, if it is not told yet (it is told once for the levels below
  * it as well, so a first look at 88% is one push, not two). Day: more than the day limit counted today. Cap: all the included
  * minutes used and a budget of 0, which stops the private repositories' CI. `announced` holds the keys already told. */
 export function usagePushes(f: UsageFigures, announced: ReadonlySet<string>): UsagePush[] {
@@ -246,8 +246,39 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** The plan without a card's row, for a card that does not block. Rows that waited for the row wait for what it waited for. */
+export function withoutCardRow(plan: PlanRow[], key: string): PlanRow[] {
+  const i = plan.findIndex(r => "card" in r && r.card === key);
+  if (i < 0) return plan;
+  const waited = plan[i]!.after ?? (i > 0 ? [plan[i - 1]!.id] : []);
+  return plan.filter((_, n) => n !== i).map((r, n) => {
+    if (r.after?.includes(key)) return { ...r, after: [...new Set([...r.after.filter(x => x !== key), ...waited])] };
+    return r.after === undefined && n === i ? { ...r, after: waited } : r;
+  });
+}
+
 /** A title longer than this many characters (spaces not counted) gets a check. */
 export const TITLE_MAX_CHARS = 20;
+/** An option name longer than this many characters (spaces not counted) is refused when a card is written; its detail has no limit. */
+export const OPTION_MAX_CHARS = 20;
+/** An open card its item's head does not place carries this label; a card and its plan row that disagree, the next. */
+export const CARD_UNPLACED_LABEL = "卡没标位置";
+export const CARD_MISMATCH_LABEL = "卡和计划对不上";
+/** A line holding only [[q:key]] places that card in the head there; the same token inside a sentence is a link. */
+const CARD_MARKER = /^[ \t]*\[\[q:([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\]\][ \t]*$/;
+/** The card key a head line places, if it is such a line. */
+export function cardMarker(line: string): string | undefined { return CARD_MARKER.exec(line)?.[1]; }
+/** The keys of the cards a head places, in the order of their lines; a line inside a code fence places nothing. */
+export function placedCards(head: string | undefined): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of (head ?? "").replace(/\r/g, "").split("\n")) {
+    if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
+    const key = fenced ? undefined : cardMarker(line);
+    if (key !== undefined && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
 /** The visible tag of a check whose own label is not set. */
 export const CHECK_LABEL = "需核对";
 /** A WIP item with its own doing step quiet for STALLED_AFTER_MS of active time carries this label instead. */
@@ -564,12 +595,24 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
   return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
 }
 
+/** The fields of an item that the status and the priority of every item are derived from: the plan and the owner's ask, a
+ * cancellation, a pause, the project (a pause stops at the project's edge), a record, a root's stored priority, the order
+ * of the top items, which the index sorts as it is built, and the dispatch records (a live session makes an item worked on).
+ * The test in test/derived.test.ts records which fields the two derivations read and fails when this list and that set
+ * differ. */
+export const STATUS_PRIORITY_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "priority", "order", "dispatches"];
+/** Whether two versions of one item give the same status and priority on the same board. Versions that differ in some other
+ * field (the text, the log, the tags) do; one that differs in a listed field may not, which only costs the caller a derivation. */
+export function sameStatusAndPriority(a: Item, b: Item): boolean {
+  return STATUS_PRIORITY_FIELDS.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+}
+
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
  * and the labels of what it waits on and what waits on it. The page repaints an item when this changes. */
 export function presentationSignature(r: Rules, decisions: Readonly<Record<string, Decision>>, id: string): string {
   const it = r.item(id);
   const label = (kind: string, key: string): unknown[] => {
-    if (kind === "card") return [decisions[key]?.question, decisions[key]?.status, decisions[key]?.blocks];
+    if (kind === "card") { const d = decisions[key]; const o = d?.options.find(o => o.key === d.choice); return [d?.question, d?.status, d?.blocks, d?.choice, o?.text, o?.detail]; }
     const owner = r.parentOf(key);
     return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
   };
@@ -710,11 +753,13 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const list = notes.get(n.target) || [];
         list.push(n); notes.set(n.target, list);
       }
-      for (const [key, d] of Object.entries(s.decisions)) {
-        const list = cards.get(d.item) || [];
-        list.push(key); cards.set(d.item, list);
+      // An item's cards follow its plan; a card whose row is missing still belongs to its item and comes last.
+      const listed = new Set<string>();
+      for (const [id, it] of items) for (const row of it.plan) {
+        if (!("card" in row) || s.decisions[row.card]?.item !== id || listed.has(row.card)) continue;
+        listed.add(row.card); cards.set(id, [...cards.get(id) || [], row.card]);
       }
-      for (const list of cards.values()) list.sort((a, b) => (s.decisions[a]?.order || 0) - (s.decisions[b]?.order || 0));
+      for (const [key, d] of Object.entries(s.decisions)) if (!listed.has(key)) cards.set(d.item, [...cards.get(d.item) || [], key]);
       return { items, children, owners, notes, cards, mentioned, decisions: new Map(Object.entries(s.decisions)) };
     });
   }
@@ -951,9 +996,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const ask = item(id)?.ask;
     return !!ask && !notesOf("it:" + id).some(n => (n.kind === "approve" || n.kind === "done") && n.state !== "draft" && (n.answerText ?? n.text) === ANSWER[n.kind] + ask.text);
   }
-  function cardWaiting(key: string): boolean {
-    return index().decisions.get(key)?.status === "open" && !notesOf("q:" + key).some(n => n.kind === "choice" && n.state !== "draft");
-  }
+  function cardWaiting(key: string): boolean { return index().decisions.get(key)?.status === "open"; }
   function cardBlocking(key: string): boolean { return cardWaiting(key) && !!index().decisions.get(key)?.blocks; }
   function ownerBlocking(id: string): boolean { return askPending(id) || cardsOf(id).some(cardBlocking); }
   function subtreeCount(id: string, own: (id: string) => number): number {
@@ -1111,6 +1154,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
         else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
       }
+      // A card and its row are one fact stored twice: an open blocking card has its row in its item's plan, an open card
+      // that does not block has none (the work goes on without it), and each card row names a card of this item. A card
+      // that is closed keeps the row it had. Only a write that bypasses write_card can break that.
+      const own = cardsOf(id), rowCards = it.plan.flatMap(row => "card" in row ? [row.card] : []);
+      const apart = [...own.filter(key => cardBlocking(key) && !rowCards.includes(key)).map(key => `${key} 挡事，却没有计划行`), ...own.filter(key => cardWaiting(key) && !cardBlocking(key) && rowCards.includes(key)).map(key => `${key} 不挡事，却有计划行`),
+        ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
+      if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
+      const placed = placedCards(it.head);
+      for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });
       if (cycles().has(id)) out.push({ text: "依赖成环" });
       if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });

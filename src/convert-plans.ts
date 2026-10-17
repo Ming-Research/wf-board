@@ -63,7 +63,8 @@ export function convertPlans(old: LegacySnapshot, options: { at: string }): Plan
   const at = Time.parse(options.at);
   const previous = legacyRules(old), findings: PlanFinding[] = [];
   const {archived: _archives, ...owner} = old.owner;
-  const snapshot: Snapshot = { ...structuredClone(old), owner: OwnerState.parse(owner), board: Board.parse({ ...old.board, projects: old.board.projects.map(({ migrated: _migrated, ...p }) => p) }), items: {} };
+  // The one-time plan conversion carries the cards as they were (old shape); the card conversion (migrate-cards.ts) gives them the new one.
+  const snapshot: Snapshot = { ...structuredClone(old), decisions: structuredClone(old.decisions) as unknown as Snapshot["decisions"], owner: OwnerState.parse(owner), board: Board.parse({ ...old.board, projects: old.board.projects.map(({ migrated: _migrated, ...p }) => p) }), items: {} };
   const report: PlanConversionReport = { summary: "", sourceHead: old.head, at, planConversionAt:at, counts: { items: Object.keys(old.items).length, records: Object.values(old.items).filter(it => it.record).length, decisions: Object.keys(old.decisions).length, notes: Object.keys(old.notes).length, targets: Object.values(old.items).reduce((n,it) => n + (it.targets?.length ?? 0),0), oldLogs: Object.values(old.items).reduce((n,it) => n + it.log.length,0), newLogs: 0, provisional: 0, droppedArchives: Object.keys(old.owner.archived).length }, findings, rewritePointers: [], survey: {}, byProject: {}, byCause: {status:{},priority:{}}, statusChanges: [], priorityChanges: [], errors: [] };
   const note = (id: string, kind: string, detail: string) => findings.push({ item: id, project: previous.groupOf(id), kind, detail });
   for (const [id, original] of Object.entries(old.items)) {

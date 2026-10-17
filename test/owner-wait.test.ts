@@ -8,7 +8,7 @@ import { board, author, at } from "./helpers.ts";
 import { createMcpServer } from "../src/mcp.ts";
 
 const doc = (fields: object) => ({ title: "t", updated: at, rev: 1, log: [], plan: [{ id: "accept", accept: true, text: "验收通过", state: "todo" }], group: "P", links: [], ...fields });
-const card = (item: string, fields: object = {}) => ({ item, question: "Q?", background: "b", options: [{ key: "A", text: "a" }], status: "open", updated: at, rev: 1, ...fields });
+const card = (item: string, fields: object = {}) => ({ item, question: "Q?", options: [{ key: "A", text: "a" }], status: "open", updated: at, rev: 1, ...fields });
 function owned(): Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> {
   return {
     board: { title: "T", projects: [{ name: "P" }] }, owner: {}, notes: {},
@@ -38,8 +38,10 @@ test("rules: a waiting card with blocks is blocking, an ask always is, and the t
   assert.equal(r.blockingBelow("kid"), 1);
   assert.equal(r.blockingBelow("plainOnly"), 0);
   assert.equal(r.nonBlockingBelow("plainOnly"), 1);
-  // A sent choice answers the card, so it neither waits nor blocks.
+  // Ruling the card (the board does it when the owner sends the pick) ends the wait and the block; a sent note alone does not.
   s.notes = { c: { target: "q:blocks", kind: "choice", choice: "A", text: "A", at, state: "sent", rev: 1 } } as never;
+  assert.equal(rules(s).cardBlocking("blocks"), true);
+  s.decisions.blocks = { ...s.decisions.blocks!, status: "ruled", choice: "A" };
   const answered = rules(s);
   assert.equal(answered.cardBlocking("blocks"), false);
   assert.equal(answered.blockingBelow("root"), 1);
@@ -53,7 +55,7 @@ async function mcp(t: Parameters<typeof board>[0]) {
   const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
   return { ...fixture, client, text };
 }
-const cardArgs = { author, key: "gate", item: "a", question: "合并吗？", background: "背景", options: [{ key: "A", text: "是", recommended: true }] };
+const cardArgs = { author, key: "gate", item: "a", question: "合并吗？", confidence: { score: 3, reason: "只凭判断" }, options: [{ text: "是", detail: "合并，之后的工作可以开始", recommended: true }] };
 
 test("write_card stores blocks, a revision can keep, replace or clear it, and context and brief show it", async t => {
   const { client, text, store } = await mcp(t);
@@ -79,11 +81,11 @@ test("write_card stores blocks, a revision can keep, replace or clear it, and co
 
 test("write_card replies with the option check of a card that has fewer than three options", async t => {
   const { client, text } = await mcp(t);
-  const two = [{ key: "A", text: "是" }, { key: "B", text: "否" }];
+  const two = [{ text: "是", detail: "合并" }, { text: "否", detail: "不合并" }];
   const short = await client.callTool({ name: "write_card", arguments: { ...cardArgs, options: two } });
   assert.equal(short.isError, undefined, text(short));
   assert.match(text(short), /\ncheck: 决策卡只有 2 个选项，至少要给三个都走得通的做法$/, "the writer sees the check in the reply");
-  const full = await client.callTool({ name: "write_card", arguments: { ...cardArgs, key: "full", options: [...two, { key: "C", text: "以后" }] } });
+  const full = await client.callTool({ name: "write_card", arguments: { ...cardArgs, key: "full", options: [...two, { text: "以后", detail: "过几天再说" }] } });
   assert.equal(full.isError, undefined, text(full));
   assert.doesNotMatch(text(full), /check: /, "three options get no check");
 });

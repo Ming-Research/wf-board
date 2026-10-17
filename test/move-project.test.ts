@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { OpError } from "../src/ops.ts";
 import { rules } from "../src/rules.ts";
 import { Store } from "../src/store.ts";
-import { board, later, author, asArchitect } from "./helpers.ts";
+import { PROCESS_WRITERS } from "../src/model.ts";
+import { board, later, author, asArchitect, retiredExactly, rx } from "./helpers.ts";
 
 // The fixture: Whitefoot's `area` (root, P1) owns `a` and `b`; `b` also waits on `a` and on a's card; `other` is Firn's.
 const structural = /^(跨项目拥有|同项目有条目在等它|被多个条目拥有)/;
@@ -108,10 +109,10 @@ test("refusals name the fix and leave the board and the log untouched", async t 
     [() => op.moveItemProject({ ...asArchitect, id: "a", project: "Nowhere" }), /project Nowhere.*configured project/],
     [() => op.moveItemProject({ ...asArchitect, id: "a", project: "Whitefoot" }), /project: a is already in Whitefoot/],
     [() => op.moveItemProject({ ...asArchitect, id: "missing", project: "Firn" }), /id missing.*existing item/],
-    // Only the architect moves items between projects: the item's own project, another project, the Architect project without the session, and the retired 总管.
-    ...[{ author }, { author, session: "架构师" }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }].map(who =>
-      [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), /^author: only Architect with session 架构师 may move an item to another project$/] as [() => Promise<unknown>, RegExp]),
-    [() => op.moveItemProject({ author: "总管", id: "a", project: "Firn" }), /^author 总管: this identity is retired; write as Architect$/],
+    // Only the PM and the architect move items between projects: the item's own project, another project, the Architect and PM projects without their sessions, and the retired 总管.
+    ...[{ author }, { author, session: "架构师" }, { author, session: "PM" }, { author: "Firn" }, { author: "Architect" }, { author: "Architect", session: "engineer" }, { author: "Architect", session: "PM" }, { author: "PM" }, { author: "PM", session: "engineer" }].map(who =>
+      [() => op.moveItemProject({ ...who, id: "a", project: "Firn" }), rx`^author: only ${PROCESS_WRITERS} may move an item to another project$`] as [() => Promise<unknown>, RegExp]),
+    [() => op.moveItemProject({ author: "总管", id: "a", project: "Firn" }), retiredExactly],
     // A tag of the moved part that the new project may not use.
     [() => op.moveItemProject({ ...asArchitect, id: "b", project: "Firn" }), /item b: tags 只在白脚: applies only to Whitefoot, not Firn/],
     [() => op.moveItemProject({ ...asArchitect, id: "area", project: "Firn" }), /item b: tags 只在白脚: applies only to Whitefoot, not Firn/],

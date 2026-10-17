@@ -36,19 +36,20 @@ async function main() {
   // A message may go to the session of any long-lived credential (docs/design.md, Messages).
   const op = ops(store, undefined, { sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The pushes to the PM, and to each other agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
-  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake") });
-  // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the architect, a merged PR marks its merge row done.
+  // The marks of the liveness checks are kept too, so a silence already told is not told again.
+  const wake = new Wake({ file: await store.localFile("state/wake.jsonl"), dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
+  // The look at GitHub every five minutes, kept across restarts: red checks and mergeable PRs go to the PM, a merged PR marks its merge row done.
   const watch = new GithubWatch({ store, ops: op, wake, github: ghSource(), stateFile: await store.localFile("state/github-watch.json") });
-  // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the architect at its levels.
+  // The look at the organization's Actions billing every half hour, kept across restarts: the month's use is a line of the timed wake and goes to the PM at its levels.
   const usage = new UsageWatch({ store, wake, billing: ghBilling(), stateFile: await store.localFile("state/actions-usage.json") });
-  // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
+  // Times every page request and tool call, and tells the PM of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
   const credentials = new Credentials(credentialFile);
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, usage, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
-  // the writes, not in their queue; when the remote copy stays behind for an hour the architect is told (design section 4, Storage).
+  // the writes, not in their queue; when the remote copy stays behind for an hour the PM is told (design section 4, Storage).
   const backup = new BackupPush({ store, wake });
   const push = () => backup.round();
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
