@@ -1830,25 +1830,31 @@ and the push that says work can be handed out reads it too.
   when that session has gone quiet: the PM takes such an item over, and listing it again
   would start a second engineer beside a stopped one.
 - *Default order.* One comparison, `compareCandidates`, over all projects: higher priority first;
-  at equal priority, the item more open, unpaused work items hold a row for (owned or shared)
-  first; then the earlier item number. `brief`'s todo list uses the same order, so there is one.
+  at equal priority, the item more open, unpaused work items hold a shared dependency row for
+  first (its owner holds an owned row for every item it owns, which tells none apart, so it is
+  not counted); then the earlier item number. `brief`'s todo list uses the same order, so there
+  is one.
 - *Pools.* Level 1 holds at most 10 engineers, level 2 and above at most 6; the owner sets
   the numbers (`POOLS`). An item belongs to the pool of its difficulty, an engineer to the pool
   of its dispatch's level.
 - *Working.* One engineer per session with an open engineer dispatch, on the item it holds.
   It does not count when the board shows it waiting: the item is blocked (it waits on another
-  item, a card or the owner), paused, done or cancelled; or every step it has in progress writes
-  `waits` (the rules keep `waits` for a wait on something outside the board, CI or a 14900K
-  run) or is the review step; or it has no step in progress and an owned sub-item on its way is
-  worked by another session (an open dispatch of another session on the sub-item or below it).
+  item, a card or the owner), paused, done or cancelled; or every step it has in progress is the
+  review step or waits on a 14900K run (`waitsOnRun`: its `waits` names the machine; the rules
+  keep `waits` for a wait outside the board, CI or a 14900K run, and an engineer waiting for CI
+  is still working, so only the run frees the slot); or it has no step in progress and an owned
+  sub-item on its way is worked by another session (an open dispatch of another session on the
+  sub-item or below it).
   An engineer that has marked no step yet counts, so a slot is not freed between its start and
   its first mark. A session that has stopped keeps its slot until the PM closes its dispatch.
 - *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
   knows this). The review that waits for a reviewer is that step in progress.
 - *Answer.* Per pool: the limit, the engineers working, the free slots; while a slot is free,
   the first 10 rows in the default order, then the number of candidates not listed. More than 3
-  candidates of a pool under one parent are one row naming the parent and the count, at the place
-  of the best of them; `under=<parent>` lists the parent's candidates one by one (at most 10).
+  candidates under one parent, of any level, are one row naming the parent and the count of all
+  of them, at the place of the best of them in each pool they fall in; the free slots and the
+  candidates a pool counts are counted apart from the groups. `under=<parent>` lists the
+  parent's candidates of every level one by one (at most 10).
   The answer is a few lines of text. Measured on the two generated boards of 176 items
   (`generateBoard`, seeds 1 and 2; 28 and 34 startable items, all slots free): 1259 and 1112
   characters, where the todo lists of `brief` over the five projects are 8316 and 10199
@@ -3110,7 +3116,7 @@ start with the schema's own error, so nothing is read and silently discarded.
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items someone is working on (a doing step of their own or a live session),
-the next ten items rated 1–5 that `canStart` allows (status todo or idle), by priority,
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), in the order of `candidates` (section 6),
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds

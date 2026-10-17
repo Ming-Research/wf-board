@@ -4,7 +4,7 @@
 
 import { openDispatches, holderOf } from "./dispatch.ts";
 import type { Difficulty, Dispatch, Priority, Snapshot } from "./model.ts";
-import { isReviewStep } from "./rules.ts";
+import { isReviewStep, waitsOnRun } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
 /** The two pools of engineers working at the same time, and the most each holds (set by the owner). */
@@ -13,14 +13,14 @@ export const POOLS = [
   { pool: "2+", limit: 6, text: "2 级以上", covers: (level: number) => level >= 2 },
 ] as const;
 export type Pool = (typeof POOLS)[number]["pool"];
-/** More startable items than this under one parent are listed as the parent and a count. */
+/** More candidates than this under one parent are listed as the parent and a count. */
 export const GROUP_OVER = 3;
 /** The most rows listed for a pool while a slot is free, and under one parent: the rest are counted, and `under` lists a parent's. */
 export const ROWS_LISTED = 10;
 export const UNDER_LISTED = 10;
 
 export interface Candidate { id: string; num?: number; project: string; title: string; difficulty: Difficulty; priority: Priority | ""; waiters: number }
-/** Several startable items under one parent: the parent and how many, in place of the items. */
+/** Several candidates under one parent: the parent and how many (of every level), in place of the items. */
 export interface CandidateGroup { parent: string; num?: number; project: string; title: string; count: number }
 export interface PoolView {
   pool: Pool;
@@ -59,17 +59,16 @@ function heldElsewhere(s: Snapshot, r: Rules, id: string, agent: string, seen = 
 
 /**
  * Whether the engineer holding `id` is waiting on something the board shows, so its slot is free for another. Waiting: the
- * item is blocked (it waits on another item, a card or the owner), paused or finished; every step it has in progress writes
- * `waits` (what the rules say is for a wait outside the board: CI, a 14900K run) or is the review step; or it has no
- * step in progress and a sub-item on its way is being worked by another session. A fresh engineer, which has marked
- * no step yet, is working.
+ * item is blocked (it waits on another item, a card or the owner), paused or finished; every step it has in progress is the
+ * review step or waits on a 14900K run (a wait for CI leaves it working); or it has no step in progress and a sub-item on
+ * its way is being worked by another session. A fresh engineer, which has marked no step yet, is working.
  */
 function waiting(s: Snapshot, r: Rules, id: string, agent: string): boolean {
   const status = r.statusOf(id);
   if (status !== "wip" && status !== "todo" && status !== "idle") return true;
   const rows = r.planRows(id);
   const doing = rows.flatMap(entry => "text" in entry.row && entry.row.state === "doing" ? [entry.row] : []);
-  if (doing.length) return doing.every(step => step.waits !== undefined || isReviewStep(step));
+  if (doing.length) return doing.every(step => isReviewStep(step) || waitsOnRun(step));
   return rows.some(entry => entry.ready && entry.state === "progress" && "item" in entry.row && heldElsewhere(s, r, entry.row.item, agent));
 }
 
@@ -78,7 +77,7 @@ function workingBy(s: Snapshot, r: Rules): Map<Pool, number> {
   const engineers = new Map<string, { dispatch: Dispatch; working: boolean }>();
   for (const id of Object.keys(s.items)) {
     const dispatch = openDispatches(s, id).find(d => d.role === "工程师");
-    if (!dispatch || holderOf(s, id) !== dispatch.agent) continue;
+    if (!dispatch) continue;
     const known = engineers.get(dispatch.agent), working = !waiting(s, r, id, dispatch.agent);
     if (!known) engineers.set(dispatch.agent, { dispatch, working });
     else known.working ||= working;
@@ -90,23 +89,25 @@ function workingBy(s: Snapshot, r: Rules): Map<Pool, number> {
 
 /**
  * The pools' slots and the candidates. Candidates from every project are put in one default order (`compareCandidates`);
- * within a pool, more than GROUP_OVER of them under one parent are listed as that parent and a count, at the place of the
- * best of them. The order is for reading; which candidate to start is decided by the architect, not by the board.
+ * more than GROUP_OVER of them under one parent, of any level, are listed as that parent and the count, at the place of the
+ * best of them in each pool they fall in. The order is for reading; which candidate to start is decided by the architect, not by the board.
  */
 export function candidates(s: Snapshot, r: Rules): Candidates {
   const working = workingBy(s, r), all = candidateIds(s, r);
+  // A parent with more than GROUP_OVER candidates, of any level, is grouped; the slots and the counts of a pool do not read the groups.
+  const perParent = new Map<string, number>();
+  for (const id of all) { const p = r.parentOf(id); if (p !== undefined) perParent.set(p, (perParent.get(p) ?? 0) + 1); }
+  const grouping = (p: string | undefined): p is string => p !== undefined && perParent.get(p)! > GROUP_OVER;
   return { pools: POOLS.map(({ pool, limit, covers }) => {
     const mine = all.filter(id => covers(s.items[id]!.difficulty!));
-    const perParent = new Map<string, number>();
-    for (const id of mine) { const p = r.parentOf(id); if (p !== undefined) perParent.set(p, (perParent.get(p) ?? 0) + 1); }
     const rows: Array<{ row: Candidate | CandidateGroup; items: number }> = [], grouped = new Set<string>();
     for (const id of mine) {
       const p = r.parentOf(id);
-      if (p === undefined || perParent.get(p)! <= GROUP_OVER) { rows.push({ row: row(s, r, id), items: 1 }); continue; }
+      if (!grouping(p)) { rows.push({ row: row(s, r, id), items: 1 }); continue; }
       if (grouped.has(p)) continue;
       grouped.add(p);
       const parent = s.items[p]!;
-      rows.push({ row: { parent: p, ...(parent.num === undefined ? {} : { num: parent.num }), project: r.projectOf(p), title: parent.title, count: perParent.get(p)! }, items: perParent.get(p)! });
+      rows.push({ row: { parent: p, ...(parent.num === undefined ? {} : { num: parent.num }), project: r.projectOf(p), title: parent.title, count: perParent.get(p)! }, items: mine.filter(x => r.parentOf(x) === p).length });
     }
     const free = Math.max(0, limit - working.get(pool)!), shown = free ? rows.slice(0, ROWS_LISTED) : [];
     return { pool, limit, working: working.get(pool)!, free, listed: shown.map(x => x.row), more: mine.length - shown.reduce((n, x) => n + x.items, 0) };
