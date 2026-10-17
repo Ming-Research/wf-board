@@ -254,7 +254,6 @@ export const CHECK_LABEL = "需核对";
 export const STALLED_LABEL = "无人推进";
 /** An open item with a todo step that says what it waits on in text the board cannot read carries this label. */
 export const WAITS_TEXT_LABEL = "在等文字";
-export const EARLY_ACCEPT_LABEL = "验收过早";
 /** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
 export const CARD_MIN_OPTIONS = 3;
 export const OPTIONS_LABEL = "选项不足";
@@ -371,20 +370,6 @@ export interface Progress {
   doing: Array<{ id: string; text: string }>;
   /** The sessions of the live dispatches. */
   sessions: string[];
-}
-/** The rows the row at `at` comes after, through `after` or the previous-row default, all the way back. */
-function comesBefore(rows: readonly DerivedPlanRow[], at: number): DerivedPlanRow[] {
-  const byId = new Map(rows.map(entry => [entry.row.id, entry])), seen = new Set<string>(), out: DerivedPlanRow[] = [];
-  const visit = (index: number): void => {
-    const after = rows[index]!.row.after, before = after === undefined ? (index > 0 ? [rows[index - 1]!.row.id] : []) : after;
-    for (const key of before) {
-      const entry = byId.get(key);
-      if (!entry || seen.has(key)) continue;
-      seen.add(key); out.push(entry); visit(rows.indexOf(entry));
-    }
-  };
-  visit(at);
-  return out;
 }
 const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
 const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
@@ -1142,9 +1127,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
         if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
-        // An acceptance step marked done while a row it comes after is still open: the check ran before the work it checks.
-        const early = rows.flatMap((entry, at) => "text" in entry.row && entry.row.accept && entry.row.state === "done" ? [comesBefore(rows, at).filter(before => before.state !== "resolved").map(before => before.row.id)] : []).flat();
-        if (early.length) out.push({ text: `验收步骤已标完成，它前面的行还有没完成的：${[...new Set(early)].join("、")}。验收要等它检查的行都做完再标；做不了的行先丢弃并写理由，不属于这件交付物的移出去`, label: EARLY_ACCEPT_LABEL });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.

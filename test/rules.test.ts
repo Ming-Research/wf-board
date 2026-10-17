@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, EARLY_ACCEPT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -702,25 +702,6 @@ test("the option check covers one-option cards and stops once the owner has chos
   });
   assert.equal(rules(s).cardChecks("one")[0]?.label, "选项不足", "a one-option card is checked");
   assert.deepEqual(rules(s).cardChecks("chosen"), [], "a card the owner has already answered is not checked before the ruling");
-});
-
-test("a done acceptance row with an unfinished row before it gets the 验收过早 check, and the usual order does not", () => {
-  const early = (plan: PlanRow[]) => rules(snapshot({ a: { plan } })).checks("a").filter(c => c.label === EARLY_ACCEPT_LABEL);
-  // Accepted while the row it comes after is still to do.
-  const [one] = early([step("work"), accept("done")]);
-  assert.match(one!.text, /work/, "the check names the unfinished row");
-  // The usual order: accept after the work, then ship after the acceptance.
-  assert.deepEqual(early([step("work", "done"), accept("done"), step("ship")]), []);
-  // The chain is followed through earlier rows, not only the row just before.
-  assert.match(early([step("a"), step("b", "done"), accept("done")])[0]?.text ?? "", /a/);
-  // A row the acceptance does not come after is not before it.
-  assert.deepEqual(early([step("a"), step("b", "done", { after: [] }), accept("done")].map(row => row.id === "accept" ? { ...row, after: ["b"] } : row)), []);
-  // A dropped row is resolved.
-  assert.deepEqual(early([step("a", "dropped"), accept("done")]), []);
-  // An acceptance row not yet done is not early.
-  assert.deepEqual(early([step("work"), accept("todo")]), []);
-  // The check flags only: the item stays open and the plan is kept.
-  assert.equal(rules(snapshot({ a: { plan: [step("work"), accept("done")] } })).statusOf("a"), "idle");
 });
 
 test("the next-task definition is written once: todo or part way, needed, rated, and a step with no waits", () => {
