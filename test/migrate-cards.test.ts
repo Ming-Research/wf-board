@@ -23,7 +23,7 @@ function old(): CardMigrationInput {
   return {
     board: { title: "Synthetic", projects: [{ name: "P" }] },
     items: {
-      r: item({ num: 1, priority: "P1", title: "Root", plan: [{ id: "a", item: "a", own: true, after: [] }, { id: "z", item: "z", own: true, after: [] }, { id: "accept", accept: true, text: "Checked", state: "todo" }] }),
+      r: item({ num: 1, title: "Root", plan: [{ id: "a", item: "a", own: true, after: [] }, { id: "z", item: "z", own: true, after: [] }, { id: "accept", accept: true, text: "Checked", state: "todo" }] }),
       a: item({ num: 2, title: "Has the cases", plan: [
         { id: "s1", text: "One", state: "done", doneAt: at },
         { id: "c1", card: "c1" },
@@ -161,7 +161,7 @@ test("a dropped foreign row leaves a log entry naming the card and what was chos
   assert.match(entry.text, /选 B：Second/);
 });
 
-test("no status, priority or ready row changes except where an answered card closes or an open card is placed", () => {
+test("no status or ready row changes except where an answered card closes or an open card is placed", () => {
   const { report } = migrateCards(withoutUndefined(old()), now);
   // c5 had no row, so closing it moves nothing; c4 is new to the plan and does not change what was ready before.
   assert.deepEqual(report.derivedChanges, []);

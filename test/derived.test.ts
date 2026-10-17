@@ -10,7 +10,7 @@ import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatusAndPriority, STATUS_PRIORITY_FIELDS, STALLED_LABEL } from "../src/rules.ts";
+import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Item, Snapshot } from "../src/model.ts";
 import { architect, asArchitect, board, author, at } from "./helpers.ts";
@@ -24,7 +24,7 @@ const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z")
 
 /** What a reader sees of each item: the values the board derives and the page paints. */
 function derivedView(r: Rules, s: Snapshot): unknown {
-  return Object.keys(s.items).map(id => [id, r.statusOf(id), r.priorityOf(id), r.checks(id), r.checks(id).some(c => c.label === STALLED_LABEL), r.stalledBelow(id)]);
+  return Object.keys(s.items).map(id => [id, r.statusOf(id), r.checks(id), r.checks(id).some(c => c.label === STALLED_LABEL), r.stalledBelow(id)]);
 }
 
 async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () => number, start: number) {
@@ -39,9 +39,8 @@ async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () =
   const state = () => (["todo", "doing", "done"] as const)[Math.floor(rand() * 3)]!;
   const step = (id: string) => { const st = state(), at = tick(); return { id, text: `step ${id}`, state: st, ...(st === "doing" ? { since: at } : st === "done" ? { doneAt: at } : {}) }; };
   // 缺难度 depends on what an unpaused root needs, so the board mixes rated and unrated items: the middle layer is rated, the
-  // first grandchild of each too. The third root of each project stores no priority, so pausing it moves no priority below
-  // it, and it waits on a rated item of the other project that owns an unrated one: the only change a pause makes there is
-  // whether that item is needed, which no check of the rated item shows.
+  // first grandchild of each too. The third root of each project waits on a rated item of the other project that owns an
+  // unrated one: the only change pausing it makes there is whether that item is needed, which no check of the rated item shows.
   for (const group of projects) {
     const dep = `${group[0]}dep`, stamp = iso(start), work = { id: "w", text: "step w", state: "todo" }, accept = { id: "accept", text: "passes", state: "todo", accept: true };
     puts.push({ kind: "item", id: dep, expectRev: null, doc: { title: `Item ${dep}`, group, difficulty: 2, plan: [{ id: `${dep}-leaf`, item: `${dep}-leaf`, own: true }, work, accept], created: stamp, updated: stamp, log: [] } });
@@ -56,7 +55,7 @@ async function synthetic(t: { after(fn: () => Promise<void>): void }, rand: () =
         puts.push({ kind: "item", id: child, expectRev: null, doc: { title: `Item ${child}`, group, difficulty: 2, plan: [...grand.map(id => ({ id, item: id, own: true })), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
         children.push(child);
       }
-      puts.push({ kind: "item", id: root, expectRev: null, doc: { title: `Root ${root}`, group, ...(r < 2 ? { priority: (["P0", "P1"] as const)[r]! } : {}), plan: [...children.map(id => ({ id, item: id, own: true })), ...(r === 2 ? [{ id: waitsOn, item: waitsOn, own: false }] : []), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
+      puts.push({ kind: "item", id: root, expectRev: null, doc: { title: `Root ${root}`, group, plan: [...children.map(id => ({ id, item: id, own: true })), ...(r === 2 ? [{ id: waitsOn, item: waitsOn, own: false }] : []), step("w"), { id: "accept", text: "passes", state: "todo", accept: true }], created: tick(), updated: tick(), log: [] } });
     }
   }
   await store.commit({ author: "Fixture", message: "Seed", puts });
@@ -140,8 +139,8 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async s => { const group = pick(["Whitefoot", "Firn"]), ids = itemsOf(s, group).filter(() => rand() < 0.3); if (ids.length) return op.setTagsMany({ author: group, items: ids.map(id => ({ id, tags: [pick(["健全性", "报错信息"])] })) }); },
     async () => op.setTerm({ author: "Firn", term: `词${made++}`, definition: "意思" }),
   ];
-  // The first rounds pause and resume the two roots that store no priority, whatever the seed draws later: nothing below them
-  // changes except whether it is needed, which only 缺难度 on an unrated item shows.
+  // The first rounds pause and resume the two roots that wait on the other project's rated item, whatever the seed draws later:
+  // nothing below them changes except whether it is needed, which only 缺难度 on an unrated item shows.
   const forced = ["W2", "F2"].flatMap(id => [true, false].map(paused => async (s: Snapshot) => op.setPause({ ...asArchitect, id, paused, ...(paused ? { reason: "wait" } : {}) }) ));
   // The last round is two writes by one session to one item in a row, which the random draws rarely make: an index that kept
   // the item twice would show only then.
@@ -157,7 +156,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     if (moveRand() < 0.25) {
       const s = store.snapshot(), ids = itemsOf(s), id = ids[Math.floor(moveRand() * ids.length)]!, group = s.items[id]!.group;
       try {
-        await mover.moveItemProject({ ...asArchitect, id, project: group === "Whitefoot" ? "Firn" : "Whitefoot", ...(moveRand() < 0.5 ? { priority: (["P0", "P1", "P2"] as const)[Math.floor(moveRand() * 3)]! } : {}) });
+        await mover.moveItemProject({ ...asArchitect, id, project: group === "Whitefoot" ? "Firn" : "Whitefoot" });
         projectMoves++;
       } catch (error) { if (!(error instanceof OpError)) throw error; }
     }
@@ -248,11 +247,10 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
 
-test("the affected walk reaches work that a root with no priority stops needing, past a rated item that shows no change", async t => {
+test("the affected walk reaches work that a paused root stops needing, past a rated item that shows no change", async t => {
   const { store, op } = await board(t);
   const work = (title: string, group: string, fields: object, rows: object[] = []) => ({ title, group, plan: [...rows, { id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
-  // R stores no priority, so pausing it moves no priority below it. A is another project's item that only R waits on, and
-  // is rated, so no check of it moves and nothing pauses it. B, owned by A and not rated, is needed only through R.
+  // A is another project's item that only R waits on, and is rated, so no check of it moves and nothing pauses it. B, owned by A and not rated, is needed only through R.
   await store.commit({ author: "Fixture", message: "Seed a chain", puts: [
     { kind: "item", id: "r-root", expectRev: null, doc: work("Root", author, { difficulty: 2 }, [{ id: "r-mid", item: "r-mid", own: false }]) },
     { kind: "item", id: "r-mid", expectRev: null, doc: work("Middle", "Firn", { difficulty: 2 }, [{ id: "r-leaf", item: "r-leaf", own: true }]) },
@@ -261,11 +259,31 @@ test("the affected walk reaches work that a root with no priority stops needing,
   const before = store.snapshot();
   await op.setPause({ ...asArchitect, id: "r-root", paused: true, reason: "wait" });
   const after = store.snapshot(), rb = rules(before), ra = rules(after);
-  assert.equal(rb.priorityOf("r-leaf"), "", "no priority moves"); assert.equal(ra.isPaused("r-mid"), false, "nothing pauses the middle item");
+  assert.equal(ra.isPaused("r-mid"), false, "nothing pauses the middle item");
   assert.equal(rb.checks("r-leaf").some(c => c.label === "缺难度"), true); assert.equal(ra.checks("r-leaf").some(c => c.label === "缺难度"), false);
   assert.deepEqual(rb.checks("r-mid"), ra.checks("r-mid"), "the rated middle item shows no change");
   assert.notEqual(presentationSignature(rb, before.decisions, "r-leaf"), presentationSignature(ra, after.decisions, "r-leaf"), "the leaf paints differently");
   assert.equal(affectedItems(rb, ra, ["r-root"]).has("r-leaf"), true, "so the page re-signs it now, not at the next full scan");
+});
+
+test("the affected walk reaches what an owner's status moves for, though the paused item between them keeps its own", async t => {
+  const { store, op } = await board(t);
+  const work = (title: string, fields: object, rows: object[] = []) => ({ title, group: author, plan: [...rows, { id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
+  // The top item waits on a leaf and owns a paused item, which owns the item that gets its first step done. The paused item
+  // stays paused, so its own summary does not move, yet the top item turns from todo to idle because work below it has begun.
+  await store.commit({ author: "Fixture", message: "Seed a chain", puts: [
+    { kind: "item", id: "b-top", expectRev: null, doc: work("Top", { difficulty: 2 }, [{ id: "ready", text: "ready", state: "todo" }, { id: "b-leaf", item: "b-leaf", own: false }, { id: "b-mid", item: "b-mid", own: true }]) },
+    { kind: "item", id: "b-mid", expectRev: null, doc: work("Middle", { difficulty: 2, paused: { reason: "wait", at } }, [{ id: "b-inner", item: "b-inner", own: true }]) },
+    { kind: "item", id: "b-inner", expectRev: null, doc: work("Inner", { difficulty: 2 }, [{ id: "step", text: "work", state: "todo" }]) },
+    { kind: "item", id: "b-leaf", expectRev: null, doc: work("Leaf", { difficulty: 2 }) },
+  ] });
+  const before = store.snapshot();
+  await op.setPlan({ author, id: "b-inner", row: { id: "step", text: "work", state: "done" } });
+  const after = store.snapshot(), rb = rules(before), ra = rules(after);
+  assert.deepEqual([rb.statusOf("b-mid"), ra.statusOf("b-mid")], ["paused", "paused"], "the paused item between them keeps its status");
+  assert.deepEqual([rb.statusOf("b-top"), ra.statusOf("b-top")], ["todo", "idle"], "the owner's status moves");
+  assert.notEqual(presentationSignature(rb, before.decisions, "b-leaf"), presentationSignature(ra, after.decisions, "b-leaf"), "the leaf paints the status of the item waiting on it");
+  assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {
@@ -278,21 +296,21 @@ test("one Rules object per snapshot and minute is shared, and a write or a new m
   assert.notStrictEqual(store.derived.rules(store.snapshot(), at + 1000), first, "a new snapshot builds another");
 });
 
-test("a status and a priority are derived from the fields sameStatusAndPriority compares, and from no others", async t => {
+test("a status is derived from the fields sameStatus compares, and from no others", async t => {
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
   const base = store.snapshot(), read = new Set<string>();
   // Every item is handed to the rules through a proxy that notes each field read from it.
   const watched: Snapshot = { ...base, items: Object.fromEntries(Object.entries(base.items).map(([id, it]) => [id, new Proxy(it, { get: (target, key, receiver) => { if (typeof key === "string") read.add(key); return Reflect.get(target, key, receiver); } })])) };
   const r = rules(watched);
   read.clear();
-  for (const id of Object.keys(base.items)) { r.statusOf(id); r.priorityOf(id); }
-  assert.deepEqual([...read].sort(), [...STATUS_PRIORITY_FIELDS].sort(), "the fields the two derivations read are the listed ones");
-  // The predicate: text and log differences do not matter, a field the derivations read does.
+  for (const id of Object.keys(base.items)) r.statusOf(id);
+  assert.deepEqual([...read].sort(), [...STATUS_FIELDS].sort(), "the fields the derivation reads are the listed ones");
+  // The predicate: text and log differences do not matter, a field the derivation reads does.
   const item = base.items.W0!;
   const changed = (fields: Partial<Item>): Item => ({ ...item, ...fields });
-  assert.equal(sameStatusAndPriority(item, changed({ head: "another head", title: "another title", log: [...item.log, { at, by: author, text: "more" }], tags: ["健全性"], updated: "2030-01-01T00:00:00Z" })), true);
-  assert.equal(sameStatusAndPriority(item, changed({ plan: item.plan.map(row => "state" in row && row.state === "todo" ? { ...row, state: "done" as const } : row) })), false, "a step's state");
-  assert.equal(sameStatusAndPriority(item, changed({ group: "Firn" })), false, "the project");
-  assert.equal(sameStatusAndPriority(item, changed({ paused: { reason: "wait", at } })), false, "a pause");
-  assert.equal(sameStatusAndPriority(item, changed({ dispatches: [{ agentId: "session-1", agent: "engineer", role: "工程师", level: 2, model: "Sonnet", started: at }] })), false, "a dispatch");
+  assert.equal(sameStatus(item, changed({ head: "another head", title: "another title", log: [...item.log, { at, by: author, text: "more" }], tags: ["健全性"], updated: "2030-01-01T00:00:00Z" })), true);
+  assert.equal(sameStatus(item, changed({ plan: item.plan.map(row => "state" in row && row.state === "todo" ? { ...row, state: "done" as const } : row) })), false, "a step's state");
+  assert.equal(sameStatus(item, changed({ group: "Firn" })), false, "the project");
+  assert.equal(sameStatus(item, changed({ paused: { reason: "wait", at } })), false, "a pause");
+  assert.equal(sameStatus(item, changed({ dispatches: [{ agentId: "session-1", agent: "engineer", role: "工程师", level: 2, model: "Sonnet", started: at }] })), false, "a dispatch");
 });

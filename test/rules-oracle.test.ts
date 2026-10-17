@@ -10,7 +10,7 @@ const acceptance = (state: "todo" | "done" = "todo"): PlanRow => ({ id: "accept"
 function fixture(plan: PlanRow[], target: Partial<Item> = {}, cardStatus: "open" | "ruled" | "withdrawn" = "open"): Snapshot {
   return {
     head: "0".repeat(40), board: { title: "Plan oracle", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {},
-    items: { subject: Item.parse({ title: "Subject", group: "P", priority: "P1", plan, updated: at, rev: 1 }), target: Item.parse({ title: "Target", group: "P", plan: [acceptance()], updated: at, rev: 1, ...target }) },
+    items: { subject: Item.parse({ title: "Subject", group: "P", plan, updated: at, rev: 1 }), target: Item.parse({ title: "Target", group: "P", plan: [acceptance()], updated: at, rev: 1, ...target }) },
     decisions: { q: Decision.parse({ item: "subject", question: "Proceed?", options: [{ key: "A", text: "Proceed" }], status: cardStatus, updated: at, rev: 1 }) },
   };
 }
@@ -112,7 +112,7 @@ test("status table: held, part way and untouched, with sessions inside and outsi
     s.items.subject = Item.parse({ ...s.items.subject, ...(c.dispatches ? { dispatches: c.dispatches } : {}) });
     if (c.wrote) s.activity = { writes: [], items: {}, agents: { eng: [{ item: "elsewhere", at: c.wrote }] } };
     assert.equal(rules(s, now).statusOf("subject"), c.expected, `production: ${c.name}`);
-    assert.equal(derivePlanOracle(s, undefined, now).statusOf("subject"), c.expected, `oracle: ${c.name}`);
+    assert.equal(derivePlanOracle(s, now).statusOf("subject"), c.expected, `oracle: ${c.name}`);
   }
 });
 
@@ -122,19 +122,19 @@ test("the item's two examples: a plan done but for two unheld parts is part way,
   const done = (id: string, extra: Partial<PlanRow> = {}): PlanRow => ({ id, text: id, state: "done", doneAt: at, ...extra } as PlanRow);
   // A study, the work, the merge and the acceptance are done; two parts hung on later have nobody on them.
   const costs = Item.parse({
-    title: "Cut the Actions minutes", group: "P", priority: "P0", updated: at, rev: 1,
+    title: "Cut the Actions minutes", group: "P", updated: at, rev: 1,
     plan: [{ id: "study", item: "study", own: true, after: [] }, done("build", { after: ["study"] }), done("ship"), acceptance("done"), { id: "private", item: "private", own: true, after: ["accept"] }, { id: "usage", item: "usage", own: true, after: ["accept"] }],
   });
   const part = (title: string, state: "todo" | "done") => Item.parse({ title, group: "P", updated: at, rev: 1, plan: [acceptance(state)] });
   const first: Snapshot = { head: "0".repeat(40), board: { title: "Examples", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
     items: { costs, study: part("Study", "done"), private: part("Private content", "todo"), usage: part("Usage push", "todo") } };
   assert.equal(rules(first, now).statusOf("costs"), "idle");
-  assert.equal(derivePlanOracle(first, undefined, now).statusOf("costs"), "idle");
+  assert.equal(derivePlanOracle(first, now).statusOf("costs"), "idle");
   // The PR is ready: the implementation is done; the merge row is marked by the board and the acceptance by the architect.
   const session = (started: string) => ({ agentId: "e1", agent: "eng", role: "工程师" as const, level: 2, model: "Sonnet", started });
   const pr = (dispatches: ReturnType<typeof session>[], wrote?: string): Snapshot => ({
     head: "0".repeat(40), board: { title: "Examples", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
-    items: { pr: Item.parse({ title: "Push blocks writes", group: "P", priority: "P0", updated: at, rev: 1, dispatches, plan: [done("impl"), { id: "ship", text: "合入", state: "todo" }, acceptance()] }) },
+    items: { pr: Item.parse({ title: "Push blocks writes", group: "P", updated: at, rev: 1, dispatches, plan: [done("impl"), { id: "ship", text: "合入", state: "todo" }, acceptance()] }) },
     ...(wrote ? { activity: { writes: [], items: {}, agents: { eng: [{ item: "elsewhere", at: wrote }] } } } : {}),
   });
   for (const [name, snap, expected] of [
@@ -144,7 +144,7 @@ test("the item's two examples: a plan done but for two unheld parts is part way,
     ["no dispatch record at all", pr([]), "idle"],
   ] as const) {
     assert.equal(rules(snap, now).statusOf("pr"), expected, `production: ${name}`);
-    assert.equal(derivePlanOracle(snap, undefined, now).statusOf("pr"), expected, `oracle: ${name}`);
+    assert.equal(derivePlanOracle(snap, now).statusOf("pr"), expected, `oracle: ${name}`);
   }
 });
 
@@ -198,8 +198,8 @@ test("status table: owned items each waiting on the other's earlier row stay blo
   const s: Snapshot = {
     head: "0".repeat(40), board: { title: "Cross", projects: [{ name: "P" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
     items: {
-      y: Item.parse({ title: "Y", group: "P", priority: "P1", updated: at, rev: 1, plan: [todo("w", { item: "w", own: false, after: [] }), todo("c", { item: "c", own: true, after: ["w"] }), acceptance()] }),
-      v: Item.parse({ title: "V", group: "P", priority: "P1", updated: at, rev: 1, plan: [todo("c", { item: "c", own: false, after: [] }), todo("w", { item: "w", own: true, after: ["c"] }), acceptance()] }),
+      y: Item.parse({ title: "Y", group: "P", updated: at, rev: 1, plan: [todo("w", { item: "w", own: false, after: [] }), todo("c", { item: "c", own: true, after: ["w"] }), acceptance()] }),
+      v: Item.parse({ title: "V", group: "P", updated: at, rev: 1, plan: [todo("c", { item: "c", own: false, after: [] }), todo("w", { item: "w", own: true, after: ["c"] }), acceptance()] }),
       c: Item.parse({ title: "C", group: "P", updated: at, rev: 1, plan: [acceptance()] }), w: Item.parse({ title: "W", group: "P", updated: at, rev: 1, plan: [acceptance()] }),
     },
   };
@@ -213,7 +213,7 @@ test("status table: a pause marker holds the item and what it owns in its projec
   const paused = { reason: "Hold", at };
   const owned = (item: string, extra: Partial<PlanRow> = {}): PlanRow => ({ id: item, item, own: true, after: [], ...extra } as PlanRow);
   const work = (): PlanRow => ({ id: "work", text: "Work", state: "todo", after: [] });
-  const item = (group: string, plan: PlanRow[], extra: Partial<Item> = {}) => Item.parse({ title: "T", group, priority: "P1", updated: at, rev: 1, plan, ...extra });
+  const item = (group: string, plan: PlanRow[], extra: Partial<Item> = {}) => Item.parse({ title: "T", group, updated: at, rev: 1, plan, ...extra });
   const s: Snapshot = {
     head: "0".repeat(40), board: { title: "Pause", projects: [{ name: "P" }, { name: "Q" }] }, glossaries: {}, notes: {}, owner: {}, decisions: {},
     items: {

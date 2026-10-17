@@ -15,6 +15,8 @@ import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummar
 import type { PlanConversionReport } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
+import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing } from "./migrate-priority.ts";
+import type { ClearedPriority } from "./migrate-priority.ts";
 import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
@@ -30,8 +32,9 @@ import { ReadCache } from "./read-cache.ts";
 export type DocKind = "item" | "decision" | "note" | "glossary" | "message";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
-/** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. */
-export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true }
+/** `numberExisting` (the one-time numbering only) issues numbers to unnumbered existing documents, in put order. `rewrite` (the one-time
+ * clearing of the retired priority only) writes each put although it changes nothing in memory: the documents were read without a field their files still hold. */
+export interface Txn { author: string; message: string; session?: string; puts?: Put[]; deletes?: Del[]; board?: z.input<typeof Board>; planConversionReport?: PlanConversionReport; numberExisting?: true; rewrite?: true }
 export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; before: unknown | null; after: unknown | null }
 /** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
@@ -151,10 +154,11 @@ function validated<T>(schema: z.ZodType<T>, value: unknown, path: string): T {
 /** Fields that past versions hold and the current schema does not accept, by where they sat. Whole-board historical comparison
  * omits exactly these before parsing, in every shape, so an old version holding them still normalizes: show() and diff()
  * return them as written, any field not listed here still refuses the old version, and current reads and writes stay
- * strict. Data-repository migration commits removed item `short` ("Drop area short names at the owner's request"), item
+ * strict. Item `priority` is retired too: the migration of src/migrate-priority.ts clears it from the current files, and old
+ * versions keep it. Data-repository migration commits removed item `short` ("Drop area short names at the owner's request"), item
  * `agent` ("Drop item agents: responsibility moves to each project's configuration") and project `agents` ("Projects
  * are identified by themselves: drop session names (agents)"); the removed inbox left the item `request` marker. */
-const retiredFields = { item: ["short", "agent", "request"], project: ["agents"] } as const;
+const retiredFields = { item: ["short", "agent", "request", "priority"], project: ["agents"] } as const;
 function without(value: unknown, keys: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !keys.some(key => Object.hasOwn(value, key))) return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
@@ -167,6 +171,11 @@ function withoutRetiredLevel(doc: unknown): unknown {
   const { difficulty: _retired, ...rest } = doc as Record<string, unknown>;
   return rest;
 }
+/** The value of the retired item `priority` a current file holds, undefined when it holds none. */
+const heldPriority = (doc: unknown): unknown => !doc || typeof doc !== "object" || Array.isArray(doc) ? undefined : (doc as { priority?: unknown }).priority;
+/** An item as the owner compares it: without the fields the board no longer has, so a version that holds one (a priority) and the
+ * migration that cleared it differ in nothing the owner reads. Other kinds come back as they are. */
+const omitRetired = (kind: DocKind, doc: unknown): unknown => kind === "item" ? without(doc, retiredFields.item) : doc;
 function withoutRetiredFields(path: string, doc: unknown): unknown {
   if (path.startsWith("items/")) return without(withoutRetiredLevel(doc), retiredFields.item);
   if (path !== "board.yaml" || !doc || typeof doc !== "object" || Array.isArray(doc)) return doc;
@@ -373,11 +382,11 @@ export class Store {
   /** `startup` is told how long each step of the start took (docs/design.md, Running). The start reads history under a
    * budget of its own (`STARTUP_LIMITS`). `requireBudget`: from then on a read of history that runs under no budget fails
    * (docs/design.md, section 4, Request budgets); the daemon sets it, and tests leave it off unless they test the budget. */
-  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
+  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; clearPriority?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
     return withBudget(new Budget("start", STARTUP_LIMITS), () => Store.start(dir, opts));
   }
 
-  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
+  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; clearPriority?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
     dir = resolve(dir);
     const lap = stopwatch(opts.startup);
     let entries: string[];
@@ -405,6 +414,8 @@ export class Store {
     let retired = false;
     // The items whose files hold the retired level 「架构师做」: read without it, and cleared in one commit below.
     const clearing: string[] = [];
+    // The items whose files hold the retired priority: read without it, and cleared in one commit below.
+    const clearingPriority: Array<{ id: string; priority: unknown }> = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
         const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
@@ -413,7 +424,11 @@ export class Store {
           if (!opts.clearArchitectLevel) throw new ValidationError([{ path, issues: RETIRED_LEVEL_REFUSAL }]);
           clearing.push(path.slice("items/".length, -".yaml".length));
         }
-        return validated(schema, path.startsWith("items/") ? withoutRetiredLevel(raw) : raw, path);
+        if (path.startsWith("items/") && heldPriority(raw) !== undefined) {
+          if (!opts.clearPriority) throw new ValidationError([{ path, issues: RETIRED_PRIORITY_REFUSAL }]);
+          clearingPriority.push({ id: path.slice("items/".length, -".yaml".length), priority: heldPriority(raw) });
+        }
+        return validated(schema, path.startsWith("items/") ? without(withoutRetiredLevel(raw), ["priority"]) : raw, path);
       } catch (error) {
         invalid.push(...(error instanceof ValidationError ? error.invalid : [{ path, issues: String(error) }]));
         return undefined;
@@ -482,6 +497,10 @@ export class Store {
     if (clearing.length) {
       await store.clearArchitectLevel(clearing);
       lap("clear the retired level", `${clearing.length} items`);
+    }
+    if (clearingPriority.length) {
+      await store.clearPriority(clearingPriority);
+      lap("clear the retired priority", `${clearingPriority.length} items`);
     }
     await store.loadActivity();
     return store;
@@ -558,6 +577,17 @@ export class Store {
     this.clearedArchitectLevel = ids;
   }
 
+  /** The items cleared of the retired priority by this start (src/migrate-priority.ts), with the value each held; none when the data held none. */
+  clearedPriority: readonly ClearedPriority[] = [];
+
+  /** Clear the retired priority from the items that held it, in one commit. The documents in memory were read without it, so the
+   * commit rewrites their files as they are: no `updated`, no log line (the value stays in git history and in the report). */
+  private async clearPriority(held: ReadonlyArray<{ id: string; priority: unknown }>): Promise<void> {
+    await this.commit({ author: "wf-board", message: `${CLEAR_PRIORITY_MESSAGE} ${held.length} items`, rewrite: true,
+      puts: held.map(({ id }) => { const doc = this.state.items[id]!; return { kind: "item" as const, id, doc, expectRev: doc.rev }; }) });
+    this.clearedPriority = held.map(({ id, priority }) => ({ id, group: this.state.items[id]!.group, priority: String(priority) }));
+  }
+
   /** Activity is a derived index of the existing history, including replaced and deleted documents. A start continues
    * from the startup cache when it can be trusted, replaying only the commits after the commit the cache is of; with no
    * usable cache it replays the whole history (the scan) and writes the cache at once. */
@@ -573,8 +603,8 @@ export class Store {
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
     for (const commit of commits) {
-      // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock.
-      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE) continue;
+      // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock. So is clearing the retired priority.
+      if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE || isPriorityClearing(commit.message)) continue;
       const files = commit.files.filter(file => this.contentPath(file));
       if (!files.length) continue;
       activity.writes.push(commit.at);
@@ -934,7 +964,7 @@ export class Store {
           else if (before === null || txn.numberExisting) input.num = nextNum++;
         }
         const after = frozen(validated(schemas[put.kind], { ...input, rev: (before?.rev ?? 0) + 1 }, path));
-        if (before && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
+        if (before && !txn.rewrite && isDeepStrictEqual({ ...before, rev: after.rev }, after)) {
           revision(put, before.rev);
           continue;
         }
@@ -1215,8 +1245,8 @@ export class Store {
   async comparisonDocuments(kind: DocKind, id: string, from: string | null, to: string): Promise<{ before: unknown | null; after: unknown | null }> {
     const before = from ? await this.show(kind, id, from) : null, after = await this.show(kind, id, to);
     const legacy = retiredItemShape;
-    if (kind !== "item" || before === null || after === null || legacy(before) === legacy(after)) return { before, after };
-    return { before: legacy(before) ? await this.showCompared(kind, id, from!) : before, after: legacy(after) ? await this.showCompared(kind, id, to) : after };
+    if (kind !== "item" || before === null || after === null || legacy(before) === legacy(after)) return { before: omitRetired(kind, before), after: omitRetired(kind, after) };
+    return { before: omitRetired(kind, legacy(before) ? await this.showCompared(kind, id, from!) : before), after: omitRetired(kind, legacy(after) ? await this.showCompared(kind, id, to) : after) };
   }
 
   private readonly compared = new ReadCache<Snapshot>(Infinity, comparedSnapshotLimit, () => 0);
@@ -1352,7 +1382,7 @@ export async function readRawCardData(dir: string): Promise<RawCardData> {
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
-    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? withoutRetiredLevel(doc) : doc; }
+    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? without(withoutRetiredLevel(doc), ["priority"]) : doc; }
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");

@@ -25,13 +25,12 @@ export function numRef(text: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
+/** What a write that still names `priority` is told, by the tools' argument check and by the ops: the field is gone from the board. */
+export const REMOVED_PRIORITY = "priority: 已去掉，看板不再有优先级；先做什么由架构师定，必须先做的用依赖表达";
+
 export const STATUSES = ["todo", "idle", "wip", "blocked", "paused", "done", "cancelled"] as const;
 export const Status = z.enum(STATUSES);
 export type Status = z.infer<typeof Status>;
-
-export const PRIORITIES = ["P0", "P1", "P2"] as const;
-export const Priority = z.enum(PRIORITIES);
-export type Priority = z.infer<typeof Priority>;
 
 export const LogEntry = z.object({
   at: Time,
@@ -213,7 +212,7 @@ export const Ask = z.object({
 export type Ask = z.infer<typeof Ask>;
 
 /**
- * Every item stores its project. Ownership, work status and priority are
+ * Every item stores its project. Ownership and work status are
  * derived from its plan; cancellation alone is stored as a status.
  */
 export const Item = z.object({
@@ -233,7 +232,6 @@ export const Item = z.object({
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
-  priority: Priority.optional(),
   head: z.string().optional(),
   log: z.array(LogEntry).default([]),
   plan: ItemPlan.default([]),
@@ -446,7 +444,7 @@ export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源�
 /** One part for each kind of write; a write names the parts it changes. */
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
-  "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.priority", "item.order",
+  "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.order",
   "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row",
   "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
 ] as const;

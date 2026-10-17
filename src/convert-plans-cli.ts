@@ -28,7 +28,7 @@ try {
   result.report.errors.push(...(loaded.legacy?verifyPlans(source,result):verifyArchiveRemoval(loaded.snapshot as import("./model.ts").Snapshot,result,loaded.planConversionAt)));
   updatePlanSummary(result.report,true);
   if(values["dry-run"])await writeFile(reportPath,stringify(result.report,{lineWidth:0,blockQuote:"literal"}));
-  console.info(JSON.stringify({sourceHead:source.head,counts:result.report.counts,findings:result.report.findings.length,rewritePointers:result.report.rewritePointers.length,survey:result.report.survey,byCause:result.report.byCause,statusChanges:result.report.statusChanges.length,priorityChanges:result.report.priorityChanges.length,errors:result.report.errors.length,report:reportPath}));
+  console.info(JSON.stringify({sourceHead:source.head,counts:result.report.counts,findings:result.report.findings.length,rewritePointers:result.report.rewritePointers.length,survey:result.report.survey,byCause:result.report.byCause,statusChanges:result.report.statusChanges.length,errors:result.report.errors.length,report:reportPath}));
   if(result.report.errors.length)throw new Error(result.report.errors.slice(0,10).join("\n")+(result.report.errors.length>10?`\n… ${result.report.errors.length-10} further errors in ${reportPath}`:""));
   if(!values["dry-run"]){const store=await Store.open(data,{planConversionHead:values["approved-head"]});console.info(`Converted in ${store.snapshot().head}`);}
 } catch(error){console.error(error instanceof Error?error.message:error);process.exitCode=1;}

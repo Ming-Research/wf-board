@@ -1,7 +1,7 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
-// The plan is the single source for ownership, status, priority and progress.
+// The plan is the single source for ownership, status and progress.
 import { liveDispatches } from "./agents.ts";
-import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Priority, Project, Snapshot, Status } from "./model.ts";
+import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Project, Snapshot, Status } from "./model.ts";
 import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
 /** Project list order is page order; only the PM and the architect may place a project after another. */
@@ -325,6 +325,8 @@ export interface Rules {
   /** Someone is working on the item now: a step of its own in progress, or a live session (an unfinished dispatch whose session
    * wrote or was started within the agent list's window). Not inherited from the items it owns. */
   workedOn(id: string): boolean;
+  /** Whether something of the item's own is done (a step, an owned item done, or an owned item that has begun): what tells `idle` from `todo`, and what its owner reads. */
+  begun(id: string): boolean;
   /** The items that carry an unfinished dispatch of this session. */
   dispatchedItems(agent: string): string[];
   /** Work an agent could be started on now, apart from its rating: status todo or idle, an unpaused root needs it, and
@@ -338,7 +340,7 @@ export interface Rules {
   pausedBy(id: string): string | undefined;
   /** Effective pause on open work; done and cancelled always win. */
   isPaused(id: string): boolean;
-  /** Open work directly owned by a record has no root or stored-priority role. */
+  /** Open work directly owned by a record has no root role. */
   isBacklog(id: string): boolean;
   /** No open work item points at it, and it is not open record-owned work. */
   isRoot(id: string): boolean;
@@ -347,8 +349,6 @@ export interface Rules {
    * also holds a row for it, and what hangs under it only when that work is; paused work and what only a paused root
    * needs are not needed. */
   isNeeded(id: string): boolean;
-  /** A root's stored priority, otherwise the highest of open work dependents. */
-  priorityOf(id: string): Priority | "";
   /** How many open, unpaused work items hold a shared row for it: the ones that wait for it. Its owner does not count: every owned item has one. */
   openDependents(id: string): number;
   depsOf(id: string): Array<{ kind: "item" | "card"; id: string; own?: boolean; open: boolean; missing: boolean }>;
@@ -383,7 +383,7 @@ export interface Rules {
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
   compareSiblings(a: string, b: string): number;
-  /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. Priority is not part of it. */
+  /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. */
   compareCandidates(a: string, b: string): number;
 }
 
@@ -419,8 +419,6 @@ export function reviewRequested(item: { plan: PlanRow[] } | undefined): string |
   const step = item?.plan.find(isReviewStep);
   return step && "text" in step && step.state === "doing" ? step.text : undefined;
 }
-const PRIORITIES: Priority[] = ["P0", "P1", "P2"];
-const rankOfPriority = (priority: Priority | "" | undefined): number => priority ? PRIORITIES.indexOf(priority) : 3;
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
 /** A reference token is [[it:<key>]] for an item and [[q:<key>]] for a decision card: an item and a card may share a key.
@@ -618,16 +616,16 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
   return { writes: delta.write === undefined ? base.writes : withSorted(base.writes, delta.write), items: { ...base.items, ...delta.items }, ...(pauses ? { pauses } : {}), ...(sessions ? { sessions } : {}), ...(agents ? { agents } : {}) };
 }
 
-/** The fields of an item that the status and the priority of every item are derived from: the plan and the owner's ask, a
- * cancellation, a pause, the project (a pause stops at the project's edge), a record, a root's stored priority, the order
+/** The fields of an item that the status of every item is derived from: the plan and the owner's ask, a
+ * cancellation, a pause, the project (a pause stops at the project's edge), a record, the order
  * of the top items, which the index sorts as it is built, and the dispatch records (a live session makes an item worked on).
- * The test in test/derived.test.ts records which fields the two derivations read and fails when this list and that set
+ * The test in test/derived.test.ts records which fields the derivation reads and fails when this list and that set
  * differ. */
-export const STATUS_PRIORITY_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "priority", "order", "dispatches"];
-/** Whether two versions of one item give the same status and priority on the same board. Versions that differ in some other
+export const STATUS_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "order", "dispatches"];
+/** Whether two versions of one item give the same status on the same board. Versions that differ in some other
  * field (the text, the log, the tags) do; one that differs in a listed field may not, which only costs the caller a derivation. */
-export function sameStatusAndPriority(a: Item, b: Item): boolean {
-  return STATUS_PRIORITY_FIELDS.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+export function sameStatus(a: Item, b: Item): boolean {
+  return STATUS_FIELDS.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }
 
 /** Everything derived the page paints for an item (web/app.ts): its row, its plan rows and those of its owned items,
@@ -637,11 +635,11 @@ export function presentationSignature(r: Rules, decisions: Readonly<Record<strin
   const label = (kind: string, key: string): unknown[] => {
     if (kind === "card") { const d = decisions[key]; const o = d?.options.find(o => o.key === d.choice); return [d?.question, d?.status, d?.blocks, d?.choice, o?.text, o?.detail]; }
     const owner = r.parentOf(key);
-    return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), r.priorityOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
+    return [r.item(key)?.title, r.groupOf(key), r.statusOf(key), owner, owner ? r.item(owner)?.title : null, r.planRatio(key)];
   };
   const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
   const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
-  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.priorityOf(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
     r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
 }
 
@@ -661,7 +659,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
     return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
-      r.priorityOf(id), parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.checks(id)]);
+      parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.begun(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
   const examined = new Set<string>(), queue: string[] = [];
@@ -1022,28 +1020,10 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return isOpenWork(id) && (index().owners.get(id) || []).some(owner => item(owner)?.record);
   }
   function isRoot(id: string): boolean { return !!item(id) && !isBacklog(id) && !waiters(id).some(isOpenWork); }
-  // Only roots seed the least fixed point. Records and closed work pass none;
-  // record-owned work receives priority from its other open dependents.
-  function ranks() {
-    return cached("ranks", "", () => {
-      const ids = [...index().items.keys()], rank = new Map<string, number>();
-      for (const id of ids) if (isRoot(id)) rank.set(id, rankOfPriority(item(id)!.priority));
-      const rankOf = (id: string): number => rank.get(id) ?? 3;
-      for (let changed = true; changed;) {
-        changed = false;
-        for (const id of ids) {
-          const r = Math.min(rankOf(id), ...waiters(id).filter(waiter => isOpenWork(waiter) && !isPaused(waiter)).map(rankOf));
-          if (r < rankOf(id)) { rank.set(id, r); changed = true; }
-        }
-      }
-      return { rankOf };
-    });
-  }
-  function priorityOf(id: string): Priority | "" { return cached("priority", id, () => PRIORITIES[ranks().rankOf(id)] || ""); }
   function openDependents(id: string): number {
     return cached("openDependents", id, () => (reverseDeps().items.get(id) || []).filter(w => !w.own && isOpenWork(w.id) && !isPaused(w.id)).length);
   }
-  // The reach of the unpaused roots, by the same walk as the priorities: up from every root along the open, unpaused rows.
+  // The reach of the unpaused roots: up from every root along the open, unpaused rows.
   function neededSet(): Set<string> {
     return cached("needed", "", () => {
       const ids = [...index().items.keys()], out = new Set<string>();
@@ -1200,7 +1180,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
-        if (isOpenWork(id) && isRoot(id) && !it.priority) out.push({ text: "没有未完成的条目依赖它，却没写优先级" });
         // Asked for only when the rating is the one thing left before the item can be dispatched (canStart): it is todo or
         // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
         // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
@@ -1219,7 +1198,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), priorityOf, openDependents,
+    isLeaf, isStatusLeaf, statusOf, workedOn, begun: begunOf, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), openDependents,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),
@@ -1227,7 +1206,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     blockingBelow: id => cached("blockingBelow", id, () => subtreeCount(id, blockingOwn)), nonBlockingBelow: id => cached("nonBlockingBelow", id, () => subtreeCount(id, nonBlockingOwn)), onCycle: id => cycles().has(id),
     checks: id => statusOf(id) === "cancelled" ? [] : copyChecks(checks(id)),
     refusals: id => copyChecks(checks(id)),
-    compareSiblings: (a, b) => rankOfPriority(priorityOf(a)) - rankOfPriority(priorityOf(b)) || Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
+    compareSiblings: (a, b) => Number(ended(a)) - Number(ended(b)) || byOrder(a, b),
     // An item without a number (written before numbers) sorts after the numbered; the key settles what is left.
     compareCandidates: (a, b) => openDependents(b) - openDependents(a)
       || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),

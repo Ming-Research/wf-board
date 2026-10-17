@@ -2,6 +2,7 @@
 // (docs/design.md, section 6, Lean replies). Everything is derived from the tool's own schema, so a new parameter is in
 // the table and the example without anyone writing it twice.
 import { z } from "zod";
+import { REMOVED_PRIORITY } from "./model.ts";
 
 /** The JSON Schema a tool advertises, reduced to the keywords this file reads. */
 export interface Json {
@@ -172,7 +173,13 @@ export function issueLines(issues: readonly Issue[], given: unknown, prefix: rea
   for (const issue of issues) {
     const path = [...prefix, ...issue.path], where = path.length ? ` in ${pathText(path)}` : "";
     switch (issue.code) {
-      case "unrecognized_keys": out.push(`unknown parameter ${issue.keys.map(k => `"${k}"`).join(", ")}${where}`); break;
+      case "unrecognized_keys": {
+        // The removed priority is told as removed, not as unknown (docs/design.md, section 5, Priority).
+        const rest = issue.keys.filter(k => k !== "priority");
+        if (rest.length < issue.keys.length) out.push(`${REMOVED_PRIORITY}${where}`);
+        if (rest.length) out.push(`unknown parameter ${rest.map(k => `"${k}"`).join(", ")}${where}`);
+        break;
+      }
       case "invalid_type":
         out.push(valueAt(given, path) === undefined ? `missing required parameter ${quoted(path)}` : `${quoted(path)} must be ${issue.expected}, got ${kindOf(valueAt(given, path))}`);
         break;

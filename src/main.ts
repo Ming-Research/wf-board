@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir } from "./data-dir.ts";
 import { Store } from "./store.ts";
+import { priorityReport } from "./migrate-priority.ts";
 import { ops } from "./ops.ts";
 import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
@@ -31,8 +32,10 @@ async function main() {
   if (!Number.isInteger(firstPushMs) || firstPushMs < 0) throw new Error("WF_BOARD_FIRST_PUSH_MS must be a non-negative integer");
   const repo = dirname(dirname(fileURLToPath(import.meta.url)));
   // A read of history that runs under no budget fails (docs/design.md, section 4, Request budgets).
-  const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, startup, requireBudget: true });
+  // clearPriority: the one-time clearing of the retired item priority (src/migrate-priority.ts); delete it with that module once it has run.
+  const store = await Store.open(dataDir(repo), { planConversionHead: process.env.WF_BOARD_PLAN_CONVERSION_HEAD, clearPriority: true, startup, requireBudget: true });
   lap("open store");
+  if (store.clearedPriority.length) for (const line of priorityReport(store.clearedPriority)) console.info(line);
   // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
   const credentialFile = new CredentialFile(defaultCredentialsPath());
   // A message may go to the session of any long-lived credential (docs/design.md, Messages).

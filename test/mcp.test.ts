@@ -196,7 +196,7 @@ test("MCP replaces legacy fields and tools with plan semantics and refuses remov
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   assert.equal(tools.length, 48, "post_notice, create_request and triage_request are gone; journal_entry, move_item_project, withdraw_card, dispatch_start, dispatch_finish, dispatches, set_difficulty, set_difficulty_many, send_message, messages and candidates are new"); for (const name of ["create_request", "triage_request"]) assert.ok(!tools.some(tool => tool.name === name), `${name} is removed`); assert.ok(tools.some(tool => tool.name === "journal_entry")); assert.ok(tools.some(tool => tool.name === "move_item_project")); assert.ok(tools.some(tool => tool.name === "set_difficulty")); assert.ok(tools.some(tool => tool.name === "set_difficulty_many")); assert.ok(tools.some(tool => tool.name === "set_plan")); assert.ok(!tools.some(tool => tool.name === "set_steps"));
   assert.deepEqual(Object.keys(tools.find(tool => tool.name === "set_plan")!.inputSchema.properties!).sort(), ["author", "id", "remove", "row", "rows", "session"]);
-  for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work"]], ["move_item", ["new_parent", "source_status", "source_priority"]], ["update_project", ["migrated"]]] as const) {
+  for (const [name, removed] of [["create_item", ["parent", "status", "deps", "parent_why", "parent_own_work", "priority"]], ["update_item", ["priority"]], ["move_item", ["new_parent", "source_status", "source_priority", "priority"]], ["move_item_project", ["priority"]], ["update_project", ["migrated"]]] as const) {
     const schema = tools.find(tool => tool.name === name)!.inputSchema;
     for (const field of removed) assert.ok(!(field in schema.properties!));
   }
@@ -206,13 +206,21 @@ test("MCP replaces legacy fields and tools with plan semantics and refuses remov
   for (const args of [{ status: "done" }, { deps: [] }, { parent: "other" }]) {
     const rejected = await client.callTool({ name: "update_item", arguments: { author, id: "a", rev: 1, ...args } }); assert.equal(rejected.isError, true, text(rejected));
   }
+  // The priority is gone from the board: a write that still names it is refused, and the refusal says so.
+  for (const [name, args] of [["create_item", { ...asArchitect, key: "p", title: "P", group: author, accept: "Pass" }], ["update_item", { author, id: "a", rev: 1 }], ["move_item", { author, id: "a" }], ["move_item_project", { ...asArchitect, id: "a", project: "Firn" }]] as const) {
+    const rejected = await client.callTool({ name, arguments: { ...args, priority: "P1" } });
+    assert.equal(rejected.isError, true, name); assert.match(text(rejected), /priority: 已去掉/, name);
+  }
+  // A list filter that names it is refused the same way, not left to the strict object's own wording.
+  const filtered = await client.callTool({ name: "list", arguments: { filters: { priority: "P0" } } });
+  assert.equal(filtered.isError, true); assert.match(text(filtered), /priority: 已去掉/);
   assert.deepEqual(store.snapshot(), before);
 });
 
 test("MCP plan rows have server dates and compact levels, targets and ownership in context and brief", async t => {
   const { client, text, store } = await connected(t);
   const written = await client.callTool({ name: "set_plan", arguments: { author, id: "a", row: { id: "work", text: "Runs pass", state: "doing", waits: "CI", after: [] } } });
-  assert.equal(written.isError, undefined, text(written)); assert.match(text(written), /a · WIP P1/); assert.match(text(written), /ancestor area now WIP P1/);
+  assert.equal(written.isError, undefined, text(written)); assert.match(text(written), /a · WIP/); assert.match(text(written), /ancestor area now WIP/);
   const context = text(await client.callTool({ name: "context", arguments: { id: "area" } }));
   assert.match(context, /plan:\n.*L0.*a.*\[own\].*Runs pass/s); assert.doesNotMatch(context, /why|migrated|status derived from.*sub-item/);
   const brief = JSON.parse(text(await client.callTool({ name: "brief", arguments: { project: author } })));
@@ -232,7 +240,7 @@ test("MCP exposes acceptance anywhere, several scenarios and first-acceptance ro
     { id: "scenario-b", accept: true, text: "Scenario B passes", state: "doing", waits: "CI", after: [] },
     { id: "merge", text: "Merge into main", state: "todo", after: ["scenario-a", "scenario-b"] },
   ] } });
-  assert.equal(written.isError, undefined, text(written)); assert.match(text(written), /^a · WIP P1/m);
+  assert.equal(written.isError, undefined, text(written)); assert.match(text(written), /^a · WIP/m);
   const inserted = await client.callTool({ name: "set_plan", arguments: { author, id: "a", row: { id: "prepare", text: "Prepare release", state: "todo", after: [] } } });
   assert.equal(inserted.isError, undefined, text(inserted));
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["prepare", "scenario-a", "scenario-b", "merge"]);
@@ -253,11 +261,11 @@ test("writes answer with their produced plan state; refusals and context identif
   const ruled = await client.callTool({ name: "rule_card", arguments: { author, key: "choice", choice: "A" } });
   assert.equal(ruled.isError, undefined, text(ruled));
   const finished = await write("a", "done");
-  assert.match(finished, /^a · DONE P1/m);
-  assert.match(finished, /^ancestor area now IDLE P1 \(was BLOCK P1\)$/m);
-  assert.match(await write("b", "done"), /^b · DONE P1/m);
-  assert.match(await write("area", "doing"), /^area · WIP P1/m);
-  assert.match(await write("area", "done"), /^area · DONE P1/m);
+  assert.match(finished, /^a · DONE/m);
+  assert.match(finished, /^ancestor area now IDLE \(was BLOCK\)$/m);
+  assert.match(await write("b", "done"), /^b · DONE/m);
+  assert.match(await write("area", "doing"), /^area · WIP/m);
+  assert.match(await write("area", "done"), /^area · DONE/m);
   // Reopening an owned part makes its owner open even when acceptance stays done.
   await write("a", "todo");
   const before = store.snapshot();
@@ -279,7 +287,7 @@ test("writes answer with their produced plan state; refusals and context identif
 
 test("MCP creates acceptance, adopts children, moves owners and cancels or reopens only", async t => {
   const { client, text, store } = await connected(t);
-  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "new", title: "New", group: author, accept: "Pass", priority: "P0", children: ["a"] } });
+  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "new", title: "New", group: author, accept: "Pass", children: ["a"] } });
   assert.equal(created.isError, undefined, text(created)); assert.ok(store.snapshot().items.new!.plan!.some(row => "item" in row && row.item === "a" && row.own));
   const refused = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "cancelled", log: "Drop" } }); assert.equal(refused.isError, true); assert.match(text(refused), /owned items.*a/);
   const moved = await client.callTool({ name: "move_item", arguments: { author, id: "a", owner: "other", after: [] } }); assert.equal(moved.isError, undefined, text(moved));
@@ -290,7 +298,7 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
 test("MCP moves an item and what it owns to another project, and only the PM or the architect may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
-  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "priority", "project", "session"]);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "project", "session"]);
   assert.deepEqual([...tool.inputSchema.required!].sort(), ["id", "project"], "author is left out when the connection has a credential, so no tool requires it");
   assert.match(tool.description!, rx`^Only author ${PROCESS_WRITERS} may use it\.`);
   const before = store.snapshot();

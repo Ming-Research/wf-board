@@ -23,7 +23,7 @@ test("a client keeps working across a replacement of the daemon process, and a r
   t.after(() => Promise.all([data, config].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
   // A board with one item, and the architect's credential in a file beside it.
   const seed = await Store.open(data, { init: true, board: { title: "Stateless test", projects: [{ name: "Test" }, { name: "Architect" }] } });
-  const item = { title: "条目", group: "Test", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: "2026-10-11T01:02:03Z" };
+  const item = { title: "条目", group: "Test", difficulty: 2, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: "2026-10-11T01:02:03Z" };
   await seed.commit({ author: "Test", message: "Seed", puts: [{ kind: "item", id: "x", expectRev: null, doc: item }] });
   await writeFile(credentials, JSON.stringify({ credentials: [{ session: "架构师", role: "架构师", project: "Architect", roots: [], hash: hashToken(TOKEN) }] }));
   const probe = createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");

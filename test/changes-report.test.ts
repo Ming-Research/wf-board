@@ -13,7 +13,7 @@ import { Store } from "../src/store.ts";
 
 const at = "2026-10-11T01:02:03Z";
 const LONG_TITLE = "长".repeat(25);
-const doc = (title: string, fields: object = {}) => ({ title, group: "Whitefoot", priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
+const doc = (title: string, fields: object = {}) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
 const put = (id: string, document: object) => ({ kind: "item" as const, id, expectRev: null, doc: document });
 
 /** Writes item `id` as session `session`: `change` turns the stored document (without its revision) into the next one. */
