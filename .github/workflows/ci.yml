@@ -65,7 +65,7 @@ jobs:
       - run: npm ci
       - run: npm run check
   # The script tests in 8 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
-  # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 45 seconds
+  # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 60 seconds
   # and a test at 40, so that a slow shard or test is named in the log of a red run; the time gate reads the step `tests`.
   test:
     name: test shard ${{ matrix.shard }}
@@ -85,7 +85,7 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: tests
         run: |
-          timeout 45 node --test --test-timeout=40000 \
+          timeout 60 node --test --test-timeout=40000 \
             --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})

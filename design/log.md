@@ -8,6 +8,12 @@ Nodes: wake/routing
 
 Summary: An engineer that waited for another item's pull request to merge learned of the merge only when the architect found it on a patrol, because the board pushed only when an item was wholly done, which is after its deploy and live check. The board now pushes `dep-merged` when a merge row turns done, to the session holding each open item with a shared row on it, and to the architect for one nobody holds; the grounds and the refused alternatives are in docs/design.md, section 8, A merge a waiter waits on.
 
+## 2026-10-18 Test the page in a DOM library between the fake DOM and the browser
+
+Nodes: testing, testing/evidence, testing/press-n
+
+Summary: The page's checks that need no layout (clicks that must land on what they claim, the cards, numbers, filters, search, the agent list, the messages list, and the few style facts read from the stylesheet) run in jsdom against the real server instead of in headless Chromium, so the layers become four and the browser layer keeps what needs a layout. Each moved check keeps a witness in the layer that runs it, on the page's source edited in memory. The page, agent list and message checks took 272 of the 806 seconds of the browser job on a hosted runner; the same checks with their spoiled-page runs measured 220 seconds in 13 files of a hosted runner each, none longer than 27 seconds, so the gain is that the files run side by side (docs/design.md, section 11, Four test layers). The link anchors of two nodes follow the renamed heading.
+
 ## 2026-10-18 Run the data repository's maintenance as a task of the write queue
 
 Nodes: storage
@@ -24,7 +30,7 @@ Summary: A run of the full CI started by hand leaves out the browser tests unles
 
 Nodes: storage/write-path/page-rules-reuse, testing/press-n
 
-Summary: The jump to the next unread change went over its limit on slow hosted runners while sessions wrote, because each write derived the whole board again on the page. The page now keeps what the rules before a write derived when the write changes nothing a status reads, and counts the filters of only the items the write reaches; a paired measurement put a write's cost at 0.46 of the main line's and the busy time while writing at 140 to 142 ms with the page throttled 1.3 times ([Write cost](../docs/design.md#4-architecture)). The press-n counts now cover writes, and the two counts that raced the 100 ms wait no longer depend on tens of milliseconds of real time ([Three test layers](../docs/design.md#three-test-layers)).
+Summary: The jump to the next unread change went over its limit on slow hosted runners while sessions wrote, because each write derived the whole board again on the page. The page now keeps what the rules before a write derived when the write changes nothing a status reads, and counts the filters of only the items the write reaches; a paired measurement put a write's cost at 0.46 of the main line's and the busy time while writing at 140 to 142 ms with the page throttled 1.3 times ([Write cost](../docs/design.md#4-architecture)). The press-n counts now cover writes, and the two counts that raced the 100 ms wait no longer depend on tens of milliseconds of real time ([Four test layers](../docs/design.md#four-test-layers)).
 
 ## 2026-10-17 Shard the script tests and gate the time of a full CI run
 
