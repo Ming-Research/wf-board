@@ -3,7 +3,7 @@
 // never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
 import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, answersPushes } from "./model.ts";
+import { AGENT_TOUCHES, ARCHITECT_TURN_SESSION, answersPushes, isRunnerSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -12,6 +12,8 @@ export const AGENT_WINDOW_MS = 6 * 3600_000;
 export const AGENT_STALE_MS = 30 * 60_000;
 /** A session waiting for longer than this is marked amber: Claude Code stops an idle session about an hour in. */
 export const AGENT_WAIT_LONG_MS = 60 * 60_000;
+/** How far apart a dispatch and the runner's report on its item may start and still be the same job: the runner records the dispatch and reports in the same breath. */
+const RUNNER_START_GRACE_MS = 5 * 60_000;
 /** A write counts as made after a dispatch ended only when it is later than this past the recorded end, which may be to the minute. */
 const FINISH_GRACE_MS = 60_000;
 
@@ -65,13 +67,23 @@ export function liveDispatches(s: Pick<Snapshot, "items"> & { activity?: Snapsho
   });
 }
 
+/**
+ * Whether the runner holds the work of a dispatch: it is an engineer's, not ended, and the item carries a runner report that began
+ * with it. A report left from an earlier job does not make a session started later (one the PM started, say) the runner's. The runner's block of
+ * the list draws these sessions (src/runner-rows.ts), so the rows read from the board's own writes leave them out.
+ */
+export function runnerHolds(it: Pick<Item, "runner"> | undefined, d: Dispatch): boolean {
+  const report = it?.runner;
+  return !!report && d.role === "工程师" && d.finish === undefined && Math.abs(Date.parse(d.started) - Date.parse(report.started)) <= RUNNER_START_GRACE_MS;
+}
+
 /** The steps in progress on an item: its own steps, which are what a session works on. */
 const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "state" in row && row.state === "doing" ? [row] : []);
 
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when it wrote to the board or was
- * started by a dispatch record within AGENT_WINDOW_MS, except the PM's and the architect's own, and except one whose newest
- * dispatch record has ended with no write since (the name is reused by the next session on the item).
+ * started by a dispatch record within AGENT_WINDOW_MS, except the PM's, the architect's and the runner's own, and except one whose newest
+ * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
  */
 export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number): AgentRow[] {
   const started = new Map<string, Started[]>();
@@ -87,7 +99,8 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   const names = new Set([...Object.keys(s.activity?.agents ?? {}), ...started.keys()]);
   const rows: AgentRow[] = [];
   for (const name of names) {
-    if (answersPushes({ session: name })) continue;
+    // The PM, the architect and the runner's own sessions are not rows: the runner's work and the architect's turns it starts are drawn from its reports.
+    if (answersPushes({ session: name }) || isRunnerSession(name) || name.trim() === ARCHITECT_TURN_SESSION) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const dispatches = started.get(name) ?? [];
     const newest = dispatches.reduce<Started | undefined>((a, b) => !a || Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a, undefined);
@@ -96,6 +109,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
     const finish = newest?.dispatch.finish;
     const review = newest?.dispatch.role === "审查";
     if (finish && !(lastWrite > Date.parse(finish.ended) + FINISH_GRACE_MS)) continue;
+    if (newest && runnerHolds(s.items[newest.item], newest.dispatch)) continue;
     const last = Math.max(lastWrite, lastStart);
     if (!(now - last <= AGENT_WINDOW_MS)) continue;
     // The items it touched: what it wrote to, and what a dispatch record started it on; the later time of an item wins.
