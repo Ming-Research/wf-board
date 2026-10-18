@@ -1,0 +1,24 @@
+name: tmp-rearch-probe
+# Temporary (board item board-rearch-study): times one write and two history reads with git commits and with an SQLite
+# log on a synthetic board of the live board's size; deleted with the branch board-rearch-probe.
+on:
+  push:
+    branches: [board-rearch-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/probe-store.ts
