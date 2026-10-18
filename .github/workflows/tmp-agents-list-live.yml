@@ -1,6 +1,6 @@
 name: tmp-agents-list-live
 # Temporary: delete before the last full CI, which fails while this file exists.
-# Finds what makes the page slower on the n-key lane's writing phase: the same lane run on the page with one part of this change taken out.
+# Finds what makes the page slower on the n-key lane's writing phase: a CPU profile of the lane on this page, read by function.
 on:
   push:
     branches-ignore: [main]
@@ -8,13 +8,9 @@ concurrency:
   group: tmp-agents-list-live-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  nkey:
-    name: nkey writing, ${{ matrix.variant }}
+  profile:
+    name: nkey writing, cpu profile
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [as-is, runner-rows-off, html-from-main, page-from-main]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -25,17 +21,43 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: Take one part out
-        run: |
-          case "${{ matrix.variant }}" in
-            as-is) ;;
-            runner-rows-off) sed -i 's/runner = runnerRowsNow(), now = Date.now();/runner = [] as RunnerRow[], now = Date.now();/' web/app.ts; git diff --stat ;;
-            html-from-main) git checkout origin/main -- web/index.html; git diff --cached --stat ;;
-            page-from-main) git checkout origin/main -- web/index.html web/app.ts; git diff --cached --stat ;;
-          esac
       - name: Base page
         run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
-      - name: The lane, four rounds
+      - name: The lane, two rounds, profiled
         env:
-          NKEY_FLOOR: 4
-        run: node --test --test-concurrency=1 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (base|time|twin)|✔|✖" || true
+          NKEY_FLOOR: 2
+        run: node --cpu-prof --cpu-prof-dir=prof --cpu-prof-interval=250 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (base|time|twin)|✔|✖" || true
+      - name: Read the profile
+        run: |
+          node - <<'EOF'
+          const fs = require("fs");
+          for (const f of fs.readdirSync("prof").filter(f => f.endsWith(".cpuprofile"))) {
+            const p = JSON.parse(fs.readFileSync("prof/" + f, "utf8"));
+            const nodes = new Map(p.nodes.map(n => [n.id, n]));
+            const parent = new Map();
+            for (const n of p.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+            const self = new Map();
+            p.samples.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + p.timeDeltas[i]));
+            const key = n => `${n.callFrame.functionName || "(anon)"} ${n.callFrame.url.split("/").slice(-2).join("/")}:${n.callFrame.lineNumber}`;
+            const by = new Map();
+            const entry = k => by.get(k) ?? (by.set(k, { self: 0, incl: 0 }), by.get(k));
+            let total = 0;
+            for (const [id, t] of self) {
+              total += t;
+              entry(key(nodes.get(id))).self += t;
+              const seen = new Set();
+              for (let cur = id; cur !== undefined; cur = parent.get(cur)) {
+                const k = key(nodes.get(cur));
+                if (!seen.has(k)) { seen.add(k); entry(k).incl += t; }
+              }
+            }
+            const ms = x => (x / 1000).toFixed(1).padStart(9);
+            console.log(`== ${f}: ${ms(total)} ms in all`);
+            const rows = [...by].map(([k, v]) => ({ k, ...v }));
+            console.log("-- the page's own functions on the path (incl, self, ms)");
+            const mine = /runner|Agents|agentRows|openDispatches|reportText|limitOf|turnOf|turnShown|ComputedStyle|scheduleRender|renderNow|renderAll|\bdraw\b/i;
+            rows.filter(r => mine.test(r.k)).sort((a, b) => b.incl - a.incl).slice(0, 40).forEach(r => console.log(ms(r.incl), ms(r.self), r.k));
+            console.log("-- top 30 by self time");
+            rows.sort((a, b) => b.self - a.self).slice(0, 30).forEach(r => console.log(ms(r.incl), ms(r.self), r.k));
+          }
+          EOF
