@@ -384,11 +384,37 @@ is `src/deploy.ts`. A run fetches the main line, `origin/main`, through `netGit`
 (Storage): a fetch that outlives its cap of five minutes is killed with its ssh and counts
 as a failed try, so a remote that never answers cannot hold the job for good (launchd
 never starts a second run while one is going).
-When the checkout the daemon runs from is behind it, the run moves the checkout
-to its head with a fast-forward, installs the packages if `package-lock.json`
-changed, rebuilds the page bundle and, when a changed path needs it, restarts
-the daemon. Pull requests merged within the five minutes are one deploy and one
-restart.
+When the checkout the daemon runs from is behind it, and the checks on that head
+passed (below), the run moves the checkout to the head with a fast-forward,
+installs the packages if `package-lock.json` changed, rebuilds the page bundle
+and, when a changed path needs it, restarts the daemon. Pull requests merged
+within the five minutes are one deploy and one restart.
+
+- **A commit goes live only when its checks passed.** The head the run fetched
+  is the commit it asks GitHub about, by its id (`ghCommitChecks` in
+  `src/github.ts`, the query `COMMIT_CHECKS_QUERY`), after the refusals about the
+  checkout (below) and before anything moves. The answer is read as the board's
+  look at the main line reads a commit (What the checks say, in Watching
+  GitHub: `summarize`, the one definition of green), so every workflow's checks on the commit
+  count, not only the full CI's. Green deploys. A check still running, or no check
+  yet (GitHub registers a push's runs within seconds of the merge, so a run that
+  starts early finds none), leaves the checkout where it is: the job writes one log
+  line and looks again five minutes later, so a head whose CI takes ten minutes is
+  deployed at the first run after it ends. A red check holds the commit: the log names the
+  failed checks and the next run asks again, so a failed check run again that
+  turns green is found, and a newer commit that is green deploys with the red one
+  under it (the push lists both). The red is not pushed by the job: the board's
+  look at the main line (section 8, Deploys and the red main line) tells it
+  once, to the session holding the item that delivered the commit, which is the
+  session that fixes it. Checks that cannot be read (`gh` not signed in, GitHub
+  not answering, a commit it does not know, an answer of an unexpected shape) are not green: the job does not
+  deploy and pushes `deployFailed` once per commit. A head whose checks are
+  still unfinished an hour after the job first found it so is pushed once as
+  well (`waiting` in the state file keeps when), since nothing else says why the board is not
+  deployed; the job keeps waiting. The newest commit decides: while merges follow each other
+  faster than CI ends, nothing deploys, which is the cost of one restart for a batch of
+  merges; the other choice, deploying the newest green commit among the unreleased ones, was refused for the
+  restarts it costs.
 
 - A restart is skipped only when every changed path is in `NO_RESTART`
   (`src/deploy.ts`, the one place the list is defined): the daemon loads `src/`
@@ -427,7 +453,7 @@ restart.
   needed no restart waits up to 90 seconds for `/health` to answer, and no
   single probe is trusted: a probe tries for up to 15 seconds, since a daemon
   that is busy or just started can miss one.
-- A deploy that fails (the daemon is not healthy, or the install or build
+- A deploy that fails after the checks passed (the daemon is not healthy, or the install or build
   fails) goes back to the last healthy commit: the checkout's commit when the
   daemon was answering at the start of the run, else the last commit the job saw
   healthy. The checkout is reset to it (`git reset --keep`), the packages (when
@@ -3074,7 +3100,7 @@ the forms the server sends:
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged. It goes to the architect's stream |
 | `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none. It goes to the architect's stream |
 | `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
-| `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the architect, naming the first |
+| `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, the checks of the head could not be read or were not finished after an hour, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the architect, naming the first |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{n, at, event:"dep-merged", item, project, title, prs, waiter}` | A merge row of `item` turned done, whether the board marked it after GitHub reported the pull requests merged or a session did by hand. One event for each open, unpaused item `waiter` with a shared row on `item`; it goes to the stream of the session holding `waiter`, and to the architect's stream when nobody does. `prs` lists the pull requests that counted for the row, as `Owner/Name#N`, and `item`, `project` and `title` are the item whose row turned done. Nothing is pushed for an owner's row, a dropped row, a row that names no counted pull request, or a paused `waiter`. Made by the write that turned the row done, so a restart announces nothing |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence, and not made for an item the runner reports on (Liveness) |
@@ -3391,7 +3417,8 @@ commit nobody has run yet looks the same. A commit status counts like a check
 full CI of a pull request reaches the board only this way: a run started by
 hand is not among the checks a pull request lists, so it writes its outcome as
 the status `full-ci`, pending until then (section 11, Fast checks while
-writing).
+writing). The deploy job reads the checks of the commit it is about to deploy
+the same way, by the commit's id (`ghCommitChecks`; section 4, Deploying).
 
 **The push about checks.** Only `main-red`: the checks of the main line's newest commit say
 failure; it goes to the session holding the item that delivers the pull request the commit's

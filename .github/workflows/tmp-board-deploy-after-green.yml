@@ -1,0 +1,23 @@
+name: tmp-board-deploy-after-green
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The type check and the tests the change touches (the deploy job and the reading of a commit's checks).
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-board-deploy-after-green-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/deploy.test.ts test/watch.test.ts

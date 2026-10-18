@@ -219,12 +219,17 @@ The shared rules' design-tree section applies; this is how it maps here.
 
 ## Deploy
 
-A launchd job, `org.ming-research.wf-board-deploy`, deploys every merge within
-five minutes (`docs/design.md`, section 4, Deploying). It fast-forwards
-`~/dev/wf/wf-board` to `main`, builds the page, restarts the
+A launchd job, `org.ming-research.wf-board-deploy`, deploys the main line within
+five minutes of its checks turning green (`docs/design.md`, section 4, Deploying).
+It asks GitHub (`gh`, signed in as the owner) for the checks on the head of `main`
+and moves nothing while they run or when one is red; once they all passed it
+fast-forwards `~/dev/wf/wf-board` to `main`, builds the page, restarts the
 daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
-`~/Library/Logs/wf-board-deploy.log`.
+`~/Library/Logs/wf-board-deploy.log`; a head still waiting for its checks, or held
+for a red one, leaves a line there on every run. A merge goes live as late as its CI
+ends (a few minutes), and a red `main` stays off the live board until a newer green
+commit or a rerun that passes.
 
 Nobody deploys by hand. The deploy result goes to the
 engineer holding the item that delivered the merge (the pull request in the
@@ -233,16 +238,17 @@ version now served, and the engineer checks the change on the live page;
 `deployFailed` says why nothing was deployed (a null version means the job
 itself could not run, as when its fetch fails; the log has the detail), and
 goes to the architect when no engineer holds such an item, where `deployed` is not
-pushed at all. The job leaves a checkout alone that is on another branch, has local
+pushed at all (a red `main` is told by the board's own `main-red` push, to the same session). The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes
-`deployFailed` once; fix the checkout and the next run deploys.
+`deployFailed` once; fix the checkout and the next run deploys. Checks it cannot read
+(`gh` signed out, GitHub not answering) hold the deploy the same way and are pushed once.
 
 Install once, after the PR that adds the job has been deployed by hand (the
 merge does not install it):
 `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts deploy`
 writes the plist and prints the `launchctl bootstrap` command to run.
 
-By hand, when the job is off or its own script broke: fast-forward
+By hand, when the job is off, its own script broke, or `gh` cannot read the checks: fast-forward
 `~/dev/wf/wf-board` to the merged head of `main` and run
 `npm run -s build:web` there (the bundle is not in git). When server code
 changed, restart the daemon
