@@ -306,6 +306,8 @@ export const Decision = z.object({
   ruling: z.string().min(1).optional(),
   /** When the card closed: the owner's send time for a pick made on the page, else the time of the call that closed it. */
   ruledAt: Time.optional(),
+  /** Set when the card was withdrawn because its item was cancelled; reopening the item restores the card to open. */
+  withdrawnWithItem: z.literal(true).optional(),
   legacy: LegacyCard.optional(),
   /** When the card was written. */
   at: Time.optional(),
