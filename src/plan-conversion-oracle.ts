@@ -24,7 +24,7 @@ export function derivePlanOracle(snapshot: Snapshot, now=Date.now()) {
   // A record row is no step: left out of the counts whether it is owned or shared, and out of the order, where a row with no
   // `after` follows the nearest row before it that is not a record row.
   const recordRow=(row:PlanRow):boolean=>"item"in row&&snapshot.items[row.item]?.record===true;
-  const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":recordRow(row)||row.own&&snapshot.items[row.item]?.status==="cancelled";
+  const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":"item"in row&&(recordRow(row)||row.own&&snapshot.items[row.item]?.status==="cancelled");
   function rowsOf(plan:readonly PlanRow[],trail:Set<string>) {
     const preceding = new Map<string,OracleRowState>(), result:Array<{id:string;state:OracleRowState;ready:boolean;excluded:boolean}>=[];
     let step:string|undefined;
